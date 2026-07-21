@@ -7,3 +7,17 @@
   --color-primary: #ffffff;
   --color-muted: #a3a3a3;
 }
+
+/* iOS Safari safe-area helpers */
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.safe-area-full {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
