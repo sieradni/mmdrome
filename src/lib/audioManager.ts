@@ -1,0 +1,306 @@
+import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
+import { getSetting, setSetting, db } from './db'
+
+const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+const PROFILE_KEY_PREFIX = 'eq_profile_'
+const DEFAULT_BAND_Q = Math.SQRT1_2
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max)
+}
+
+interface EqFilterConfig {
+  type: BiquadFilterType
+  frequency: number
+  gain: number
+  q: number
+}
+
+function parseEqLine(line: string): EqFilterConfig | null {
+  const m = line.match(
+    /^Filter\s+\d+:\s+(ON|OFF)\s+(PK|LSC|HSC)\s+Fc\s+([\d.]+)\s+Hz\s+Gain\s+(-?[\d.]+)\s+dB\s+Q\s+([\d.]+)$/i
+  )
+  if (!m) return null
+
+  const typeMap: Record<string, BiquadFilterType> = { PK: 'peaking', LSC: 'lowshelf', HSC: 'highshelf' }
+  const cfg: EqFilterConfig = {
+    type: typeMap[m[2].toUpperCase()] ?? 'peaking',
+    frequency: parseFloat(m[3]),
+    gain: m[1].toUpperCase() === 'ON' ? parseFloat(m[4]) : 0,
+    q: parseFloat(m[5]),
+  }
+  return cfg
+}
+
+class AudioManager {
+  readonly a: HTMLAudioElement
+  readonly b: HTMLAudioElement
+  private _ctx: AudioContext | null = null
+  private _sourceA: MediaElementAudioSourceNode | null = null
+  private _sourceB: MediaElementAudioSourceNode | null = null
+  private _gainA: GainNode | null = null
+  private _gainB: GainNode | null = null
+  private _soundTouch: AudioNode | null = null
+  private _initialized = false
+  private _setupComplete = false
+  private _speed = 1
+  private _pitchOctaves = 0
+  private _tapeMode = false
+  private _snapTolerance = 0.15
+  private _eqBypassed = false
+  private _eqFilters: BiquadFilterNode[] = []
+  private _preamp: GainNode | null = null
+
+  constructor() {
+    this.a = new Audio()
+    this.b = new Audio()
+    this.a.crossOrigin = 'anonymous'
+    this.b.crossOrigin = 'anonymous'
+    this.a.preservesPitch = false
+    this.b.preservesPitch = false
+  }
+
+  get ctx(): AudioContext | null { return this._ctx }
+  get gainA(): GainNode | null { return this._gainA }
+  get gainB(): GainNode | null { return this._gainB }
+  get soundTouch(): AudioNode | null { return this._soundTouch }
+  get initialized(): boolean { return this._initialized }
+  get setupComplete(): boolean { return this._setupComplete }
+  get speed(): number { return this._speed }
+  get pitchOctaves(): number { return this._pitchOctaves }
+  get tapeMode(): boolean { return this._tapeMode }
+  get snapTolerance(): number { return this._snapTolerance }
+  get eqBypassed(): boolean { return this._eqBypassed }
+  get preamp(): GainNode | null { return this._preamp }
+
+  set snapTolerance(value: number) { this._snapTolerance = Math.max(0, value) }
+
+  async init(): Promise<void> {
+    if (this._initialized) return
+    this._ctx = new AudioContext()
+
+    this._sourceA = this._ctx.createMediaElementSource(this.a)
+    this._sourceB = this._ctx.createMediaElementSource(this.b)
+    this._gainA = this._ctx.createGain()
+    this._gainB = this._ctx.createGain()
+    this._soundTouch = this._ctx.createGain()
+
+    this._sourceA.connect(this._gainA)
+    this._gainA.connect(this._soundTouch)
+
+    this._sourceB.connect(this._gainB)
+    this._gainB.connect(this._soundTouch)
+
+    this._soundTouch.connect(this._ctx.destination)
+
+    this._initialized = true
+  }
+
+  async setup(): Promise<void> {
+    if (!this._ctx) throw new Error('AudioManager not initialized. Call init() first.')
+    if (this._setupComplete) return
+
+    await SoundTouchNode.register(this._ctx, '/soundtouch-processor.js')
+
+    const stNode = new SoundTouchNode({ context: this._ctx })
+
+    if (this._soundTouch) {
+      this._gainA?.disconnect(this._soundTouch)
+      this._gainB?.disconnect(this._soundTouch)
+      this._soundTouch.disconnect()
+    }
+
+    this._gainA?.connect(stNode)
+    this._gainB?.connect(stNode)
+    this._soundTouch = stNode
+
+    this._preamp = this._ctx.createGain()
+    this._preamp.gain.value = 1
+    this._buildDefaultEq()
+    this._reconnectChain()
+
+    this._setupComplete = true
+
+    this._applyTempo()
+    this._applyPitch(this._pitchOctaves)
+  }
+
+  setSpeed(value: number): void {
+    this._speed = clamp(value, 0.2, 4)
+    this._applyTempo()
+  }
+
+  setPitchOctaves(octaves: number): void {
+    this._pitchOctaves = clamp(octaves, -8, 8)
+    const snapped = this._snapOctaves(this._pitchOctaves)
+    this._pitchOctaves = snapped
+    this._applyPitch(snapped)
+  }
+
+  toggleTapeMode(): void {
+    this._tapeMode = !this._tapeMode
+    this._applyTempo()
+    this._applyPitch(this._pitchOctaves)
+  }
+
+  setTapeMode(enabled: boolean): void {
+    if (this._tapeMode === enabled) return
+    this._tapeMode = enabled
+    this._applyTempo()
+    this._applyPitch(this._pitchOctaves)
+  }
+
+  setEqBandGain(bandIndex: number, gainDb: number): void {
+    const filter = this._eqFilters[bandIndex]
+    if (!filter) return
+    filter.gain.value = clamp(gainDb, -12, 12)
+  }
+
+  toggleEqBypass(): void {
+    this._eqBypassed = !this._eqBypassed
+    this._reconnectChain()
+  }
+
+  setEqBypass(enabled: boolean): void {
+    if (this._eqBypassed === enabled) return
+    this._eqBypassed = enabled
+    this._reconnectChain()
+  }
+
+  parseParametricEQ(configText: string): void {
+    const lines = configText.trim().split('\n')
+    const configs: EqFilterConfig[] = []
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      const parsed = parseEqLine(trimmed)
+      if (parsed) configs.push(parsed)
+    }
+
+    this._teardownFilters()
+
+    if (configs.length === 0) {
+      this._eqFilters = []
+      this._reconnectChain()
+      return
+    }
+
+    if (!this._ctx) return
+
+    this._eqFilters = configs.map(cfg => {
+      const f = this._ctx!.createBiquadFilter()
+      f.type = cfg.type
+      f.frequency.value = cfg.frequency
+      f.gain.value = clamp(cfg.gain, -12, 12)
+      f.Q.value = cfg.q
+      return f
+    })
+
+    this._reconnectChain()
+  }
+
+  async saveEqProfile(name: string, configText: string): Promise<void> {
+    await setSetting(`${PROFILE_KEY_PREFIX}${name}`, configText)
+  }
+
+  async loadEqProfile(name: string): Promise<void> {
+    const config = await getSetting<string>(`${PROFILE_KEY_PREFIX}${name}`)
+    if (config) this.parseParametricEQ(config)
+  }
+
+  async deleteEqProfile(name: string): Promise<void> {
+    await db.userSettings.delete(`${PROFILE_KEY_PREFIX}${name}`)
+  }
+
+  async listEqProfiles(): Promise<string[]> {
+    const entries = await db.userSettings
+      .filter(s => s.key.startsWith(PROFILE_KEY_PREFIX))
+      .toArray()
+    return entries.map(e => e.key.slice(PROFILE_KEY_PREFIX.length))
+  }
+
+  async getEqProfileConfig(name: string): Promise<string | undefined> {
+    return getSetting<string>(`${PROFILE_KEY_PREFIX}${name}`)
+  }
+
+  private _buildDefaultEq(): void {
+    if (!this._ctx) return
+    this._eqFilters = EQ_FREQUENCIES.map(freq => {
+      const f = this._ctx!.createBiquadFilter()
+      f.type = 'peaking'
+      f.frequency.value = freq
+      f.gain.value = 0
+      f.Q.value = DEFAULT_BAND_Q
+      return f
+    })
+  }
+
+  private _teardownFilters(): void {
+    for (const f of this._eqFilters) {
+      f.disconnect()
+    }
+    this._eqFilters = []
+  }
+
+  private _reconnectChain(): void {
+    if (!this._soundTouch || !this._preamp || !this._ctx) return
+
+    this._soundTouch.disconnect()
+    this._preamp.disconnect()
+
+    if (this._eqBypassed || this._eqFilters.length === 0) {
+      this._soundTouch.connect(this._preamp)
+    } else {
+      this._soundTouch.connect(this._eqFilters[0])
+      for (let i = 0; i < this._eqFilters.length - 1; i++) {
+        this._eqFilters[i].connect(this._eqFilters[i + 1])
+      }
+      this._eqFilters[this._eqFilters.length - 1].connect(this._preamp)
+    }
+
+    this._preamp.connect(this._ctx.destination)
+  }
+
+  private _applyTempo(): void {
+    if (this._tapeMode) {
+      this.a.playbackRate = this._speed
+      this.b.playbackRate = this._speed
+      if (this._soundTouch instanceof SoundTouchNode) {
+        this._soundTouch.playbackRate.value = 1
+      }
+    } else {
+      this.a.playbackRate = 1
+      this.b.playbackRate = 1
+      if (this._soundTouch instanceof SoundTouchNode) {
+        this._soundTouch.playbackRate.value = this._speed
+      }
+    }
+  }
+
+  private _applyPitch(octaves: number): void {
+    if (this._soundTouch instanceof SoundTouchNode) {
+      if (this._tapeMode) {
+        this._soundTouch.pitch.value = 1
+      } else {
+        this._soundTouch.pitch.value = Math.pow(2, octaves)
+      }
+    }
+  }
+
+  private _snapOctaves(octaves: number): number {
+    const nearestSemitone = Math.round(octaves * 12) / 12
+    const semitoneDist = Math.abs(octaves - nearestSemitone)
+    const nearestOctave = Math.round(octaves)
+    const octDist = Math.abs(octaves - nearestOctave)
+
+    const best = semitoneDist <= octDist ? nearestSemitone : nearestOctave
+    const bestDist = Math.min(semitoneDist, octDist)
+
+    return bestDist <= this._snapTolerance ? best : octaves
+  }
+}
+
+const audioManager = new AudioManager()
+export { audioManager }
+export type { AudioManager }
