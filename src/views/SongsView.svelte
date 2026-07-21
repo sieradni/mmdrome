@@ -96,7 +96,8 @@
         (t) =>
           t.title.toLowerCase().includes(q) ||
           t.artist.toLowerCase().includes(q) ||
-          t.album.toLowerCase().includes(q)
+          t.album.toLowerCase().includes(q) ||
+          t.composer.toLowerCase().includes(q)
       )
     }
     list = list.filter((t) => {
