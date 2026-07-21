@@ -50,6 +50,13 @@ class AudioManager {
   private _eqBypassed = false
   private _eqFilters: BiquadFilterNode[] = []
   private _preamp: GainNode | null = null
+  private _activeElement: 'a' | 'b' = 'a'
+  private _crossfadeDuration = 0
+  private _nextTrackUrl: string | null = null
+  private _transitionArmed = false
+  private _timeupdateEl: HTMLAudioElement | null = null
+  private _timeupdateHandler: ((e: Event) => void) | null = null
+  onTrackEnd: (() => void) | null = null
 
   constructor() {
     this.a = new Audio()
@@ -74,6 +81,22 @@ class AudioManager {
   get preamp(): GainNode | null { return this._preamp }
 
   set snapTolerance(value: number) { this._snapTolerance = Math.max(0, value) }
+
+  get activeElement(): HTMLAudioElement {
+    return this._activeElement === 'a' ? this.a : this.b
+  }
+
+  get standbyElement(): HTMLAudioElement {
+    return this._activeElement === 'a' ? this.b : this.a
+  }
+
+  get crossfadeDuration(): number {
+    return this._crossfadeDuration
+  }
+
+  set crossfadeDuration(seconds: number) {
+    this._crossfadeDuration = Math.max(0, Math.min(15, seconds))
+  }
 
   async init(): Promise<void> {
     if (this._initialized) return
@@ -148,6 +171,15 @@ class AudioManager {
     this._tapeMode = enabled
     this._applyTempo()
     this._applyPitch(this._pitchOctaves)
+  }
+
+  setNextTrack(url: string | null): void {
+    this._nextTrackUrl = url
+    if (url && this._crossfadeDuration > 0) {
+      this._setupTimeupdateMonitor()
+    } else {
+      this._teardownTimeupdateMonitor()
+    }
   }
 
   setEqBandGain(bandIndex: number, gainDb: number): void {
@@ -298,6 +330,71 @@ class AudioManager {
     const bestDist = Math.min(semitoneDist, octDist)
 
     return bestDist <= this._snapTolerance ? best : octaves
+  }
+
+  private _setupTimeupdateMonitor(): void {
+    this._teardownTimeupdateMonitor()
+    if (this._crossfadeDuration <= 0 || !this._nextTrackUrl) return
+
+    const el = this.activeElement
+    this._timeupdateEl = el
+    this._transitionArmed = false
+    this._timeupdateHandler = () => {
+      if (!this._nextTrackUrl || this._transitionArmed) return
+      if (!el.duration || !isFinite(el.duration)) return
+
+      const transitionPoint = el.duration - this._crossfadeDuration
+      if (transitionPoint <= 0) return
+
+      if (el.currentTime >= transitionPoint) {
+        this._executeCrossfade()
+      }
+    }
+    el.addEventListener('timeupdate', this._timeupdateHandler)
+  }
+
+  private _teardownTimeupdateMonitor(): void {
+    if (this._timeupdateEl && this._timeupdateHandler) {
+      this._timeupdateEl.removeEventListener('timeupdate', this._timeupdateHandler)
+    }
+    this._timeupdateEl = null
+    this._timeupdateHandler = null
+    this._transitionArmed = false
+  }
+
+  private _executeCrossfade(): void {
+    if (this._transitionArmed || !this._nextTrackUrl || !this._ctx) return
+    this._transitionArmed = true
+
+    const fadeDuration = this._crossfadeDuration
+    const ctx = this._ctx
+    const now = ctx.currentTime
+
+    if (ctx.state === 'suspended') {
+      ctx.resume()
+    }
+
+    const fadeOutGain = this._activeElement === 'a' ? this._gainA : this._gainB
+    const fadeInGain = this._activeElement === 'a' ? this._gainB : this._gainA
+    if (!fadeOutGain || !fadeInGain) return
+
+    const standbyEl = this.standbyElement
+    standbyEl.src = this._nextTrackUrl
+    standbyEl.play()
+
+    fadeOutGain.gain.cancelScheduledValues(now)
+    fadeOutGain.gain.setValueAtTime(fadeOutGain.gain.value, now)
+    fadeOutGain.gain.exponentialRampToValueAtTime(0.001, now + fadeDuration)
+
+    fadeInGain.gain.cancelScheduledValues(now)
+    fadeInGain.gain.setValueAtTime(0.001, now)
+    fadeInGain.gain.exponentialRampToValueAtTime(1.0, now + fadeDuration)
+
+    this._teardownTimeupdateMonitor()
+    this._activeElement = this._activeElement === 'a' ? 'b' : 'a'
+    this._nextTrackUrl = null
+
+    this.onTrackEnd?.()
   }
 }
 
