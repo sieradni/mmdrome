@@ -8,4 +8,8 @@ const app = mount(App, {
   target: document.getElementById('app')!,
 })
 
+if ('serviceWorker' in navigator && !location.hostname.includes('localhost')) {
+  navigator.serviceWorker.register('/sw.js', { scope: '/' })
+}
+
 export default app
