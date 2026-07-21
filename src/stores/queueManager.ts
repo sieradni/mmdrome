@@ -52,18 +52,20 @@ export function createQueueManager() {
 
   const combined = (s: QueueManagerState) => [...s.userQueue, ...s.autoQueue]
 
+  function calcReplenishTracks(s: QueueManagerState, library: Track[]): Track[] {
+    const all = combined(s)
+    const used = new Set(all.map((t) => t.trackId))
+    const recent = new Set(s.historyQueue.map((t) => t.trackId))
+
+    let eligible = library.filter((t) => !used.has(t.trackId) && !recent.has(t.trackId))
+    eligible = shuffleEnabled ? shuffle(eligible) : sortConfig ? sortTracks(eligible, sortConfig) : eligible
+
+    const needed = Math.max(0, MAX_AUTO_QUEUE - s.autoQueue.length)
+    return [...s.autoQueue, ...eligible.slice(0, needed)]
+  }
+
   function replenish(library: Track[]) {
-    update((s) => {
-      const all = combined(s)
-      const used = new Set(all.map((t) => t.trackId))
-      const recent = new Set(s.historyQueue.map((t) => t.trackId))
-
-      let eligible = library.filter((t) => !used.has(t.trackId) && !recent.has(t.trackId))
-      eligible = shuffleEnabled ? shuffle(eligible) : sortConfig ? sortTracks(eligible, sortConfig) : eligible
-
-      const needed = Math.max(0, MAX_AUTO_QUEUE - s.autoQueue.length)
-      return { ...s, autoQueue: [...s.autoQueue, ...eligible.slice(0, needed)] }
-    })
+    update((s) => ({ ...s, autoQueue: calcReplenishTracks(s, library) }))
   }
 
   return {
@@ -120,19 +122,6 @@ export function createQueueManager() {
       return track
     },
 
-    playAtIndex(index: number) {
-      let track: Track | null = null
-      update((s) => {
-        const c = combined(s)
-        if (index >= 0 && index < c.length) {
-          track = c[index]
-          return { ...s, activeIndex: index }
-        }
-        return s
-      })
-      return track
-    },
-
     getCurrentTrack() {
       const s = get({ subscribe })
       const c = combined(s)
@@ -156,6 +145,72 @@ export function createQueueManager() {
 
     setSortConfig(config: SortConfig | null) {
       sortConfig = config
+    },
+
+    completeCurrentTrack(library: Track[]) {
+      let nextTrack: Track | null = null
+      update((s) => {
+        if (s.activeIndex < 0) return s
+        const c = combined(s)
+        const current = c[s.activeIndex]
+        if (!current) return { ...s, activeIndex: -1 }
+
+        const history = [current, ...s.historyQueue].slice(0, MAX_HISTORY)
+        const next = s.activeIndex + 1
+        if (next >= c.length) return { ...s, historyQueue: history, activeIndex: -1 }
+
+        nextTrack = c[next]
+        const updated = { ...s, historyQueue: history, activeIndex: next }
+        return { ...updated, autoQueue: calcReplenishTracks(updated, library) }
+      })
+      return nextTrack
+    },
+
+    playTrackInCombinedQueue(index: number) {
+      let track: Track | null = null
+      update((s) => {
+        const c = combined(s)
+        if (index < 0 || index >= c.length) return s
+
+        track = c[index]
+
+        if (index > s.activeIndex) {
+          const nu = s.userQueue.length
+          const toConvert: Track[] = []
+          for (let i = s.activeIndex + 1; i < index; i++) {
+            if (i >= nu) {
+              toConvert.push(s.autoQueue[i - nu])
+            }
+          }
+          if (toConvert.length > 0) {
+            const convertIds = new Set(toConvert.map((t) => t.trackId))
+            return {
+              ...s,
+              userQueue: [...s.userQueue, ...toConvert],
+              autoQueue: s.autoQueue.filter((t) => !convertIds.has(t.trackId)),
+              activeIndex: index,
+            }
+          }
+        }
+
+        return { ...s, activeIndex: index }
+      })
+      return track
+    },
+
+    autoQueueConversionRule(dropCombinedIndex: number) {
+      update((s) => {
+        const autoIdx = dropCombinedIndex - s.userQueue.length
+        if (autoIdx < 1 || autoIdx >= s.autoQueue.length) return s
+
+        const toConvert = s.autoQueue.slice(0, autoIdx)
+        const convertIds = new Set(toConvert.map((t) => t.trackId))
+        return {
+          ...s,
+          userQueue: [...s.userQueue, ...toConvert],
+          autoQueue: s.autoQueue.filter((t) => !convertIds.has(t.trackId)),
+        }
+      })
     },
   }
 }
