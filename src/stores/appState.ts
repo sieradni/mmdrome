@@ -9,9 +9,15 @@ export interface Track {
   title: string
   artist: string
   album: string
+  year?: number
   duration: number
   filePath: string
   fileType: "mp3" | "flac" | "m4a" | "ogg" | "opus"
+}
+
+export interface TrackWithMeta extends Track {
+  rating: number
+  loved: boolean
 }
 
 export interface QueueState {
@@ -37,6 +43,11 @@ export const playbackState = writable<PlaybackState>('stopped')
 export const queue = writable<QueueState>({ userQueue: [], autoQueue: [], historyQueue: [], activeIndex: -1 })
 export const settings = writable<SettingsMap>({})
 export const metadataCache = writable<Map<string, LocalMetadataStore>>(new Map())
+export const library = writable<Track[]>([])
+
+export function setLibrary(tracks: Track[]): void {
+  library.set(tracks)
+}
 
 let initialized = false
 

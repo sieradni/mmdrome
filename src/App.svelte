@@ -2,25 +2,14 @@
   import { onMount } from 'svelte'
   import { slide } from 'svelte/transition'
   import { currentTrack, playbackState, initStores } from './stores/appState'
+  import SongsView from './views/SongsView.svelte'
 
-  let filterPanelOpen = $state(false)
-  let sortPanelOpen = $state(false)
   let nowPlayingOpen = $state(false)
   let searchQuery = $state('')
 
   onMount(() => {
     initStores()
   })
-
-  function toggleFilterPanel() {
-    filterPanelOpen = !filterPanelOpen
-    if (filterPanelOpen) sortPanelOpen = false
-  }
-
-  function toggleSortPanel() {
-    sortPanelOpen = !sortPanelOpen
-    if (sortPanelOpen) filterPanelOpen = false
-  }
 
   function toggleNowPlaying() {
     nowPlayingOpen = !nowPlayingOpen
@@ -39,45 +28,12 @@
           class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
         />
       </div>
-      <button
-        onclick={toggleFilterPanel}
-        class="rounded-lg px-3 py-2 text-sm font-medium transition-colors"
-        class:bg-surface-hover={filterPanelOpen}
-        class:text-primary={filterPanelOpen}
-        class:text-muted={!filterPanelOpen}
-      >Filter</button>
-      <button
-        onclick={toggleSortPanel}
-        class="rounded-lg px-3 py-2 text-sm font-medium transition-colors"
-        class:bg-surface-hover={sortPanelOpen}
-        class:text-primary={sortPanelOpen}
-        class:text-muted={!sortPanelOpen}
-      >Sort</button>
     </div>
-
-    {#if filterPanelOpen}
-      <div transition:slide={{ duration: 200 }} class="border-t border-white/10 px-4 pb-4 pt-2">
-        <p class="text-sm text-muted">Filter panel — coming soon</p>
-      </div>
-    {/if}
-
-    {#if sortPanelOpen}
-      <div transition:slide={{ duration: 200 }} class="border-t border-white/10 px-4 pb-4 pt-2">
-        <p class="text-sm text-muted">Sort panel — coming soon</p>
-      </div>
-    {/if}
   </header>
 
   <!-- ─── Main View Container ─── -->
-  <main class="overflow-y-auto pb-24">
-    <div class="px-4 py-6">
-      {#if searchQuery}
-        <p class="text-center text-sm text-muted">Results for “{searchQuery}”</p>
-      {:else}
-        <p class="text-center text-sm text-muted">Your music library</p>
-      {/if}
-      <!-- placeholder: infinite-scroll list views will be composed here -->
-    </div>
+  <main class="flex flex-col overflow-hidden">
+    <SongsView {searchQuery} />
   </main>
 </div>
 
