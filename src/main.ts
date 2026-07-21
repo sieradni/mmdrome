@@ -9,7 +9,7 @@ const app = mount(App, {
 })
 
 if ('serviceWorker' in navigator && !location.hostname.includes('localhost')) {
-  navigator.serviceWorker.register('/sw.js', { scope: '/' })
+  navigator.serviceWorker.register('sw.js')
 }
 
 export default app

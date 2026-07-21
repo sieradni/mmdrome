@@ -1,44 +1,53 @@
 const CACHE_NAME = 'mmdrome-v1'
 const PRELOAD_CACHE = 'mmdrome-preload-cache'
 
+const BASE = self.location.pathname.replace(/\/sw\.js$/, '') || '/'
+
 const STATIC_ASSETS = [
-  '/',
-  '/index.html',
-  '/favicon.svg',
-  '/icons.svg',
-  '/icon-192.png',
-  '/icon-512.png',
-  '/manifest.webmanifest',
-  '/soundtouch-processor.js',
+  BASE + '/',
+  BASE + '/index.html',
+  BASE + '/favicon.svg',
+  BASE + '/icons.svg',
+  BASE + '/icon-192.png',
+  BASE + '/icon-512.png',
+  BASE + '/manifest.webmanifest',
+  BASE + '/soundtouch-processor.js',
 ]
 
+function stripBase(pathname) {
+  if (pathname.startsWith(BASE)) {
+    return pathname.slice(BASE.length) || '/'
+  }
+  return pathname
+}
+
 function isApiOrStreaming(pathname) {
+  const p = stripBase(pathname)
   return (
-    pathname.startsWith('/api/') ||
-    pathname.startsWith('/rest/') ||
-    pathname.startsWith('/dav/')
+    p.startsWith('/api/') ||
+    p.startsWith('/rest/') ||
+    p.startsWith('/dav/')
   )
 }
 
 function isAppAsset(pathname) {
+  const p = stripBase(pathname)
   return (
-    pathname === '/' ||
-    pathname === '/index.html' ||
-    pathname.startsWith('/assets/') ||
-    pathname === '/favicon.svg' ||
-    pathname === '/icons.svg' ||
-    pathname.startsWith('/icon-') ||
-    pathname === '/manifest.webmanifest' ||
-    pathname === '/soundtouch-processor.js'
+    p === '/' ||
+    p === '/index.html' ||
+    p.startsWith('/assets/') ||
+    p === '/favicon.svg' ||
+    p === '/icons.svg' ||
+    p.startsWith('/icon-') ||
+    p === '/manifest.webmanifest' ||
+    p === '/soundtouch-processor.js'
   )
 }
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) =>
-      cache.addAll(STATIC_ASSETS).catch(() => {
-        /* individual items may fail if offline at install time */
-      })
+      cache.addAll(STATIC_ASSETS).catch(() => {})
     )
   )
   self.skipWaiting()

@@ -6,6 +6,7 @@ import path from 'path'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [svelte(), tailwindcss()],
+  base: '/mmdrome/',
   resolve: {
     alias: {
       $lib: path.resolve('./src/lib'),
