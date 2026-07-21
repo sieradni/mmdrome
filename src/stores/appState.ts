@@ -13,6 +13,11 @@ export interface Track {
   duration: number
   filePath: string
   fileType: "mp3" | "flac" | "m4a" | "ogg" | "opus"
+  composer?: string
+  bitrate?: number
+  size?: number
+  createdAt?: number
+  modifiedAt?: number
 }
 
 export interface TrackWithMeta extends Track {
