@@ -41,6 +41,8 @@ export interface SettingsMap {
   webdavUrl?: string
   webdavUser?: string
   webdavToken?: string
+  navidromeUrl?: string
+  navidromeToken?: string
   tapeMode?: boolean
   snapTolerance?: number
 }
@@ -81,7 +83,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'tapeMode', 'snapTolerance']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeToken', 'tapeMode', 'snapTolerance']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]

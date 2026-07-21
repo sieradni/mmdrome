@@ -1,20 +1,26 @@
 <script lang="ts">
   import { settings, updateSetting } from '../stores/appState'
+  import { runManualWebDAVSync } from '../lib/syncEngine'
 
   let webdavUrl = $state('')
   let webdavUser = $state('')
   let webdavToken = $state('')
+  let navidromeUrl = $state('')
+  let navidromeToken = $state('')
   let preloadTracks = $state(0)
   let crossfadeDuration = $state(0)
   let tapeMode = $state(false)
   let snapTolerance = $state(0.15)
   let syncing = $state(false)
+  let syncResult = $state('')
 
   $effect(() => {
     const s = $settings
     webdavUrl = s.webdavUrl ?? ''
     webdavUser = s.webdavUser ?? ''
     webdavToken = s.webdavToken ?? ''
+    navidromeUrl = s.navidromeUrl ?? ''
+    navidromeToken = s.navidromeToken ?? ''
     preloadTracks = s.preloadTracks ?? 0
     crossfadeDuration = s.crossfadeDuration ?? 0
     tapeMode = s.tapeMode ?? false
@@ -44,20 +50,29 @@
     updateSetting('snapTolerance', val)
   }
 
-  function updateWebdavField(field: 'webdavUrl' | 'webdavUser' | 'webdavToken') {
+  function updateWebdavField(field: 'webdavUrl' | 'webdavUser' | 'webdavToken' | 'navidromeUrl' | 'navidromeToken') {
     return (e: Event) => {
       const val = (e.target as HTMLInputElement).value
       if (field === 'webdavUrl') webdavUrl = val
       if (field === 'webdavUser') webdavUser = val
       if (field === 'webdavToken') webdavToken = val
+      if (field === 'navidromeUrl') navidromeUrl = val
+      if (field === 'navidromeToken') navidromeToken = val
       updateSetting(field, val)
     }
   }
 
   async function syncNow() {
     syncing = true
-    await new Promise(r => setTimeout(r, 1000))
-    syncing = false
+    syncResult = ''
+    try {
+      const result = await runManualWebDAVSync()
+      syncResult = `Synced ${result.synced} track(s), ${result.failed} failed`
+    } catch (err) {
+      syncResult = `Sync failed: ${err instanceof Error ? err.message : String(err)}`
+    } finally {
+      syncing = false
+    }
   }
 </script>
 
@@ -153,6 +168,21 @@
             oninput={updateWebdavField('webdavToken')}
             class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
           />
+          <h3 class="pt-2 text-sm font-medium text-primary">Navidrome</h3>
+          <input
+            type="url"
+            placeholder="https://music.example.com"
+            value={navidromeUrl}
+            oninput={updateWebdavField('navidromeUrl')}
+            class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+          />
+          <input
+            type="password"
+            placeholder="API Token"
+            value={navidromeToken}
+            oninput={updateWebdavField('navidromeToken')}
+            class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+          />
           <button
             onclick={syncNow}
             disabled={syncing}
@@ -169,6 +199,9 @@
               Sync Now
             {/if}
           </button>
+          {#if syncResult}
+            <p class="text-xs text-muted">{syncResult}</p>
+          {/if}
         </div>
       </section>
     </div>
