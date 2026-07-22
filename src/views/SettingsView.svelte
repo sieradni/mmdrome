@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus } from '../stores/appState'
+  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, setLibrary, initMetadataForTracks } from '../stores/appState'
   import { runManualWebDAVSync, testWebdavConn, connectNavidrome } from '../lib/syncEngine'
   import { navidromeSongToTrack } from '../lib/navidromeApi'
-  import { setLibrary } from '../stores/appState'
   import type { Track } from '../stores/appState'
 
   let webdavUrl = $state('')
@@ -87,6 +86,8 @@
       if (result.connection.connected) {
         const tracks: Track[] = result.songs.map(navidromeSongToTrack)
         setLibrary(tracks)
+        initMetadataForTracks(tracks)
+
         navidromeLoadStatus.set({
           loading: false,
           loaded: result.loadResult.loaded,

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { library, metadataCache, addToUserQueue } from '../stores/appState'
   import type { Track } from '../stores/appState'
+  import LazyThumb from '../components/LazyThumb.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
 
@@ -79,7 +80,7 @@
       <div class="px-4 py-2">
         {#each selectedTracks as track, idx (track.trackId)}
           <div class="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-surface-hover">
-            <div class="h-10 w-10 flex-shrink-0 rounded bg-surface-hover"></div>
+            <LazyThumb {track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-bold text-primary">{track.title}</p>
               <p class="truncate text-xs text-muted">{track.artist} · {track.year ?? '—'} · {formatDuration(track.duration)}</p>
@@ -111,7 +112,7 @@
       <div class="grid grid-cols-2 gap-4 px-4 py-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
         {#each albumGroups as group (group.album)}
           <button onclick={() => selectedAlbum = group.album} class="group text-left transition-transform hover:scale-[1.02]">
-            <div class="mb-2 aspect-square w-full rounded-lg bg-surface-hover"></div>
+            <LazyThumb track={group.tracks.find(t => t.trackId === group.thumbnailTrackId) || group.tracks[0]} wrapperClass="mb-2 aspect-square w-full rounded-lg" />
             <p class="truncate text-sm font-bold text-primary">{group.album}</p>
             <p class="truncate text-xs text-muted">{group.artist} · {group.tracks.length} tracks</p>
           </button>

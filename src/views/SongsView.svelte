@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { slide } from 'svelte/transition'
-  import { library, metadataCache, addToUserQueue } from '../stores/appState'
+  import { library, metadataCache, addToUserQueue, playNext } from '../stores/appState'
+  import { playbackManager } from '../lib/playbackManager'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
+  import LazyThumb from '../components/LazyThumb.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
 
@@ -302,9 +304,13 @@
       {#each enriched as track, idx (track.trackId)}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-surface-hover"
+          class="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-surface-hover"
+          role="button"
+          tabindex="0"
+          onclick={() => { addToUserQueue(track.trackId); playbackManager.playTrackById(track.trackId) }}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { addToUserQueue(track.trackId); playbackManager.playTrackById(track.trackId) } }}
         >
-          <div class="h-10 w-10 flex-shrink-0 rounded bg-surface-hover"></div>
+          <LazyThumb {track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
           <div class="min-w-0 flex-1">
             <p class="truncate text-sm font-bold text-primary">{track.title}</p>
             <p class="truncate text-xs text-muted">{track.artist}</p>
@@ -361,7 +367,7 @@
                   Add to queue
                 </button>
                 <button
-                  onclick={(e) => { e.stopPropagation(); menuTrackId = null }}
+                  onclick={(e) => { e.stopPropagation(); playNext(track.trackId); playbackManager.next(); menuTrackId = null }}
                   class="flex w-full items-center gap-2 px-3 py-1.5 text-xs text-muted transition-colors hover:bg-surface-hover hover:text-primary"
                 >
                   <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M10 9V5l-7 7 7 7v-4.1c5 0 8.5 1.6 11 5.1-1-5-4-10-11-11z" /></svg>

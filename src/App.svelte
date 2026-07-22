@@ -1,7 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { slide } from 'svelte/transition'
-  import { currentTrack, playbackState, initStores } from './stores/appState'
+  import { currentTrack, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus } from './stores/appState'
+  import { connectNavidrome } from './lib/syncEngine'
+  import { navidromeSongToTrack } from './lib/navidromeApi'
+  import { playbackManager } from './lib/playbackManager'
+  import type { Track } from './stores/appState'
   import SongsView from './views/SongsView.svelte'
   import AlbumsView from './views/AlbumsView.svelte'
   import ArtistsView from './views/ArtistsView.svelte'
@@ -11,8 +15,38 @@
   let searchQuery = $state('')
   let view = $state<'songs' | 'albums' | 'artists' | 'settings'>('songs')
 
-  onMount(() => {
-    initStores()
+  onMount(async () => {
+    await initStores()
+
+    // Auto-connect if Navidrome credentials exist
+    const s = $settings
+    if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {
+      navidromeConnection.set({ connected: false, checking: true })
+      navidromeLoadStatus.set({ loading: true, loaded: 0, failed: 0 })
+      try {
+        const result = await connectNavidrome()
+        navidromeConnection.set({ ...result.connection, checking: false })
+        if (result.connection.connected) {
+          const tracks: Track[] = result.songs.map(navidromeSongToTrack)
+          setLibrary(tracks)
+          initMetadataForTracks(tracks)
+          navidromeLoadStatus.set({
+            loading: false,
+            loaded: result.loadResult.loaded,
+            failed: result.loadResult.failed,
+          })
+        } else {
+          navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: result.connection.error })
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        navidromeConnection.set({ connected: false, error: msg, checking: false })
+        navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: msg })
+      }
+    }
+
+    // Initialize playback manager (after library is populated for stream resolution)
+    await playbackManager.init()
   })
 
   function toggleNowPlaying() {
@@ -72,17 +106,17 @@
           <p class="truncate text-xs text-muted">{$currentTrack.artist}</p>
         </div>
         <div class="flex flex-shrink-0 items-center gap-1">
-          <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => e.stopPropagation()}>
+          <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => { e.stopPropagation(); playbackManager.prev() }}>
             <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
           </button>
-          <button class="rounded-full bg-primary p-1.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={(e) => e.stopPropagation()}>
+          <button class="rounded-full bg-primary p-1.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
             {#if $playbackState === 'playing'}
               <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
             {:else}
               <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
             {/if}
           </button>
-          <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={(e) => e.stopPropagation()}>
+          <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={(e) => { e.stopPropagation(); playbackManager.next() }}>
             <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
           </button>
         </div>
@@ -131,6 +165,22 @@
     <div class="space-y-1 px-6 pb-10">
       <h2 class="text-xl font-bold text-primary">{$currentTrack.title}</h2>
       <p class="text-sm text-muted">{$currentTrack.artist}</p>
+
+      <div class="flex items-center justify-center gap-4 pt-4">
+        <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
+          <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+        </button>
+        <button class="rounded-full bg-primary p-3 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
+          {#if $playbackState === 'playing'}
+            <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
+          {:else}
+            <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          {/if}
+        </button>
+        <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
+          <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
+        </button>
+      </div>
     </div>
   </div>
 {/if}

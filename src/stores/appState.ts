@@ -1,6 +1,6 @@
 import { writable, get } from 'svelte/store'
 import type { LocalMetadataStore, PlayQueueState } from '$lib/db'
-import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata } from '$lib/db'
+import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata } from '$lib/db'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped'
 
@@ -9,6 +9,7 @@ export interface Track {
   title: string
   artist: string
   album: string
+  albumId?: string
   year?: number
   duration: number
   filePath: string
@@ -115,6 +116,16 @@ export function addToUserQueue(trackId: string): void {
   })
 }
 
+export function playNext(trackId: string): void {
+  queue.update((q) => {
+    const insertAt = q.activeIndex >= 0 ? q.activeIndex + 1 : q.userQueue.length
+    const userQueue = [...q.userQueue.slice(0, insertAt), trackId, ...q.userQueue.slice(insertAt)]
+    const adjustedIndex = q.activeIndex >= insertAt ? q.activeIndex + 1 : q.activeIndex
+    saveQueue({ ...q, userQueue, activeIndex: adjustedIndex })
+    return { ...q, userQueue, activeIndex: adjustedIndex }
+  })
+}
+
 export function removeFromUserQueue(index: number): void {
   queue.update((q) => {
     const userQueue = q.userQueue.filter((_, i) => i !== index)
@@ -148,15 +159,42 @@ export function updateSetting<K extends keyof SettingsMap>(key: K, value: Settin
 
 export function updateMetadata(meta: LocalMetadataStore): void {
   metadataCache.update((map) => {
-    map.set(meta.trackId, meta)
-    return map
+    const next = new Map(map)
+    next.set(meta.trackId, meta)
+    return next
   })
   upsertMetadata(meta)
 }
 
 export function removeMetadata(trackId: string): void {
   metadataCache.update((map) => {
-    map.delete(trackId)
-    return map
+    const next = new Map(map)
+    next.delete(trackId)
+    return next
+  })
+}
+
+export function initMetadataForTracks(tracks: Track[]): void {
+  const cache = get(metadataCache)
+  const toInit: LocalMetadataStore[] = []
+  for (const t of tracks) {
+    if (!cache.has(t.trackId)) {
+      toInit.push({
+        trackId: t.trackId,
+        rating: 0,
+        loved: false,
+        filePath: t.filePath,
+        fileType: t.fileType,
+        syncStatus: 'synced',
+        lastModifiedLocally: Date.now(),
+      })
+    }
+  }
+  if (toInit.length === 0) return
+  bulkUpsertMetadata(toInit)
+  metadataCache.update((map) => {
+    const next = new Map(map)
+    for (const m of toInit) next.set(m.trackId, m)
+    return next
   })
 }

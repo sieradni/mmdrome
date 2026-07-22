@@ -283,50 +283,40 @@ export async function connectNavidrome(config: NavidromeConfig): Promise<Navidro
   return { connection, songs, loadResult: result }
 }
 
+// ── In-memory config cache ──────────────────────────────────────────
+let _cachedConfig: NavidromeConfig | null = null
+
+export function getCachedConfig(): NavidromeConfig | null {
+  return _cachedConfig
+}
+
+export function setCachedConfig(config: NavidromeConfig | null): void {
+  _cachedConfig = config
+}
+
 export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ songs: NavidromeSong[]; result: NavidromeLoadResult }> {
   const songs: NavidromeSong[] = []
   let failed = 0
 
   try {
-    const indexesResponse = await callSubsonic(config, 'getIndexes.view')
-    const indexes = indexesResponse.indexes || indexesResponse
+    _cachedConfig = config
 
-    const artistIds: string[] = []
-    if (indexes.artists) {
-      for (const artist of indexes.artists) {
-        artistIds.push(artist.id)
-      }
-    }
-    if (indexes.indexes) {
-      for (const idx of indexes.indexes) {
-        for (const artist of idx.artist) {
-          artistIds.push(artist.id)
-        }
-      }
-    }
-
-    for (const artistId of artistIds) {
-      try {
-        const artistResponse = await callSubsonic(config, 'getArtist.view', { id: artistId })
-        const artist = artistResponse.artist
-        if (!artist || !artist.album) continue
-
-        for (const album of artist.album) {
-          try {
-            const albumResponse = await callSubsonic(config, 'getAlbum.view', { id: album.id })
-            const albumData = albumResponse.album
-            if (!albumData || !albumData.song) continue
-
-            for (const song of albumData.song) {
-              songs.push(song)
-            }
-          } catch {
-            failed++
-          }
-        }
-      } catch {
-        failed++
-      }
+    // Fetch all songs via search3 pagination (standard Subsonic endpoint)
+    const PAGE_SIZE = 500
+    let offset = 0
+    while (true) {
+      const resp = await callSubsonic(config, 'search3.view', {
+        query: '',
+        songCount: PAGE_SIZE,
+        songOffset: offset,
+        artistCount: 0,
+        albumCount: 0,
+      })
+      const page: NavidromeSong[] = resp.searchResult3?.song ?? []
+      if (!Array.isArray(page) || page.length === 0) break
+      songs.push(...page)
+      offset += page.length
+      if (page.length < PAGE_SIZE) break
     }
 
     return { songs, result: { loaded: songs.length, failed } }
@@ -336,7 +326,7 @@ export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ son
   }
 }
 
-export async function getNavidromeSongStreamUrl(config: NavidromeConfig, songId: string): Promise<string> {
+export function buildStreamUrl(config: NavidromeConfig, songId: string): string {
   const params = buildAuthParams(config.username, config.password)
   params.id = songId
 
@@ -345,6 +335,26 @@ export async function getNavidromeSongStreamUrl(config: NavidromeConfig, songId:
     url.searchParams.set(key, String(value))
   })
   return url.toString()
+}
+
+export async function getNavidromeSongStreamUrl(config: NavidromeConfig, songId: string): Promise<string> {
+  return buildStreamUrl(config, songId)
+}
+
+export function buildCoverArtUrl(config: NavidromeConfig, id: string, size?: number): string {
+  const params = buildAuthParams(config.username, config.password)
+  params.id = id
+  if (size) params.size = String(size)
+
+  const url = new URL(`${normalizeUrl(config.baseUrl)}/rest/getCoverArt.view`)
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, String(value))
+  })
+  return url.toString()
+}
+
+export function resolveCoverArtId(track: Track): string {
+  return track.albumId || track.trackId.replace(/^navidrome-/, '')
 }
 
 export async function triggerNavidromeScan(config: NavidromeConfig): Promise<void> {
@@ -361,6 +371,7 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     title: song.title || 'Unknown Title',
     artist: song.artist || song.albumArtist || 'Unknown Artist',
     album: song.album || 'Unknown Album',
+    albumId: song.albumId,
     year: song.year,
     duration: song.duration || 0,
     filePath: song.id,
