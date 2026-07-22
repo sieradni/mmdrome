@@ -15,22 +15,44 @@ import type { Track } from '../stores/appState'
   let userTracks = $derived.by(() => {
     const q = $queue
     const lib = $library
-    const ordered: (Track | null)[] = q.userQueue.map((id) => lib.find((t) => t.trackId === id) ?? null)
-    return ordered.filter((t): t is Track => t !== null)
+    const seen = new Set<string>()
+    const result: Track[] = []
+    for (const id of q.userQueue) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      const t = lib.find((t) => t.trackId === id)
+      if (t) result.push(t)
+    }
+    return result
   })
 
   let autoTracks = $derived.by(() => {
     const q = $queue
     const lib = $library
-    const idSet = new Set(q.autoQueue)
-    const ordered: (Track | null)[] = q.autoQueue.map((id) => lib.find((t) => t.trackId === id) ?? null)
-    return ordered.filter((t): t is Track => t !== null)
+    const seen = new Set<string>()
+    const result: Track[] = []
+    for (const id of q.autoQueue) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      const t = lib.find((t) => t.trackId === id)
+      if (t) result.push(t)
+    }
+    return result
   })
 
   let historyTracks = $derived.by(() => {
     const q = $queue
     const lib = $library
-    return q.historyQueue.map((id) => lib.find((t) => t.trackId === id)).filter((t): t is Track => t !== null).slice(0, 100)
+    const seen = new Set<string>()
+    const result: Track[] = []
+    for (const id of q.historyQueue) {
+      if (seen.has(id)) continue
+      seen.add(id)
+      const t = lib.find((t) => t.trackId === id)
+      if (t) result.push(t)
+      if (result.length >= 100) break
+    }
+    return result
   })
 
   let activeIndex = $derived($queue.activeIndex)

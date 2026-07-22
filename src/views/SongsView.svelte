@@ -29,6 +29,17 @@
 
   let menuTrackId: string | null = $state(null)
   let detailsTrack: Track | null = $state(null)
+  let addedTrackIds = $state(new Set<string>())
+
+  function handleAddToQueue(trackId: string) {
+    addToUserQueue(trackId)
+    addedTrackIds = new Set([...addedTrackIds, trackId])
+    setTimeout(() => {
+      const next = new Set(addedTrackIds)
+      next.delete(trackId)
+      addedTrackIds = next
+    }, 1000)
+  }
 
   let listContainer: HTMLDivElement
   let sentinelEl: HTMLDivElement
@@ -330,8 +341,8 @@
           class="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-surface-hover"
           role="button"
           tabindex="0"
-          onclick={() => { addToUserQueue(track.trackId); playbackManager.playTrackById(track.trackId) }}
-          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { addToUserQueue(track.trackId); playbackManager.playTrackById(track.trackId) } }}
+          onclick={() => { handleAddToQueue(track.trackId); playbackManager.playTrackById(track.trackId) }}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { handleAddToQueue(track.trackId); playbackManager.playTrackById(track.trackId) } }}
         >
           <LazyThumb {track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
           <div class="min-w-0 flex-1">
@@ -361,13 +372,15 @@
           </div>
 
           <button
-            onclick={(e) => { e.stopPropagation(); addToUserQueue(track.trackId) }}
+            onclick={(e) => { e.stopPropagation(); handleAddToQueue(track.trackId) }}
             class="flex-shrink-0 rounded-full p-1.5 text-muted transition-colors hover:text-primary"
             aria-label="Add to queue"
           >
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" />
-            </svg>
+            {#if addedTrackIds.has(track.trackId)}
+              <svg class="h-4 w-4 text-green-400" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
+            {:else}
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" /></svg>
+            {/if}
           </button>
 
           <div class="relative" data-menu>

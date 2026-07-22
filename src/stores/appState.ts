@@ -76,6 +76,10 @@ export function setLibrary(tracks: Track[]): void {
 
 let initialized = false
 
+function uniq<T>(arr: T[]): T[] {
+  return [...new Set(arr)]
+}
+
 export async function initStores(): Promise<void> {
   if (initialized) return
 
@@ -86,7 +90,11 @@ export async function initStores(): Promise<void> {
   ])
 
   if (q) {
-    queue.set({ userQueue: q.userQueue, autoQueue: q.autoQueue, historyQueue: q.historyQueue, activeIndex: q.activeIndex })
+    const userQueue = uniq(q.userQueue)
+    const autoQueue = uniq(q.autoQueue)
+    const historyQueue = uniq(q.historyQueue)
+    queue.set({ userQueue, autoQueue, historyQueue, activeIndex: q.activeIndex })
+    saveQueue({ userQueue, autoQueue, historyQueue, activeIndex: q.activeIndex })
   }
 
   const map = new Map<string, LocalMetadataStore>()
@@ -121,6 +129,7 @@ export function setPlaybackState(state: PlaybackState): void {
 
 export function addToUserQueue(trackId: string): void {
   queue.update((q) => {
+    if (q.userQueue.includes(trackId)) return q
     const userQueue = [...q.userQueue, trackId]
     saveQueue({ ...q, userQueue })
     return { ...q, userQueue }
@@ -129,6 +138,7 @@ export function addToUserQueue(trackId: string): void {
 
 export function playNext(trackId: string): void {
   queue.update((q) => {
+    if (q.userQueue.includes(trackId) || q.autoQueue.includes(trackId)) return q
     const insertAt = q.activeIndex >= 0 ? q.activeIndex + 1 : q.userQueue.length
     const userQueue = [...q.userQueue.slice(0, insertAt), trackId, ...q.userQueue.slice(insertAt)]
     const adjustedIndex = q.activeIndex >= insertAt ? q.activeIndex + 1 : q.activeIndex
@@ -155,7 +165,7 @@ export function setActiveQueueIndex(index: number): void {
 
 export function pushHistory(trackId: string): void {
   queue.update((q) => {
-    const historyQueue = [...q.historyQueue, trackId]
+    const historyQueue = uniq([...q.historyQueue, trackId])
     saveQueue({ ...q, historyQueue })
     return { ...q, historyQueue }
   })

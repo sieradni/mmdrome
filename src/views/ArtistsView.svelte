@@ -7,6 +7,17 @@
   let { searchQuery = '' }: { searchQuery?: string } = $props()
 
   let selectedArtist = $state<string | null>(null)
+  let addedTrackIds = $state(new Set<string>())
+
+  function handleAddToQueue(trackId: string) {
+    addToUserQueue(trackId)
+    addedTrackIds = new Set([...addedTrackIds, trackId])
+    setTimeout(() => {
+      const next = new Set(addedTrackIds)
+      next.delete(trackId)
+      addedTrackIds = next
+    }, 1000)
+  }
 
   type ArtistGroup = {
     artist: string
@@ -102,8 +113,12 @@
                 </svg>
               {/each}
             </div>
-            <button onclick={() => addToUserQueue(track.trackId)} class="flex-shrink-0 rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Add to queue">
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+            <button onclick={() => handleAddToQueue(track.trackId)} class="flex-shrink-0 rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Add to queue">
+              {#if addedTrackIds.has(track.trackId)}
+                <svg class="h-4 w-4 text-green-400" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+              {:else}
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+              {/if}
             </button>
           </div>
         {/each}
