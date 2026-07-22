@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { library, metadataCache, addToUserQueue, playNext } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
+  import { prioritizeTrack, deprioritizeTrack } from '../lib/metadataScanner'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import LazyThumb from '../components/LazyThumb.svelte'
@@ -47,6 +48,28 @@
     )
     observer.observe(sentinelEl)
     return () => observer.disconnect()
+  })
+
+  let priorityObserver: IntersectionObserver | null = null
+
+  $effect(() => {
+    visible
+    priorityObserver?.disconnect()
+    if (!listContainer) return
+    priorityObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const id = (entry.target as HTMLElement).dataset.trackId
+          if (!id) continue
+          if (entry.isIntersecting) prioritizeTrack(id)
+          else deprioritizeTrack(id)
+        }
+      },
+      { root: listContainer, rootMargin: '200px' }
+    )
+    const items = listContainer.querySelectorAll('[data-track-id]')
+    for (const el of items) priorityObserver.observe(el)
+    return () => priorityObserver?.disconnect()
   })
 
   $effect(() => {
@@ -303,6 +326,7 @@
       {#each enriched as track, idx (track.trackId)}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
+          data-track-id={track.trackId}
           class="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-surface-hover"
           role="button"
           tabindex="0"

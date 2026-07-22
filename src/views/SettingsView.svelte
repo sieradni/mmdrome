@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, setLibrary, initMetadataForTracks } from '../stores/appState'
+  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, setLibrary, initMetadataForTracks, metadataScanState } from '../stores/appState'
   import { runManualWebDAVSync, testWebdavConn, connectNavidrome } from '../lib/syncEngine'
   import { navidromeSongToTrack } from '../lib/navidromeApi'
+  import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, resetScan, getWebdavConfigured } from '../lib/metadataScanner'
   import type { Track } from '../stores/appState'
 
   let webdavUrl = $state('')
@@ -14,8 +15,10 @@
   let crossfadeDuration = $state(0)
   let tapeMode = $state(false)
   let snapTolerance = $state(0.15)
+  let autoScanMetadata = $state(true)
   let syncing = $state(false)
   let syncResult = $state('')
+  let indexing = $state(false)
 
   $effect(() => {
     const s = $settings
@@ -29,6 +32,7 @@
     crossfadeDuration = s.crossfadeDuration ?? 0
     tapeMode = s.tapeMode ?? false
     snapTolerance = s.snapTolerance ?? 0.15
+    autoScanMetadata = s.autoScanMetadata ?? true
   })
 
   function setPreload(val: number) {
@@ -46,6 +50,12 @@
     const val = !tapeMode
     tapeMode = val
     updateSetting('tapeMode', val)
+  }
+
+  function setAutoScan() {
+    const val = !autoScanMetadata
+    autoScanMetadata = val
+    updateSetting('autoScanMetadata', val)
   }
 
   function setSnapTolerance(e: Event) {
@@ -75,6 +85,28 @@
     } catch (err) {
       webdavConnection.set({ connected: false, error: err instanceof Error ? err.message : String(err), checking: false })
     }
+  }
+
+  async function buildIndex() {
+    indexing = true
+    try {
+      const s = $settings
+      if (s.webdavUrl && s.webdavUser && s.webdavToken) {
+        setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
+      }
+      await rebuildIndex()
+    } finally {
+      indexing = false
+    }
+  }
+
+  async function startMetadataScan() {
+    const s = $settings
+    if (s.webdavUrl && s.webdavUser && s.webdavToken) {
+      setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
+    }
+    await ensureIndex()
+    scanAllNow()
   }
 
   async function connectNavidromeHandler() {
@@ -309,6 +341,53 @@
           </button>
           {#if syncResult}
             <p class="text-xs text-muted">{syncResult}</p>
+          {/if}
+        </div>
+      </section>
+
+      <!-- Metadata Scan -->
+      <section class="px-4 py-4">
+        <h3 class="mb-3 text-sm font-medium text-primary">Metadata Scan</h3>
+        <p class="mb-2 text-xs text-muted">Read ratings and loved status from file tags via WebDAV.</p>
+        <div class="space-y-3">
+          <label class="flex cursor-pointer items-center gap-3">
+            <input type="checkbox" checked={autoScanMetadata} onchange={setAutoScan} class="accent-yellow-500" />
+            <div>
+              <p class="text-sm text-primary">Auto-scan on library load</p>
+              <p class="text-xs text-muted">Rescan all metadata when the app starts</p>
+            </div>
+          </label>
+          <button
+            onclick={startMetadataScan}
+            disabled={$metadataScanState.status === 'scanning'}
+            class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
+          >
+            {#if $metadataScanState.status === 'scanning'}
+              <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
+            {:else}
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
+              Scan All Metadata
+            {/if}
+          </button>
+          <button
+            onclick={buildIndex}
+            disabled={indexing}
+            class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+          >
+            {#if indexing}
+              Indexing...
+            {:else}
+              Rebuild WebDAV File Index
+            {/if}
+          </button>
+          {#if $metadataScanState.status === 'complete'}
+            <p class="text-xs text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed</p>
+          {:else if $metadataScanState.status === 'scanning'}
+            <p class="text-xs text-muted">Progress: {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
           {/if}
         </div>
       </section>

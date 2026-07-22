@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { currentTrack, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, toggleShuffle } from './stores/appState'
+  import { currentTrack, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, toggleShuffle, metadataScanState } from './stores/appState'
   import { connectNavidrome } from './lib/syncEngine'
   import { navidromeSongToTrack } from './lib/navidromeApi'
   import { playbackManager } from './lib/playbackManager'
   import { audioManager } from './lib/audioManager'
+  import { setWebdavCredentials, ensureIndex, scanAllNow, getWebdavConfigured } from './lib/metadataScanner'
   import type { Track } from './stores/appState'
   import SongsView from './views/SongsView.svelte'
   import AlbumsView from './views/AlbumsView.svelte'
@@ -28,6 +29,7 @@
     await initStores()
 
     const s = $settings
+
     if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {
       navidromeConnection.set({ connected: false, checking: true })
       navidromeLoadStatus.set({ loading: true, loaded: 0, failed: 0 })
@@ -43,6 +45,14 @@
             loaded: result.loadResult.loaded,
             failed: result.loadResult.failed,
           })
+
+          const s2 = $settings
+          if (s2.webdavUrl && s2.webdavUser && s2.webdavToken) {
+            setWebdavCredentials(s2.webdavUrl, s2.webdavUser, s2.webdavToken)
+            if (s2.autoScanMetadata !== false) {
+              ensureIndex().then(() => scanAllNow())
+            }
+          }
         } else {
           navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: result.connection.error })
         }

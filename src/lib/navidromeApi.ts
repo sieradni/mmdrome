@@ -50,6 +50,7 @@ export interface NavidromeSong {
   totalDiscs?: number
   explicit?: boolean
   streamId?: string
+  path?: string
 }
 
 export interface NavidromeArtist {
@@ -380,6 +381,7 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     bitrate: song.bitRate,
     size: song.size,
     createdAt: song.created ? new Date(song.created).getTime() : undefined,
+    navidromePath: song.path,
   }
 }
 

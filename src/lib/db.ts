@@ -8,6 +8,19 @@ export interface LocalMetadataStore {
   fileType: "mp3" | "flac" | "m4a" | "ogg" | "opus"
   syncStatus: "synced" | "pending_sync"
   lastModifiedLocally: number
+  webdavPath?: string
+}
+
+export interface WebdavFileEntry {
+  path: string
+  filename: string
+  size: number
+}
+
+export interface WebdavFileIndex {
+  id: string
+  entries: WebdavFileEntry[]
+  buildTimestamp: number
 }
 
 export interface UserSettings {
@@ -27,12 +40,20 @@ const db = new Dexie('mmdrome') as Dexie & {
   localMetadata: EntityTable<LocalMetadataStore, 'trackId'>
   userSettings: EntityTable<UserSettings, 'key'>
   playQueue: EntityTable<PlayQueueState, 'id'>
+  webdavFileIndex: EntityTable<WebdavFileIndex, 'id'>
 }
 
 db.version(1).stores({
   localMetadata: 'trackId, syncStatus, rating, loved',
   userSettings: 'key',
   playQueue: 'id',
+})
+
+db.version(2).stores({
+  localMetadata: 'trackId, syncStatus, rating, loved',
+  userSettings: 'key',
+  playQueue: 'id',
+  webdavFileIndex: 'id',
 })
 
 export { db }
@@ -76,4 +97,16 @@ export async function getQueue(): Promise<PlayQueueState | undefined> {
 
 export async function saveQueue(queue: Omit<PlayQueueState, 'id'>): Promise<void> {
   await db.playQueue.put({ id: 'main', ...queue })
+}
+
+export async function getWebdavFileIndex(): Promise<WebdavFileIndex | undefined> {
+  return db.webdavFileIndex.get('main')
+}
+
+export async function saveWebdavFileIndex(index: Omit<WebdavFileIndex, 'id'>): Promise<void> {
+  await db.webdavFileIndex.put({ id: 'main', ...index })
+}
+
+export async function clearWebdavFileIndex(): Promise<void> {
+  await db.webdavFileIndex.delete('main')
 }

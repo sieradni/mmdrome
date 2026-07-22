@@ -19,6 +19,7 @@ export interface Track {
   size?: number
   createdAt?: number
   modifiedAt?: number
+  navidromePath?: string
 }
 
 export interface TrackWithMeta extends Track {
@@ -31,6 +32,12 @@ export interface QueueState {
   autoQueue: string[]
   historyQueue: string[]
   activeIndex: number
+}
+
+export interface MetadataScanState {
+  status: 'idle' | 'scanning' | 'complete' | 'error'
+  progress: { scanned: number; total: number; failed: number }
+  error?: string
 }
 
 export interface SettingsMap {
@@ -47,6 +54,7 @@ export interface SettingsMap {
   navidromePassword?: string
   tapeMode?: boolean
   snapTolerance?: number
+  autoScanMetadata?: boolean
 }
 
 export const currentTrack = writable<Track | null>(null)
@@ -60,6 +68,7 @@ export const navidromeConnection = writable<{ connected: boolean; error?: string
 export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string }>({ loading: false, loaded: 0, failed: 0 })
 export const shuffleEnabled = writable<boolean>(false)
 export const currentTime = writable<number>(0)
+export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0 } })
 
 export function setLibrary(tracks: Track[]): void {
   library.set(tracks)
@@ -90,7 +99,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance', 'autoScanMetadata']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]
