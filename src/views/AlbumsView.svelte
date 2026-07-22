@@ -1,5 +1,6 @@
 <script lang="ts">
   import { library, metadataCache, addToUserQueue } from '../stores/appState'
+  import { playbackManager } from '../lib/playbackManager'
   import type { Track } from '../stores/appState'
   import LazyThumb from '../components/LazyThumb.svelte'
 
@@ -79,7 +80,14 @@
     <div class="flex-1 overflow-y-auto pb-24">
       <div class="px-4 py-2">
         {#each selectedTracks as track, idx (track.trackId)}
-          <div class="flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-surface-hover">
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-surface-hover"
+            role="button"
+            tabindex="0"
+            onclick={() => { addToUserQueue(track.trackId); playbackManager.playTrackById(track.trackId) }}
+            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { addToUserQueue(track.trackId); playbackManager.playTrackById(track.trackId) } }}
+          >
             <LazyThumb {track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm font-bold text-primary">{track.title}</p>
