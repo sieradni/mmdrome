@@ -6,8 +6,6 @@ const BASE = self.location.pathname.replace(/\/sw\.js$/, '') || '/'
 const STATIC_ASSETS = [
   BASE + '/',
   BASE + '/index.html',
-  BASE + '/favicon.svg',
-  BASE + '/icons.svg',
   BASE + '/icon-192.png',
   BASE + '/icon-512.png',
   BASE + '/manifest.webmanifest',
@@ -36,8 +34,6 @@ function isAppAsset(pathname) {
     p === '/' ||
     p === '/index.html' ||
     p.startsWith('/assets/') ||
-    p === '/favicon.svg' ||
-    p === '/icons.svg' ||
     p.startsWith('/icon-') ||
     p === '/manifest.webmanifest' ||
     p === '/soundtouch-processor.js'
