@@ -1,12 +1,16 @@
 <script lang="ts">
-  import { settings, updateSetting } from '../stores/appState'
-  import { runManualWebDAVSync } from '../lib/syncEngine'
+  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus } from '../stores/appState'
+  import { runManualWebDAVSync, testWebdavConn, connectNavidrome } from '../lib/syncEngine'
+  import { navidromeSongToTrack } from '../lib/navidromeApi'
+  import { setLibrary } from '../stores/appState'
+  import type { Track } from '../stores/appState'
 
   let webdavUrl = $state('')
   let webdavUser = $state('')
   let webdavToken = $state('')
   let navidromeUrl = $state('')
-  let navidromeToken = $state('')
+  let navidromeUser = $state('')
+  let navidromePassword = $state('')
   let preloadTracks = $state(0)
   let crossfadeDuration = $state(0)
   let tapeMode = $state(false)
@@ -20,7 +24,8 @@
     webdavUser = s.webdavUser ?? ''
     webdavToken = s.webdavToken ?? ''
     navidromeUrl = s.navidromeUrl ?? ''
-    navidromeToken = s.navidromeToken ?? ''
+    navidromeUser = s.navidromeUser ?? ''
+    navidromePassword = s.navidromePassword ?? ''
     preloadTracks = s.preloadTracks ?? 0
     crossfadeDuration = s.crossfadeDuration ?? 0
     tapeMode = s.tapeMode ?? false
@@ -50,15 +55,51 @@
     updateSetting('snapTolerance', val)
   }
 
-  function updateWebdavField(field: 'webdavUrl' | 'webdavUser' | 'webdavToken' | 'navidromeUrl' | 'navidromeToken') {
+  function updateField(field: 'webdavUrl' | 'webdavUser' | 'webdavToken' | 'navidromeUrl' | 'navidromeUser' | 'navidromePassword') {
     return (e: Event) => {
       const val = (e.target as HTMLInputElement).value
       if (field === 'webdavUrl') webdavUrl = val
       if (field === 'webdavUser') webdavUser = val
       if (field === 'webdavToken') webdavToken = val
       if (field === 'navidromeUrl') navidromeUrl = val
-      if (field === 'navidromeToken') navidromeToken = val
+      if (field === 'navidromeUser') navidromeUser = val
+      if (field === 'navidromePassword') navidromePassword = val
       updateSetting(field, val)
+    }
+  }
+
+  async function testWebdav() {
+    webdavConnection.set({ connected: false, checking: true })
+    try {
+      const result = await testWebdavConn()
+      webdavConnection.set({ ...result, checking: false })
+    } catch (err) {
+      webdavConnection.set({ connected: false, error: err instanceof Error ? err.message : String(err), checking: false })
+    }
+  }
+
+  async function connectNavidromeHandler() {
+    navidromeConnection.set({ connected: false, checking: true })
+    navidromeLoadStatus.set({ loading: true, loaded: 0, failed: 0 })
+    try {
+      const result = await connectNavidrome()
+      navidromeConnection.set({ ...result.connection, checking: false })
+      if (result.connection.connected) {
+        const tracks: Track[] = result.songs.map(navidromeSongToTrack)
+        setLibrary(tracks)
+        navidromeLoadStatus.set({
+          loading: false,
+          loaded: result.loadResult.loaded,
+          failed: result.loadResult.failed,
+          error: result.loadResult.error,
+        })
+      } else {
+        navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: result.connection.error })
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      navidromeConnection.set({ connected: false, error: msg, checking: false })
+      navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: msg })
     }
   }
 
@@ -151,38 +192,103 @@
             type="url"
             placeholder="https://example.com/remote.php/dav/files/user/"
             value={webdavUrl}
-            oninput={updateWebdavField('webdavUrl')}
+            oninput={updateField('webdavUrl')}
             class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
           />
           <input
             type="text"
             placeholder="Username"
             value={webdavUser}
-            oninput={updateWebdavField('webdavUser')}
+            oninput={updateField('webdavUser')}
             class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
           />
           <input
             type="password"
             placeholder="Password / Token"
             value={webdavToken}
-            oninput={updateWebdavField('webdavToken')}
+            oninput={updateField('webdavToken')}
             class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
           />
-          <h3 class="pt-2 text-sm font-medium text-primary">Navidrome</h3>
+          <div class="flex items-center gap-2">
+            <button
+              onclick={testWebdav}
+              disabled={$webdavConnection.checking}
+              class="flex items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-2 text-xs font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+            >
+              {#if $webdavConnection.checking}
+                <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Testing…
+              {:else}
+                Test Connection
+              {/if}
+            </button>
+            {#if $webdavConnection.connected}
+              <span class="text-xs text-green-400">Connected</span>
+            {:else if $webdavConnection.error}
+              <span class="text-xs text-red-400">{$webdavConnection.error}</span>
+            {/if}
+          </div>
+        </div>
+      </section>
+
+      <!-- Navidrome -->
+      <section class="px-4 py-4">
+        <h3 class="mb-3 text-sm font-medium text-primary">Navidrome</h3>
+        <div class="space-y-3">
           <input
             type="url"
             placeholder="https://music.example.com"
             value={navidromeUrl}
-            oninput={updateWebdavField('navidromeUrl')}
+            oninput={updateField('navidromeUrl')}
+            class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+          />
+          <input
+            type="text"
+            placeholder="Username"
+            value={navidromeUser}
+            oninput={updateField('navidromeUser')}
             class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
           />
           <input
             type="password"
-            placeholder="API Token"
-            value={navidromeToken}
-            oninput={updateWebdavField('navidromeToken')}
+            placeholder="Password"
+            value={navidromePassword}
+            oninput={updateField('navidromePassword')}
             class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
           />
+          <button
+            onclick={connectNavidromeHandler}
+            disabled={$navidromeConnection.checking || $navidromeLoadStatus.loading}
+            class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
+          >
+            {#if $navidromeConnection.checking || $navidromeLoadStatus.loading}
+              <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              {$navidromeConnection.checking ? 'Connecting…' : 'Loading Songs…'}
+            {:else}
+              Connect & Load Songs
+            {/if}
+          </button>
+          {#if $navidromeConnection.connected}
+            <p class="text-xs text-green-400">
+              Connected{$navidromeConnection.serverVersion ? ' (' + $navidromeConnection.serverVersion + ')' : ''}
+            </p>
+          {:else if $navidromeConnection.error}
+            <p class="text-xs text-red-400">{$navidromeConnection.error}</p>
+          {/if}
+          {#if $navidromeLoadStatus.loaded > 0 || $navidromeLoadStatus.error}
+            <p class="text-xs text-muted">
+              {$navidromeLoadStatus.error
+                ? `Error: ${$navidromeLoadStatus.error}`
+                : `Loaded {$navidromeLoadStatus.loaded} song(s), {$navidromeLoadStatus.failed} failed`}
+            </p>
+          {/if}
+
           <button
             onclick={syncNow}
             disabled={syncing}

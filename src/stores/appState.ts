@@ -42,7 +42,8 @@ export interface SettingsMap {
   webdavUser?: string
   webdavToken?: string
   navidromeUrl?: string
-  navidromeToken?: string
+  navidromeUser?: string
+  navidromePassword?: string
   tapeMode?: boolean
   snapTolerance?: number
 }
@@ -53,6 +54,9 @@ export const queue = writable<QueueState>({ userQueue: [], autoQueue: [], histor
 export const settings = writable<SettingsMap>({})
 export const metadataCache = writable<Map<string, LocalMetadataStore>>(new Map())
 export const library = writable<Track[]>([])
+export const webdavConnection = writable<{ connected: boolean; error?: string; checking: boolean }>({ connected: false, checking: false })
+export const navidromeConnection = writable<{ connected: boolean; error?: string; checking: boolean; serverVersion?: string }>({ connected: false, checking: false })
+export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string }>({ loading: false, loaded: 0, failed: 0 })
 
 export function setLibrary(tracks: Track[]): void {
   library.set(tracks)
@@ -83,7 +87,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeToken', 'tapeMode', 'snapTolerance']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]
