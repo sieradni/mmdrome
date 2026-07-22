@@ -58,6 +58,8 @@ export const library = writable<Track[]>([])
 export const webdavConnection = writable<{ connected: boolean; error?: string; checking: boolean }>({ connected: false, checking: false })
 export const navidromeConnection = writable<{ connected: boolean; error?: string; checking: boolean; serverVersion?: string }>({ connected: false, checking: false })
 export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string }>({ loading: false, loaded: 0, failed: 0 })
+export const shuffleEnabled = writable<boolean>(false)
+export const currentTime = writable<number>(0)
 
 export function setLibrary(tracks: Track[]): void {
   library.set(tracks)
@@ -172,6 +174,10 @@ export function removeMetadata(trackId: string): void {
     next.delete(trackId)
     return next
   })
+}
+
+export function toggleShuffle(): void {
+  shuffleEnabled.update((v) => !v)
 }
 
 export function initMetadataForTracks(tracks: Track[]): void {

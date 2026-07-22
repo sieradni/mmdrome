@@ -3,8 +3,8 @@ import type { Track } from '../stores/appState'
 
 const urlCache = new Map<string, string>()
 
-export function getCoverUrl(track: Track, size = 120): string {
-  const key = track.trackId
+export function getCoverUrl(track: Track, size?: number): string {
+  const key = track.trackId + '-' + (size ?? 'original')
   let url = urlCache.get(key)
   if (!url) {
     const config = getCachedConfig()

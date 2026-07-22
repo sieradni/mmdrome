@@ -1,6 +1,5 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { slide } from 'svelte/transition'
   import { library, metadataCache, addToUserQueue, playNext } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
   import type { Track } from '../stores/appState'
@@ -187,7 +186,7 @@
   </div>
 
   {#if filterOpen}
-    <div transition:slide={{ duration: 200 }} class="border-b border-white/10 bg-surface/50 px-4 py-3">
+    <div class="border-b border-white/10 bg-surface/50 px-4 py-3">
       <div class="space-y-3">
         <div>
           <span class="text-xs font-medium text-muted">Rating range</span>
@@ -271,7 +270,7 @@
   {/if}
 
   {#if sortOpen}
-    <div transition:slide={{ duration: 200 }} class="border-b border-white/10 bg-surface/50 px-4 py-3">
+    <div class="border-b border-white/10 bg-surface/50 px-4 py-3">
       <p class="mb-2 text-xs font-medium text-muted">Sort by</p>
       <div class="space-y-1">
         {#each ['rating', 'loved', 'year', 'length'] as key (key)}

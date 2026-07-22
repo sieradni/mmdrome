@@ -287,7 +287,7 @@
             <p class="text-xs text-muted">
               {$navidromeLoadStatus.error
                 ? `Error: ${$navidromeLoadStatus.error}`
-                : `Loaded {$navidromeLoadStatus.loaded} song(s), {$navidromeLoadStatus.failed} failed`}
+                : `Loaded ${$navidromeLoadStatus.loaded} song(s), ${$navidromeLoadStatus.failed} failed`}
             </p>
           {/if}
 
