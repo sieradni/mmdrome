@@ -123,7 +123,7 @@ class AudioManager {
     if (!this._ctx) throw new Error('AudioManager not initialized. Call init() first.')
     if (this._setupComplete) return
 
-    await SoundTouchNode.register(this._ctx, '/soundtouch-processor.js')
+    await SoundTouchNode.register(this._ctx, 'soundtouch-processor.js')
 
     const stNode = new SoundTouchNode({ context: this._ctx })
 
