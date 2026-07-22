@@ -188,6 +188,7 @@
       <!-- WebDAV -->
       <section class="px-4 py-4">
         <h3 class="mb-3 text-sm font-medium text-primary">WebDAV Sync</h3>
+        <p class="mb-2 text-xs text-muted">Requires CORS to be configured on the server.</p>
         <div class="space-y-3">
           <input
             type="url"
