@@ -49,9 +49,7 @@
           const s2 = $settings
           if (s2.webdavUrl && s2.webdavUser && s2.webdavToken) {
             setWebdavCredentials(s2.webdavUrl, s2.webdavUser, s2.webdavToken)
-            if (s2.autoScanMetadata !== false) {
-              ensureIndex().then(() => scanAllNow())
-            }
+            ensureIndex().then(() => scanAllNow())
           }
         } else {
           navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: result.connection.error })

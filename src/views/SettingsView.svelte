@@ -15,7 +15,6 @@
   let crossfadeDuration = $state(0)
   let tapeMode = $state(false)
   let snapTolerance = $state(0.15)
-  let autoScanMetadata = $state(true)
   let syncing = $state(false)
   let syncResult = $state('')
   let indexing = $state(false)
@@ -32,7 +31,6 @@
     crossfadeDuration = s.crossfadeDuration ?? 0
     tapeMode = s.tapeMode ?? false
     snapTolerance = s.snapTolerance ?? 0.15
-    autoScanMetadata = s.autoScanMetadata ?? true
   })
 
   function setPreload(val: number) {
@@ -50,12 +48,6 @@
     const val = !tapeMode
     tapeMode = val
     updateSetting('tapeMode', val)
-  }
-
-  function setAutoScan() {
-    const val = !autoScanMetadata
-    autoScanMetadata = val
-    updateSetting('autoScanMetadata', val)
   }
 
   function setSnapTolerance(e: Event) {
@@ -348,15 +340,8 @@
       <!-- Metadata Scan -->
       <section class="px-4 py-4">
         <h3 class="mb-3 text-sm font-medium text-primary">Metadata Scan</h3>
-        <p class="mb-2 text-xs text-muted">Read ratings and loved status from file tags via WebDAV.</p>
+        <p class="mb-2 text-xs text-muted">Read ratings and loved status from file tags via WebDAV. Runs incremental check on library load (1 request, only reads changed files).</p>
         <div class="space-y-3">
-          <label class="flex cursor-pointer items-center gap-3">
-            <input type="checkbox" checked={autoScanMetadata} onchange={setAutoScan} class="accent-yellow-500" />
-            <div>
-              <p class="text-sm text-primary">Auto-scan on library load</p>
-              <p class="text-xs text-muted">Rescan all metadata when the app starts</p>
-            </div>
-          </label>
           <button
             onclick={startMetadataScan}
             disabled={$metadataScanState.status === 'scanning'}
