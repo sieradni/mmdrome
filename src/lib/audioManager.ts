@@ -194,6 +194,11 @@ class AudioManager {
     this._applyPitch(this._pitchOctaves)
   }
 
+  reapplyEffects(): void {
+    this._applyTempo()
+    this._applyPitch(this._pitchOctaves)
+  }
+
   setNextTrack(url: string | null): void {
     this._nextTrackUrl = url
     if (url && this._crossfadeDuration > 0 && this._webAudioReady) {
@@ -403,6 +408,7 @@ class AudioManager {
     const standbyEl = this.standbyElement
     standbyEl.src = this._nextTrackUrl
     standbyEl.play()
+    this.reapplyEffects()
 
     fadeOutGain.gain.cancelScheduledValues(now)
     fadeOutGain.gain.setValueAtTime(fadeOutGain.gain.value, now)

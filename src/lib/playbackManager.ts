@@ -84,6 +84,7 @@ class PlaybackManager {
     const el = audioManager.activeElement
     el.src = url
     await el.play()
+    audioManager.reapplyEffects()
     setCurrentTrack(track)
     setPlaybackState('playing')
 
