@@ -135,7 +135,7 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
       const davPath = track.webdavPath || track.filePath
       const raw = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)
       const modified = await modifyMetadataBuffer(raw, track.rating, track.loved, track.fileType)
-      await webdavPut(webdavUrl, track.filePath, modified, webdavUser, webdavToken)
+      await webdavPut(webdavUrl, davPath, modified, webdavUser, webdavToken)
       await upsertMetadata({ ...track, syncStatus: "synced" })
       synced++
     } catch {
