@@ -10,11 +10,11 @@
 
   let gains = $state(FREQ_VALUES.map((_, i) => {
     const filter = audioManager['_eqFilters']?.[i]
-    return filter ? filter.gain.value : 0
+    return filter ? -filter.gain.value : 0
   }))
 
   function setGain(index: number) {
-    audioManager.setEqBandGain(index, gains[index])
+    audioManager.setEqBandGain(index, -gains[index])
   }
 
   function toggleBypass() {
@@ -51,7 +51,7 @@
     <div class="flex items-end justify-between gap-1 pb-4" style="height: 320px;">
       {#each FREQ_LABELS as label, i}
         <div class="flex flex-1 flex-col items-center gap-1 h-full justify-end">
-          <span class="text-[10px] tabular-nums text-muted/60">{gains[i] > 0 ? '+' : ''}{gains[i].toFixed(1)}</span>
+          <span class="text-[10px] tabular-nums text-muted/60">{-gains[i] > 0 ? '+' : ''}{(-gains[i]).toFixed(1)}</span>
           <input
             type="range"
             min="-12"

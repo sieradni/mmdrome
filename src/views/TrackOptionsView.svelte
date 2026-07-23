@@ -4,7 +4,7 @@
   import type { LocalMetadataStore } from '../lib/db'
   import LazyThumb from '../components/LazyThumb.svelte'
 
-  let { onclose, onnavigate }: { onclose: () => void; onnavigate: (page: string) => void } = $props()
+  let { onclose, onnavigate }: { onclose: () => void; onnavigate: (page: 'pitchSpeed' | 'eq' | 'volume' | 'detail' | 'settings') => void } = $props()
 
   let rating = $state(0)
   let loved = $state(false)

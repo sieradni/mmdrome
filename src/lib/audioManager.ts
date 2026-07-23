@@ -42,7 +42,7 @@ class AudioManager {
   private _gainB: GainNode | null = null
   private _soundTouch: AudioNode | null = null
   private _initialized = false
-  private _setupComplete = false
+  private _webAudioReady = false
   private _speed = 1
   private _pitchOctaves = 0
   private _tapeMode = false
@@ -68,11 +68,11 @@ class AudioManager {
   }
 
   get ctx(): AudioContext | null { return this._ctx }
+  get webAudioReady(): boolean { return this._webAudioReady }
   get gainA(): GainNode | null { return this._gainA }
   get gainB(): GainNode | null { return this._gainB }
   get soundTouch(): AudioNode | null { return this._soundTouch }
   get initialized(): boolean { return this._initialized }
-  get setupComplete(): boolean { return this._setupComplete }
   get speed(): number { return this._speed }
   get pitchOctaves(): number { return this._pitchOctaves }
   get tapeMode(): boolean { return this._tapeMode }
@@ -100,52 +100,73 @@ class AudioManager {
 
   async init(): Promise<void> {
     if (this._initialized) return
-    this._ctx = new AudioContext()
-
-    this._sourceA = this._ctx.createMediaElementSource(this.a)
-    this._sourceB = this._ctx.createMediaElementSource(this.b)
-    this._gainA = this._ctx.createGain()
-    this._gainB = this._ctx.createGain()
-    this._soundTouch = this._ctx.createGain()
-
-    this._sourceA.connect(this._gainA)
-    this._gainA.connect(this._soundTouch)
-
-    this._sourceB.connect(this._gainB)
-    this._gainB.connect(this._soundTouch)
-
-    this._soundTouch.connect(this._ctx.destination)
-
     this._initialized = true
   }
 
-  async setup(): Promise<void> {
-    if (!this._ctx) throw new Error('AudioManager not initialized. Call init() first.')
-    if (this._setupComplete) return
+  async ensureWebAudioReady(): Promise<boolean> {
+    if (this._webAudioReady) return true
+    if (this._ctx) return true
 
-    await SoundTouchNode.register(this._ctx, 'soundtouch-processor.js')
+    try {
+      this._ctx = new AudioContext()
+      if (this._ctx.state === 'suspended') {
+        await this._ctx.resume()
+      }
 
-    const stNode = new SoundTouchNode({ context: this._ctx })
+      try {
+        await SoundTouchNode.register(this._ctx, 'soundtouch-processor.js')
+        const stNode = new SoundTouchNode({ context: this._ctx })
+        this._soundTouch = stNode
+      } catch {
+        this._soundTouch = this._ctx.createGain()
+      }
 
-    if (this._soundTouch) {
-      this._gainA?.disconnect(this._soundTouch)
-      this._gainB?.disconnect(this._soundTouch)
-      this._soundTouch.disconnect()
+      this._sourceA = this._ctx.createMediaElementSource(this.a)
+      this._sourceB = this._ctx.createMediaElementSource(this.b)
+      this._gainA = this._ctx.createGain()
+      this._gainB = this._ctx.createGain()
+
+      this._sourceA.connect(this._gainA)
+      this._gainA.connect(this._soundTouch)
+
+      this._sourceB.connect(this._gainB)
+      this._gainB.connect(this._soundTouch)
+
+      this._preamp = this._ctx.createGain()
+      this._preamp.gain.value = 1
+      this._buildDefaultEq()
+      this._reconnectChain()
+
+      this._applyTempo()
+      this._applyPitch(this._pitchOctaves)
+
+      this._webAudioReady = true
+    } catch (err) {
+      console.warn('WebAudio init failed, using direct playback', err)
+      this._cleanupWebAudio()
     }
 
-    this._gainA?.connect(stNode)
-    this._gainB?.connect(stNode)
-    this._soundTouch = stNode
+    return this._webAudioReady
+  }
 
-    this._preamp = this._ctx.createGain()
-    this._preamp.gain.value = 1
-    this._buildDefaultEq()
-    this._reconnectChain()
-
-    this._setupComplete = true
-
-    this._applyTempo()
-    this._applyPitch(this._pitchOctaves)
+  private _cleanupWebAudio(): void {
+    if (this._sourceA) { try { this._sourceA.disconnect() } catch {} }
+    if (this._sourceB) { try { this._sourceB.disconnect() } catch {} }
+    if (this._gainA) { try { this._gainA.disconnect() } catch {} }
+    if (this._gainB) { try { this._gainB.disconnect() } catch {} }
+    if (this._soundTouch) { try { this._soundTouch.disconnect() } catch {} }
+    if (this._preamp) { try { this._preamp.disconnect() } catch {} }
+    this._teardownFilters()
+    if (this._ctx) { try { this._ctx.close() } catch {} }
+    this._ctx = null
+    this._sourceA = null
+    this._sourceB = null
+    this._gainA = null
+    this._gainB = null
+    this._soundTouch = null
+    this._preamp = null
+    this._eqFilters = []
+    this._webAudioReady = false
   }
 
   setSpeed(value: number): void {
@@ -154,7 +175,7 @@ class AudioManager {
   }
 
   setPitchOctaves(octaves: number): void {
-    this._pitchOctaves = clamp(octaves, -8, 8)
+    this._pitchOctaves = clamp(octaves, -2, 2)
     const snapped = this._snapOctaves(this._pitchOctaves)
     this._pitchOctaves = snapped
     this._applyPitch(snapped)
@@ -175,7 +196,7 @@ class AudioManager {
 
   setNextTrack(url: string | null): void {
     this._nextTrackUrl = url
-    if (url && this._crossfadeDuration > 0) {
+    if (url && this._crossfadeDuration > 0 && this._webAudioReady) {
       this._setupTimeupdateMonitor()
     } else {
       this._teardownTimeupdateMonitor()
@@ -189,17 +210,20 @@ class AudioManager {
   }
 
   toggleEqBypass(): void {
+    if (!this._webAudioReady) return
     this._eqBypassed = !this._eqBypassed
     this._reconnectChain()
   }
 
   setEqBypass(enabled: boolean): void {
+    if (!this._webAudioReady) return
     if (this._eqBypassed === enabled) return
     this._eqBypassed = enabled
     this._reconnectChain()
   }
 
   parseParametricEQ(configText: string): void {
+    if (!this._ctx) return
     const lines = configText.trim().split('\n')
     const configs: EqFilterConfig[] = []
 
@@ -217,8 +241,6 @@ class AudioManager {
       this._reconnectChain()
       return
     }
-
-    if (!this._ctx) return
 
     this._eqFilters = configs.map(cfg => {
       const f = this._ctx!.createBiquadFilter()
@@ -302,8 +324,8 @@ class AudioManager {
         this._soundTouch.playbackRate.value = 1
       }
     } else {
-      this.a.playbackRate = 1
-      this.b.playbackRate = 1
+      this.a.playbackRate = this._speed
+      this.b.playbackRate = this._speed
       if (this._soundTouch instanceof SoundTouchNode) {
         this._soundTouch.playbackRate.value = this._speed
       }
@@ -334,7 +356,7 @@ class AudioManager {
 
   private _setupTimeupdateMonitor(): void {
     this._teardownTimeupdateMonitor()
-    if (this._crossfadeDuration <= 0 || !this._nextTrackUrl) return
+    if (!this._webAudioReady || this._crossfadeDuration <= 0 || !this._nextTrackUrl) return
 
     const el = this.activeElement
     this._timeupdateEl = el
@@ -363,7 +385,7 @@ class AudioManager {
   }
 
   private _executeCrossfade(): void {
-    if (this._transitionArmed || !this._nextTrackUrl || !this._ctx) return
+    if (this._transitionArmed || !this._nextTrackUrl || !this._ctx || !this._webAudioReady) return
     this._transitionArmed = true
 
     const fadeDuration = this._crossfadeDuration

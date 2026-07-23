@@ -54,11 +54,10 @@ export function setupMediaSession(
 
   navigator.mediaSession.setActionHandler('play', () => {
     const el = audioManager.activeElement
-    if (audioManager.ctx?.state === 'suspended') {
-      audioManager.ctx.resume()
-    }
-    el.play().catch(() => {})
-    setPlaybackState('playing')
+    audioManager.ensureWebAudioReady().then(() => {
+      el.play().catch(() => {})
+      setPlaybackState('playing')
+    })
   })
 
   navigator.mediaSession.setActionHandler('pause', () => {

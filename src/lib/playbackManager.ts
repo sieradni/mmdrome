@@ -2,6 +2,7 @@ import { get } from 'svelte/store'
 import { audioManager } from './audioManager'
 import { setup as setupPreloader, teardown as teardownPreloader } from './preloader'
 import { setupMediaSession } from './mediaSession'
+import { getCoverUrl } from './coverArtCache'
 import { getCachedConfig, buildStreamUrl } from './navidromeApi'
 import {
   currentTrack,
@@ -18,18 +19,19 @@ import type { Track } from '../stores/appState'
 
 class PlaybackManager {
   private _initialized = false
+  private _handlingEnd = false
 
   async init(): Promise<void> {
     if (this._initialized) return
 
     await audioManager.init()
-    await audioManager.setup()
 
-    audioManager.onTrackEnd = () => this._onTrackEnded()
+    audioManager.onTrackEnd = () => this._handleCrossfadeEnd()
 
     setupMediaSession(
       () => this.next(),
       () => this.prev(),
+      (track) => getCoverUrl(track, 512) || undefined,
     )
 
     setupPreloader(audioManager.activeElement, (trackId) => this._resolveUrl(trackId))
@@ -37,14 +39,6 @@ class PlaybackManager {
     this._attachPlaybackListeners()
 
     this._initialized = true
-
-    const q = get(queue)
-    if (q.activeIndex >= 0) {
-      const combined = [...q.userQueue, ...q.autoQueue]
-      if (combined.length > 0 && q.activeIndex < combined.length) {
-        await this.playTrackAt(q.activeIndex)
-      }
-    }
   }
 
   private _attachPlaybackListeners(): void {
@@ -54,11 +48,14 @@ class PlaybackManager {
       if (el.ended) return
       setPlaybackState('paused')
     }
+    const onEnded = () => this._onTrackEnded()
 
     audioManager.a.addEventListener('play', onPlay)
     audioManager.a.addEventListener('pause', onPause)
+    audioManager.a.addEventListener('ended', onEnded)
     audioManager.b.addEventListener('play', onPlay)
     audioManager.b.addEventListener('pause', onPause)
+    audioManager.b.addEventListener('ended', onEnded)
   }
 
   private _resolveUrl(trackId: string): string {
@@ -82,11 +79,10 @@ class PlaybackManager {
     const url = this._resolveUrl(track.trackId)
     if (!url) return
 
+    await audioManager.ensureWebAudioReady()
+
     const el = audioManager.activeElement
     el.src = url
-    if (audioManager.ctx?.state === 'suspended') {
-      await audioManager.ctx.resume()
-    }
     await el.play()
     setCurrentTrack(track)
     setPlaybackState('playing')
@@ -130,7 +126,7 @@ class PlaybackManager {
     })
   }
 
-  private _onTrackEnded(): void {
+  private _advanceQueue(): Track | null {
     const q = get(queue)
     const combinedTrackIds = [...q.userQueue, ...q.autoQueue]
     const currentId = combinedTrackIds[q.activeIndex]
@@ -138,7 +134,6 @@ class PlaybackManager {
       pushHistory(currentId)
     }
 
-    // Trim history to max size
     const hist = get(queue).historyQueue
     if (hist.length > 100) {
       queue.update((q) => {
@@ -152,15 +147,36 @@ class PlaybackManager {
     if (nextIndex >= 0 && nextIndex < combinedTrackIds.length) {
       setActiveQueueIndex(nextIndex)
       this._replenishAutoQueue()
-      const nextTrack = this._findTrack(combinedTrackIds[nextIndex])
+      return this._findTrack(combinedTrackIds[nextIndex]) ?? null
+    }
+
+    this._replenishAutoQueue()
+    setPlaybackState('stopped')
+    setCurrentTrack(null)
+    audioManager.activeElement.src = ''
+    return null
+  }
+
+  private _onTrackEnded(): void {
+    if (this._handlingEnd) return
+    this._handlingEnd = true
+    try {
+      const nextTrack = this._advanceQueue()
       if (nextTrack) {
         this._loadAndPlay(nextTrack)
       }
-    } else {
-      this._replenishAutoQueue()
-      setPlaybackState('stopped')
-      setCurrentTrack(null)
-      audioManager.activeElement.src = ''
+    } finally {
+      this._handlingEnd = false
+    }
+  }
+
+  private _handleCrossfadeEnd(): void {
+    if (this._handlingEnd) return
+    this._handlingEnd = true
+    try {
+      this._advanceQueue()
+    } finally {
+      this._handlingEnd = false
     }
   }
 
@@ -207,11 +223,10 @@ class PlaybackManager {
   }
 
   async play(): Promise<void> {
+    await audioManager.ensureWebAudioReady()
+
     const el = audioManager.activeElement
     if (el.src && el.src !== '') {
-      if (audioManager.ctx?.state === 'suspended') {
-        await audioManager.ctx.resume()
-      }
       await el.play()
       setPlaybackState('playing')
     } else {

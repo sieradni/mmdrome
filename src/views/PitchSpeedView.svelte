@@ -72,8 +72,8 @@
       </div>
       <input
         type="range"
-        min="-8"
-        max="8"
+        min="-2"
+        max="2"
         step="0.01"
         bind:value={pitch}
         oninput={updatePitch}
@@ -81,9 +81,9 @@
         class="h-1 w-full accent-white/80 disabled:opacity-30"
       />
       <div class="flex justify-between text-[10px] text-muted/50">
-        <span>-8</span>
+        <span>-2</span>
         <span>0</span>
-        <span>+8</span>
+        <span>+2</span>
       </div>
     </div>
 
