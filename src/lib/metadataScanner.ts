@@ -23,6 +23,7 @@ let activeCount = 0
 let cancelled = false
 let index: WebdavFileEntry[] = []
 let indexBuilt = false
+let serverLastScan = ""
 
 let webdavUrl = ""
 let webdavUser = ""
@@ -36,6 +37,10 @@ export function setWebdavCredentials(url: string, user: string, token: string): 
 
 export function getWebdavConfigured(): boolean {
   return !!(webdavUrl && webdavUser && webdavToken)
+}
+
+export function setServerLastScan(scan: string): void {
+  serverLastScan = scan
 }
 
 export async function ensureIndex(): Promise<void> {
@@ -56,7 +61,7 @@ export async function rebuildIndex(): Promise<void> {
 
   index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
   indexBuilt = true
-  await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now() })
+  await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan })
 }
 
 export function prioritizeTrack(trackId: string): void {
@@ -70,7 +75,7 @@ let scannedCount = 0
 let failedCount = 0
 let totalTracks = 0
 
-export async function scanAllNow(): Promise<void> {
+export async function scanAllNow(forceRescan = false): Promise<void> {
   cancelled = false
   queue = []
   scannedCount = 0
@@ -81,16 +86,21 @@ export async function scanAllNow(): Promise<void> {
 
   metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0 } })
 
+  if (forceRescan) {
+    await rebuildIndex()
+  } else {
+    await ensureIndex()
+    if (index.length === 0) {
+      metadataScanState.set({ status: "complete", progress: { scanned: 0, total: 0, failed: 0 } })
+      return
+    }
+  }
+
   const tracks = get(library)
   const cache = get(metadataCache)
 
-  const freshIndex = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
-  index = freshIndex
-  indexBuilt = true
-  await saveWebdavFileIndex({ entries: freshIndex, buildTimestamp: Date.now() })
-
-  const timestamps = buildPathTimestamps(freshIndex)
-  const { changed, unmatched } = findChangedTracks(tracks, cache, freshIndex, timestamps)
+  const timestamps = buildPathTimestamps(index)
+  const { changed, unmatched } = findChangedTracks(tracks, cache, index, timestamps)
   const alreadySeen = new Set(cache.keys())
 
   for (const t of changed) queue.push({ trackId: t.trackId })

@@ -1,4 +1,4 @@
-import { TagLib } from "taglib-wasm"
+import { getTagLib } from "./taglibSingleton"
 
 export function ratingToMp3Popm(rating: number): number {
   if (rating <= 0) return 0
@@ -34,7 +34,7 @@ export async function modifyMetadataBuffer(
   loved: boolean,
   fileType: string,
 ): Promise<ArrayBuffer> {
-  const taglib = await TagLib.initialize()
+  const taglib = await getTagLib()
 
   const modified = await taglib.edit(arrayBuffer, async (file) => {
     if (fileType === "mp3") {

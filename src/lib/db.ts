@@ -23,6 +23,13 @@ export interface WebdavFileIndex {
   id: string
   entries: WebdavFileEntry[]
   buildTimestamp: number
+  lastScan?: string
+}
+
+export interface SongLibraryCache {
+  id: string
+  tracks: import('./navidromeApi').NavidromeSong[]
+  lastScan: string
 }
 
 export interface UserSettings {
@@ -43,6 +50,7 @@ const db = new Dexie('mmdrome') as Dexie & {
   userSettings: EntityTable<UserSettings, 'key'>
   playQueue: EntityTable<PlayQueueState, 'id'>
   webdavFileIndex: EntityTable<WebdavFileIndex, 'id'>
+  songLibraryCache: EntityTable<SongLibraryCache, 'id'>
 }
 
 db.version(1).stores({
@@ -56,6 +64,14 @@ db.version(2).stores({
   userSettings: 'key',
   playQueue: 'id',
   webdavFileIndex: 'id',
+})
+
+db.version(3).stores({
+  localMetadata: 'trackId, syncStatus, rating, loved',
+  userSettings: 'key',
+  playQueue: 'id',
+  webdavFileIndex: 'id',
+  songLibraryCache: 'id',
 })
 
 export { db }
@@ -111,4 +127,16 @@ export async function saveWebdavFileIndex(index: Omit<WebdavFileIndex, 'id'>): P
 
 export async function clearWebdavFileIndex(): Promise<void> {
   await db.webdavFileIndex.delete('main')
+}
+
+export async function getSongLibraryCache(): Promise<SongLibraryCache | undefined> {
+  return db.songLibraryCache.get('main')
+}
+
+export async function saveSongLibraryCache(cache: Omit<SongLibraryCache, 'id'>): Promise<void> {
+  await db.songLibraryCache.put({ id: 'main', ...cache })
+}
+
+export async function clearSongLibraryCache(): Promise<void> {
+  await db.songLibraryCache.delete('main')
 }

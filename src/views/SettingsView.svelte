@@ -98,14 +98,14 @@
       setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
     }
     await ensureIndex()
-    scanAllNow()
+    scanAllNow(true)
   }
 
   async function connectNavidromeHandler() {
     navidromeConnection.set({ connected: false, checking: true })
     navidromeLoadStatus.set({ loading: true, loaded: 0, failed: 0 })
     try {
-      const result = await connectNavidrome()
+      const result = await connectNavidrome(true)
       navidromeConnection.set({ ...result.connection, checking: false })
       if (result.connection.connected) {
         const tracks: Track[] = result.songs.map(navidromeSongToTrack)

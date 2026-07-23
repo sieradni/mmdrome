@@ -1,4 +1,4 @@
-import { readTags } from "taglib-wasm/simple"
+import { getTagLib } from "./taglibSingleton"
 import type { Track } from "../stores/appState"
 import type { WebdavFileEntry, LocalMetadataStore } from "./db"
 
@@ -233,20 +233,21 @@ export interface FileMetadata {
 
 export async function extractMetadataFromBuffer(
   buffer: ArrayBuffer,
-  fileType: string,
+  _fileType: string,
 ): Promise<FileMetadata> {
   let rating = 0
   let loved = false
 
   try {
-    const tags = await readTags(buffer)
+    const taglib = await getTagLib()
+    const file = await taglib.open(new Uint8Array(buffer))
 
-    if (tags.ratings && tags.ratings.length > 0) {
-      const r = tags.ratings[0]
-      rating = Math.round((r.rating ?? 0) * 100)
+    const r = file.getRating()
+    if (r !== undefined && r !== null) {
+      rating = Math.round(r * 100)
     }
 
-    const props = tags as Record<string, unknown>
+    const props = file.properties()
     const loveRating = props["LOVE RATING"]
     if (Array.isArray(loveRating) && loveRating[0] === "L") {
       loved = true
@@ -257,6 +258,8 @@ export async function extractMetadataFromBuffer(
       const parsed = parseInt(rawRating[0], 10)
       if (!isNaN(parsed) && parsed > 0) rating = Math.min(100, parsed)
     }
+
+    file.dispose()
   } catch {
     // file too small or corrupt — rating stays 0
   }

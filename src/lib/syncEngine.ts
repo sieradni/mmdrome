@@ -1,4 +1,4 @@
-import { getPendingSyncMetadata, upsertMetadata, getSetting } from "$lib/db"
+import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache, saveSongLibraryCache } from "$lib/db"
 import { modifyMetadataBuffer } from "$lib/tagWriter"
 import {
   testNavidromeConnection as navidromeTestConnection,
@@ -6,6 +6,7 @@ import {
   triggerNavidromeScan as navidromeTriggerScan,
   testWebdavConnection as webdavTestConnection,
   connectNavidrome as navidromeConnect,
+  getScanStatus as navidromeGetScanStatus,
   type NavidromeConfig,
   type NavidromeConnectionStatus,
   type NavidromeLoadResult,
@@ -103,7 +104,7 @@ export async function triggerNavidromeScan(): Promise<void> {
   await navidromeTriggerScan(config)
 }
 
-export async function connectNavidrome(): Promise<NavidromeConnectResult> {
+export async function connectNavidrome(forceRefresh = false): Promise<NavidromeConnectResult> {
   const config = await getNavidromeConfig()
   if (!config) {
     return {
@@ -112,7 +113,39 @@ export async function connectNavidrome(): Promise<NavidromeConnectResult> {
       loadResult: { loaded: 0, failed: 0, error: "Navidrome credentials not configured" },
     }
   }
-  return navidromeConnect(config)
+
+  const connection = await navidromeTestConnection(config)
+  if (!connection.connected) {
+    return { connection, songs: [], loadResult: { loaded: 0, failed: 0, error: connection.error } }
+  }
+
+  let lastScan = ""
+  try {
+    const scanStatus = await navidromeGetScanStatus(config)
+    lastScan = scanStatus.lastScan
+  } catch {
+    // if scan status fails, proceed without caching
+  }
+
+  if (!forceRefresh && lastScan) {
+    const cached = await getSongLibraryCache()
+    if (cached && cached.lastScan === lastScan && cached.tracks.length > 0) {
+      return {
+        connection,
+        songs: cached.tracks,
+        loadResult: { loaded: cached.tracks.length, failed: 0, cached: true },
+        lastScan,
+      }
+    }
+  }
+
+  const { songs, result } = await navidromeLoadSongs(config)
+
+  if (songs.length > 0 && lastScan) {
+    await saveSongLibraryCache({ tracks: songs, lastScan })
+  }
+
+  return { connection, songs, loadResult: result, lastScan }
 }
 
 export async function runManualWebDAVSync(): Promise<{ synced: number; failed: number }> {

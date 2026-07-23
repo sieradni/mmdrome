@@ -5,7 +5,8 @@
   import { navidromeSongToTrack } from './lib/navidromeApi'
   import { playbackManager } from './lib/playbackManager'
   import { audioManager } from './lib/audioManager'
-  import { setWebdavCredentials, ensureIndex, scanAllNow, getWebdavConfigured } from './lib/metadataScanner'
+  import { setWebdavCredentials, ensureIndex, scanAllNow, setServerLastScan, getWebdavConfigured } from './lib/metadataScanner'
+  import { getTagLib } from './lib/taglibSingleton'
   import type { Track } from './stores/appState'
   import SongsView from './views/SongsView.svelte'
   import AlbumsView from './views/AlbumsView.svelte'
@@ -46,10 +47,12 @@
             failed: result.loadResult.failed,
           })
 
+          if (result.lastScan) setServerLastScan(result.lastScan)
+
           const s2 = $settings
           if (s2.webdavUrl && s2.webdavUser && s2.webdavToken) {
             setWebdavCredentials(s2.webdavUrl, s2.webdavUser, s2.webdavToken)
-            ensureIndex().then(() => scanAllNow())
+            ensureIndex().then(() => scanAllNow(false))
           }
         } else {
           navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: result.connection.error })
@@ -61,7 +64,12 @@
       }
     }
 
+    getTagLib()
     await playbackManager.init()
+
+    if (navigator.storage?.persist) {
+      navigator.storage.persist()
+    }
   })
 
   function toggleNowPlaying() {

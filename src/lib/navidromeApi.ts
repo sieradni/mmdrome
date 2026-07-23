@@ -82,6 +82,7 @@ export interface NavidromeLoadResult {
   loaded: number
   failed: number
   error?: string
+  cached?: boolean
 }
 
 export interface NavidromeConfig {
@@ -268,6 +269,7 @@ export interface NavidromeConnectResult {
   connection: NavidromeConnectionStatus
   songs: NavidromeSong[]
   loadResult: NavidromeLoadResult
+  lastScan?: string
 }
 
 export async function connectNavidrome(config: NavidromeConfig): Promise<NavidromeConnectResult> {
@@ -360,6 +362,15 @@ export function resolveCoverArtId(track: Track): string {
 
 export async function triggerNavidromeScan(config: NavidromeConfig): Promise<void> {
   await callSubsonic(config, 'startScan.view', { scanType: 'fast' })
+}
+
+export interface ScanStatus {
+  lastScan: string
+}
+
+export async function getScanStatus(config: NavidromeConfig): Promise<ScanStatus> {
+  const resp = await callSubsonic(config, 'getScanStatus.view')
+  return { lastScan: resp.scanStatus?.lastScan ?? '' }
 }
 
 export function navidromeSongToTrack(song: NavidromeSong): Track {
