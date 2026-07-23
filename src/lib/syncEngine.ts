@@ -21,38 +21,80 @@ function webdavAuthHeaders(user: string, token: string): Record<string, string> 
   }
 }
 
+function buildWebdavUrl(baseUrl: string, filePath: string): string {
+  return `${baseUrl.replace(/\/+$/, "")}/${filePath.replace(/^\/+/, "")}`
+}
+
+class ConflictError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "ConflictError"
+  }
+}
+
 async function webdavGet(
   baseUrl: string,
   filePath: string,
   user: string,
   token: string,
-): Promise<ArrayBuffer> {
-  const url = `${baseUrl.replace(/\/+$/, "")}/${filePath.replace(/^\/+/, "")}`
+): Promise<{ data: ArrayBuffer; etag?: string }> {
+  const url = buildWebdavUrl(baseUrl, filePath)
   const res = await fetch(url, {
     method: "GET",
     headers: webdavAuthHeaders(user, token),
   })
   if (!res.ok) throw new Error(`WebDAV GET failed (${res.status}) for ${filePath}`)
-  return res.arrayBuffer()
+  return {
+    data: await res.arrayBuffer(),
+    etag: res.headers.get("ETag") ?? undefined,
+  }
 }
 
-async function webdavPut(
+async function webdavPutAtomic(
   baseUrl: string,
   filePath: string,
   data: ArrayBuffer,
   user: string,
   token: string,
+  etag?: string,
 ): Promise<void> {
-  const url = `${baseUrl.replace(/\/+$/, "")}/${filePath.replace(/^\/+/, "")}`
-  const res = await fetch(url, {
+  const tempPath = `${filePath}.mmdrome-tmp`
+  const authHeaders = webdavAuthHeaders(user, token)
+
+  // Write to temp file first — original untouched if this fails
+  const putRes = await fetch(buildWebdavUrl(baseUrl, tempPath), {
     method: "PUT",
     headers: {
-      ...webdavAuthHeaders(user, token),
+      ...authHeaders,
       "Content-Type": "application/octet-stream",
     },
     body: data,
   })
-  if (!res.ok) throw new Error(`WebDAV PUT failed (${res.status}) for ${filePath}`)
+  if (!putRes.ok) throw new Error(`WebDAV PUT to temp failed (${putRes.status}) for ${filePath}`)
+
+  // Atomically replace via MOVE with optional concurrency check
+  const destUrl = buildWebdavUrl(baseUrl, filePath)
+  const moveHeaders: Record<string, string> = {
+    ...authHeaders,
+    Destination: destUrl,
+    Overwrite: "T",
+  }
+  if (etag) moveHeaders["If-Match"] = etag
+
+  const moveRes = await fetch(buildWebdavUrl(baseUrl, tempPath), {
+    method: "MOVE",
+    headers: moveHeaders,
+  })
+
+  // Clean up temp file on MOVE failure
+  if (!moveRes.ok) {
+    await fetch(buildWebdavUrl(baseUrl, tempPath), {
+      method: "DELETE",
+      headers: authHeaders,
+    }).catch(() => {})
+    if (moveRes.status === 412) throw new ConflictError(`File changed since GET for ${filePath}`)
+    throw new Error(`WebDAV MOVE failed (${moveRes.status}) for ${filePath}`)
+  }
 }
 
 async function getNavidromeConfig(): Promise<NavidromeConfig | null> {
@@ -168,9 +210,28 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   for (const track of pending) {
     try {
       const davPath = track.webdavPath || track.filePath
-      const raw = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)
+
+      // GET with ETag for concurrency detection
+      const { data: raw, etag } = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)
       const modified = await modifyMetadataBuffer(raw, track.rating, track.loved, track.fileType)
-      await webdavPut(webdavUrl, davPath, modified, webdavUser, webdavToken)
+
+      try {
+        await webdavPutAtomic(webdavUrl, davPath, modified, webdavUser, webdavToken, etag)
+      } catch (err) {
+        if (err instanceof ConflictError) {
+          // File changed since we read it — re-read, re-apply, retry once
+          const { data: refreshed, etag: newEtag } = await webdavGet(
+            webdavUrl, davPath, webdavUser, webdavToken,
+          )
+          const reModified = await modifyMetadataBuffer(
+            refreshed, track.rating, track.loved, track.fileType,
+          )
+          await webdavPutAtomic(webdavUrl, davPath, reModified, webdavUser, webdavToken, newEtag)
+        } else {
+          throw err
+        }
+      }
+
       await upsertMetadata({ ...track, syncStatus: "synced" })
       synced++
     } catch {
