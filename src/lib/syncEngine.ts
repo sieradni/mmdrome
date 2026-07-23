@@ -7,6 +7,7 @@ import {
   testWebdavConnection as webdavTestConnection,
   connectNavidrome as navidromeConnect,
   getScanStatus as navidromeGetScanStatus,
+  setCachedConfig as navidromeSetCachedConfig,
   type NavidromeConfig,
   type NavidromeConnectionStatus,
   type NavidromeLoadResult,
@@ -130,6 +131,7 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
   if (!forceRefresh && lastScan) {
     const cached = await getSongLibraryCache()
     if (cached && cached.lastScan === lastScan && cached.tracks.length > 0) {
+      navidromeSetCachedConfig(config)
       return {
         connection,
         songs: cached.tracks,
