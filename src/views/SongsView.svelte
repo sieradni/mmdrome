@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { library, metadataCache, addToUserQueue, playNext } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
-  import { prioritizeTrack } from '../lib/metadataScanner'
+
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import LazyThumb from '../components/LazyThumb.svelte'
@@ -59,27 +59,6 @@
     )
     observer.observe(sentinelEl)
     return () => observer.disconnect()
-  })
-
-  let priorityObserver: IntersectionObserver | null = null
-
-  $effect(() => {
-    visible
-    priorityObserver?.disconnect()
-    if (!listContainer) return
-    priorityObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const id = (entry.target as HTMLElement).dataset.trackId
-          if (!id) continue
-          if (entry.isIntersecting) prioritizeTrack(id)
-        }
-      },
-      { root: listContainer, rootMargin: '200px' }
-    )
-    const items = listContainer.querySelectorAll('[data-track-id]')
-    for (const el of items) priorityObserver.observe(el)
-    return () => priorityObserver?.disconnect()
   })
 
   $effect(() => {
