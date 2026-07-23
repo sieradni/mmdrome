@@ -393,9 +393,10 @@ export async function testWebdavConnection(
   try {
     const url = `${baseUrl.replace(/\/+$/, '')}/`
     const res = await fetch(url, {
-      method: 'GET',
+      method: 'PROPFIND',
       headers: {
         Authorization: `Basic ${btoa(`${user}:${token}`)}`,
+        Depth: '0',
       },
     })
     if (res.ok) {

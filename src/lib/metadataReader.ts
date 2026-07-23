@@ -59,7 +59,16 @@ async function walkWebdav(
   for (const resp of responses) {
     const href = getChildText(resp, "href", DAV_NS)
     const decoded = decodeURIComponent(href)
-    const cleaned = decoded.replace(new RegExp(`^${normalizeUrl(baseUrl).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/?`, "i"), "")
+    const urlStr = normalizeUrl(baseUrl)
+    const escapedUrl = urlStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    let cleaned = decoded.replace(new RegExp(`^${escapedUrl}/?`, "i"), "")
+    try {
+      const pathPart = new URL(urlStr).pathname.replace(/\/+$/, "")
+      if (pathPart) {
+        const escapedPath = pathPart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        cleaned = cleaned.replace(new RegExp(`^${escapedPath}/?`, "i"), "")
+      }
+    } catch {}
     if (!cleaned) continue
 
     const props = resp.getElementsByTagNameNS(DAV_NS, "prop")[0]
