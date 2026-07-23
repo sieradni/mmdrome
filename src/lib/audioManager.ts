@@ -40,6 +40,8 @@ class AudioManager {
   private _sourceB: MediaElementAudioSourceNode | null = null
   private _gainA: GainNode | null = null
   private _gainB: GainNode | null = null
+  private _rgGainA: GainNode | null = null
+  private _rgGainB: GainNode | null = null
   private _soundTouch: AudioNode | null = null
   private _initialized = false
   private _webAudioReady = false
@@ -53,7 +55,11 @@ class AudioManager {
   private _activeElement: 'a' | 'b' = 'a'
   private _crossfadeDuration = 0
   private _nextTrackUrl: string | null = null
+  private _nextTrackReplayGainLinear: number | null = null
   private _transitionArmed = false
+  private _replayGainMode: 'off' | 'track' | 'album' = 'off'
+  private _currentTrackGainDb: number | null = null
+  private _currentAlbumGainDb: number | null = null
   private _timeupdateEl: HTMLAudioElement | null = null
   private _timeupdateHandler: ((e: Event) => void) | null = null
   onTrackEnd: (() => void) | null = null
@@ -125,12 +131,18 @@ class AudioManager {
       this._sourceB = this._ctx.createMediaElementSource(this.b)
       this._gainA = this._ctx.createGain()
       this._gainB = this._ctx.createGain()
+      this._rgGainA = this._ctx.createGain()
+      this._rgGainB = this._ctx.createGain()
+      this._rgGainA.gain.value = 1
+      this._rgGainB.gain.value = 1
 
       this._sourceA.connect(this._gainA)
-      this._gainA.connect(this._soundTouch)
+      this._gainA.connect(this._rgGainA)
+      this._rgGainA.connect(this._soundTouch)
 
       this._sourceB.connect(this._gainB)
-      this._gainB.connect(this._soundTouch)
+      this._gainB.connect(this._rgGainB)
+      this._rgGainB.connect(this._soundTouch)
 
       this._preamp = this._ctx.createGain()
       this._preamp.gain.value = 1
@@ -154,6 +166,8 @@ class AudioManager {
     if (this._sourceB) { try { this._sourceB.disconnect() } catch {} }
     if (this._gainA) { try { this._gainA.disconnect() } catch {} }
     if (this._gainB) { try { this._gainB.disconnect() } catch {} }
+    if (this._rgGainA) { try { this._rgGainA.disconnect() } catch {} }
+    if (this._rgGainB) { try { this._rgGainB.disconnect() } catch {} }
     if (this._soundTouch) { try { this._soundTouch.disconnect() } catch {} }
     if (this._preamp) { try { this._preamp.disconnect() } catch {} }
     this._teardownFilters()
@@ -163,6 +177,8 @@ class AudioManager {
     this._sourceB = null
     this._gainA = null
     this._gainB = null
+    this._rgGainA = null
+    this._rgGainB = null
     this._soundTouch = null
     this._preamp = null
     this._eqFilters = []
@@ -199,8 +215,9 @@ class AudioManager {
     this._applyPitch(this._pitchOctaves)
   }
 
-  setNextTrack(url: string | null): void {
+  setNextTrack(url: string | null, replayGainLinear?: number): void {
     this._nextTrackUrl = url
+    this._nextTrackReplayGainLinear = replayGainLinear ?? null
     if (url && this._crossfadeDuration > 0 && this._webAudioReady) {
       this._setupTimeupdateMonitor()
     } else {
@@ -225,6 +242,36 @@ class AudioManager {
     if (this._eqBypassed === enabled) return
     this._eqBypassed = enabled
     this._reconnectChain()
+  }
+
+  setReplayGainMode(mode: 'off' | 'track' | 'album'): void {
+    this._replayGainMode = mode
+    this._applyReplayGainInternal()
+  }
+
+  applyReplayGain(trackGainDb?: number, albumGainDb?: number): void {
+    this._currentTrackGainDb = trackGainDb ?? null
+    this._currentAlbumGainDb = albumGainDb ?? null
+    this._applyReplayGainInternal()
+  }
+
+  private _applyReplayGainInternal(): void {
+    if (!this._webAudioReady) return
+    const activeRgGain = this._activeElement === 'a' ? this._rgGainA : this._rgGainB
+    if (!activeRgGain) return
+
+    let gainDb: number | null = null
+    if (this._replayGainMode === 'track') {
+      gainDb = this._currentTrackGainDb
+    } else if (this._replayGainMode === 'album') {
+      gainDb = this._currentAlbumGainDb
+    }
+
+    if (gainDb !== null && isFinite(gainDb)) {
+      activeRgGain.gain.value = Math.pow(10, gainDb / 20)
+    } else {
+      activeRgGain.gain.value = 1
+    }
   }
 
   parseParametricEQ(configText: string): void {
@@ -403,7 +450,12 @@ class AudioManager {
 
     const fadeOutGain = this._activeElement === 'a' ? this._gainA : this._gainB
     const fadeInGain = this._activeElement === 'a' ? this._gainB : this._gainA
+    const standbyRgGain = this._activeElement === 'a' ? this._rgGainB : this._rgGainA
     if (!fadeOutGain || !fadeInGain) return
+
+    if (standbyRgGain && this._nextTrackReplayGainLinear !== null) {
+      standbyRgGain.gain.value = this._nextTrackReplayGainLinear
+    }
 
     const standbyEl = this.standbyElement
     standbyEl.src = this._nextTrackUrl
@@ -421,6 +473,7 @@ class AudioManager {
     this._teardownTimeupdateMonitor()
     this._activeElement = this._activeElement === 'a' ? 'b' : 'a'
     this._nextTrackUrl = null
+    this._nextTrackReplayGainLinear = null
 
     this.onTrackEnd?.()
   }

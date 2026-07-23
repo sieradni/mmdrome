@@ -9,6 +9,7 @@ import {
   playbackState,
   queue,
   library,
+  settings,
   setCurrentTrack,
   setPlaybackState,
   setActiveQueueIndex,
@@ -88,6 +89,14 @@ class PlaybackManager {
     setCurrentTrack(track)
     setPlaybackState('playing')
 
+    const s = get(settings)
+    if (s.replayGainMode && s.replayGainMode !== 'off') {
+      audioManager.setReplayGainMode(s.replayGainMode)
+      audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
+    } else {
+      audioManager.applyReplayGain()
+    }
+
     this._setupNextTrack()
   }
 
@@ -98,7 +107,17 @@ class PlaybackManager {
     if (nextIdx >= 0 && nextIdx < combined.length) {
       const url = this._resolveUrl(combined[nextIdx])
       if (url) {
-        audioManager.setNextTrack(url)
+        let linearGain: number | undefined
+        const nextTrack = this._findTrack(combined[nextIdx])
+        if (nextTrack) {
+          const s = get(settings)
+          if (s.replayGainMode === 'track' && nextTrack.replayGain != null) {
+            linearGain = Math.pow(10, nextTrack.replayGain / 20)
+          } else if (s.replayGainMode === 'album' && nextTrack.albumReplayGain != null) {
+            linearGain = Math.pow(10, nextTrack.albumReplayGain / 20)
+          }
+        }
+        audioManager.setNextTrack(url, linearGain)
       }
     } else {
       audioManager.setNextTrack(null)

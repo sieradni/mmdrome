@@ -20,6 +20,8 @@ export interface Track {
   createdAt?: number
   modifiedAt?: number
   navidromePath?: string
+  replayGain?: number
+  albumReplayGain?: number
 }
 
 export interface TrackWithMeta extends Track {
@@ -54,6 +56,7 @@ export interface SettingsMap {
   navidromePassword?: string
   tapeMode?: boolean
   snapTolerance?: number
+  replayGainMode?: 'off' | 'track' | 'album'
 }
 
 export const currentTrack = writable<Track | null>(null)
@@ -98,7 +101,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance', 'replayGainMode']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]

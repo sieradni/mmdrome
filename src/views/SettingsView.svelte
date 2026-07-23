@@ -15,6 +15,7 @@
   let crossfadeDuration = $state(0)
   let tapeMode = $state(false)
   let snapTolerance = $state(0.15)
+  let replayGainMode = $state<'off' | 'track' | 'album'>('off')
   let syncing = $state(false)
   let syncResult = $state('')
   let indexing = $state(false)
@@ -31,6 +32,7 @@
     crossfadeDuration = s.crossfadeDuration ?? 0
     tapeMode = s.tapeMode ?? false
     snapTolerance = s.snapTolerance ?? 0.15
+    replayGainMode = (s.replayGainMode ?? 'off') as 'off' | 'track' | 'album'
   })
 
   function setPreload(val: number) {
@@ -48,6 +50,11 @@
     const val = !tapeMode
     tapeMode = val
     updateSetting('tapeMode', val)
+  }
+
+  function setReplayGainMode(val: 'off' | 'track' | 'album') {
+    replayGainMode = val
+    updateSetting('replayGainMode', val)
   }
 
   function setSnapTolerance(e: Event) {
@@ -206,6 +213,24 @@
               class="h-1 w-full accent-yellow-500"
             />
           </div>
+        </div>
+      </section>
+
+      <!-- Replay Gain -->
+      <section class="px-4 py-4">
+        <h3 class="mb-3 text-sm font-medium text-primary">Replay Gain</h3>
+        <p class="mb-2 text-xs text-muted">Apply loudness normalization based on file metadata</p>
+        <div class="flex gap-2">
+          {#each ['off', 'track', 'album'] as mode}
+            <button
+              onclick={() => setReplayGainMode(mode as 'off' | 'track' | 'album')}
+              class="rounded-lg px-4 py-2 text-xs font-medium transition-colors"
+              class:bg-primary={replayGainMode === mode}
+              class:text-background={replayGainMode === mode}
+              class:bg-surface-hover={replayGainMode !== mode}
+              class:text-muted={replayGainMode !== mode}
+            >{mode === 'off' ? 'Off' : mode === 'track' ? 'Track Gain' : 'Album Gain'}</button>
+          {/each}
         </div>
       </section>
 

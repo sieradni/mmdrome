@@ -51,6 +51,8 @@ export interface NavidromeSong {
   explicit?: boolean
   streamId?: string
   path?: string
+  replayGain?: number
+  albumReplayGain?: number
 }
 
 export interface NavidromeArtist {
@@ -393,6 +395,8 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     size: song.size,
     createdAt: song.created ? new Date(song.created).getTime() : undefined,
     navidromePath: song.path,
+    replayGain: song.replayGain,
+    albumReplayGain: song.albumReplayGain,
   }
 }
 
