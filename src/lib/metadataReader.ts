@@ -1,6 +1,6 @@
 import { readTags } from "taglib-wasm/simple"
 import type { Track } from "../stores/appState"
-import type { WebdavFileEntry } from "./db"
+import type { WebdavFileEntry, LocalMetadataStore } from "./db"
 
 function authHeaders(user: string, token: string): Record<string, string> {
   return { Authorization: `Basic ${btoa(`${user}:${token}`)}` }
@@ -70,14 +70,54 @@ export async function buildWebdavFileIndex(
 
     const filename = cleaned.split("/").pop() || cleaned
     const sizeStr = props.getElementsByTagNameNS(DAV_NS, "getcontentlength")[0]?.textContent
+    const modStr = props.getElementsByTagNameNS(DAV_NS, "getlastmodified")[0]?.textContent
     entries.push({
       path: cleaned,
       filename,
       size: sizeStr ? parseInt(sizeStr, 10) || 0 : 0,
+      lastModified: modStr || undefined,
     })
   }
 
   return entries
+}
+
+/** Build a Map<webdavPath, lastModified> from the index for fast lookup. */
+export function buildPathTimestamps(index: WebdavFileEntry[]): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const e of index) {
+    if (e.lastModified) map.set(e.path, e.lastModified)
+  }
+  return map
+}
+
+/**
+ * Given the current PROPFIND index and cached metadata, return the set of
+ * tracks whose file has been modified (or that need matching for the first time).
+ */
+export function findChangedTracks(
+  tracks: Track[],
+  metadata: Map<string, LocalMetadataStore>,
+  newIndex: WebdavFileEntry[],
+  pathTimestamps: Map<string, string>,
+): { changed: Track[]; unmatched: Track[] } {
+  const changed: Track[] = []
+  const unmatched: Track[] = []
+
+  for (const t of tracks) {
+    const meta = metadata.get(t.trackId)
+    if (meta?.webdavPath) {
+      const cached = meta.webdavLastModified
+      const current = pathTimestamps.get(meta.webdavPath)
+      if (current !== cached) {
+        changed.push(t)
+      }
+    } else {
+      unmatched.push(t)
+    }
+  }
+
+  return { changed, unmatched }
 }
 
 function normalizeForMatch(s: string): string {

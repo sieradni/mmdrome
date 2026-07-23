@@ -7,6 +7,8 @@ import {
   buildWebdavFileIndex,
   matchTrackToWebdav,
   readFileMetadata,
+  buildPathTimestamps,
+  findChangedTracks,
 } from "./metadataReader"
 import type { WebdavFileEntry } from "./db"
 
@@ -14,7 +16,6 @@ const CONCURRENCY = 6
 
 interface QueueItem {
   trackId: string
-  priority: number
 }
 
 let queue: QueueItem[] = []
@@ -59,68 +60,63 @@ export async function rebuildIndex(): Promise<void> {
 }
 
 export function prioritizeTrack(trackId: string): void {
-  const existingIdx = queue.findIndex((qi) => qi.trackId === trackId)
-  if (existingIdx >= 0) {
-    queue[existingIdx].priority = queue[existingIdx].priority + 1
-  } else {
-    queue.push({ trackId, priority: 10 })
-  }
-  queue.sort((a, b) => b.priority - a.priority)
-  drain()
-}
-
-export function deprioritizeTrack(trackId: string): void {
-  const existingIdx = queue.findIndex((qi) => qi.trackId === trackId)
-  if (existingIdx >= 0) {
-    queue[existingIdx].priority = Math.max(0, queue[existingIdx].priority - 1)
+  if (!queue.some((qi) => qi.trackId === trackId)) {
+    queue.unshift({ trackId })
+    drain()
   }
 }
 
-export function enqueueAll(rescanAll?: boolean): void {
-  const cache = get(metadataCache)
-  const tracks = get(library)
-  const existing: Set<string> = new Set(queue.map((qi) => qi.trackId))
+let scannedCount = 0
+let failedCount = 0
+let totalTracks = 0
 
-  for (const t of tracks) {
-    if (existing.has(t.trackId)) continue
-    const meta = cache.get(t.trackId)
-    const needsMetadata = rescanAll || (!meta || (meta.rating === 0 && !meta.loved))
-    queue.push({
-      trackId: t.trackId,
-      priority: needsMetadata ? 1 : 0,
-    })
-  }
-  queue.sort((a, b) => b.priority - a.priority)
-  drain()
-}
-
-export function scanAllNow(): void {
+export async function scanAllNow(): Promise<void> {
   cancelled = false
   queue = []
   scannedCount = 0
   failedCount = 0
-  const total = get(library).length
+  totalTracks = 0
+
+  if (!webdavUrl || !webdavUser || !webdavToken) return
+
+  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0 } })
+
+  const tracks = get(library)
+  const cache = get(metadataCache)
+
+  const freshIndex = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
+  index = freshIndex
+  indexBuilt = true
+  await saveWebdavFileIndex({ entries: freshIndex, buildTimestamp: Date.now() })
+
+  const timestamps = buildPathTimestamps(freshIndex)
+  const { changed, unmatched } = findChangedTracks(tracks, cache, freshIndex, timestamps)
+  const alreadySeen = new Set(cache.keys())
+
+  for (const t of changed) queue.push({ trackId: t.trackId })
+  for (const t of unmatched) queue.push({ trackId: t.trackId })
+
+  const skipCount = Array.from(alreadySeen).filter((id) => {
+    const meta = cache.get(id)
+    return meta?.webdavPath && !changed.some((c) => c.trackId === id) && !unmatched.some((u) => u.trackId === id)
+  }).length
+
+  totalTracks = queue.length + skipCount
   metadataScanState.set({
     status: "scanning",
-    progress: { scanned: 0, total, failed: 0 },
+    progress: { scanned: skipCount, total: totalTracks, failed: 0 },
   })
-  enqueueAll(true)
-}
 
-let totalQueued = 0
-let scannedCount = 0
-let failedCount = 0
+  drain()
+}
 
 async function drain(): Promise<void> {
   if (cancelled) return
-  if (!indexBuilt) return
-  if (!getWebdavConfigured()) return
 
   while (activeCount < CONCURRENCY && queue.length > 0) {
     const item = queue.shift()
     if (!item) break
     activeCount++
-    totalQueued++
     processItem(item).finally(() => {
       activeCount--
       drain()
@@ -151,6 +147,7 @@ async function processItem(item: QueueItem): Promise<void> {
       syncStatus: "synced",
       lastModifiedLocally: Date.now(),
       webdavPath: match.path,
+      webdavLastModified: match.lastModified,
     })
     scannedCount++
   } catch {
@@ -160,17 +157,16 @@ async function processItem(item: QueueItem): Promise<void> {
 }
 
 function updateScanProgress(): void {
-  const total = get(library).length
   const done = scannedCount + failedCount
-  if (done >= total) {
+  if (done >= totalTracks) {
     metadataScanState.set({
       status: "complete",
-      progress: { scanned: scannedCount, total, failed: failedCount },
+      progress: { scanned: scannedCount, total: totalTracks, failed: failedCount },
     })
   } else {
     metadataScanState.set({
       status: "scanning",
-      progress: { scanned: done, total, failed: failedCount },
+      progress: { scanned: done, total: totalTracks, failed: failedCount },
     })
   }
 }
@@ -181,7 +177,7 @@ export function resetScan(): void {
   activeCount = 0
   scannedCount = 0
   failedCount = 0
-  totalQueued = 0
+  totalTracks = 0
   indexBuilt = false
   index = []
   metadataScanState.set({ status: "idle", progress: { scanned: 0, total: 0, failed: 0 } })

@@ -9,12 +9,14 @@ export interface LocalMetadataStore {
   syncStatus: "synced" | "pending_sync"
   lastModifiedLocally: number
   webdavPath?: string
+  webdavLastModified?: string
 }
 
 export interface WebdavFileEntry {
   path: string
   filename: string
   size: number
+  lastModified?: string
 }
 
 export interface WebdavFileIndex {

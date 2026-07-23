@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { library, metadataCache, addToUserQueue, playNext } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
-  import { prioritizeTrack, deprioritizeTrack } from '../lib/metadataScanner'
+  import { prioritizeTrack } from '../lib/metadataScanner'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import LazyThumb from '../components/LazyThumb.svelte'
@@ -73,7 +73,6 @@
           const id = (entry.target as HTMLElement).dataset.trackId
           if (!id) continue
           if (entry.isIntersecting) prioritizeTrack(id)
-          else deprioritizeTrack(id)
         }
       },
       { root: listContainer, rootMargin: '200px' }
