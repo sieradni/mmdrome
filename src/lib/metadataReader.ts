@@ -25,72 +25,17 @@ function getChildText(parent: Element, tag: string, ns: string): string {
   return el?.textContent ?? ""
 }
 
-async function propfind(
-  baseUrl: string,
-  davPath: string,
-  user: string,
-  token: string,
-): Promise<string> {
-  const url = buildWebdavUrl(baseUrl, davPath)
-  const res = await fetch(url, {
-    method: "PROPFIND",
-    headers: {
-      ...authHeaders(user, token),
-      Depth: "1",
-      "Content-Type": "application/xml",
-    },
-  })
-  if (!res.ok) throw new Error(`PROPFIND ${davPath} failed: ${res.status}`)
-  return res.text()
-}
-
-async function walkWebdav(
-  baseUrl: string,
-  davPath: string,
-  user: string,
-  token: string,
-  entries: WebdavFileEntry[],
-): Promise<void> {
-  const xml = await propfind(baseUrl, davPath, user, token)
-  const doc = parseXml(xml)
-  const responses = doc.getElementsByTagNameNS(DAV_NS, "response")
-
-  const dirs: string[] = []
-  for (const resp of responses) {
-    const href = getChildText(resp, "href", DAV_NS)
-    const decoded = decodeURIComponent(href)
-    const urlStr = normalizeUrl(baseUrl)
-    const escapedUrl = urlStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    let cleaned = decoded.replace(new RegExp(`^${escapedUrl}/?`, "i"), "")
-    try {
-      const pathPart = new URL(urlStr).pathname.replace(/\/+$/, "")
-      if (pathPart) {
-        const escapedPath = pathPart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-        cleaned = cleaned.replace(new RegExp(`^${escapedPath}/?`, "i"), "")
-      }
-    } catch {}
-    if (!cleaned) continue
-
-    const props = resp.getElementsByTagNameNS(DAV_NS, "prop")[0]
-    if (!props) continue
-
-    const rtype = props.getElementsByTagNameNS(DAV_NS, "collection")[0]
-    if (rtype) {
-      if (cleaned !== davPath.replace(/^\/+/, "").replace(/\/+$/, "")) {
-        dirs.push(cleaned)
-      }
-    } else {
-      const filename = cleaned.split("/").pop() || cleaned
-      const sizeStr = props.getElementsByTagNameNS(DAV_NS, "getcontentlength")[0]?.textContent
-      entries.push({
-        path: cleaned,
-        filename,
-        size: sizeStr ? parseInt(sizeStr, 10) || 0 : 0,
-      })
+function stripBasePath(baseUrl: string, href: string): string {
+  const decoded = decodeURIComponent(href)
+  try {
+    const urlPath = new URL(normalizeUrl(baseUrl)).pathname.replace(/\/+$/, "")
+    if (urlPath && decoded.toLowerCase().startsWith(urlPath.toLowerCase())) {
+      return decoded.slice(urlPath.length).replace(/^\/+/, "")
     }
-  }
-
-  await Promise.all(dirs.map((d) => walkWebdav(baseUrl, d, user, token, entries)))
+  } catch {}
+  const urlStr = normalizeUrl(baseUrl)
+  const escaped = urlStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return decoded.replace(new RegExp(`^${escaped}/?`, "i"), "")
 }
 
 export async function buildWebdavFileIndex(
@@ -98,8 +43,40 @@ export async function buildWebdavFileIndex(
   user: string,
   token: string,
 ): Promise<WebdavFileEntry[]> {
+  const url = buildWebdavUrl(baseUrl, "/")
+  const res = await fetch(url, {
+    method: "PROPFIND",
+    headers: {
+      ...authHeaders(user, token),
+      Depth: "infinity",
+    },
+  })
+  if (!res.ok) throw new Error(`PROPFIND / failed: ${res.status}`)
+  const xml = await res.text()
+  const doc = parseXml(xml)
+  const responses = doc.getElementsByTagNameNS(DAV_NS, "response")
+
   const entries: WebdavFileEntry[] = []
-  await walkWebdav(baseUrl, "/", user, token, entries)
+  for (const resp of responses) {
+    const href = getChildText(resp, "href", DAV_NS)
+    const cleaned = stripBasePath(baseUrl, href)
+    if (!cleaned) continue
+
+    const props = resp.getElementsByTagNameNS(DAV_NS, "prop")[0]
+    if (!props) continue
+
+    const isCollection = props.getElementsByTagNameNS(DAV_NS, "collection")[0]
+    if (isCollection) continue
+
+    const filename = cleaned.split("/").pop() || cleaned
+    const sizeStr = props.getElementsByTagNameNS(DAV_NS, "getcontentlength")[0]?.textContent
+    entries.push({
+      path: cleaned,
+      filename,
+      size: sizeStr ? parseInt(sizeStr, 10) || 0 : 0,
+    })
+  }
+
   return entries
 }
 
