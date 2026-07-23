@@ -82,7 +82,7 @@
   }
 
   function closeQueue() {
-    queueOpen = false
+    queueOpen = false; nowPlayingOpen = true
   }
 
   function openTrackOptions() {

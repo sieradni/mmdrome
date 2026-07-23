@@ -191,6 +191,17 @@ export function toggleShuffle(): void {
   shuffleEnabled.update((v) => !v)
 }
 
+export function clearQueue(): void {
+  queue.update((q) => {
+    const combined = [...q.userQueue, ...q.autoQueue];
+    const currentId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : null;
+    const userQueue = currentId ? [currentId] : [];
+    const updated = { ...q, userQueue, autoQueue: [], activeIndex: currentId ? 0 : -1 };
+    saveQueue(updated);
+    return updated;
+  });
+}
+
 export function initMetadataForTracks(tracks: Track[]): void {
   const cache = get(metadataCache)
   const toInit: LocalMetadataStore[] = []

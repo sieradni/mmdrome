@@ -1,16 +1,16 @@
 <script lang="ts">
-  import { queue, library, currentTrack, shuffleEnabled, toggleShuffle, currentTime } from '../stores/appState'
+  import { queue, library, currentTrack, shuffleEnabled, toggleShuffle, currentTime, playbackState, clearQueue } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
+  import { audioManager } from '../lib/audioManager'
   import { addToUserQueue, removeFromUserQueue } from '../stores/appState'
-import { saveQueue } from '../lib/db'
-import LazyThumb from '../components/LazyThumb.svelte'
-import type { Track } from '../stores/appState'
+  import { saveQueue } from '../lib/db'
+  import LazyThumb from '../components/LazyThumb.svelte'
+  import type { Track } from '../stores/appState'
 
   let { onclose }: { onclose: () => void } = $props()
 
   let dragIndex = $state<number | null>(null)
   let dropAutoIndex = $state<number | null>(null)
-  let showHistory = $state(false)
 
   let userTracks = $derived.by(() => {
     const q = $queue
@@ -26,19 +26,20 @@ import type { Track } from '../stores/appState'
     return ordered.filter((t): t is Track => t !== null)
   })
 
-  let historyTracks = $derived.by(() => {
-    const q = $queue
-    const lib = $library
-    return q.historyQueue.map((id) => lib.find((t) => t.trackId === id)).filter((t): t is Track => t !== null).slice(0, 100)
-  })
-
-  let activeIndex = $derived($queue.activeIndex)
+  let duration = $derived(audioManager.activeElement.duration || 0)
 
   function formatTime(sec: number): string {
     if (!isFinite(sec) || sec < 0) return '0:00'
     const m = Math.floor(sec / 60)
     const s = Math.floor(sec % 60)
     return `${m}:${s.toString().padStart(2, '0')}`
+  }
+
+  function seek(e: Event) {
+    const el = e.target as HTMLInputElement
+    const t = parseFloat(el.value)
+    audioManager.activeElement.currentTime = t
+    currentTime.set(t)
   }
 
   function handleDragStart(e: DragEvent, index: number) {
@@ -117,16 +118,14 @@ import type { Track } from '../stores/appState'
     removeFromUserQueue(idx)
   }
 
-  function isCurrent(trackId: string): boolean {
-    const q = $queue
-    const combined = [...q.userQueue, ...q.autoQueue]
-    return q.activeIndex >= 0 && q.activeIndex < combined.length && combined[q.activeIndex] === trackId
+  function isCurrent(combinedIndex: number): boolean {
+    return combinedIndex === $queue.activeIndex
   }
 
-  function combinedIndexOf(trackId: string): number {
-    const q = $queue
-    const combined = [...q.userQueue, ...q.autoQueue]
-    return combined.indexOf(trackId)
+  function playQueueItem(combinedIndex: number) {
+    if (combinedIndex !== $queue.activeIndex) {
+      playbackManager.playTrackAt(combinedIndex)
+    }
   }
 
   let dragBoundaryActive = $derived(dragIndex !== null && dropAutoIndex !== null)
@@ -139,69 +138,92 @@ import type { Track } from '../stores/appState'
       <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
     </button>
     <span class="text-sm font-medium text-muted">Queue</span>
-    <span class="w-10"></span>
+    <button
+      onclick={clearQueue}
+      class="rounded-lg px-2 py-1 text-xs text-muted transition-colors hover:text-red-400"
+      aria-label="Clear queue"
+    >
+      Clear
+    </button>
   </div>
 
   <!-- Queue List -->
-  <div class="flex-1 overflow-y-auto pb-24">
+  <div class="flex-1 overflow-y-auto pb-4">
     {#if $queue.userQueue.length === 0 && $queue.autoQueue.length === 0}
       <div class="flex h-full items-center justify-center">
         <p class="text-xs text-muted">Queue is empty</p>
       </div>
     {/if}
 
-    <!-- Now Playing Indicator -->
+    <!-- Now Playing Section -->
     {#if $currentTrack}
-      <div class="mx-4 mb-2 flex items-center gap-3 rounded-lg bg-surface/50 px-3 py-2.5 ring-1 ring-white/10">
-        <LazyThumb track={$currentTrack} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
-        <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-medium text-primary">{$currentTrack.title}</p>
-          <p class="truncate text-xs text-muted">{$currentTrack.artist}</p>
-        </div>
-        <span class="text-xs text-muted tabular-nums">{formatTime($currentTime)}</span>
-      </div>
-    {/if}
-
-    <!-- History Toggle -->
-    {#if historyTracks.length > 0}
-      <button
-        onclick={() => showHistory = !showHistory}
-        class="mx-4 mb-1 flex w-[calc(100%-2rem)] items-center gap-2 rounded px-3 py-1.5 text-xs text-muted transition-colors hover:bg-surface-hover"
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="mx-4 mb-3 rounded-lg bg-surface/50 px-3 py-2.5 ring-1 ring-white/10"
+        role="button"
+        tabindex="0"
+        onclick={onclose}
+        onkeydown={(e) => { if (e.key === 'Enter') onclose() }}
       >
-        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/>
-        </svg>
-        <span>Previous ({historyTracks.length})</span>
-        <svg class={"ml-auto h-3.5 w-3.5 transition-transform" + (showHistory ? ' rotate-180' : '')} viewBox="0 0 24 24" fill="currentColor">
-          <path d="M7 10l5 5 5-5z"/>
-        </svg>
-      </button>
-
-      {#if showHistory}
-        <div class="mx-4 mb-2 space-y-0.5 rounded-lg bg-surface/30 px-2 py-2">
-          {#each historyTracks as track, idx (idx)}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="flex cursor-pointer items-center gap-3 rounded px-2 py-1.5 transition-colors hover:bg-surface-hover"
-              onclick={() => { const ci = combinedIndexOf(track.trackId); if (ci >= 0) playbackManager.playTrackAt(ci) }}
-              role="button"
-              tabindex="0"
-              onkeydown={(e) => { if (e.key === 'Enter') { const ci = combinedIndexOf(track.trackId); if (ci >= 0) playbackManager.playTrackAt(ci) } }}
-            >
-              <LazyThumb {track} wrapperClass="h-8 w-8 flex-shrink-0 rounded" />
-              <div class="min-w-0 flex-1">
-                <p class="truncate text-xs text-muted">{track.title}</p>
-                <p class="truncate text-[10px] text-muted/60">{track.artist}</p>
-              </div>
-            </div>
-          {/each}
+        <div class="flex items-center gap-3">
+          <LazyThumb track={$currentTrack} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm font-medium text-primary">{$currentTrack.title}</p>
+            <p class="truncate text-xs text-muted">{$currentTrack.artist}</p>
+          </div>
+          <span class="text-xs text-muted tabular-nums">{formatTime($currentTime)} / {formatTime(duration)}</span>
         </div>
-      {/if}
+
+        <!-- Seek Bar -->
+        <div class="mt-2 flex items-center gap-2">
+          <input
+            type="range"
+            min="0"
+            max={duration || 1}
+            value={$currentTime}
+            oninput={(e) => { e.stopPropagation(); seek(e) }}
+            class="h-1 flex-1 accent-white/80 cursor-pointer"
+            step="0.1"
+          />
+        </div>
+
+        <!-- Controls -->
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <div class="mt-2 flex items-center justify-between gap-3" onclick={(e) => e.stopPropagation()}>
+          <button
+            onclick={() => toggleShuffle()}
+            class="rounded-full p-1.5 transition-colors"
+            class:text-yellow-400={$shuffleEnabled}
+            class:text-muted={!$shuffleEnabled}
+            aria-label="Toggle shuffle"
+          >
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+          </button>
+
+          <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          </button>
+
+          <button class="rounded-full bg-primary p-2 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
+            {#if $playbackState === 'playing'}
+              <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
+            {:else}
+              <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            {/if}
+          </button>
+
+          <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
+          </button>
+
+          <span class="w-5"></span>
+        </div>
+      </div>
     {/if}
 
     <!-- === USER QUEUE === -->
     {#if userTracks.length > 0}
-      <div class="mx-4 mb-1 mt-3 flex items-center gap-2 px-1">
+      <div class="mx-4 mb-1 mt-2 flex items-center gap-2 px-1">
         <div class="h-px flex-1 bg-white/10"></div>
         <span class="text-[10px] font-medium uppercase tracking-wider text-muted/50">User Queue</span>
         <div class="h-px flex-1 bg-white/10"></div>
@@ -215,17 +237,22 @@ import type { Track } from '../stores/appState'
             ondragstart={(e) => handleDragStart(e, idx)}
             ondragover={(e) => handleDragOver(e, 'user', idx)}
             ondrop={(e) => handleDrop(e, 'user', idx)}
-            class={"flex items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (dragOver ? ' opacity-50' : '') + (isCurrent(track.trackId) ? ' bg-white/5' : ' hover:bg-surface-hover')}
+            onclick={() => playQueueItem(idx)}
+            role="button"
+            tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(idx) }}
+            class={"flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (dragOver ? ' opacity-50' : '') + (isCurrent(idx) ? ' bg-white/5' : ' hover:bg-surface-hover')}
           >
             <!-- Drag Handle -->
-            <div class="flex-shrink-0 cursor-grab text-muted/40 hover:text-muted" aria-label="Drag to reorder">
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <div role="presentation" class="flex-shrink-0 cursor-grab text-muted/40 hover:text-muted" aria-label="Drag to reorder" onclick={(e) => e.stopPropagation()}>
               <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
               </svg>
             </div>
 
             <!-- Current Track Indicator -->
-            {#if isCurrent(track.trackId)}
+            {#if isCurrent(idx)}
               <div class="flex-shrink-0">
                 <svg class="h-3 w-3 text-yellow-500" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z"/>
@@ -243,7 +270,7 @@ import type { Track } from '../stores/appState'
             </div>
 
             <button
-              onclick={() => removeFromUser(track.trackId)}
+              onclick={(e) => { e.stopPropagation(); removeFromUser(track.trackId) }}
               class="flex-shrink-0 rounded-full p-1 text-muted/40 transition-colors hover:text-red-400"
               aria-label="Remove from queue"
             >
@@ -275,6 +302,7 @@ import type { Track } from '../stores/appState'
 
     <!-- === AUTO QUEUE === -->
     {#if autoTracks.length > 0}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="mx-2 space-y-0.5"
         ondragover={(e) => { if (dragIndex !== null) { e.preventDefault(); } }}
@@ -286,10 +314,14 @@ import type { Track } from '../stores/appState'
             ondragover={(e) => handleDragOver(e, 'auto', combinedIdx)}
             ondragleave={() => handleDragLeave('auto')}
             ondrop={(e) => handleDrop(e, 'auto', combinedIdx)}
-            class={"flex items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (isCurrent(track.trackId) ? ' bg-white/5' : ' hover:bg-surface-hover') + (dropAutoIndex === combinedIdx && dragIndex !== null ? ' ring-1 ring-yellow-500/50' : '')}
+            onclick={() => playQueueItem(combinedIdx)}
+            role="button"
+            tabindex="0"
+            onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(combinedIdx) }}
+            class={"flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (isCurrent(combinedIdx) ? ' bg-white/5' : ' hover:bg-surface-hover') + (dropAutoIndex === combinedIdx && dragIndex !== null ? ' ring-1 ring-yellow-500/50' : '')}
           >
             <!-- Current Track Indicator -->
-            {#if isCurrent(track.trackId)}
+            {#if isCurrent(combinedIdx)}
               <div class="w-6 flex-shrink-0">
                 <svg class="h-3 w-3 text-yellow-500" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z"/>
@@ -307,7 +339,7 @@ import type { Track } from '../stores/appState'
             </div>
 
             <button
-              onclick={() => promoteToUser(track.trackId)}
+              onclick={(e) => { e.stopPropagation(); promoteToUser(track.trackId) }}
               class="flex-shrink-0 rounded-full p-1 text-muted/40 transition-colors hover:text-green-400"
               aria-label="Add to user queue"
             >
@@ -321,24 +353,5 @@ import type { Track } from '../stores/appState'
     {:else if userTracks.length > 0}
       <p class="px-6 py-4 text-center text-xs text-muted/50">Auto queue is empty</p>
     {/if}
-  </div>
-
-  <!-- ── Footer Controls ── -->
-  <div class="sticky bottom-0 flex items-center justify-between border-t border-white/10 bg-surface px-4 py-2.5 safe-area-bottom">
-    <button
-      onclick={toggleShuffle}
-      class={"flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors" + ($shuffleEnabled ? ' text-yellow-400 bg-yellow-500/10' : ' text-muted')}
-    >
-      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
-      <span>Shuffle</span>
-    </button>
-
-    <button
-      onclick={onclose}
-      class="rounded-lg p-2 text-muted transition-colors hover:text-primary"
-      aria-label="Settings"
-    >
-      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.488.488 0 00-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
-    </button>
   </div>
 </div>
