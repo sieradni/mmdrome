@@ -357,7 +357,7 @@ export function buildCoverArtUrl(config: NavidromeConfig, id: string, size?: num
 }
 
 export function resolveCoverArtId(track: Track): string {
-  return track.albumId || track.trackId.replace(/^navidrome-/, '')
+  return track.trackId.replace(/^navidrome-/, '')
 }
 
 export async function triggerNavidromeScan(config: NavidromeConfig): Promise<void> {
