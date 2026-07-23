@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { currentTrack, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, toggleShuffle, metadataScanState } from './stores/appState'
+  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, toggleShuffle, metadataScanState } from './stores/appState'
   import { connectNavidrome } from './lib/syncEngine'
   import { navidromeSongToTrack } from './lib/navidromeApi'
   import { playbackManager } from './lib/playbackManager'
@@ -122,6 +122,10 @@
 
   let duration = $derived(audioManager.activeElement.duration || 0)
 
+  let combinedQueue = $derived([...$queue.userQueue, ...$queue.autoQueue])
+  let queueSize = $derived(combinedQueue.length)
+  let queuePosition = $derived($queue.activeIndex >= 0 ? $queue.activeIndex + 1 : 0)
+
   const tabs: { id: typeof view; label: string; icon: string }[] = [
     { id: 'songs', label: 'Songs', icon: 'M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z' },
     { id: 'albums', label: 'Albums', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z' },
@@ -165,47 +169,55 @@
 
   <!-- ─── Bottom Bar: Mini Player + Tab Nav ─── -->
   <div class="flex flex-col">
-    {#if $currentTrack}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        onclick={miniPlayerTap}
-        role="button"
-        tabindex="0"
-        onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') miniPlayerTap(); }}
-        class="flex cursor-pointer items-center gap-3 border-t border-white/10 bg-surface px-4 py-2.5 text-left transition-colors hover:bg-surface-hover"
-      >
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      onclick={miniPlayerTap}
+      role="button"
+      tabindex="0"
+      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') miniPlayerTap(); }}
+      class="flex cursor-pointer items-center gap-3 border-t border-white/10 bg-surface px-4 py-2.5 text-left transition-colors hover:bg-surface-hover"
+    >
+      {#if $currentTrack}
         <LazyThumb track={$currentTrack} wrapperClass="h-10 w-10 flex-shrink-0 rounded-md" />
         <div class="min-w-0 flex-1">
           <p class="truncate text-sm font-medium text-primary">{$currentTrack.title}</p>
           <p class="truncate text-xs text-muted">{$currentTrack.artist}</p>
         </div>
-        <div class="flex flex-shrink-0 items-center gap-1">
-          <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => { e.stopPropagation(); playbackManager.prev() }}>
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-          </button>
-          <button class="rounded-full bg-primary p-1.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
-            {#if $playbackState === 'playing'}
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
-            {:else}
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-            {/if}
-          </button>
-          <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={(e) => { e.stopPropagation(); playbackManager.next() }}>
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
-          </button>
+      {:else}
+        <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md bg-surface-hover">
+          <svg class="h-5 w-5 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
         </div>
+        <div class="min-w-0 flex-1">
+          <p class="truncate text-sm font-medium text-primary">Not playing</p>
+          <p class="truncate text-xs text-muted">{queueSize > 0 ? `Track ${queuePosition} of ${queueSize} in queue` : 'Queue is empty'}</p>
+        </div>
+      {/if}
+      <div class="flex flex-shrink-0 items-center gap-1">
+        <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => { e.stopPropagation(); playbackManager.prev() }}>
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+        </button>
+        <button class="rounded-full bg-primary p-1.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
+          {#if $playbackState === 'playing'}
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
+          {:else}
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          {/if}
+        </button>
+        <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={(e) => { e.stopPropagation(); playbackManager.next() }}>
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
+        </button>
       </div>
-    {/if}
+    </div>
 
     <nav class="flex border-t border-white/10 bg-surface safe-area-bottom">
       {#each tabs as tab (tab.id)}
         <button
           onclick={() => view = tab.id}
-          class="flex flex-1 flex-col items-center gap-0.5 py-2 text-[10px] font-medium transition-colors"
+          class="flex flex-1 flex-col items-center gap-1 py-3 text-xs font-medium transition-colors"
           class:text-primary={view === tab.id}
           class:text-muted={view !== tab.id}
         >
-          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+          <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
             <path d={tab.icon} />
           </svg>
           <span>{tab.label}</span>
@@ -216,7 +228,7 @@
 </div>
 
 <!-- ─── Full-Screen Now Playing Overlay ─── -->
-{#if nowPlayingOpen && $currentTrack}
+{#if nowPlayingOpen}
   <div class="fixed inset-0 z-40 flex flex-col bg-background safe-area-full">
     <!-- Header -->
     <div class="flex items-center justify-between px-4 py-3">
@@ -229,33 +241,48 @@
       </button>
     </div>
 
-    <!-- Album Art -->
-    <div class="flex flex-1 items-center justify-center px-8">
-      <div class="aspect-square w-full max-w-sm overflow-hidden rounded-2xl bg-surface-hover shadow-2xl">
-        <LazyThumb track={$currentTrack} wrapperClass="h-full w-full" />
+    {#if $currentTrack}
+      <!-- Album Art -->
+      <div class="flex flex-1 items-center justify-center px-8">
+        <div class="aspect-square w-full max-w-sm overflow-hidden rounded-2xl bg-surface-hover shadow-2xl">
+          <LazyThumb track={$currentTrack} wrapperClass="h-full w-full" />
+        </div>
       </div>
-    </div>
 
-    <!-- Track Info -->
-    <div class="space-y-0.5 px-6 pt-2">
-      <h2 class="text-xl font-bold text-primary truncate">{$currentTrack.title}</h2>
-      <p class="text-sm text-muted truncate">{$currentTrack.artist}</p>
-    </div>
+      <!-- Track Info -->
+      <div class="space-y-0.5 px-6 pt-2">
+        <h2 class="text-xl font-bold text-primary truncate">{$currentTrack.title}</h2>
+        <p class="text-sm text-muted truncate">{$currentTrack.artist}</p>
+      </div>
 
-    <!-- Seek Bar -->
-    <div class="flex items-center gap-3 px-6 pt-4">
-      <span class="w-10 text-right text-xs tabular-nums text-muted">{formatTime($currentTime)}</span>
-      <input
-        type="range"
-        min="0"
-        max={duration || 1}
-        value={$currentTime}
-        oninput={seek}
-        class="h-1 flex-1 accent-white/80 cursor-pointer"
-        step="0.1"
-      />
-      <span class="w-10 text-xs tabular-nums text-muted">{formatTime(duration)}</span>
-    </div>
+      <!-- Seek Bar -->
+      <div class="flex items-center gap-3 px-6 pt-4">
+        <span class="w-10 text-right text-xs tabular-nums text-muted">{formatTime($currentTime)}</span>
+        <input
+          type="range"
+          min="0"
+          max={duration || 1}
+          value={$currentTime}
+          oninput={seek}
+          class="h-1 flex-1 accent-white/80 cursor-pointer"
+          step="0.1"
+        />
+        <span class="w-10 text-xs tabular-nums text-muted">{formatTime(duration)}</span>
+      </div>
+    {:else}
+      <!-- Empty State -->
+      <div class="flex flex-1 flex-col items-center justify-center gap-3 px-8">
+        <div class="flex h-20 w-20 items-center justify-center rounded-full bg-surface-hover">
+          <svg class="h-10 w-10 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+        </div>
+        <h2 class="text-xl font-bold text-primary">No track playing</h2>
+        {#if queueSize > 0}
+          <p class="text-sm text-muted">Track {queuePosition} of {queueSize} in queue — press Play to start</p>
+        {:else}
+          <p class="text-sm text-muted">Queue is empty — add songs to get started</p>
+        {/if}
+      </div>
+    {/if}
 
     <!-- Controls -->
     <div class="flex items-center justify-center gap-6 px-6 pt-4">

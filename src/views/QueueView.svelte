@@ -15,44 +15,21 @@ import type { Track } from '../stores/appState'
   let userTracks = $derived.by(() => {
     const q = $queue
     const lib = $library
-    const seen = new Set<string>()
-    const result: Track[] = []
-    for (const id of q.userQueue) {
-      if (seen.has(id)) continue
-      seen.add(id)
-      const t = lib.find((t) => t.trackId === id)
-      if (t) result.push(t)
-    }
-    return result
+    const ordered: (Track | null)[] = q.userQueue.map((id) => lib.find((t) => t.trackId === id) ?? null)
+    return ordered.filter((t): t is Track => t !== null)
   })
 
   let autoTracks = $derived.by(() => {
     const q = $queue
     const lib = $library
-    const seen = new Set<string>()
-    const result: Track[] = []
-    for (const id of q.autoQueue) {
-      if (seen.has(id)) continue
-      seen.add(id)
-      const t = lib.find((t) => t.trackId === id)
-      if (t) result.push(t)
-    }
-    return result
+    const ordered: (Track | null)[] = q.autoQueue.map((id) => lib.find((t) => t.trackId === id) ?? null)
+    return ordered.filter((t): t is Track => t !== null)
   })
 
   let historyTracks = $derived.by(() => {
     const q = $queue
     const lib = $library
-    const seen = new Set<string>()
-    const result: Track[] = []
-    for (const id of q.historyQueue) {
-      if (seen.has(id)) continue
-      seen.add(id)
-      const t = lib.find((t) => t.trackId === id)
-      if (t) result.push(t)
-      if (result.length >= 100) break
-    }
-    return result
+    return q.historyQueue.map((id) => lib.find((t) => t.trackId === id)).filter((t): t is Track => t !== null).slice(0, 100)
   })
 
   let activeIndex = $derived($queue.activeIndex)
@@ -202,7 +179,7 @@ import type { Track } from '../stores/appState'
 
       {#if showHistory}
         <div class="mx-4 mb-2 space-y-0.5 rounded-lg bg-surface/30 px-2 py-2">
-          {#each historyTracks as track (track.trackId)}
+          {#each historyTracks as track, idx (idx)}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="flex cursor-pointer items-center gap-3 rounded px-2 py-1.5 transition-colors hover:bg-surface-hover"
@@ -231,7 +208,7 @@ import type { Track } from '../stores/appState'
       </div>
 
       <div class="mx-2 space-y-0.5">
-        {#each userTracks as track, idx (track.trackId)}
+        {#each userTracks as track, idx (idx)}
           {@const dragOver = dragIndex === idx}
           <div
             draggable="true"
@@ -303,7 +280,7 @@ import type { Track } from '../stores/appState'
         ondragover={(e) => { if (dragIndex !== null) { e.preventDefault(); } }}
         ondrop={(e) => { if (dragIndex !== null) { handleDrop(e, 'auto', $queue.userQueue.length); } }}
       >
-        {#each autoTracks as track, idx (track.trackId)}
+        {#each autoTracks as track, idx (idx)}
           {@const combinedIdx = userTracks.length + idx}
           <div
             ondragover={(e) => handleDragOver(e, 'auto', combinedIdx)}

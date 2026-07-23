@@ -37,6 +37,14 @@ class PlaybackManager {
     this._attachPlaybackListeners()
 
     this._initialized = true
+
+    const q = get(queue)
+    if (q.activeIndex >= 0) {
+      const combined = [...q.userQueue, ...q.autoQueue]
+      if (combined.length > 0 && q.activeIndex < combined.length) {
+        await this.playTrackAt(q.activeIndex)
+      }
+    }
   }
 
   private _attachPlaybackListeners(): void {
