@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { getCoverUrl } from '../lib/coverArtCache'
+  import { coverConfig } from '../lib/navidromeApi'
   import type { Track } from '../stores/appState'
 
   let { track, wrapperClass = '', size }: { track: Track; wrapperClass?: string; size?: number } = $props()
@@ -24,7 +25,7 @@
 </script>
 
 <div bind:this={container} class="{wrapperClass} overflow-hidden bg-surface-hover">
-  {#if visible}
-    <img src={getCoverUrl(track, size)} alt="" class="h-full w-full object-cover" loading="lazy" crossorigin="anonymous" />
+  {#if visible && $coverConfig}
+    <img src={getCoverUrl(track, $coverConfig, size)} alt="" class="h-full w-full object-cover" loading="lazy" crossorigin="anonymous" />
   {/if}
 </div>

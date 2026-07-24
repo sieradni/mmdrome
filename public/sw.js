@@ -28,18 +28,6 @@ function isApiOrStreaming(pathname) {
   )
 }
 
-function isAppAsset(pathname) {
-  const p = stripBase(pathname)
-  return (
-    p === '/' ||
-    p === '/index.html' ||
-    p.startsWith('/assets/') ||
-    p.startsWith('/icon-') ||
-    p === '/manifest.webmanifest' ||
-    p === '/soundtouch-processor.js'
-  )
-}
-
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) =>
@@ -70,22 +58,6 @@ self.addEventListener('fetch', (event) => {
   if (url.origin !== self.location.origin) return
 
   if (isApiOrStreaming(url.pathname)) return
-
-  if (isAppAsset(url.pathname)) {
-    event.respondWith(
-      caches.match(event.request).then((cached) => {
-        if (cached) return cached
-        return fetch(event.request).then((response) => {
-          if (response.ok) {
-            const clone = response.clone()
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone))
-          }
-          return response
-        })
-      })
-    )
-    return
-  }
 
   event.respondWith(
     fetch(event.request)

@@ -1,4 +1,5 @@
 import type { Track } from '../stores/appState'
+import { writable } from 'svelte/store'
 
 const API_VERSION = '1.16.1'
 const CLIENT_NAME = 'mmdrome'
@@ -295,6 +296,7 @@ export async function connectNavidrome(config: NavidromeConfig): Promise<Navidro
 
 // ── In-memory config cache ──────────────────────────────────────────
 let _cachedConfig: NavidromeConfig | null = null
+export const coverConfig = writable<NavidromeConfig | null>(null)
 
 export function getCachedConfig(): NavidromeConfig | null {
   return _cachedConfig
@@ -302,6 +304,7 @@ export function getCachedConfig(): NavidromeConfig | null {
 
 export function setCachedConfig(config: NavidromeConfig | null): void {
   _cachedConfig = config
+  coverConfig.set(config)
 }
 
 export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ songs: NavidromeSong[]; result: NavidromeLoadResult }> {

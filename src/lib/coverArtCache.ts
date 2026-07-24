@@ -1,14 +1,12 @@
-import { getCachedConfig, buildCoverArtUrl, resolveCoverArtId } from './navidromeApi'
+import { buildCoverArtUrl, resolveCoverArtId, type NavidromeConfig } from './navidromeApi'
 import type { Track } from '../stores/appState'
 
 const urlCache = new Map<string, string>()
 
-export function getCoverUrl(track: Track, size?: number): string {
+export function getCoverUrl(track: Track, config: NavidromeConfig, size?: number): string {
   const key = track.trackId + '-' + (size ?? 'original')
   let url = urlCache.get(key)
   if (!url) {
-    const config = getCachedConfig()
-    if (!config) return ''
     const artId = resolveCoverArtId(track) || track.albumId
     if (!artId) return ''
     url = buildCoverArtUrl(config, artId, size)
