@@ -12,6 +12,7 @@ import {
   settings,
   shuffleEnabled,
   playbackSpeed,
+  currentTime,
   setCurrentTrack,
   setPlaybackState,
   setActiveQueueIndex,
@@ -109,8 +110,15 @@ class PlaybackManager {
     await audioManager.ensureWebAudioReady()
 
     const el = audioManager.activeElement
+    currentTime.set(0)
     el.src = url
-    await el.play()
+    try {
+      await el.play()
+    } catch {
+      setCurrentTrack(null)
+      setPlaybackState('stopped')
+      return
+    }
     audioManager.reapplyEffects()
     setCurrentTrack(track)
     setPlaybackState('playing')
@@ -248,13 +256,13 @@ class PlaybackManager {
     return null
   }
 
-  private _onTrackEnded(): void {
+  private async _onTrackEnded(): Promise<void> {
     if (this._handlingEnd) return
     this._handlingEnd = true
     try {
       const nextTrack = this._advanceQueue()
       if (nextTrack) {
-        this._loadAndPlay(nextTrack)
+        await this._loadAndPlay(nextTrack)
       }
     } finally {
       this._handlingEnd = false

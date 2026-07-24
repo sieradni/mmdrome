@@ -144,7 +144,7 @@ class AudioManager {
 
     this._bgEl.src = el.src
     this._bgEl.currentTime = el.currentTime
-    this._bgEl.playbackRate = el.playbackRate
+    this._bgEl.playbackRate = this._speed
 
     this._bgEl.play().catch(() => {
       this._inBgMode = false
@@ -440,18 +440,19 @@ class AudioManager {
   }
 
   private _applyTempo(): void {
-    if (this._tapeMode) {
-      this.a.playbackRate = this._speed
-      this.b.playbackRate = this._speed
-      if (this._soundTouch instanceof SoundTouchNode) {
+    if (this._soundTouch instanceof SoundTouchNode) {
+      if (this._tapeMode) {
+        this.a.playbackRate = this._speed
+        this.b.playbackRate = this._speed
         this._soundTouch.playbackRate.value = 1
+      } else {
+        this.a.playbackRate = this._speed
+        this.b.playbackRate = this._speed
+        this._soundTouch.playbackRate.value = this._speed
       }
     } else {
       this.a.playbackRate = this._speed
       this.b.playbackRate = this._speed
-      if (this._soundTouch instanceof SoundTouchNode) {
-        this._soundTouch.playbackRate.value = 1
-      }
     }
   }
 

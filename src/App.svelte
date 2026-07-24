@@ -118,8 +118,9 @@
   function seek(e: Event) {
     const el = e.target as HTMLInputElement
     const t = parseFloat(el.value)
-    audioManager.activeElement.currentTime = t
-    currentTime.set(t)
+    const realTime = $playbackSpeed > 0 ? t * $playbackSpeed : t
+    audioManager.activeElement.currentTime = realTime
+    currentTime.set(realTime)
   }
 
   $effect(() => {
@@ -134,6 +135,8 @@
 
   let duration = $state(0)
   let effectiveDuration = $derived($playbackSpeed > 0 ? duration / $playbackSpeed : duration)
+  let sliderValue = $derived($playbackSpeed > 0 ? $currentTime / $playbackSpeed : $currentTime)
+  let sliderMax = $derived(effectiveDuration || 1)
 
   $effect(() => {
     const handler = () => {
@@ -283,12 +286,12 @@
 
       <!-- Seek Bar -->
       <div class="flex items-center gap-3 px-6 pt-4">
-        <span class="w-10 text-right text-xs tabular-nums text-muted">{formatTime($playbackSpeed > 0 ? $currentTime / $playbackSpeed : $currentTime)}</span>
+        <span class="w-10 text-right text-xs tabular-nums text-muted">{formatTime(sliderValue)}</span>
         <input
           type="range"
           min="0"
-          max={duration || 1}
-          value={$currentTime}
+          max={sliderMax}
+          value={sliderValue}
           oninput={seek}
           class="h-1 flex-1 accent-white/80 cursor-pointer"
           step="0.1"

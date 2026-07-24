@@ -53,9 +53,13 @@
   function seek(e: Event) {
     const el = e.target as HTMLInputElement
     const t = parseFloat(el.value)
-    audioManager.activeElement.currentTime = t
-    currentTime.set(t)
+    const realTime = $playbackSpeed > 0 ? t * $playbackSpeed : t
+    audioManager.activeElement.currentTime = realTime
+    currentTime.set(realTime)
   }
+
+  let sliderValue = $derived($playbackSpeed > 0 ? $currentTime / $playbackSpeed : $currentTime)
+  let sliderMax = $derived(effectiveDuration || 1)
 
   function handleDragStart(e: DragEvent, index: number) {
     if (!e.dataTransfer) return
@@ -186,7 +190,7 @@
             <p class="truncate text-sm font-medium text-primary">{$currentTrack.title}</p>
             <p class="truncate text-xs text-muted">{$currentTrack.artist}</p>
           </div>
-          <span class="text-xs text-muted tabular-nums">{formatTime($playbackSpeed > 0 ? $currentTime / $playbackSpeed : $currentTime)} / {formatTime(effectiveDuration)}</span>
+          <span class="text-xs text-muted tabular-nums">{formatTime(sliderValue)} / {formatTime(effectiveDuration)}</span>
         </div>
 
         <!-- Seek Bar -->
@@ -194,8 +198,8 @@
           <input
             type="range"
             min="0"
-            max={duration || 1}
-            value={$currentTime}
+            max={sliderMax}
+            value={sliderValue}
             oninput={(e) => { e.stopPropagation(); seek(e) }}
             class="h-1 flex-1 accent-white/80 cursor-pointer"
             step="0.1"
