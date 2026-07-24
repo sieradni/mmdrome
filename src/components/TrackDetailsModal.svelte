@@ -8,11 +8,7 @@
   let rating = $state(0)
   let loved = $state(false)
 
-  $effect(() => {
-    const meta = $metadataCache.get(track.trackId)
-    rating = meta?.rating ?? 0
-    loved = meta?.loved ?? false
-  })
+  const meta = $derived($metadataCache.get(track.trackId))
 
   function commit() {
     const existing = $metadataCache.get(track.trackId)
@@ -24,6 +20,9 @@
       fileType: existing?.fileType ?? track.fileType,
       syncStatus: 'pending_sync',
       lastModifiedLocally: Date.now(),
+      comments: existing?.comments ?? track.comments,
+      playCount: existing?.playCount ?? track.playCount,
+      skipCount: existing?.skipCount ?? track.skipCount,
     }
     updateMetadata(meta)
   }
@@ -58,6 +57,13 @@
     let s = bytes
     while (s >= 1024 && i < units.length - 1) { s /= 1024; i++ }
     return `${s.toFixed(1)} ${units[i]}`
+  }
+
+  function formatTime(sec: number): string {
+    if (!isFinite(sec) || sec < 0) return '0:00'
+    const m = Math.floor(sec / 60)
+    const s = Math.floor(sec % 60)
+    return `${m}:${s.toString().padStart(2, '0')}`
   }
 
   function toggleLoved() {
@@ -102,12 +108,20 @@
           <p class="truncate text-sm text-primary" title={track.artist}>{track.artist}</p>
         </div>
         <div>
+          <p class="text-xs font-medium text-muted">Album Artist</p>
+          <p class="truncate text-sm text-primary" title={track.albumArtist || ''}>{track.albumArtist || '\u2014'}</p>
+        </div>
+        <div>
           <p class="text-xs font-medium text-muted">Album</p>
           <p class="truncate text-sm text-primary" title={track.album}>{track.album}</p>
         </div>
         <div>
+          <p class="text-xs font-medium text-muted">Track #</p>
+          <p class="text-sm text-primary">{track.trackNumber ?? '\u2014'}</p>
+        </div>
+        <div>
           <p class="text-xs font-medium text-muted">Composer</p>
-          <p class="truncate text-sm text-primary" title={track.composer || '\u2014'}>{track.composer || '\u2014'}</p>
+          <p class="truncate text-sm text-primary" title={track.composer || ''}>{track.composer || '\u2014'}</p>
         </div>
         <div>
           <p class="text-xs font-medium text-muted">Year</p>
@@ -127,9 +141,32 @@
         </div>
         <div>
           <p class="text-xs font-medium text-muted">Duration</p>
-          <p class="text-sm text-primary">{Math.floor(track.duration / 60)}:{String(track.duration % 60).padStart(2, '0')}</p>
+          <p class="text-sm text-primary">{formatTime(track.duration)}</p>
+        </div>
+        <div>
+          <p class="text-xs font-medium text-muted">Track Gain</p>
+          <p class="text-sm text-primary">{track.replayGain != null ? `${track.replayGain} dB` : '\u2014'}</p>
+        </div>
+        <div>
+          <p class="text-xs font-medium text-muted">Album Gain</p>
+          <p class="text-sm text-primary">{track.albumReplayGain != null ? `${track.albumReplayGain} dB` : '\u2014'}</p>
+        </div>
+        <div>
+          <p class="text-xs font-medium text-muted">Play Count</p>
+          <p class="text-sm text-primary">{meta?.playCount ?? track.playCount ?? 0}</p>
+        </div>
+        <div>
+          <p class="text-xs font-medium text-muted">Skip Count</p>
+          <p class="text-sm text-primary">{meta?.skipCount ?? track.skipCount ?? 0}</p>
         </div>
       </div>
+
+      {#if track.comments}
+        <div>
+          <p class="text-xs font-medium text-muted">Comments</p>
+          <p class="text-sm text-primary whitespace-pre-wrap">{track.comments}</p>
+        </div>
+      {/if}
 
       <div>
         <p class="text-xs font-medium text-muted">File Path</p>
@@ -214,4 +251,3 @@
     </div>
   </div>
 </div>
-

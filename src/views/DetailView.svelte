@@ -17,6 +17,25 @@
     while (s >= 1024 && i < units.length - 1) { s /= 1024; i++ }
     return `${s.toFixed(1)} ${units[i]}`
   }
+
+  function formatTime(sec: number): string {
+    if (!isFinite(sec) || sec < 0) return '0:00'
+    const m = Math.floor(sec / 60)
+    const s = Math.floor(sec % 60)
+    return `${m}:${s.toString().padStart(2, '0')}`
+  }
+
+  function starSegments(rating: number): ('full' | 'half' | 'empty')[] {
+    const sv = Math.min(5, rating / 20)
+    const segs: ('full' | 'half' | 'empty')[] = []
+    for (let i = 0; i < 5; i++) {
+      const r = Math.max(0, Math.min(1, sv - i))
+      if (r >= 0.75) segs.push('full')
+      else if (r >= 0.25) segs.push('half')
+      else segs.push('empty')
+    }
+    return segs
+  }
 </script>
 
 <div class="flex h-full flex-col bg-background">
@@ -29,9 +48,11 @@
 
   <div class="flex-1 overflow-y-auto px-4">
     {#if $currentTrack}
+      {@const meta = $metadataCache.get($currentTrack.trackId)}
+      {@const track = $currentTrack}
       <div class="flex flex-col items-center pt-2 pb-6">
         <div class="aspect-square w-40 overflow-hidden rounded-xl bg-surface-hover shadow-lg">
-          <LazyThumb track={$currentTrack} wrapperClass="h-full w-full" />
+          <LazyThumb track={track} wrapperClass="h-full w-full" />
         </div>
       </div>
 
@@ -39,50 +60,107 @@
         <div class="grid grid-cols-2 gap-x-4 gap-y-3">
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Title</p>
-            <p class="truncate text-sm text-primary">{$currentTrack.title}</p>
+            <p class="truncate text-sm text-primary">{track.title}</p>
           </div>
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Artist</p>
-            <p class="truncate text-sm text-primary">{$currentTrack.artist}</p>
+            <p class="truncate text-sm text-primary">{track.artist}</p>
+          </div>
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Album Artist</p>
+            <p class="truncate text-sm text-primary">{track.albumArtist || '\u2014'}</p>
           </div>
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Album</p>
-            <p class="truncate text-sm text-primary">{$currentTrack.album}</p>
+            <p class="truncate text-sm text-primary">{track.album}</p>
+          </div>
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Track #</p>
+            <p class="text-sm text-primary">{track.trackNumber ?? '\u2014'}</p>
           </div>
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Composer</p>
-            <p class="truncate text-sm text-primary">{$currentTrack.composer || '\u2014'}</p>
+            <p class="truncate text-sm text-primary">{track.composer || '\u2014'}</p>
           </div>
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Year</p>
-            <p class="text-sm text-primary">{$currentTrack.year ?? '\u2014'}</p>
+            <p class="text-sm text-primary">{track.year ?? '\u2014'}</p>
+          </div>
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Rating</p>
+            <div class="flex items-center gap-0.5">
+              {#each starSegments(meta?.rating ?? 0) as seg}
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24">
+                  <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26Z" fill={seg === 'full' ? '#facc15' : seg === 'half' ? '#facc15' : 'none'} stroke={seg === 'empty' ? '#555' : '#facc15'} stroke-width="1"/>
+                </svg>
+              {/each}
+              <span class="ml-1 text-xs text-muted">{meta?.rating ?? 0}</span>
+            </div>
+          </div>
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Loved</p>
+            {#if meta?.loved}
+              <svg class="h-5 w-5 text-red-400" viewBox="0 0 24 24" fill="currentColor"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            {:else}
+              <svg class="h-5 w-5 text-muted/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg>
+            {/if}
           </div>
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Duration</p>
-            <p class="text-sm text-primary">{Math.floor($currentTrack.duration / 60)}:{String($currentTrack.duration % 60).padStart(2, '0')}</p>
+            <p class="text-sm text-primary">{formatTime(track.duration)}</p>
           </div>
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Format</p>
-            <p class="text-sm text-primary uppercase">{$currentTrack.fileType}</p>
+            <p class="text-sm text-primary uppercase">{track.fileType}</p>
           </div>
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Bitrate</p>
-            <p class="text-sm text-primary">{$currentTrack.bitrate != null ? `${$currentTrack.bitrate} kbps` : '\u2014'}</p>
+            <p class="text-sm text-primary">{track.bitrate != null ? `${track.bitrate} kbps` : '\u2014'}</p>
           </div>
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Size</p>
-            <p class="text-sm text-primary">{formatSize($currentTrack.size)}</p>
+            <p class="text-sm text-primary">{formatSize(track.size)}</p>
+          </div>
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Track Gain</p>
+            <p class="text-sm text-primary">{track.replayGain != null ? `${track.replayGain} dB` : '\u2014'}</p>
+          </div>
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Album Gain</p>
+            <p class="text-sm text-primary">{track.albumReplayGain != null ? `${track.albumReplayGain} dB` : '\u2014'}</p>
+          </div>
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Play Count</p>
+            <p class="text-sm text-primary">{meta?.playCount ?? 0}</p>
+          </div>
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Skip Count</p>
+            <p class="text-sm text-primary">{meta?.skipCount ?? 0}</p>
           </div>
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Created</p>
-            <p class="text-sm text-primary">{formatDate($currentTrack.createdAt)}</p>
+            <p class="text-sm text-primary">{formatDate(track.createdAt)}</p>
           </div>
         </div>
 
-        {#if $currentTrack.filePath}
+        {#if track.comments}
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Comments</p>
+            <p class="text-sm text-primary whitespace-pre-wrap">{track.comments}</p>
+          </div>
+        {/if}
+
+        {#if meta?.comments}
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">File Comments</p>
+            <p class="text-sm text-primary whitespace-pre-wrap">{meta.comments}</p>
+          </div>
+        {/if}
+
+        {#if track.filePath}
           <div>
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider">File Path</p>
-            <p class="truncate text-xs text-muted/70">{$currentTrack.filePath}</p>
+            <p class="truncate text-xs text-muted/70">{track.filePath}</p>
           </div>
         {/if}
       </div>

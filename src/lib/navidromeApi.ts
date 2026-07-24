@@ -405,6 +405,8 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     navidromePath: song.path,
     replayGain: song.replayGain?.trackGain,
     albumReplayGain: song.replayGain?.albumGain,
+    albumArtist: song.albumArtist,
+    trackNumber: song.track,
   }
 }
 

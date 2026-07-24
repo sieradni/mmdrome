@@ -70,31 +70,54 @@
     return ordered.filter((t): t is Track => t !== null)
   })
 
+  let dragOverZone: 'user' | 'auto' | null = $state(null)
+  let dragOverAutoIdx = $state(0)
+
   let previewUserTracks = $derived.by(() => {
-    if (dragIndex === null || hoverIndex === null) return userTracks
+    if (dragIndex === null) return userTracks
     const userLen = userTracks.length
-    if (hoverIndex < userLen) {
-      const result = [...userTracks]
-      const [moved] = result.splice(dragIndex, 1)
-      let target = hoverIndex
-      if (target > dragIndex) target--
-      result.splice(target, 0, moved)
+
+    if (dragOverZone === 'auto' && dragOverAutoIdx >= 0) {
+      const autoIdx = dragOverAutoIdx
+      const converted = autoTracks.slice(0, autoIdx)
+      const result = userTracks.filter((_, i) => i !== dragIndex)
+      const insertPos = dragIndex <= result.length ? dragIndex : result.length
+      result.splice(insertPos, 0, userTracks[dragIndex], ...converted)
       return result
     }
-    const autoIdx = hoverIndex - userLen
-    const converted = autoTracks.slice(0, autoIdx)
-    const result = userTracks.filter((_, i) => i !== dragIndex)
-    const insertPos = dragIndex <= result.length ? dragIndex : result.length
-    result.splice(insertPos, 0, userTracks[dragIndex], ...converted)
-    return result
+
+    if (dragOverZone === 'user' || (dragOverZone === null && hoverIndex !== null && hoverIndex < userLen)) {
+      const target = hoverIndex ?? dragIndex
+      const result = [...userTracks]
+      const [moved] = result.splice(dragIndex, 1)
+      let insertAt = target
+      if (insertAt > dragIndex) insertAt--
+      result.splice(insertAt, 0, moved)
+      return result
+    }
+
+    return userTracks
   })
 
   let previewAutoTracks = $derived.by(() => {
-    if (dragIndex === null || hoverIndex === null) return autoTracks
+    if (dragIndex === null) return autoTracks
     const userLen = userTracks.length
-    if (hoverIndex < userLen) return autoTracks
-    const autoIdx = hoverIndex - userLen
-    return autoTracks.slice(autoIdx)
+
+    if (dragOverZone === 'auto' && dragOverAutoIdx >= 0) {
+      const autoIdx = dragOverAutoIdx
+      return autoTracks.filter((_, i) => i >= autoIdx)
+    }
+
+    if (dragOverZone === 'user') {
+      return autoTracks
+    }
+
+    if (hoverIndex !== null && hoverIndex >= userLen) {
+      const autoIdx = hoverIndex - userLen
+      return autoTracks.slice(autoIdx)
+    }
+
+    return autoTracks
   })
 
   let duration = $state(0)
@@ -132,49 +155,73 @@
   let sliderValue = $derived($playbackSpeed > 0 ? $currentTime / $playbackSpeed : $currentTime)
   let sliderMax = $derived(effectiveDuration || 1)
 
+  const DRAG_HANDLE_KEY = 'mmdrome-drag-handle'
+
   function handleDragStart(e: DragEvent, index: number) {
     if (!e.dataTransfer) return
     if (!(e.target as HTMLElement).closest('.drag-handle')) return
     dragIndex = index
+    dragOverZone = null
+    dragOverAutoIdx = 0
     hoverIndex = index
     e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', String(index))
+    e.dataTransfer.setData(DRAG_HANDLE_KEY, String(index))
+    if (e.dataTransfer.setDragImage) {
+      const ghost = document.createElement('div')
+      ghost.style.cssText = 'width:1px;height:1px;position:absolute;top:-9999px;left:-9999px;overflow:hidden;background:transparent;'
+      document.body.appendChild(ghost)
+      e.dataTransfer.setDragImage(ghost, 0, 0)
+      setTimeout(() => ghost.remove(), 0)
+    }
   }
 
-  function handleDragOver(e: DragEvent, combinedIdx: number) {
+  function handleDragOver(e: DragEvent, zone: 'user' | 'auto', zoneIndex: number) {
     e.preventDefault()
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-    hoverIndex = combinedIdx
-  }
-
-  function handleDragLeave() {
-    hoverIndex = null
-  }
-
-  function handleDrop(e: DragEvent, zone: 'user' | 'auto', dropCombinedIdx: number) {
-    e.preventDefault()
-    const fromIndex = dragIndex
-    if (fromIndex === null) {
-      dragIndex = null
-      hoverIndex = null
-      return
+    dragOverZone = zone
+    if (zone === 'auto') {
+      dragOverAutoIdx = zoneIndex
+    } else {
+      hoverIndex = zoneIndex
+      dragOverAutoIdx = 0
     }
+  }
+
+  function handleDragLeave(e: DragEvent) {
+    const related = e.relatedTarget as HTMLElement | null
+    if (!related || !e.currentTarget) {
+      dragOverZone = null
+      dragOverAutoIdx = 0
+      hoverIndex = null
+    }
+  }
+
+  function handleDrop(e: DragEvent, zone: 'user' | 'auto', dropIdx: number) {
+    e.preventDefault()
+    e.stopPropagation()
+    const fromIndex = dragIndex
+    const fromZone = dragOverZone
+    dragIndex = null
+    dragOverZone = null
+    dragOverAutoIdx = 0
+    hoverIndex = null
+
+    if (fromIndex === null) return
 
     const q = $queue
-    const userLen = q.userQueue.length
 
     if (zone === 'user') {
       const newUser = [...q.userQueue]
       const [moved] = newUser.splice(fromIndex, 1)
-      let target = dropCombinedIdx
+      let target = dropIdx
       if (target > fromIndex) target--
       newUser.splice(target, 0, moved)
       const updated = { ...q, userQueue: newUser }
       saveQueue(updated); queue.set(updated)
-    } else {
-      const autoIdx = dropCombinedIdx - userLen
+    } else if (zone === 'auto') {
+      const autoIdx = dropIdx
       const movedId = q.userQueue[fromIndex]
-      if (movedId == null) { dragIndex = null; hoverIndex = null; return }
+      if (movedId == null) return
 
       const toConvert = q.autoQueue.slice(0, autoIdx)
       const convertIds = new Set(toConvert)
@@ -185,9 +232,6 @@
       const updated = { ...q, userQueue: newUser, autoQueue: newAuto }
       saveQueue(updated); queue.set(updated)
     }
-
-    dragIndex = null
-    hoverIndex = null
   }
 
   function promoteToUser(trackId: string) {
@@ -278,8 +322,6 @@
     clearQueue()
     playbackManager.replenishAutoQueue()
   }
-
-  let dragBoundaryActive = $derived(dragIndex !== null && hoverIndex !== null && hoverIndex >= userTracks.length)
 </script>
 
 <div class="flex h-full flex-col bg-background">
@@ -343,28 +385,28 @@
         <div class="mt-2 flex items-center justify-between gap-3" onclick={(e) => e.stopPropagation()}>
           <button
             onclick={() => toggleShuffle()}
-            class="rounded-full p-1.5 transition-colors"
+            class="rounded-full p-2 text-muted transition-colors hover:text-primary"
             class:text-yellow-400={$shuffleEnabled}
             class:text-muted={!$shuffleEnabled}
             aria-label="Toggle shuffle"
           >
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
           </button>
 
-          <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
-            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+          <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
+            <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
           </button>
 
-          <button class="rounded-full bg-primary p-2 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
+          <button class="rounded-full bg-primary p-2.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
             {#if $playbackState === 'playing'}
-              <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
+              <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
             {:else}
-              <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+              <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
             {/if}
           </button>
 
-          <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
-            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
+          <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
+            <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
           </button>
 
           <span class="w-5"></span>
@@ -380,24 +422,29 @@
         <div class="h-px flex-1 bg-white/10"></div>
       </div>
 
-      <div class="mx-2 space-y-0.5">
+      <div class="mx-2 space-y-0.5" role="group" aria-label="User queue"
+        ondragover={(e) => { e.preventDefault(); handleDragOver(e, 'user', userTracks.length) }}
+        ondragleave={handleDragLeave}
+        ondrop={(e) => handleDrop(e, 'auto', userTracks.length)}
+      >
         {#each previewUserTracks as track, idx (idx + ':' + track.trackId)}
           <div
             animate:flip={{ duration: 180 }}
             draggable="true"
             ondragstart={(e) => handleDragStart(e, idx)}
-            ondragover={(e) => handleDragOver(e, idx)}
-            ondrop={(e) => handleDrop(e, 'user', idx)}
+            ondragover={(e) => { e.preventDefault(); handleDragOver(e, 'user', idx) }}
             ondragleave={handleDragLeave}
+            ondrop={(e) => handleDrop(e, 'user', idx)}
             onclick={() => playQueueItem(idx)}
             role="button"
             tabindex="0"
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(idx) }}
-            class={"flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (isCurrent(idx) ? ' bg-white/5' : ' hover:bg-surface-hover')}
+            class={"flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (isCurrent(idx) ? ' bg-white/5' : ' hover:bg-surface-hover') + (dragIndex !== null && hoverIndex === idx && dragOverZone === 'user' ? ' ring-1 ring-yellow-500/50 bg-yellow-500/5' : '')}
           >
+            <!-- Drag Handle -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-            <div class="drag-handle flex-shrink-0 cursor-grab text-muted/40 hover:text-muted" aria-label="Drag to reorder" onclick={(e) => e.stopPropagation()} role="presentation">
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+            <div class="drag-handle flex-shrink-0 cursor-grab rounded p-1 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover" aria-label="Drag to reorder" onclick={(e) => e.stopPropagation()} role="presentation">
+              <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
               </svg>
             </div>
@@ -409,51 +456,52 @@
                 </svg>
               </div>
             {:else}
-              <span class="w-3 flex-shrink-0 text-[10px] text-muted/40 tabular-nums">{idx + 1}</span>
+              <span class="w-3 flex-shrink-0 text-[10px] text-muted/50 tabular-nums text-center">{idx + 1}</span>
             {/if}
 
-            <LazyThumb {track} wrapperClass="h-9 w-9 flex-shrink-0 rounded" />
+            <LazyThumb {track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
 
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm text-primary">{track.title}</p>
               <p class="truncate text-xs text-muted">{track.artist}</p>
             </div>
 
+            <!-- Action Buttons -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-            <div class="flex flex-shrink-0 items-center gap-0.5" onclick={(e) => e.stopPropagation()} role="presentation">
+            <div class="flex flex-shrink-0 items-center gap-1" onclick={(e) => e.stopPropagation()} role="presentation">
               <button
                 onclick={() => detailsTrack = track}
-                class="rounded p-1 text-muted/40 transition-colors hover:text-primary"
+                class="rounded-lg p-2 text-muted/70 transition-colors hover:text-primary"
                 aria-label="View details"
               >
-                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
                 </svg>
               </button>
               <button
                 onclick={() => moveToNext(track.trackId)}
-                class="rounded p-1 text-muted/40 transition-colors hover:text-green-400"
+                class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Move to next"
               >
-                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/>
                 </svg>
               </button>
               <button
                 onclick={() => moveToEnd(track.trackId)}
-                class="rounded p-1 text-muted/40 transition-colors hover:text-green-400"
+                class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Move to end"
               >
-                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M5 18h14v-2H5v2zm0-5h14v-2H5v2zm0-7v2h14V6H5z"/>
                 </svg>
               </button>
               <button
                 onclick={() => removeFromUser(track.trackId)}
-                class="rounded p-1 text-muted/40 transition-colors hover:text-red-400"
+                class="rounded-lg p-2 text-muted/70 transition-colors hover:text-red-400"
                 aria-label="Remove from queue"
               >
-                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                 </svg>
               </button>
@@ -465,16 +513,21 @@
 
     <!-- ── Boundary Indicator ── -->
     <div
-      class={"mx-4 my-2 flex items-center gap-2 px-1 transition-all duration-200" + (dragBoundaryActive ? ' opacity-100' : ' opacity-40')}
+      class={"mx-4 my-2 flex items-center gap-2 px-1 transition-all duration-200" + ((dragOverZone === 'auto' || (dragIndex !== null && hoverIndex !== null && hoverIndex >= userTracks.length)) ? ' opacity-100' : ' opacity-40')}
+      role="separator"
+      aria-label="Auto queue boundary"
+      ondragover={(e) => { if (dragIndex !== null) { e.preventDefault(); dragOverZone = 'auto'; dragOverAutoIdx = 0; } }}
+      ondragleave={() => { dragOverZone = null; dragOverAutoIdx = 0; }}
+      ondrop={(e) => { e.preventDefault(); e.stopPropagation(); handleDrop(e, 'auto', 0); dragOverZone = null; dragOverAutoIdx = 0; }}
     >
       <div
-        class={"h-0.5 flex-1 rounded-full transition-colors duration-200" + (dragBoundaryActive ? ' bg-yellow-500' : ' bg-white/20')}
+        class={"h-0.5 flex-1 rounded-full transition-colors duration-200" + ((dragOverZone === 'auto' || (dragIndex !== null && hoverIndex !== null && hoverIndex >= userTracks.length)) ? ' bg-yellow-500' : ' bg-white/20')}
       ></div>
       <span class="flex items-center gap-2">
         <span
-          class={"text-[10px] font-medium uppercase tracking-wider transition-colors duration-200" + (dragBoundaryActive ? ' text-yellow-400' : ' text-muted/50')}
+          class={"text-[10px] font-medium uppercase tracking-wider transition-colors duration-200" + ((dragOverZone === 'auto' || (dragIndex !== null && hoverIndex !== null && hoverIndex >= userTracks.length)) ? ' text-yellow-400' : ' text-muted/50')}
         >
-          {dragBoundaryActive ? 'Release to convert' : 'Auto Queue'}
+          {(dragOverZone === 'auto' || (dragIndex !== null && hoverIndex !== null && hoverIndex >= userTracks.length)) ? 'Release to convert' : 'Auto Queue'}
         </span>
         <button
           onclick={() => filterOpen = !filterOpen}
@@ -482,7 +535,7 @@
         >Filter</button>
       </span>
       <div
-        class={"h-0.5 flex-1 rounded-full transition-colors duration-200" + (dragBoundaryActive ? ' bg-yellow-500' : ' bg-white/20')}
+        class={"h-0.5 flex-1 rounded-full transition-colors duration-200" + ((dragOverZone === 'auto' || (dragIndex !== null && hoverIndex !== null && hoverIndex >= userTracks.length)) ? ' bg-yellow-500' : ' bg-white/20')}
       ></div>
     </div>
 
@@ -518,17 +571,17 @@
           <div>
             <span class="text-xs font-medium text-muted">Year</span>
             <div class="mt-1 flex items-center gap-2">
-              <input type="number" placeholder="From" value={fromYear} oninput={(e) => { const v = (e.target as HTMLInputElement).value; fromYear = v === '' ? '' : Number(v) }} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
+              <input type="number" placeholder="From" bind:value={fromYear} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
               <span class="text-xs text-muted">to</span>
-              <input type="number" placeholder="To" value={toYear} oninput={(e) => { const v = (e.target as HTMLInputElement).value; toYear = v === '' ? '' : Number(v) }} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
+              <input type="number" placeholder="To" bind:value={toYear} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
             </div>
           </div>
           <div>
             <span class="text-xs font-medium text-muted">Length (seconds)</span>
             <div class="mt-1 flex items-center gap-2">
-              <input type="number" placeholder="Min" value={minLength} oninput={(e) => { const v = (e.target as HTMLInputElement).value; minLength = v === '' ? '' : Number(v) }} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
+              <input type="number" placeholder="Min" bind:value={minLength} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
               <span class="text-xs text-muted">to</span>
-              <input type="number" placeholder="Max" value={maxLength} oninput={(e) => { const v = (e.target as HTMLInputElement).value; maxLength = v === '' ? '' : Number(v) }} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
+              <input type="number" placeholder="Max" bind:value={maxLength} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
             </div>
           </div>
         </div>
@@ -540,25 +593,41 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="mx-2 space-y-0.5"
-        ondragover={(e) => { if (dragIndex !== null) { e.preventDefault(); } }}
-        ondrop={(e) => { if (dragIndex !== null) { handleDrop(e, 'auto', userTracks.length + previewAutoTracks.length); } }}
+        role="group"
+        aria-label="Auto queue"
+        ondragover={(e) => { if (dragIndex !== null) { e.preventDefault(); handleDragOver(e, 'auto', previewAutoTracks.length) } }}
+        ondragleave={(e) => {
+          const related = e.relatedTarget as HTMLElement | null
+          if (!related || !e.currentTarget?.contains(related)) {
+            dragOverZone = null
+            dragOverAutoIdx = 0
+          }
+        }}
+        ondrop={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          handleDrop(e, 'auto', previewAutoTracks.length)
+        }}
       >
         {#each previewAutoTracks as track, idx (idx + ':' + track.trackId)}
           {@const combinedIdx = userTracks.length + idx}
           <div
             animate:flip={{ duration: 180 }}
-            ondragover={(e) => handleDragOver(e, combinedIdx)}
+            draggable="true"
+            ondragstart={(e) => handleDragStart(e, userTracks.length + idx)}
+            ondragover={(e) => { e.preventDefault(); handleDragOver(e, 'auto', idx) }}
             ondragleave={handleDragLeave}
-            ondrop={(e) => handleDrop(e, 'auto', combinedIdx)}
+            ondrop={(e) => { e.preventDefault(); e.stopPropagation(); handleDrop(e, 'auto', idx) }}
             onclick={() => playQueueItem(combinedIdx)}
             role="button"
             tabindex="0"
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(combinedIdx) }}
-            class={"flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (isCurrent(combinedIdx) ? ' bg-white/5' : ' hover:bg-surface-hover') + (hoverIndex === combinedIdx && dragIndex !== null ? ' ring-1 ring-yellow-500/50' : '')}
+            class={"flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (isCurrent(combinedIdx) ? ' bg-white/5' : ' hover:bg-surface-hover') + (dragIndex !== null && dragOverZone === 'auto' && dragOverAutoIdx === idx ? ' ring-1 ring-yellow-500/50 bg-yellow-500/5' : '') + (dragIndex !== null && hoverIndex === combinedIdx && dragOverZone === null ? ' ring-1 ring-yellow-500/50 bg-yellow-500/5' : '')}
           >
+            <!-- Drag Handle -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-            <div class="drag-handle flex-shrink-0 text-muted/40" aria-label="Drag handle" onclick={(e) => e.stopPropagation()} role="presentation">
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+            <div class="drag-handle flex-shrink-0 cursor-grab rounded p-1 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover" aria-label="Drag to reorder" onclick={(e) => e.stopPropagation()} role="presentation">
+              <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
               </svg>
             </div>
@@ -570,51 +639,52 @@
                 </svg>
               </div>
             {:else}
-              <span class="w-3 flex-shrink-0 text-[10px] text-muted/40 tabular-nums">{idx + 1}</span>
+              <span class="w-3 flex-shrink-0 text-[10px] text-muted/50 tabular-nums text-center">{idx + 1}</span>
             {/if}
 
-            <LazyThumb {track} wrapperClass="h-9 w-9 flex-shrink-0 rounded" />
+            <LazyThumb {track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
 
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm text-primary">{track.title}</p>
               <p class="truncate text-xs text-muted">{track.artist}</p>
             </div>
 
+            <!-- Action Buttons -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-            <div class="flex flex-shrink-0 items-center gap-0.5" onclick={(e) => e.stopPropagation()} role="presentation">
+            <div class="flex flex-shrink-0 items-center gap-1" onclick={(e) => e.stopPropagation()} role="presentation">
               <button
                 onclick={() => detailsTrack = track}
-                class="rounded p-1 text-muted/40 transition-colors hover:text-primary"
+                class="rounded-lg p-2 text-muted/70 transition-colors hover:text-primary"
                 aria-label="View details"
               >
-                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
                 </svg>
               </button>
               <button
                 onclick={() => promoteToUserNext(track.trackId)}
-                class="rounded p-1 text-muted/40 transition-colors hover:text-green-400"
+                class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Play next"
               >
-                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/>
                 </svg>
               </button>
               <button
                 onclick={() => promoteToUser(track.trackId)}
-                class="rounded p-1 text-muted/40 transition-colors hover:text-green-400"
+                class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Add to user queue"
               >
-                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
                 </svg>
               </button>
               <button
                 onclick={() => removeFromAutoQueue(track.trackId)}
-                class="rounded p-1 text-muted/40 transition-colors hover:text-red-400"
+                class="rounded-lg p-2 text-muted/70 transition-colors hover:text-red-400"
                 aria-label="Remove from auto queue"
               >
-                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
                 </svg>
               </button>

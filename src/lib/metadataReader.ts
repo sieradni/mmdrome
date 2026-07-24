@@ -230,6 +230,9 @@ export async function readMetadataChunk(
 export interface FileMetadata {
   rating: number
   loved: boolean
+  comments?: string
+  playCount?: number
+  skipCount?: number
 }
 
 export async function extractMetadataFromBuffer(
@@ -238,6 +241,9 @@ export async function extractMetadataFromBuffer(
 ): Promise<FileMetadata> {
   let rating = 0
   let loved = false
+  let comments = ''
+  let playCount = 0
+  let skipCount = 0
 
   try {
     const taglib = await getTagLib()
@@ -249,23 +255,45 @@ export async function extractMetadataFromBuffer(
     }
 
     const props = file.properties()
-    const loveRating = props["LOVE RATING"]
-    if (Array.isArray(loveRating) && loveRating[0] === "L") {
+    const loveRating = props['LOVE RATING']
+    if (Array.isArray(loveRating) && loveRating[0] === 'L') {
       loved = true
     }
 
-    const rawRating = props["RATING"]
+    const rawRating = props['RATING']
     if (Array.isArray(rawRating) && rating === 0) {
       const parsed = parseInt(rawRating[0], 10)
       if (!isNaN(parsed) && parsed > 0) rating = Math.min(100, parsed)
     }
 
+    const rawComments = props['COMMENTS']
+    if (Array.isArray(rawComments) && rawComments[0]) {
+      comments = rawComments[0]
+    }
+
+    const rawComment = props['COMMENT']
+    if (!comments && Array.isArray(rawComment) && rawComment[0]) {
+      comments = rawComment[0]
+    }
+
+    const rawPlayCount = props['PLAY COUNT']
+    if (Array.isArray(rawPlayCount)) {
+      const parsed = parseInt(rawPlayCount[0], 10)
+      if (!isNaN(parsed) && parsed > 0) playCount = parsed
+    }
+
+    const rawSkipCount = props['SKIP COUNT']
+    if (Array.isArray(rawSkipCount)) {
+      const parsed = parseInt(rawSkipCount[0], 10)
+      if (!isNaN(parsed) && parsed > 0) skipCount = parsed
+    }
+
     file.dispose()
   } catch {
-    // file too small or corrupt — rating stays 0
+    // file too small or corrupt — metadata stays at defaults
   }
 
-  return { rating, loved }
+  return { rating, loved, comments: comments || undefined, playCount: playCount || undefined, skipCount: skipCount || undefined }
 }
 
 export async function readFileMetadata(

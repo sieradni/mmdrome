@@ -146,21 +146,24 @@ async function processItem(item: QueueItem): Promise<void> {
     return
   }
 
-  try {
-    const meta = await readFileMetadata(webdavUrl, match.path, webdavUser, webdavToken, track.fileType)
-    updateMetadata({
-      trackId: track.trackId,
-      rating: meta.rating,
-      loved: meta.loved,
-      filePath: track.filePath,
-      fileType: track.fileType,
-      syncStatus: "synced",
-      lastModifiedLocally: Date.now(),
-      webdavPath: match.path,
-      webdavLastModified: match.lastModified,
-    })
-    scannedCount++
-  } catch {
+    try {
+      const meta = await readFileMetadata(webdavUrl, match.path, webdavUser, webdavToken, track.fileType)
+      updateMetadata({
+        trackId: track.trackId,
+        rating: meta.rating,
+        loved: meta.loved,
+        filePath: track.filePath,
+        fileType: track.fileType,
+        syncStatus: "synced",
+        lastModifiedLocally: Date.now(),
+        webdavPath: match.path,
+        webdavLastModified: match.lastModified,
+        comments: meta.comments,
+        playCount: meta.playCount,
+        skipCount: meta.skipCount,
+      })
+      scannedCount++
+    } catch {
     failedCount++
   }
   updateScanProgress()

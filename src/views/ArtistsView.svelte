@@ -1,23 +1,14 @@
 <script lang="ts">
-  import { library, metadataCache, addToUserQueue } from '../stores/appState'
-  import { playbackManager } from '../lib/playbackManager'
+  import { library, metadataCache } from '../stores/appState'
   import type { Track } from '../stores/appState'
+  import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import LazyThumb from '../components/LazyThumb.svelte'
+  import TrackRow from '../components/TrackRow.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
 
   let selectedArtist = $state<string | null>(null)
-  let addedTrackIds = $state(new Set<string>())
-
-  function handleAddToQueue(trackId: string) {
-    addToUserQueue(trackId)
-    addedTrackIds = new Set([...addedTrackIds, trackId])
-    setTimeout(() => {
-      const next = new Set(addedTrackIds)
-      next.delete(trackId)
-      addedTrackIds = next
-    }, 1000)
-  }
+  let detailsTrack: Track | null = $state(null)
 
   type ArtistGroup = {
     artist: string
@@ -56,28 +47,7 @@
     selectedArtist ? artistGroups.find(g => g.artist === selectedArtist)?.tracks ?? [] : []
   )
 
-  function formatDuration(s: number): string {
-    const m = Math.floor(s / 60)
-    const sec = Math.floor(s % 60)
-    return `${m}:${String(sec).padStart(2, '0')}`
-  }
-
-  function starSegments(rating: number): ('full' | 'half' | 'empty')[] {
-    const sv = Math.min(5, rating / 20)
-    const segs: ('full' | 'half' | 'empty')[] = []
-    for (let i = 0; i < 5; i++) {
-      const r = Math.max(0, Math.min(1, sv - i))
-      if (r >= 0.75) segs.push('full')
-      else if (r >= 0.25) segs.push('half')
-      else segs.push('empty')
-    }
-    return segs
-  }
-
-  function getRating(trackId: string): number {
-    return $metadataCache.get(trackId)?.rating ?? 0
-  }
-</script>
+  </script>
 
 {#if selectedArtist}
   <div class="flex h-full flex-col">
@@ -88,43 +58,17 @@
       <h2 class="truncate text-sm font-bold text-primary">{selectedArtist}</h2>
     </div>
     <div class="flex-1 overflow-y-auto pb-24">
-      <div class="px-4 py-2">
-        {#each selectedTracks as track, idx (track.trackId)}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-surface-hover"
-            role="button"
-            tabindex="0"
-            onclick={() => { addToUserQueue(track.trackId); playbackManager.playTrackById(track.trackId) }}
-            onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { addToUserQueue(track.trackId); playbackManager.playTrackById(track.trackId) } }}
-          >
-            <LazyThumb {track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
-            <div class="min-w-0 flex-1">
-              <p class="truncate text-sm font-bold text-primary">{track.title}</p>
-              <p class="truncate text-xs text-muted">{track.album} · {track.year ?? '—'} · {formatDuration(track.duration)}</p>
-            </div>
-            <div class="flex flex-shrink-0 items-center gap-0.5">
-              {#each starSegments(getRating(track.trackId)) as seg, si}
-                <svg class="h-3 w-3" viewBox="0 0 24 24">
-                  {#if seg === 'half'}
-                    <defs><linearGradient id="ar-{track.trackId}-{si}"><stop offset="50%" stop-color="#facc15" /><stop offset="50%" stop-color="transparent" /></linearGradient></defs>
-                  {/if}
-                  <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26Z" fill={seg === 'full' ? '#facc15' : seg === 'half' ? 'url(#ar-' + track.trackId + '-' + si + ')' : 'none'} stroke={seg === 'empty' ? '#555' : '#facc15'} stroke-width="1" />
-                </svg>
-              {/each}
-            </div>
-            <button onclick={() => handleAddToQueue(track.trackId)} class="flex-shrink-0 rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Add to queue">
-              {#if addedTrackIds.has(track.trackId)}
-                <svg class="h-4 w-4 text-green-400" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-              {:else}
-                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
-              {/if}
-            </button>
-          </div>
+<div class="px-4 py-2">
+        {#each selectedTracks as track (track.trackId)}
+          <TrackRow {track} ondetails={() => detailsTrack = track} />
         {/each}
       </div>
-    </div>
   </div>
+</div>
+
+{#if detailsTrack}
+  <TrackDetailsModal track={detailsTrack} onclose={() => detailsTrack = null} />
+{/if}
 {:else}
   <div class="flex h-full flex-col">
     <div class="border-b border-white/10 px-4 py-3">

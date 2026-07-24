@@ -10,6 +10,9 @@ export interface LocalMetadataStore {
   lastModifiedLocally: number
   webdavPath?: string
   webdavLastModified?: string
+  comments?: string
+  playCount?: number
+  skipCount?: number
 }
 
 export interface WebdavFileEntry {
