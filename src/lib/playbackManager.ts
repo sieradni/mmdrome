@@ -36,7 +36,11 @@ class PlaybackManager {
     setupMediaSession(
       () => this.next(),
       () => this.prev(),
-      (track) => getCoverUrl(track, 512) || undefined,
+      (track) => {
+        const config = getCachedConfig()
+        if (!config) return undefined
+        return getCoverUrl(track, config, 512) || undefined
+      },
     )
 
     setupPreloader(audioManager.activeElement, (trackId) => this._resolveUrl(trackId))
@@ -156,6 +160,10 @@ class PlaybackManager {
     } else {
       audioManager.setNextTrack(null)
     }
+  }
+
+  replenishAutoQueue(): void {
+    this._replenishAutoQueue()
   }
 
   private _replenishAutoQueue(): void {
@@ -309,19 +317,6 @@ class PlaybackManager {
   async playTrackAt(index: number): Promise<void> {
     const combined = this._getCombinedQueue()
     if (index < 0 || index >= combined.length) return
-
-    const q = get(queue)
-    const userQueueLen = q.userQueue.length
-    if (index >= userQueueLen) {
-      const autoIdx = index - userQueueLen
-      const toConvert = q.autoQueue.slice(0, autoIdx)
-      const convertIds = new Set(toConvert)
-      queue.update((q) => ({
-        ...q,
-        userQueue: [...q.userQueue, ...toConvert],
-        autoQueue: q.autoQueue.filter((id) => !convertIds.has(id)),
-      }))
-    }
 
     setActiveQueueIndex(index)
     const track = this._findTrack(combined[index])

@@ -147,6 +147,11 @@
     }
   }
 
+  function handleClearQueue() {
+    clearQueue()
+    playbackManager.replenishAutoQueue()
+  }
+
   let dragBoundaryActive = $derived(dragIndex !== null && dropAutoIndex !== null)
 </script>
 
@@ -158,7 +163,7 @@
     </button>
     <span class="text-sm font-medium text-muted">Queue</span>
     <button
-      onclick={clearQueue}
+      onclick={handleClearQueue}
       class="rounded-lg px-2 py-1 text-xs text-muted transition-colors hover:text-red-400"
       aria-label="Clear queue"
     >
