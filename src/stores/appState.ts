@@ -73,6 +73,28 @@ export const currentTime = writable<number>(0)
 export const playbackSpeed = writable<number>(1)
 export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0 } })
 
+export interface AutoQueueFilters {
+  minRating: number
+  maxRating: number
+  lovedOnly: boolean
+  fromYear: number | ''
+  toYear: number | ''
+  minLength: number | ''
+  maxLength: number | ''
+  searchQuery?: string
+}
+
+export const autoQueueFilters = writable<AutoQueueFilters>({
+  minRating: 0,
+  maxRating: 100,
+  lovedOnly: false,
+  fromYear: '',
+  toYear: '',
+  minLength: '',
+  maxLength: '',
+  searchQuery: '',
+})
+
 export function setLibrary(tracks: Track[]): void {
   library.set(tracks)
 }
@@ -97,6 +119,13 @@ export async function initStores(): Promise<void> {
     map.set(m.trackId, m)
   }
   metadataCache.set(map)
+
+  // Load and persist shuffle state
+  const savedShuffle = await getSetting<boolean>('shuffleEnabled')
+  if (savedShuffle !== undefined) {
+    shuffleEnabled.set(savedShuffle)
+  }
+  shuffleEnabled.subscribe((v) => { setSetting('shuffleEnabled', v) })
 
   initialized = true
 }

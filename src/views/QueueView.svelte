@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { queue, library, currentTrack, shuffleEnabled, toggleShuffle, currentTime, playbackSpeed, playbackState, clearQueue } from '../stores/appState'
+  import { queue, library, currentTrack, shuffleEnabled, toggleShuffle, currentTime, playbackSpeed, playbackState, clearQueue, autoQueueFilters } from '../stores/appState'
+  import { onMount } from 'svelte'
   import { playbackManager } from '../lib/playbackManager'
   import { audioManager } from '../lib/audioManager'
   import { addToUserQueue, removeFromUserQueue } from '../stores/appState'
-  import { saveQueue } from '../lib/db'
+  import { saveQueue, getSetting, setSetting } from '../lib/db'
   import LazyThumb from '../components/LazyThumb.svelte'
   import type { Track } from '../stores/appState'
 
@@ -11,6 +12,46 @@
 
   let dragIndex = $state<number | null>(null)
   let dropAutoIndex = $state<number | null>(null)
+  let filterOpen = $state(false)
+
+  let minRating = $state(0)
+  let maxRating = $state(100)
+  let lovedOnly = $state(false)
+  let fromYear = $state<number | ''>('')
+  let toYear = $state<number | ''>('')
+  let minLength = $state<number | ''>('')
+  let maxLength = $state<number | ''>('')
+
+  let searchQuery = $state('')
+
+  function norm(v: any): number | '' {
+    if (v === 0 || v === null || v === undefined || v === '') return ''
+    const num = Number(v)
+    return isNaN(num) ? '' : num
+  }
+
+  onMount(async () => {
+    const saved = await getSetting<string>('autoQueueFilters')
+    if (saved) {
+      try {
+        const p = JSON.parse(saved)
+        if (p.minRating !== undefined) minRating = p.minRating
+        if (p.maxRating !== undefined) maxRating = p.maxRating
+        if (p.lovedOnly !== undefined) lovedOnly = p.lovedOnly
+        if (p.fromYear !== undefined) fromYear = norm(p.fromYear)
+        if (p.toYear !== undefined) toYear = norm(p.toYear)
+        if (p.minLength !== undefined) minLength = norm(p.minLength)
+        if (p.maxLength !== undefined) maxLength = norm(p.maxLength)
+        if (p.searchQuery !== undefined) searchQuery = p.searchQuery || ''
+      } catch { /* ignore corrupt saved filter */ }
+    }
+  })
+
+  $effect(() => {
+    autoQueueFilters.set({ minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery })
+    setSetting('autoQueueFilters', JSON.stringify({ minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery }))
+    playbackManager.replenishAutoQueue()
+  })
 
   let userTracks = $derived.by(() => {
     const q = $queue
@@ -314,15 +355,70 @@
       <div
         class={"h-0.5 flex-1 rounded-full transition-colors duration-200" + (dragBoundaryActive ? ' bg-yellow-500' : ' bg-white/20')}
       ></div>
-      <span
-        class={"text-[10px] font-medium uppercase tracking-wider transition-colors duration-200" + (dragBoundaryActive ? ' text-yellow-400' : ' text-muted/50')}
-      >
-        {dragBoundaryActive ? 'Release to convert' : 'Auto Queue'}
+      <span class="flex items-center gap-2">
+        <span
+          class={"text-[10px] font-medium uppercase tracking-wider transition-colors duration-200" + (dragBoundaryActive ? ' text-yellow-400' : ' text-muted/50')}
+        >
+          {dragBoundaryActive ? 'Release to convert' : 'Auto Queue'}
+        </span>
+        <button
+          onclick={() => filterOpen = !filterOpen}
+          class={"rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider transition-colors" + (filterOpen ? ' bg-surface-hover text-primary' : ' text-muted/50 hover:text-primary')}
+        >Filter</button>
       </span>
       <div
         class={"h-0.5 flex-1 rounded-full transition-colors duration-200" + (dragBoundaryActive ? ' bg-yellow-500' : ' bg-white/20')}
       ></div>
     </div>
+
+    {#if filterOpen}
+      <div class="mx-4 mb-2 rounded-lg border border-white/10 bg-surface/50 px-3 py-3">
+        <div class="space-y-3">
+          <div>
+            <span class="text-xs font-medium text-muted">Search Query</span>
+            <div class="mt-1">
+              <input
+                type="search"
+                placeholder="Fuzzy search title, artist, album..."
+                bind:value={searchQuery}
+                class="w-full rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted outline-none focus:ring-white/20"
+              />
+            </div>
+          </div>
+
+          <div>
+            <span class="text-xs font-medium text-muted">Rating range</span>
+            <div class="mt-1 flex items-center gap-2">
+              <input type="range" min="0" max="100" bind:value={minRating} class="h-1 w-24 accent-yellow-500" />
+              <input type="number" min="0" max="100" bind:value={minRating} class="w-14 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10" />
+              <span class="text-xs text-muted">–</span>
+              <input type="number" min="0" max="100" bind:value={maxRating} class="w-14 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10" />
+              <input type="range" min="0" max="100" bind:value={maxRating} class="h-1 w-24 accent-yellow-500" />
+            </div>
+          </div>
+          <label class="flex cursor-pointer items-center gap-2 text-xs text-muted">
+            <input type="checkbox" bind:checked={lovedOnly} class="accent-yellow-500" />
+            Loved tracks only
+          </label>
+          <div>
+            <span class="text-xs font-medium text-muted">Year</span>
+            <div class="mt-1 flex items-center gap-2">
+              <input type="number" placeholder="From" value={fromYear} oninput={(e) => { const v = (e.target as HTMLInputElement).value; fromYear = v === '' ? '' : Number(v) }} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
+              <span class="text-xs text-muted">to</span>
+              <input type="number" placeholder="To" value={toYear} oninput={(e) => { const v = (e.target as HTMLInputElement).value; toYear = v === '' ? '' : Number(v) }} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
+            </div>
+          </div>
+          <div>
+            <span class="text-xs font-medium text-muted">Length (seconds)</span>
+            <div class="mt-1 flex items-center gap-2">
+              <input type="number" placeholder="Min" value={minLength} oninput={(e) => { const v = (e.target as HTMLInputElement).value; minLength = v === '' ? '' : Number(v) }} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
+              <span class="text-xs text-muted">to</span>
+              <input type="number" placeholder="Max" value={maxLength} oninput={(e) => { const v = (e.target as HTMLInputElement).value; maxLength = v === '' ? '' : Number(v) }} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
+            </div>
+          </div>
+        </div>
+      </div>
+    {/if}
 
     <!-- === AUTO QUEUE === -->
     {#if autoTracks.length > 0}

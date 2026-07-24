@@ -118,10 +118,15 @@
       return r >= minRating && r <= maxRating
     })
     if (lovedOnly) list = list.filter((t) => getLoved(t.trackId))
-    if (fromYear !== '') list = list.filter((t) => (t.year ?? 0) >= Number(fromYear))
-    if (toYear !== '') list = list.filter((t) => (t.year ?? 9999) <= Number(toYear))
-    if (minLength !== '') list = list.filter((t) => t.duration >= Number(minLength))
-    if (maxLength !== '') list = list.filter((t) => t.duration <= Number(maxLength))
+    const fromY = fromYear !== null && fromYear !== undefined && fromYear !== '' ? Number(fromYear) : null
+    const toY = toYear !== null && toYear !== undefined && toYear !== '' ? Number(toYear) : null
+    const minL = minLength !== null && minLength !== undefined && minLength !== '' ? Number(minLength) : null
+    const maxL = maxLength !== null && maxLength !== undefined && maxLength !== '' ? Number(maxLength) : null
+
+    if (fromY !== null) list = list.filter((t) => (t.year ?? 0) >= fromY)
+    if (toY !== null) list = list.filter((t) => (t.year ?? 9999) <= toY)
+    if (minL !== null) list = list.filter((t) => t.duration >= minL)
+    if (maxL !== null) list = list.filter((t) => t.duration <= maxL)
     if (sortBy) {
       list = [...list].sort((a, b) => {
         let cmp = 0
