@@ -10,6 +10,7 @@ import {
   queue,
   library,
   settings,
+  shuffleEnabled,
   setCurrentTrack,
   setPlaybackState,
   setActiveQueueIndex,
@@ -47,6 +48,20 @@ class PlaybackManager {
     })
 
     this._attachPlaybackListeners()
+
+    this._replenishAutoQueue()
+
+    library.subscribe(() => {
+      if (this._initialized) {
+        this._replenishAutoQueue()
+      }
+    })
+
+    shuffleEnabled.subscribe(() => {
+      if (this._initialized) {
+        this.reshuffleAutoQueue()
+      }
+    })
 
     this._initialized = true
   }
@@ -138,14 +153,22 @@ class PlaybackManager {
     const MAX_HISTORY = 100
     const q = get(queue)
     const lib = get(library)
+    const shuffle = get(shuffleEnabled)
 
     const allTrackIds = lib.map((t) => t.trackId)
     const used = new Set([...q.userQueue, ...q.autoQueue])
     const recent = new Set(q.historyQueue)
 
-    const eligible = allTrackIds.filter((id) => !used.has(id) && !recent.has(id))
+    let eligible = allTrackIds.filter((id) => !used.has(id) && !recent.has(id))
     const needed = Math.max(0, MAX_AUTO_QUEUE - q.autoQueue.length)
     if (needed === 0 || eligible.length === 0) return
+
+    if (shuffle) {
+      for (let i = eligible.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[eligible[i], eligible[j]] = [eligible[j], eligible[i]]
+      }
+    }
 
     const fill = eligible.slice(0, needed)
     queue.update((q) => {
@@ -153,6 +176,36 @@ class PlaybackManager {
       saveQueue(updated)
       return updated
     })
+  }
+
+  reshuffleAutoQueue(): void {
+    const q = get(queue)
+    let autoQueue = [...q.autoQueue]
+    const shuffle = get(shuffleEnabled)
+
+    if (autoQueue.length === 0) {
+      this._replenishAutoQueue()
+      return
+    }
+
+    if (shuffle) {
+      for (let i = autoQueue.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[autoQueue[i], autoQueue[j]] = [autoQueue[j], autoQueue[i]]
+      }
+    } else {
+      const lib = get(library)
+      const libOrder = new Map(lib.map((t, i) => [t.trackId, i]))
+      autoQueue.sort((a, b) => (libOrder.get(a) ?? Infinity) - (libOrder.get(b) ?? Infinity))
+    }
+
+    queue.update((q) => {
+      const updated = { ...q, autoQueue }
+      saveQueue(updated)
+      return updated
+    })
+
+    this._replenishAutoQueue()
   }
 
   private _advanceQueue(): Track | null {
@@ -180,6 +233,13 @@ class PlaybackManager {
     }
 
     this._replenishAutoQueue()
+    const q2 = get(queue)
+    const updatedCombined = [...q2.userQueue, ...q2.autoQueue]
+    if (nextIndex >= 0 && nextIndex < updatedCombined.length) {
+      setActiveQueueIndex(nextIndex)
+      return this._findTrack(updatedCombined[nextIndex]) ?? null
+    }
+
     setPlaybackState('stopped')
     setCurrentTrack(null)
     audioManager.activeElement.src = ''

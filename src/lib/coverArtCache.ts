@@ -10,6 +10,7 @@ export function getCoverUrl(track: Track, size?: number): string {
     const config = getCachedConfig()
     if (!config) return ''
     const artId = resolveCoverArtId(track) || track.albumId
+    if (!artId) return ''
     url = buildCoverArtUrl(config, artId, size)
     urlCache.set(key, url)
   }
