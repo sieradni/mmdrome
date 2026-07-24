@@ -62,6 +62,8 @@ class AudioManager {
   private _currentAlbumGainDb: number | null = null
   private _timeupdateEl: HTMLAudioElement | null = null
   private _timeupdateHandler: ((e: Event) => void) | null = null
+  private _bgEl: HTMLAudioElement | null = null
+  private _inBgMode = false
   onTrackEnd: (() => void) | null = null
 
   constructor() {
@@ -107,6 +109,70 @@ class AudioManager {
   async init(): Promise<void> {
     if (this._initialized) return
     this._initialized = true
+    this._setupVisibilityHandler()
+  }
+
+  private _setupVisibilityHandler(): void {
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        this._enterBackground()
+      } else if (this._inBgMode) {
+        this._exitBackground()
+      }
+    })
+  }
+
+  private _enterBackground(): void {
+    if (this._inBgMode) return
+
+    const el = this.activeElement
+    if (el.paused || el.ended || !el.src) return
+
+    this._teardownTimeupdateMonitor()
+
+    this._inBgMode = true
+
+    if (!this._bgEl) {
+      this._bgEl = new Audio()
+      this._bgEl.crossOrigin = 'anonymous'
+      this._bgEl.preservesPitch = false
+    }
+
+    this._bgEl.src = el.src
+    this._bgEl.currentTime = el.currentTime
+    this._bgEl.playbackRate = el.playbackRate
+
+    this._bgEl.play().catch(() => {
+      this._inBgMode = false
+    })
+
+    el.pause()
+  }
+
+  private async _exitBackground(): Promise<void> {
+    if (!this._bgEl) return
+    this._inBgMode = false
+
+    const wasPlaying = !this._bgEl.paused
+    const ended = this._bgEl.ended
+    const bgTime = this._bgEl.currentTime
+
+    this._bgEl.pause()
+    this._bgEl.removeAttribute('src')
+    this._bgEl.load()
+
+    if (this._ctx && this._ctx.state !== 'running') {
+      try { await this._ctx.resume() } catch {}
+    }
+
+    const el = this.activeElement
+
+    if (ended) {
+      el.dispatchEvent(new Event('ended'))
+    } else if (wasPlaying) {
+      el.currentTime = bgTime
+      await el.play().catch(() => {})
+    }
   }
 
   async ensureWebAudioReady(): Promise<boolean> {
