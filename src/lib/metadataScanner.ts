@@ -111,10 +111,10 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
     return meta?.webdavPath && !changed.some((c) => c.trackId === id) && !unmatched.some((u) => u.trackId === id)
   }).length
 
-  totalTracks = queue.length + skipCount
+  totalTracks = queue.length
   metadataScanState.set({
     status: "scanning",
-    progress: { scanned: skipCount, total: totalTracks, failed: 0 },
+    progress: { scanned: 0, total: totalTracks, failed: 0 },
   })
 
   drain()

@@ -25,6 +25,6 @@
 
 <div bind:this={container} class="{wrapperClass} overflow-hidden bg-surface-hover">
   {#if visible}
-    <img src={getCoverUrl(track, size)} alt="" class="h-full w-full object-cover" loading="lazy" />
+    <img src={getCoverUrl(track, size)} alt="" class="h-full w-full object-cover" loading="lazy" crossorigin="anonymous" />
   {/if}
 </div>

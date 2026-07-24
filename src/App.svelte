@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, toggleShuffle, metadataScanState } from './stores/appState'
   import { connectNavidrome } from './lib/syncEngine'
-  import { navidromeSongToTrack } from './lib/navidromeApi'
+  import { navidromeSongToTrack, setCachedConfig } from './lib/navidromeApi'
   import { playbackManager } from './lib/playbackManager'
   import { audioManager } from './lib/audioManager'
   import { setWebdavCredentials, ensureIndex, scanAllNow, setServerLastScan, getWebdavConfigured } from './lib/metadataScanner'
@@ -30,6 +30,9 @@
     await initStores()
 
     const s = $settings
+    if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {
+      setCachedConfig({ baseUrl: s.navidromeUrl, username: s.navidromeUser, password: s.navidromePassword })
+    }
 
     if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {
       navidromeConnection.set({ connected: false, checking: true })

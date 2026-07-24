@@ -183,17 +183,18 @@ function md5(input: string): string {
   }).join('')
 }
 
-function buildAuthParams(username: string, password: string): Record<string, string> {
+function buildAuthParams(username: string, password: string, jsonFormat = true): Record<string, string> {
   const salt = generateSalt(16)
   const token = md5(password + salt)
-  return {
+  const params: Record<string, string> = {
     u: username,
     t: token,
     s: salt,
     v: API_VERSION,
     c: CLIENT_NAME,
-    f: 'json',
   }
+  if (jsonFormat) params.f = 'json'
+  return params
 }
 
 function normalizeUrl(baseUrl: string): string {
@@ -351,7 +352,7 @@ export async function getNavidromeSongStreamUrl(config: NavidromeConfig, songId:
 }
 
 export function buildCoverArtUrl(config: NavidromeConfig, id: string, size?: number): string {
-  const params = buildAuthParams(config.username, config.password)
+  const params = buildAuthParams(config.username, config.password, false)
   params.id = id
   if (size) params.size = String(size)
 

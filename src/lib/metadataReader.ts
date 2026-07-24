@@ -11,7 +11,8 @@ function normalizeUrl(base: string): string {
 }
 
 function buildWebdavUrl(base: string, path: string): string {
-  return `${normalizeUrl(base)}/${path.replace(/^\/+/, "")}`
+  const encodedPath = path.split("/").map((s) => encodeURIComponent(s)).join("/")
+  return `${normalizeUrl(base)}/${encodedPath.replace(/^\/+/, "")}`
 }
 
 function parseXml(text: string): Document {

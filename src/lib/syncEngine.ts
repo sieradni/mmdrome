@@ -22,7 +22,8 @@ function webdavAuthHeaders(user: string, token: string): Record<string, string> 
 }
 
 function buildWebdavUrl(baseUrl: string, filePath: string): string {
-  return `${baseUrl.replace(/\/+$/, "")}/${filePath.replace(/^\/+/, "")}`
+  const encodedPath = filePath.split("/").map((s) => encodeURIComponent(s)).join("/")
+  return `${baseUrl.replace(/\/+$/, "")}/${encodedPath.replace(/^\/+/, "")}`
 }
 
 class ConflictError extends Error {
