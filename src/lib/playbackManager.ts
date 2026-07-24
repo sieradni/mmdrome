@@ -117,6 +117,8 @@ class PlaybackManager {
   }
 
   private async _loadAndPlay(track: Track): Promise<void> {
+    this._promoteActiveTrack()
+
     const url = this._resolveUrl(track.trackId)
     if (!url) return
 
@@ -169,6 +171,25 @@ class PlaybackManager {
     } else {
       audioManager.setNextTrack(null)
     }
+  }
+
+  private _promoteActiveTrack(): void {
+    queue.update((q) => {
+      const combined = [...q.userQueue, ...q.autoQueue]
+      const activeId = combined[q.activeIndex]
+      if (!activeId) return q
+
+      const autoIdx = q.autoQueue.indexOf(activeId)
+      if (autoIdx < 0) return q
+
+      const newUserQueue = [...q.userQueue, activeId]
+      const newAutoQueue = q.autoQueue.slice(autoIdx + 1)
+      const newActiveIndex = newUserQueue.length - 1
+
+      const updated = { ...q, userQueue: newUserQueue, autoQueue: newAutoQueue, activeIndex: newActiveIndex }
+      saveQueue(updated)
+      return updated
+    })
   }
 
   replenishAutoQueue(): void {
@@ -372,6 +393,7 @@ class PlaybackManager {
     this._handlingEnd = true
     try {
       this._advanceQueue()
+      this._promoteActiveTrack()
       const q = get(queue)
       const combined = [...q.userQueue, ...q.autoQueue]
       const currentId = combined[q.activeIndex]
