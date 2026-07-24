@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, toggleShuffle, metadataScanState } from './stores/appState'
+  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, toggleShuffle, metadataScanState } from './stores/appState'
   import { connectNavidrome } from './lib/syncEngine'
   import { navidromeSongToTrack, setCachedConfig } from './lib/navidromeApi'
   import { playbackManager } from './lib/playbackManager'
@@ -123,13 +123,30 @@
   }
 
   $effect(() => {
-    const el = audioManager.activeElement
-    const handler = () => currentTime.set(el.currentTime)
-    el.addEventListener('timeupdate', handler)
-    return () => el.removeEventListener('timeupdate', handler)
+    const handler = () => currentTime.set(audioManager.activeElement.currentTime)
+    audioManager.a.addEventListener('timeupdate', handler)
+    audioManager.b.addEventListener('timeupdate', handler)
+    return () => {
+      audioManager.a.removeEventListener('timeupdate', handler)
+      audioManager.b.removeEventListener('timeupdate', handler)
+    }
   })
 
-  let duration = $derived(audioManager.activeElement.duration || 0)
+  let duration = $state(0)
+  let effectiveDuration = $derived($playbackSpeed > 0 ? duration / $playbackSpeed : duration)
+
+  $effect(() => {
+    const handler = () => {
+      duration = audioManager.activeElement.duration || 0
+    }
+    audioManager.a.addEventListener('durationchange', handler)
+    audioManager.b.addEventListener('durationchange', handler)
+    handler()
+    return () => {
+      audioManager.a.removeEventListener('durationchange', handler)
+      audioManager.b.removeEventListener('durationchange', handler)
+    }
+  })
 
   let combinedQueue = $derived([...$queue.userQueue, ...$queue.autoQueue])
   let queueSize = $derived(combinedQueue.length)
@@ -266,7 +283,7 @@
 
       <!-- Seek Bar -->
       <div class="flex items-center gap-3 px-6 pt-4">
-        <span class="w-10 text-right text-xs tabular-nums text-muted">{formatTime($currentTime)}</span>
+        <span class="w-10 text-right text-xs tabular-nums text-muted">{formatTime($playbackSpeed > 0 ? $currentTime / $playbackSpeed : $currentTime)}</span>
         <input
           type="range"
           min="0"
@@ -276,7 +293,7 @@
           class="h-1 flex-1 accent-white/80 cursor-pointer"
           step="0.1"
         />
-        <span class="w-10 text-xs tabular-nums text-muted">{formatTime(duration)}</span>
+        <span class="w-10 text-xs tabular-nums text-muted">{formatTime(effectiveDuration)}</span>
       </div>
     {:else}
       <!-- Empty State -->

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { queue, library, currentTrack, shuffleEnabled, toggleShuffle, currentTime, playbackState, clearQueue } from '../stores/appState'
+  import { queue, library, currentTrack, shuffleEnabled, toggleShuffle, currentTime, playbackSpeed, playbackState, clearQueue } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
   import { audioManager } from '../lib/audioManager'
   import { addToUserQueue, removeFromUserQueue } from '../stores/appState'
@@ -26,7 +26,22 @@
     return ordered.filter((t): t is Track => t !== null)
   })
 
-  let duration = $derived(audioManager.activeElement.duration || 0)
+  let duration = $state(0)
+
+  $effect(() => {
+    const handler = () => {
+      duration = audioManager.activeElement.duration || 0
+    }
+    audioManager.a.addEventListener('durationchange', handler)
+    audioManager.b.addEventListener('durationchange', handler)
+    handler()
+    return () => {
+      audioManager.a.removeEventListener('durationchange', handler)
+      audioManager.b.removeEventListener('durationchange', handler)
+    }
+  })
+
+  let effectiveDuration = $derived($playbackSpeed > 0 ? duration / $playbackSpeed : duration)
 
   function formatTime(sec: number): string {
     if (!isFinite(sec) || sec < 0) return '0:00'
@@ -171,7 +186,7 @@
             <p class="truncate text-sm font-medium text-primary">{$currentTrack.title}</p>
             <p class="truncate text-xs text-muted">{$currentTrack.artist}</p>
           </div>
-          <span class="text-xs text-muted tabular-nums">{formatTime($currentTime)} / {formatTime(duration)}</span>
+          <span class="text-xs text-muted tabular-nums">{formatTime($playbackSpeed > 0 ? $currentTime / $playbackSpeed : $currentTime)} / {formatTime(effectiveDuration)}</span>
         </div>
 
         <!-- Seek Bar -->

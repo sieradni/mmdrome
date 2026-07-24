@@ -70,6 +70,7 @@ export const navidromeConnection = writable<{ connected: boolean; error?: string
 export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string }>({ loading: false, loaded: 0, failed: 0 })
 export const shuffleEnabled = writable<boolean>(false)
 export const currentTime = writable<number>(0)
+export const playbackSpeed = writable<number>(1)
 export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0 } })
 
 export function setLibrary(tracks: Track[]): void {

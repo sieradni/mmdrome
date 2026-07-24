@@ -2,7 +2,7 @@
   import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, setLibrary, initMetadataForTracks, metadataScanState } from '../stores/appState'
   import { runManualWebDAVSync, testWebdavConn, connectNavidrome } from '../lib/syncEngine'
   import { navidromeSongToTrack } from '../lib/navidromeApi'
-  import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, resetScan, getWebdavConfigured } from '../lib/metadataScanner'
+  import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, scanAllForceRescan, resetScan, getWebdavConfigured } from '../lib/metadataScanner'
   import type { Track } from '../stores/appState'
 
   let webdavUrl = $state('')
@@ -106,6 +106,14 @@
     }
     await ensureIndex()
     scanAllNow(true)
+  }
+
+  async function rescanAllMetadata() {
+    const s = $settings
+    if (s.webdavUrl && s.webdavUser && s.webdavToken) {
+      setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
+    }
+    scanAllForceRescan()
   }
 
   async function connectNavidromeHandler() {
@@ -380,7 +388,23 @@
               Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
             {:else}
               <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
-              Scan All Metadata
+              Check Modified Ratings
+            {/if}
+          </button>
+          <button
+            onclick={rescanAllMetadata}
+            disabled={$metadataScanState.status === 'scanning'}
+            class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+          >
+            {#if $metadataScanState.status === 'scanning'}
+              <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
+            {:else}
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
+              Rescan All Metadata
             {/if}
           </button>
           <button

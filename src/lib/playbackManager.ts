@@ -11,6 +11,7 @@ import {
   library,
   settings,
   shuffleEnabled,
+  playbackSpeed,
   setCurrentTrack,
   setPlaybackState,
   setActiveQueueIndex,
@@ -29,6 +30,7 @@ class PlaybackManager {
     await audioManager.init()
 
     audioManager.onTrackEnd = () => this._handleCrossfadeEnd()
+    audioManager.onSpeedChange = (speed: number) => playbackSpeed.set(speed)
 
     setupMediaSession(
       () => this.next(),
@@ -264,6 +266,13 @@ class PlaybackManager {
     this._handlingEnd = true
     try {
       this._advanceQueue()
+      const q = get(queue)
+      const combined = [...q.userQueue, ...q.autoQueue]
+      const currentId = combined[q.activeIndex]
+      if (currentId) {
+        const track = this._findTrack(currentId)
+        if (track) setCurrentTrack(track)
+      }
     } finally {
       this._handlingEnd = false
     }

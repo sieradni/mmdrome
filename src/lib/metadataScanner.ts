@@ -181,6 +181,31 @@ function updateScanProgress(): void {
   }
 }
 
+export async function scanAllForceRescan(): Promise<void> {
+  cancelled = false
+  queue = []
+  scannedCount = 0
+  failedCount = 0
+  totalTracks = 0
+
+  if (!webdavUrl || !webdavUser || !webdavToken) return
+
+  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0 } })
+
+  await rebuildIndex()
+
+  const tracks = get(library)
+  for (const t of tracks) queue.push({ trackId: t.trackId })
+
+  totalTracks = queue.length
+  metadataScanState.set({
+    status: "scanning",
+    progress: { scanned: 0, total: totalTracks, failed: 0 },
+  })
+
+  drain()
+}
+
 export function resetScan(): void {
   cancelled = true
   queue = []

@@ -65,6 +65,8 @@ class AudioManager {
   private _bgEl: HTMLAudioElement | null = null
   private _inBgMode = false
   onTrackEnd: (() => void) | null = null
+  onSpeedChange: ((speed: number) => void) | null = null
+  private _isIOS: boolean
 
   constructor() {
     this.a = new Audio()
@@ -73,6 +75,7 @@ class AudioManager {
     this.b.crossOrigin = 'anonymous'
     this.a.preservesPitch = false
     this.b.preservesPitch = false
+    this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
   }
 
   get ctx(): AudioContext | null { return this._ctx }
@@ -113,6 +116,7 @@ class AudioManager {
   }
 
   private _setupVisibilityHandler(): void {
+    if (!this._isIOS) return
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         this._enterBackground()
@@ -254,6 +258,7 @@ class AudioManager {
   setSpeed(value: number): void {
     this._speed = clamp(value, 0.2, 4)
     this._applyTempo()
+    this.onSpeedChange?.(this._speed)
   }
 
   setPitchOctaves(octaves: number): void {
@@ -445,7 +450,7 @@ class AudioManager {
       this.a.playbackRate = this._speed
       this.b.playbackRate = this._speed
       if (this._soundTouch instanceof SoundTouchNode) {
-        this._soundTouch.playbackRate.value = this._speed
+        this._soundTouch.playbackRate.value = 1
       }
     }
   }
