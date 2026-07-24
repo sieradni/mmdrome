@@ -37,6 +37,15 @@ class PlaybackManager {
 
     setupPreloader(audioManager.activeElement, (trackId) => this._resolveUrl(trackId))
 
+    settings.subscribe((s) => {
+      if (!this._initialized) return
+      const track = get(currentTrack)
+      if (track && s.replayGainMode) {
+        audioManager.setReplayGainMode(s.replayGainMode)
+        audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
+      }
+    })
+
     this._attachPlaybackListeners()
 
     this._initialized = true

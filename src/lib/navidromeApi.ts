@@ -20,6 +20,11 @@ export interface SubsonicError extends Error {
   subsonicCode: number
 }
 
+export interface ReplayGainValues {
+  trackGain: number
+  albumGain: number
+}
+
 export interface NavidromeSong {
   id: string
   title: string
@@ -51,8 +56,7 @@ export interface NavidromeSong {
   explicit?: boolean
   streamId?: string
   path?: string
-  replayGain?: number
-  albumReplayGain?: number
+  replayGain?: ReplayGainValues
 }
 
 export interface NavidromeArtist {
@@ -395,8 +399,8 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     size: song.size,
     createdAt: song.created ? new Date(song.created).getTime() : undefined,
     navidromePath: song.path,
-    replayGain: song.replayGain,
-    albumReplayGain: song.albumReplayGain,
+    replayGain: song.replayGain?.trackGain,
+    albumReplayGain: song.replayGain?.albumGain,
   }
 }
 
