@@ -1,18 +1,21 @@
 <script lang="ts">
-  import { queue, library, currentTrack, shuffleEnabled, toggleShuffle, currentTime, playbackSpeed, playbackState, clearQueue, autoQueueFilters } from '../stores/appState'
+  import { queue, library, currentTrack, shuffleEnabled, toggleShuffle, currentTime, playbackSpeed, playbackState, clearQueue, autoQueueFilters, removeFromAutoQueue } from '../stores/appState'
   import { onMount } from 'svelte'
+  import { flip } from 'svelte/animate'
   import { playbackManager } from '../lib/playbackManager'
   import { audioManager } from '../lib/audioManager'
   import { addToUserQueue, removeFromUserQueue } from '../stores/appState'
   import { saveQueue, getSetting, setSetting } from '../lib/db'
   import LazyThumb from '../components/LazyThumb.svelte'
+  import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import type { Track } from '../stores/appState'
 
   let { onclose }: { onclose: () => void } = $props()
 
   let dragIndex = $state<number | null>(null)
-  let dropAutoIndex = $state<number | null>(null)
+  let hoverIndex = $state<number | null>(null)
   let filterOpen = $state(false)
+  let detailsTrack: Track | null = $state(null)
 
   let minRating = $state(0)
   let maxRating = $state(100)
@@ -67,6 +70,33 @@
     return ordered.filter((t): t is Track => t !== null)
   })
 
+  let previewUserTracks = $derived.by(() => {
+    if (dragIndex === null || hoverIndex === null) return userTracks
+    const userLen = userTracks.length
+    if (hoverIndex < userLen) {
+      const result = [...userTracks]
+      const [moved] = result.splice(dragIndex, 1)
+      let target = hoverIndex
+      if (target > dragIndex) target--
+      result.splice(target, 0, moved)
+      return result
+    }
+    const autoIdx = hoverIndex - userLen
+    const converted = autoTracks.slice(0, autoIdx)
+    const result = userTracks.filter((_, i) => i !== dragIndex)
+    const insertPos = dragIndex <= result.length ? dragIndex : result.length
+    result.splice(insertPos, 0, userTracks[dragIndex], ...converted)
+    return result
+  })
+
+  let previewAutoTracks = $derived.by(() => {
+    if (dragIndex === null || hoverIndex === null) return autoTracks
+    const userLen = userTracks.length
+    if (hoverIndex < userLen) return autoTracks
+    const autoIdx = hoverIndex - userLen
+    return autoTracks.slice(autoIdx)
+  })
+
   let duration = $state(0)
 
   $effect(() => {
@@ -104,71 +134,127 @@
 
   function handleDragStart(e: DragEvent, index: number) {
     if (!e.dataTransfer) return
+    if (!(e.target as HTMLElement).closest('.drag-handle')) return
     dragIndex = index
+    hoverIndex = index
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', String(index))
   }
 
-  function handleDragOver(e: DragEvent, zone: 'user' | 'auto', idx: number) {
+  function handleDragOver(e: DragEvent, combinedIdx: number) {
     e.preventDefault()
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-    if (zone === 'auto') {
-      dropAutoIndex = idx
-    }
+    hoverIndex = combinedIdx
   }
 
-  function handleDragLeave(zone: 'user' | 'auto') {
-    if (zone === 'auto') dropAutoIndex = null
+  function handleDragLeave() {
+    hoverIndex = null
   }
 
-  function handleDrop(e: DragEvent, zone: 'user' | 'auto', dropIdx: number) {
+  function handleDrop(e: DragEvent, zone: 'user' | 'auto', dropCombinedIdx: number) {
     e.preventDefault()
     const fromIndex = dragIndex
     if (fromIndex === null) {
       dragIndex = null
-      dropAutoIndex = null
+      hoverIndex = null
       return
     }
 
     const q = $queue
+    const userLen = q.userQueue.length
 
     if (zone === 'user') {
       const newUser = [...q.userQueue]
       const [moved] = newUser.splice(fromIndex, 1)
-      let targetIdx = dropIdx
-      if (targetIdx > fromIndex) targetIdx--
-      newUser.splice(targetIdx, 0, moved)
+      let target = dropCombinedIdx
+      if (target > fromIndex) target--
+      newUser.splice(target, 0, moved)
       const updated = { ...q, userQueue: newUser }
       saveQueue(updated); queue.set(updated)
     } else {
-      const autoIdx = dropIdx - q.userQueue.length
+      const autoIdx = dropCombinedIdx - userLen
       const movedId = q.userQueue[fromIndex]
-      if (movedId == null) { dragIndex = null; dropAutoIndex = null; return }
+      if (movedId == null) { dragIndex = null; hoverIndex = null; return }
 
       const toConvert = q.autoQueue.slice(0, autoIdx)
       const convertIds = new Set(toConvert)
-      const updated = {
-        ...q,
-        userQueue: q.userQueue.filter((_, i) => i !== fromIndex),
-        autoQueue: q.autoQueue.filter((id) => !convertIds.has(id)),
-      }
-      const insertPos = fromIndex <= updated.userQueue.length ? fromIndex : updated.userQueue.length
-      updated.userQueue.splice(insertPos, 0, movedId, ...toConvert)
+      const newUser = q.userQueue.filter((_, i) => i !== fromIndex)
+      const newAuto = q.autoQueue.filter((id) => !convertIds.has(id))
+      const insertPos = fromIndex <= newUser.length ? fromIndex : newUser.length
+      newUser.splice(insertPos, 0, movedId, ...toConvert)
+      const updated = { ...q, userQueue: newUser, autoQueue: newAuto }
       saveQueue(updated); queue.set(updated)
     }
 
     dragIndex = null
-    dropAutoIndex = null
+    hoverIndex = null
   }
 
   function promoteToUser(trackId: string) {
-    const q = $queue
-    const idx = q.autoQueue.indexOf(trackId)
-    if (idx < 0) return
-    addToUserQueue(trackId)
-    const newAuto = q.autoQueue.filter((id) => id !== trackId)
-    const updated = { ...q, autoQueue: newAuto }
-    saveQueue(updated); queue.set(updated)
+    queue.update((q) => {
+      const idx = q.autoQueue.indexOf(trackId)
+      if (idx < 0) return q
+      const autoQueue = q.autoQueue.filter((id) => id !== trackId)
+      const userQueue = [...q.userQueue, trackId]
+      const updated = { ...q, userQueue, autoQueue }
+      saveQueue(updated)
+      return updated
+    })
+  }
+
+  function promoteToUserNext(trackId: string) {
+    queue.update((q) => {
+      const idx = q.autoQueue.indexOf(trackId)
+      if (idx < 0) return q
+      const autoQueue = q.autoQueue.filter((id) => id !== trackId)
+      const insertAt = q.activeIndex >= 0 ? q.activeIndex + 1 : q.userQueue.length
+      const userQueue = [...q.userQueue.slice(0, insertAt), trackId, ...q.userQueue.slice(insertAt)]
+      const adjustedIndex = q.activeIndex >= insertAt ? q.activeIndex + 1 : q.activeIndex
+      const updated = { ...q, userQueue, autoQueue, activeIndex: adjustedIndex }
+      saveQueue(updated)
+      return updated
+    })
+  }
+
+  function moveToNext(trackId: string) {
+    queue.update((q) => {
+      const idx = q.userQueue.indexOf(trackId)
+      if (idx < 0) return q
+      const insertAt = q.activeIndex >= 0 ? q.activeIndex + 1 : q.userQueue.length
+      if (idx === insertAt) return q
+      const userQueue = q.userQueue.filter((id) => id !== trackId)
+      const target = insertAt > idx ? insertAt - 1 : insertAt
+      userQueue.splice(target, 0, trackId)
+      let activeIndex = q.activeIndex
+      if (idx === q.activeIndex) {
+        activeIndex = target
+      } else if (idx < q.activeIndex && target >= q.activeIndex) {
+        activeIndex--
+      } else if (idx > q.activeIndex && target <= q.activeIndex) {
+        activeIndex++
+      }
+      const updated = { ...q, userQueue, activeIndex }
+      saveQueue(updated)
+      return updated
+    })
+  }
+
+  function moveToEnd(trackId: string) {
+    queue.update((q) => {
+      const idx = q.userQueue.indexOf(trackId)
+      if (idx < 0) return q
+      const userQueue = q.userQueue.filter((id) => id !== trackId)
+      userQueue.push(trackId)
+      let activeIndex = q.activeIndex
+      if (idx === q.activeIndex) {
+        activeIndex = userQueue.length - 1
+      } else if (idx < q.activeIndex) {
+        activeIndex--
+      }
+      const updated = { ...q, userQueue, activeIndex }
+      saveQueue(updated)
+      return updated
+    })
   }
 
   function removeFromUser(trackId: string) {
@@ -193,7 +279,7 @@
     playbackManager.replenishAutoQueue()
   }
 
-  let dragBoundaryActive = $derived(dragIndex !== null && dropAutoIndex !== null)
+  let dragBoundaryActive = $derived(dragIndex !== null && hoverIndex !== null && hoverIndex >= userTracks.length)
 </script>
 
 <div class="flex h-full flex-col bg-background">
@@ -287,7 +373,7 @@
     {/if}
 
     <!-- === USER QUEUE === -->
-    {#if userTracks.length > 0}
+    {#if previewUserTracks.length > 0}
       <div class="mx-4 mb-1 mt-2 flex items-center gap-2 px-1">
         <div class="h-px flex-1 bg-white/10"></div>
         <span class="text-[10px] font-medium uppercase tracking-wider text-muted/50">User Queue</span>
@@ -295,28 +381,27 @@
       </div>
 
       <div class="mx-2 space-y-0.5">
-        {#each userTracks as track, idx (idx)}
-          {@const dragOver = dragIndex === idx}
+        {#each previewUserTracks as track, idx (idx + ':' + track.trackId)}
           <div
+            animate:flip={{ duration: 180 }}
             draggable="true"
             ondragstart={(e) => handleDragStart(e, idx)}
-            ondragover={(e) => handleDragOver(e, 'user', idx)}
+            ondragover={(e) => handleDragOver(e, idx)}
             ondrop={(e) => handleDrop(e, 'user', idx)}
+            ondragleave={handleDragLeave}
             onclick={() => playQueueItem(idx)}
             role="button"
             tabindex="0"
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(idx) }}
-            class={"flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (dragOver ? ' opacity-50' : '') + (isCurrent(idx) ? ' bg-white/5' : ' hover:bg-surface-hover')}
+            class={"flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (isCurrent(idx) ? ' bg-white/5' : ' hover:bg-surface-hover')}
           >
-            <!-- Drag Handle -->
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <div role="presentation" class="flex-shrink-0 cursor-grab text-muted/40 hover:text-muted" aria-label="Drag to reorder" onclick={(e) => e.stopPropagation()}>
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+            <div class="drag-handle flex-shrink-0 cursor-grab text-muted/40 hover:text-muted" aria-label="Drag to reorder" onclick={(e) => e.stopPropagation()} role="presentation">
               <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
                 <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
               </svg>
             </div>
 
-            <!-- Current Track Indicator -->
             {#if isCurrent(idx)}
               <div class="flex-shrink-0">
                 <svg class="h-3 w-3 text-yellow-500" viewBox="0 0 24 24" fill="currentColor">
@@ -334,15 +419,45 @@
               <p class="truncate text-xs text-muted">{track.artist}</p>
             </div>
 
-            <button
-              onclick={(e) => { e.stopPropagation(); removeFromUser(track.trackId) }}
-              class="flex-shrink-0 rounded-full p-1 text-muted/40 transition-colors hover:text-red-400"
-              aria-label="Remove from queue"
-            >
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
-              </svg>
-            </button>
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+            <div class="flex flex-shrink-0 items-center gap-0.5" onclick={(e) => e.stopPropagation()} role="presentation">
+              <button
+                onclick={() => detailsTrack = track}
+                class="rounded p-1 text-muted/40 transition-colors hover:text-primary"
+                aria-label="View details"
+              >
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+                </svg>
+              </button>
+              <button
+                onclick={() => moveToNext(track.trackId)}
+                class="rounded p-1 text-muted/40 transition-colors hover:text-green-400"
+                aria-label="Move to next"
+              >
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/>
+                </svg>
+              </button>
+              <button
+                onclick={() => moveToEnd(track.trackId)}
+                class="rounded p-1 text-muted/40 transition-colors hover:text-green-400"
+                aria-label="Move to end"
+              >
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M5 18h14v-2H5v2zm0-5h14v-2H5v2zm0-7v2h14V6H5z"/>
+                </svg>
+              </button>
+              <button
+                onclick={() => removeFromUser(track.trackId)}
+                class="rounded p-1 text-muted/40 transition-colors hover:text-red-400"
+                aria-label="Remove from queue"
+              >
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                </svg>
+              </button>
+            </div>
           </div>
         {/each}
       </div>
@@ -363,7 +478,7 @@
         </span>
         <button
           onclick={() => filterOpen = !filterOpen}
-          class={"rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider transition-colors" + (filterOpen ? ' bg-surface-hover text-primary' : ' text-muted/50 hover:text-primary')}
+          class={"rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider transition-colors" + (filterOpen ? ' bg-white/10 text-white' : ' text-muted/50 hover:text-white')}
         >Filter</button>
       </span>
       <div
@@ -421,34 +536,41 @@
     {/if}
 
     <!-- === AUTO QUEUE === -->
-    {#if autoTracks.length > 0}
+    {#if previewAutoTracks.length > 0}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="mx-2 space-y-0.5"
         ondragover={(e) => { if (dragIndex !== null) { e.preventDefault(); } }}
-        ondrop={(e) => { if (dragIndex !== null) { handleDrop(e, 'auto', $queue.userQueue.length); } }}
+        ondrop={(e) => { if (dragIndex !== null) { handleDrop(e, 'auto', userTracks.length + previewAutoTracks.length); } }}
       >
-        {#each autoTracks as track, idx (idx)}
+        {#each previewAutoTracks as track, idx (idx + ':' + track.trackId)}
           {@const combinedIdx = userTracks.length + idx}
           <div
-            ondragover={(e) => handleDragOver(e, 'auto', combinedIdx)}
-            ondragleave={() => handleDragLeave('auto')}
+            animate:flip={{ duration: 180 }}
+            ondragover={(e) => handleDragOver(e, combinedIdx)}
+            ondragleave={handleDragLeave}
             ondrop={(e) => handleDrop(e, 'auto', combinedIdx)}
             onclick={() => playQueueItem(combinedIdx)}
             role="button"
             tabindex="0"
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(combinedIdx) }}
-            class={"flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (isCurrent(combinedIdx) ? ' bg-white/5' : ' hover:bg-surface-hover') + (dropAutoIndex === combinedIdx && dragIndex !== null ? ' ring-1 ring-yellow-500/50' : '')}
+            class={"flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors" + (isCurrent(combinedIdx) ? ' bg-white/5' : ' hover:bg-surface-hover') + (hoverIndex === combinedIdx && dragIndex !== null ? ' ring-1 ring-yellow-500/50' : '')}
           >
-            <!-- Current Track Indicator -->
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+            <div class="drag-handle flex-shrink-0 text-muted/40" aria-label="Drag handle" onclick={(e) => e.stopPropagation()} role="presentation">
+              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+                <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
+              </svg>
+            </div>
+
             {#if isCurrent(combinedIdx)}
-              <div class="w-6 flex-shrink-0">
+              <div class="flex-shrink-0">
                 <svg class="h-3 w-3 text-yellow-500" viewBox="0 0 24 24" fill="currentColor">
                   <path d="M8 5v14l11-7z"/>
                 </svg>
               </div>
             {:else}
-              <span class="w-6 flex-shrink-0 text-[10px] text-muted/40 tabular-nums">{idx + 1}</span>
+              <span class="w-3 flex-shrink-0 text-[10px] text-muted/40 tabular-nums">{idx + 1}</span>
             {/if}
 
             <LazyThumb {track} wrapperClass="h-9 w-9 flex-shrink-0 rounded" />
@@ -458,20 +580,54 @@
               <p class="truncate text-xs text-muted">{track.artist}</p>
             </div>
 
-            <button
-              onclick={(e) => { e.stopPropagation(); promoteToUser(track.trackId) }}
-              class="flex-shrink-0 rounded-full p-1 text-muted/40 transition-colors hover:text-green-400"
-              aria-label="Add to user queue"
-            >
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
-              </svg>
-            </button>
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+            <div class="flex flex-shrink-0 items-center gap-0.5" onclick={(e) => e.stopPropagation()} role="presentation">
+              <button
+                onclick={() => detailsTrack = track}
+                class="rounded p-1 text-muted/40 transition-colors hover:text-primary"
+                aria-label="View details"
+              >
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+                </svg>
+              </button>
+              <button
+                onclick={() => promoteToUserNext(track.trackId)}
+                class="rounded p-1 text-muted/40 transition-colors hover:text-green-400"
+                aria-label="Play next"
+              >
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/>
+                </svg>
+              </button>
+              <button
+                onclick={() => promoteToUser(track.trackId)}
+                class="rounded p-1 text-muted/40 transition-colors hover:text-green-400"
+                aria-label="Add to user queue"
+              >
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                </svg>
+              </button>
+              <button
+                onclick={() => removeFromAutoQueue(track.trackId)}
+                class="rounded p-1 text-muted/40 transition-colors hover:text-red-400"
+                aria-label="Remove from auto queue"
+              >
+                <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                </svg>
+              </button>
+            </div>
           </div>
         {/each}
       </div>
-    {:else if userTracks.length > 0}
+    {:else if previewUserTracks.length > 0}
       <p class="px-6 py-4 text-center text-xs text-muted/50">Auto queue is empty</p>
     {/if}
   </div>
 </div>
+
+{#if detailsTrack}
+  <TrackDetailsModal track={detailsTrack} onclose={() => detailsTrack = null} />
+{/if}

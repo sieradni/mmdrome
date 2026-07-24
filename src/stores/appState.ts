@@ -169,6 +169,15 @@ export function playNext(trackId: string): void {
   })
 }
 
+export function removeFromAutoQueue(trackId: string): void {
+  queue.update((q) => {
+    const autoQueue = q.autoQueue.filter((id) => id !== trackId)
+    const historyQueue = [trackId, ...q.historyQueue].slice(0, 100)
+    saveQueue({ ...q, autoQueue, historyQueue })
+    return { ...q, autoQueue, historyQueue }
+  })
+}
+
 export function removeFromUserQueue(index: number): void {
   queue.update((q) => {
     const userQueue = q.userQueue.filter((_, i) => i !== index)
