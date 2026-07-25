@@ -119,12 +119,12 @@
     const el = e.target as HTMLInputElement
     const t = parseFloat(el.value)
     const realTime = $playbackSpeed > 0 ? t * $playbackSpeed : t
-    audioManager.activeElement.currentTime = realTime
+    audioManager.playbackElement.currentTime = realTime
     currentTime.set(realTime)
   }
 
   $effect(() => {
-    const handler = () => currentTime.set(audioManager.activeElement.currentTime)
+    const handler = () => currentTime.set(audioManager.playbackElement.currentTime)
     audioManager.a.addEventListener('timeupdate', handler)
     audioManager.b.addEventListener('timeupdate', handler)
     return () => {
@@ -140,7 +140,7 @@
 
   $effect(() => {
     const handler = () => {
-      duration = audioManager.activeElement.duration || 0
+      duration = audioManager.playbackElement.duration || 0
     }
     audioManager.a.addEventListener('durationchange', handler)
     audioManager.b.addEventListener('durationchange', handler)

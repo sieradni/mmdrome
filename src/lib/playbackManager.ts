@@ -66,7 +66,7 @@ class PlaybackManager {
       },
     )
 
-    setupPreloader(audioManager.activeElement, (trackId) => this._resolveUrl(trackId))
+    setupPreloader(() => audioManager.activeElement, (trackId) => this._resolveUrl(trackId))
 
     settings.subscribe((s) => {
       audioManager.crossfadeDuration = s.crossfadeDuration ?? 0

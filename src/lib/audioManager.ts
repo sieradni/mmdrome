@@ -187,12 +187,12 @@ class AudioManager {
     this._bgEl.currentTime = el.currentTime
     this._bgEl.playbackRate = this._speed
 
-    const bgEl = this._bgEl
-    bgEl.play().then(() => {
-      this._inBgMode = true
+    this._inBgMode = true
+    this._bgEl.play().then(() => {
       el.pause()
     }).catch(() => {
-      bgEl.volume = 0
+      this._inBgMode = false
+      this._bgEl!.volume = 0
     })
   }
 
@@ -230,6 +230,12 @@ class AudioManager {
 
     if (this._nextTrackUrl && this._crossfadeDuration > 0 && this._webAudioReady) {
       this._setupCrossfadeMonitor()
+      const el = this.activeElement
+      if (el.duration && isFinite(el.duration) && !el.paused && el.duration >= this._crossfadeDuration + 1) {
+        if (el.currentTime >= el.duration - this._crossfadeDuration) {
+          this._executeCrossfade()
+        }
+      }
     }
   }
 

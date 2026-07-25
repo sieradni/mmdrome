@@ -6,7 +6,7 @@ const MAX_CACHE_ENTRIES = 50
 
 export type TrackUrlResolver = (trackId: string) => string
 
-let audioEl: HTMLAudioElement | null = null
+let getAudioEl: (() => HTMLAudioElement) | null = null
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let urlForTrack: TrackUrlResolver | null = null
 let unsubCurrentTrack: (() => void) | null = null
@@ -14,9 +14,9 @@ let unsubSettings: (() => void) | null = null
 let blobUrls: Map<string, string> = new Map()
 let preloading = false
 
-export function setup(el: HTMLAudioElement, resolver: TrackUrlResolver): void {
+export function setup(getEl: () => HTMLAudioElement, resolver: TrackUrlResolver): void {
   teardown()
-  audioEl = el
+  getAudioEl = getEl
   urlForTrack = resolver
 
   let prevId: string | null = get(currentTrack)?.trackId ?? null
@@ -44,7 +44,7 @@ export function teardown(): void {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
   if (unsubCurrentTrack) { unsubCurrentTrack(); unsubCurrentTrack = null }
   if (unsubSettings) { unsubSettings(); unsubSettings = null }
-  audioEl = null
+  getAudioEl = null
   urlForTrack = null
 }
 
@@ -74,8 +74,9 @@ export async function cleanup(url: string): Promise<void> {
 }
 
 function poll(): void {
-  if (!audioEl || !audioEl.duration || audioEl.paused || preloading || !urlForTrack) return
-  const remaining = audioEl.duration - audioEl.currentTime
+  const el = getAudioEl?.()
+  if (!el || !el.duration || el.paused || preloading || !urlForTrack) return
+  const remaining = el.duration - el.currentTime
   if (remaining > 30) return
 
   const n = get(settings).preloadTracks ?? 0

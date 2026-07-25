@@ -1,5 +1,5 @@
 import { audioManager } from './audioManager'
-import { currentTrack, playbackState, setPlaybackState } from '../stores/appState'
+import { currentTrack, currentTime, playbackState, setPlaybackState } from '../stores/appState'
 import type { Track } from '../stores/appState'
 
 export function setupMediaSession(
@@ -59,7 +59,10 @@ export function setupMediaSession(
   const bgCheck = () => {
     if (audioManager.isInBgMode) {
       if (!bgInterval) {
-        bgInterval = setInterval(() => updatePositionState(), 250)
+        bgInterval = setInterval(() => {
+          updatePositionState()
+          currentTime.set(audioManager.playbackElement.currentTime)
+        }, 250)
       }
     } else {
       if (bgInterval) { clearInterval(bgInterval); bgInterval = null }
