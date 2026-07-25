@@ -343,33 +343,54 @@ class PlaybackManager {
   }
 
   reshuffleAutoQueue(): void {
+    this._rebuildAutoQueue()
+  }
+
+  private _rebuildAutoQueue(): void {
+    const MAX_AUTO_QUEUE = 50
     const q = get(queue)
-    let autoQueue = [...q.autoQueue]
+    const lib = get(library)
     const shuffle = get(shuffleEnabled)
+    const filters = get(autoQueueFilters)
+    const meta = get(metadataCache)
 
-    if (autoQueue.length === 0) {
-      this._replenishAutoQueue()
-      return
-    }
+    // Exclude user queue tracks, include history tracks
+    const userQueueSet = new Set(q.userQueue)
+    let candidates = lib.filter((t) => {
+      if (userQueueSet.has(t.trackId)) return false
+      return this._matchesAutoQueueFilters(t, filters, meta)
+    })
 
-    if (shuffle) {
-      for (let i = autoQueue.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1))
-          ;[autoQueue[i], autoQueue[j]] = [autoQueue[j], autoQueue[i]]
+    if (candidates.length > 0) {
+      if (shuffle) {
+        for (let i = candidates.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1))
+          ;[candidates[i], candidates[j]] = [candidates[j], candidates[i]]
+        }
+      } else {
+        const startIdx = this._autoQueueCursor % (lib.length || 1)
+        const libPos = new Map(lib.map((t, i) => [t.trackId, i]))
+        candidates.sort((a, b) => (libPos.get(a.trackId) ?? 0) - (libPos.get(b.trackId) ?? 0))
+        const splitAt = candidates.findIndex(t => (libPos.get(t.trackId) ?? 0) >= startIdx)
+        if (splitAt > 0) {
+          candidates = [...candidates.slice(splitAt), ...candidates.slice(0, splitAt)]
+        }
       }
-    } else {
-      const lib = get(library)
-      const libOrder = new Map(lib.map((t, i) => [t.trackId, i]))
-      autoQueue.sort((a, b) => (libOrder.get(a) ?? Infinity) - (libOrder.get(b) ?? Infinity))
     }
 
+    const fill = candidates.slice(0, MAX_AUTO_QUEUE)
+    if (!shuffle && fill.length > 0) {
+      const libPos = new Map(lib.map((t, i) => [t.trackId, i]))
+      const lastPickedPos = libPos.get(fill[fill.length - 1].trackId) ?? 0
+      this._autoQueueCursor = (lastPickedPos + 1) % (lib.length || 1)
+    }
+
+    const fillIds = fill.map((t) => t.trackId)
     queue.update((q) => {
-      const updated = { ...q, autoQueue }
+      const updated = { ...q, autoQueue: fillIds }
       saveQueue(updated)
       return updated
     })
-
-    this._replenishAutoQueue()
   }
 
   private _advanceQueue(): Track | null {
