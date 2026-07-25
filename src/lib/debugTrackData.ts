@@ -69,8 +69,19 @@ export async function debugFetchTrackData(trackId: string): Promise<DebugTrackDa
         webdavMatch = { path: match.path, filename: match.filename, size: match.size }
 
         try {
-          const buffer = await readMetadataChunk(webdavUrl, match.path, webdavUser, webdavToken, track.fileType)
-          webdavRawMetadata = await extractRawTagProperties(buffer)
+          const maxChunkSize = 8388608
+          let chunkSize = 262144
+          while (true) {
+            const buffer = await readMetadataChunk(webdavUrl, match.path, webdavUser, webdavToken, track.fileType, chunkSize)
+            const gotFullFile = buffer.byteLength < chunkSize
+            try {
+              webdavRawMetadata = await extractRawTagProperties(buffer)
+              break
+            } catch (err) {
+              if (chunkSize >= maxChunkSize || gotFullFile) throw err
+              chunkSize *= 2
+            }
+          }
         } catch (err) {
           webdavMetadataError = (err as Error).message
         }

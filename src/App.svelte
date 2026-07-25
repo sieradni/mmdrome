@@ -197,7 +197,7 @@
   </main>
 
   <!-- ─── Bottom Bar: Mini Player + Tab Nav ─── -->
-  <div class="flex flex-col">
+  <div class="flex flex-col overflow-hidden">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       onclick={miniPlayerTap}

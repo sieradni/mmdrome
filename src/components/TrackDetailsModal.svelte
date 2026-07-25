@@ -11,6 +11,13 @@
 
   const meta = $derived($metadataCache.get(track.trackId))
 
+  $effect(() => {
+    if (meta) {
+      rating = meta.rating ?? 0
+      loved = meta.loved ?? false
+    }
+  })
+
   function commit() {
     const existing = $metadataCache.get(track.trackId)
     const meta: LocalMetadataStore = {
