@@ -279,7 +279,7 @@
       </div>
 
       <!-- Track Info -->
-      <div class="space-y-0.5 px-6 pt-2">
+      <div class="w-full min-w-0 space-y-0.5 px-6 pt-2">
         <h2 class="text-xl font-bold text-primary truncate">{$currentTrack.title}</h2>
         <p class="text-sm text-muted truncate">{$currentTrack.artist}</p>
       </div>

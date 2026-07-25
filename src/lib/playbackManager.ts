@@ -12,6 +12,7 @@ import {
   settings,
   shuffleEnabled,
   playbackSpeed,
+  pitchOctaves,
   currentTime,
   setCurrentTrack,
   setPlaybackState,
@@ -19,8 +20,9 @@ import {
   pushHistory,
   autoQueueFilters,
   metadataCache,
+  updateSetting,
 } from '../stores/appState'
-import { saveQueue } from './db'
+import { saveQueue, getSetting, setSetting } from './db'
 import type { Track, AutoQueueFilters } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
 
@@ -35,8 +37,25 @@ class PlaybackManager {
 
     audioManager.onTrackEnd = () => this._handleCrossfadeEnd()
     audioManager.onSpeedChange = (speed: number) => playbackSpeed.set(speed)
+    audioManager.onPitchChange = (pitch: number) => pitchOctaves.set(pitch)
+
+    // Restore persisted speed/pitch/volume
+    const savedSpeed = await getSetting<number>('playbackSpeed')
+    const savedPitch = await getSetting<number>('pitchOctaves')
+    const savedGain = await getSetting<number>('masterGain')
+    if (savedSpeed !== undefined && savedSpeed !== 1) audioManager.setSpeed(savedSpeed)
+    if (savedPitch !== undefined && savedPitch !== 0) audioManager.setPitchOctaves(savedPitch)
+    if (savedGain !== undefined && audioManager.preamp) {
+      audioManager.preamp.gain.value = savedGain
+    }
+
+    // Persist speed/pitch on change
+    playbackSpeed.subscribe((v) => { setSetting('playbackSpeed', v) })
+    pitchOctaves.subscribe((v) => { setSetting('pitchOctaves', v) })
 
     setupMediaSession(
+      () => { this.play() },
+      () => { this.pause() },
       () => this.next(),
       () => this.prev(),
       (track) => {
@@ -49,11 +68,13 @@ class PlaybackManager {
     setupPreloader(audioManager.activeElement, (trackId) => this._resolveUrl(trackId))
 
     settings.subscribe((s) => {
-      if (!this._initialized) return
       const track = get(currentTrack)
-      if (track && s.replayGainMode) {
+      if (this._initialized && track && s.replayGainMode) {
         audioManager.setReplayGainMode(s.replayGainMode)
         audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
+      }
+      if (s.masterGain !== undefined && audioManager.preamp) {
+        audioManager.preamp.gain.value = s.masterGain
       }
     })
 
@@ -124,8 +145,15 @@ class PlaybackManager {
 
     await audioManager.ensureWebAudioReady()
 
+    const s = get(settings)
+    if (s.masterGain !== undefined && audioManager.preamp) {
+      audioManager.preamp.gain.value = s.masterGain
+    }
+
     const el = audioManager.activeElement
     currentTime.set(0)
+    setCurrentTrack(track)
+    audioManager.syncBgSource(url)
     el.src = url
     try {
       await el.play()
@@ -135,10 +163,8 @@ class PlaybackManager {
       return
     }
     audioManager.reapplyEffects()
-    setCurrentTrack(track)
     setPlaybackState('playing')
 
-    const s = get(settings)
     if (s.replayGainMode && s.replayGainMode !== 'off') {
       audioManager.setReplayGainMode(s.replayGainMode)
       audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
@@ -440,8 +466,12 @@ class PlaybackManager {
 
     const el = audioManager.activeElement
     if (el.src && el.src !== '') {
-      await el.play()
-      setPlaybackState('playing')
+      try {
+        await el.play()
+        setPlaybackState('playing')
+      } catch {
+        /* play rejected — autoplay policy or no user gesture */
+      }
     } else {
       await this._playFirstInQueue()
     }

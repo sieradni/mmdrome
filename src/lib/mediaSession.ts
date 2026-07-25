@@ -3,6 +3,8 @@ import { currentTrack, playbackState, setPlaybackState } from '../stores/appStat
 import type { Track } from '../stores/appState'
 
 export function setupMediaSession(
+  onPlay?: () => void,
+  onPause?: () => void,
   onNextTrack?: () => void,
   onPreviousTrack?: () => void,
   getCoverBlobUrl?: (track: Track) => string | undefined
@@ -34,7 +36,7 @@ export function setupMediaSession(
   })
 
   function updatePositionState() {
-    const el = audioManager.activeElement
+    const el = audioManager.playbackElement
     if (el.duration && isFinite(el.duration)) {
       try {
         navigator.mediaSession.setPositionState?.({
@@ -52,17 +54,38 @@ export function setupMediaSession(
   audioManager.a.addEventListener('timeupdate', onTimeUpdate)
   audioManager.b.addEventListener('timeupdate', onTimeUpdate)
 
+  // Poll position state during background mode (iOS timeupdate can stall)
+  let bgInterval: ReturnType<typeof setInterval> | null = null
+  const bgCheck = () => {
+    if (audioManager.isInBgMode) {
+      if (!bgInterval) {
+        bgInterval = setInterval(() => updatePositionState(), 250)
+      }
+    } else {
+      if (bgInterval) { clearInterval(bgInterval); bgInterval = null }
+    }
+  }
+  // Re-check bg mode whenever playback state changes
+  playbackState.subscribe(bgCheck)
+  currentTrack.subscribe(bgCheck)
+
   navigator.mediaSession.setActionHandler('play', () => {
-    const el = audioManager.activeElement
-    audioManager.ensureWebAudioReady().then(() => {
+    if (audioManager.isInBgMode) {
+      const el = audioManager.playbackElement
       el.play().catch(() => {})
       setPlaybackState('playing')
-    })
+    } else {
+      onPlay?.()
+    }
   })
 
   navigator.mediaSession.setActionHandler('pause', () => {
-    audioManager.activeElement.pause()
-    setPlaybackState('paused')
+    if (audioManager.isInBgMode) {
+      audioManager.playbackElement.pause()
+      setPlaybackState('paused')
+    } else {
+      onPause?.()
+    }
   })
 
   navigator.mediaSession.setActionHandler('nexttrack', () => {
@@ -75,7 +98,7 @@ export function setupMediaSession(
 
   navigator.mediaSession.setActionHandler('seekto', (details) => {
     if (details.seekTime != null) {
-      audioManager.activeElement.currentTime = details.seekTime
+      audioManager.playbackElement.currentTime = details.seekTime
       updatePositionState()
     }
   })

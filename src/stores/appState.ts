@@ -61,6 +61,8 @@ export interface SettingsMap {
   tapeMode?: boolean
   snapTolerance?: number
   replayGainMode?: 'off' | 'track' | 'album'
+  playbackSpeed?: number
+  pitchOctaves?: number
 }
 
 export const currentTrack = writable<Track | null>(null)
@@ -75,6 +77,7 @@ export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; 
 export const shuffleEnabled = writable<boolean>(false)
 export const currentTime = writable<number>(0)
 export const playbackSpeed = writable<number>(1)
+export const pitchOctaves = writable<number>(0)
 export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0 } })
 
 export interface AutoQueueFilters {
@@ -135,7 +138,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance', 'replayGainMode']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance', 'replayGainMode', 'playbackSpeed', 'pitchOctaves']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]

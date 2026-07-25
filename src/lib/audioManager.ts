@@ -66,6 +66,7 @@ class AudioManager {
   private _inBgMode = false
   onTrackEnd: (() => void) | null = null
   onSpeedChange: ((speed: number) => void) | null = null
+  onPitchChange: ((pitch: number) => void) | null = null
   private _isIOS: boolean
 
   constructor() {
@@ -76,6 +77,12 @@ class AudioManager {
     this.a.preservesPitch = false
     this.b.preservesPitch = false
     this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+
+    // Pre-create background element for iOS — keeps audio session warm
+    this._bgEl = new Audio()
+    this._bgEl.crossOrigin = 'anonymous'
+    this._bgEl.preservesPitch = false
+    this._bgEl.volume = 0 // silent until swapped in
   }
 
   get ctx(): AudioContext | null { return this._ctx }
@@ -93,12 +100,19 @@ class AudioManager {
 
   set snapTolerance(value: number) { this._snapTolerance = Math.max(0, value) }
 
+  get isInBgMode(): boolean { return this._inBgMode }
+
   get activeElement(): HTMLAudioElement {
     return this._activeElement === 'a' ? this.a : this.b
   }
 
   get standbyElement(): HTMLAudioElement {
     return this._activeElement === 'a' ? this.b : this.a
+  }
+
+  /** Returns the element currently driving audible playback (respects bg mode) */
+  get playbackElement(): HTMLAudioElement {
+    return this._inBgMode && this._bgEl ? this._bgEl : this.activeElement
   }
 
   get crossfadeDuration(): number {
@@ -122,35 +136,39 @@ class AudioManager {
         this._enterBackground()
       } else if (this._inBgMode) {
         this._exitBackground()
+      } else if (this._ctx && this._ctx.state !== 'running') {
+        /* _bgEl.play() may have failed — still try to revive context */
+        this._ctx.resume().catch(() => {})
       }
     })
   }
 
+  /** Keep the background element's source in sync so it can resume from a loaded buffer */
+  syncBgSource(url: string): void {
+    if (!this._bgEl || this._inBgMode) return
+    if (this._bgEl.src !== url) {
+      this._bgEl.src = url
+    }
+  }
+
   private _enterBackground(): void {
-    if (this._inBgMode) return
+    if (this._inBgMode || !this._bgEl) return
 
     const el = this.activeElement
     if (el.paused || el.ended || !el.src) return
 
     this._teardownTimeupdateMonitor()
 
-    this._inBgMode = true
-
-    if (!this._bgEl) {
-      this._bgEl = new Audio()
-      this._bgEl.crossOrigin = 'anonymous'
-      this._bgEl.preservesPitch = false
-    }
-
-    this._bgEl.src = el.src
+    this._bgEl.volume = 1
     this._bgEl.currentTime = el.currentTime
     this._bgEl.playbackRate = this._speed
 
-    this._bgEl.play().catch(() => {
-      this._inBgMode = false
+    this._bgEl.play().then(() => {
+      this._inBgMode = true
+      el.pause()
+    }).catch(() => {
+      this._bgEl.volume = 0
     })
-
-    el.pause()
   }
 
   private async _exitBackground(): Promise<void> {
@@ -165,8 +183,15 @@ class AudioManager {
     this._bgEl.removeAttribute('src')
     this._bgEl.load()
 
-    if (this._ctx && this._ctx.state !== 'running') {
-      try { await this._ctx.resume() } catch {}
+    if (this._ctx) {
+      if (this._ctx.state !== 'running') {
+        try {
+          await this._ctx.suspend()
+          await this._ctx.resume()
+        } catch {
+          /* Context irrecoverable — play() on element will use system audio */        }
+      }
+      this.reapplyEffects()
     }
 
     const el = this.activeElement
@@ -177,10 +202,26 @@ class AudioManager {
       el.currentTime = bgTime
       await el.play().catch(() => {})
     }
+
+    /* Re-arm crossfade monitor if next track is queued */
+    if (this._nextTrackUrl && this._crossfadeDuration > 0 && this._webAudioReady) {
+      this._setupTimeupdateMonitor()
+    }
   }
 
   async ensureWebAudioReady(): Promise<boolean> {
-    if (this._webAudioReady) return true
+    if (this._webAudioReady) {
+      if (this._ctx && this._ctx.state !== 'running') {
+        try {
+          /* Work around iOS zombie AudioContext: suspend then resume resets state */
+          await this._ctx.suspend()
+          await this._ctx.resume()
+        } catch {
+          /* Context irrecoverable — new context can't reuse these audio elements */
+        }
+      }
+      return true
+    }
     if (this._ctx) return true
 
     try {
@@ -266,6 +307,7 @@ class AudioManager {
     const snapped = this._snapOctaves(this._pitchOctaves)
     this._pitchOctaves = snapped
     this._applyPitch(snapped)
+    this.onPitchChange?.(this._pitchOctaves)
   }
 
   toggleTapeMode(): void {
@@ -453,6 +495,10 @@ class AudioManager {
     } else {
       this.a.playbackRate = this._speed
       this.b.playbackRate = this._speed
+    }
+
+    if (this._bgEl) {
+      this._bgEl.playbackRate = this._speed
     }
   }
 

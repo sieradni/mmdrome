@@ -1,5 +1,6 @@
 <script lang="ts">
   import { audioManager } from '../lib/audioManager'
+  import { updateSetting } from '../stores/appState'
 
   let { onback }: { onback: () => void } = $props()
 
@@ -9,6 +10,7 @@
     if (audioManager.preamp) {
       audioManager.preamp.gain.value = volume
     }
+    updateSetting('masterGain', volume)
   }
 </script>
 
