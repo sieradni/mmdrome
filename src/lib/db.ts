@@ -4,7 +4,6 @@ export interface LocalMetadataStore {
   trackId: string
   rating: number
   loved: boolean
-  filePath: string
   fileType: "mp3" | "flac" | "m4a" | "ogg" | "opus"
   syncStatus: "synced" | "pending_sync"
   lastModifiedLocally: number

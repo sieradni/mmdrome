@@ -152,7 +152,6 @@ async function processItem(item: QueueItem): Promise<void> {
         trackId: track.trackId,
         rating: meta.rating,
         loved: meta.loved,
-        filePath: track.filePath,
         fileType: track.fileType,
         syncStatus: "synced",
         lastModifiedLocally: Date.now(),
@@ -164,8 +163,12 @@ async function processItem(item: QueueItem): Promise<void> {
       })
       scannedCount++
     } catch {
-    failedCount++
-  }
+      const existing = get(metadataCache).get(track.trackId)
+      if (existing?.webdavPath) {
+        updateMetadata({ ...existing, webdavPath: undefined, webdavLastModified: undefined })
+      }
+      failedCount++
+    }
   updateScanProgress()
 }
 

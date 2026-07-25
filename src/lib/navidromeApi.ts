@@ -396,7 +396,6 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     albumId: song.albumId,
     year: song.year,
     duration: song.duration || 0,
-    filePath: song.id,
     fileType: normalizedType,
     composer: song.composer,
     bitrate: song.bitRate,
@@ -408,6 +407,11 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     albumArtist: song.albumArtist,
     trackNumber: song.track,
   }
+}
+
+export async function getNavidromeSong(config: NavidromeConfig, songId: string): Promise<NavidromeSong> {
+  const resp = await callSubsonic(config, 'getSong.view', { id: songId })
+  return resp.song
 }
 
 export async function testWebdavConnection(

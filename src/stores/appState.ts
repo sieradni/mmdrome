@@ -12,7 +12,6 @@ export interface Track {
   albumId?: string
   year?: number
   duration: number
-  filePath: string
   fileType: "mp3" | "flac" | "m4a" | "ogg" | "opus"
   composer?: string
   bitrate?: number
@@ -255,7 +254,6 @@ export function initMetadataForTracks(tracks: Track[]): void {
         trackId: t.trackId,
         rating: 0,
         loved: false,
-        filePath: t.filePath,
         fileType: t.fileType,
         syncStatus: 'synced',
         lastModifiedLocally: Date.now(),

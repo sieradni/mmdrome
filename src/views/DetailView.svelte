@@ -1,8 +1,28 @@
 <script lang="ts">
   import { currentTrack, metadataCache } from '../stores/appState'
+  import { get } from 'svelte/store'
+  import { debugFetchTrackData, type DebugTrackData } from '../lib/debugTrackData'
   import LazyThumb from '../components/LazyThumb.svelte'
 
   let { onback }: { onback: () => void } = $props()
+
+  let debugging = $state(false)
+  let debugData: DebugTrackData | null = $state(null)
+  let debugError: string | null = $state(null)
+
+  async function handleDebug() {
+    const track = get(currentTrack)
+    if (!track) return
+    debugging = true
+    debugError = null
+    try {
+      debugData = await debugFetchTrackData(track.trackId)
+    } catch (err) {
+      debugError = (err as Error).message
+    } finally {
+      debugging = false
+    }
+  }
 
   function formatDate(ts?: number): string {
     if (ts == null) return '\u2014'
@@ -157,13 +177,92 @@
           </div>
         {/if}
 
-        {#if track.filePath}
+        {#if track.trackId}
           <div>
-            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">File Path</p>
-            <p class="truncate text-xs text-muted/70">{track.filePath}</p>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Navidrome ID</p>
+            <p class="truncate text-xs text-muted/70">{track.trackId.replace(/^navidrome-/, '')}</p>
           </div>
         {/if}
       </div>
+
+      <div class="px-4 pb-4">
+        <button
+          onclick={handleDebug}
+          disabled={debugging}
+          class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-3 py-2 text-sm text-muted transition-colors hover:text-primary disabled:opacity-50"
+        >
+          {#if debugging}
+            <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10" opacity="0.25"></circle>
+              <path d="M12 2v4m0 12v4M4 12h4m12 0h4" opacity="0.25"></path>
+            </svg>
+            Fetching...
+          {:else}
+            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2l3 7h7l-5.5 4 2 7-5.5-4-5.5 4 2-7-5.5-4h7z"></path>
+            </svg>
+            Debug Track Data
+          {/if}
+        </button>
+      </div>
+
+      {#if debugError}
+        <div class="px-4 pb-4">
+          <pre class="text-xs text-red-400 whitespace-pre-wrap">{debugError}</pre>
+        </div>
+      {/if}
+
+      {#if debugData}
+        <div class="px-4 pb-4 space-y-4">
+          {#if debugData.navidromeError}
+            <div>
+              <p class="text-[10px] font-medium text-red-400 uppercase tracking-wider">Navidrome Error</p>
+              <pre class="text-xs text-red-400 whitespace-pre-wrap">{debugData.navidromeError}</pre>
+            </div>
+          {:else if debugData.navidromeSong}
+            <div>
+              <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Navidrome Song (replayGain focus)</p>
+              <pre class="text-xs text-primary whitespace-pre-wrap">{JSON.stringify({
+                id: debugData.navidromeSong.id,
+                title: debugData.navidromeSong.title,
+                artist: debugData.navidromeSong.artist,
+                album: debugData.navidromeSong.album,
+                path: debugData.navidromeSong.path,
+                replayGain: debugData.navidromeSong.replayGain,
+              }, null, 2)}</pre>
+            </div>
+          {/if}
+
+          {#if debugData.webdavMatchError}
+            <div>
+              <p class="text-[10px] font-medium text-red-400 uppercase tracking-wider">WebDAV Match Error</p>
+              <pre class="text-xs text-red-400 whitespace-pre-wrap">{debugData.webdavMatchError}</pre>
+            </div>
+          {:else if debugData.webdavMatch}
+            <div>
+              <p class="text-[10px] font-medium text-muted uppercase tracking-wider">WebDAV Match</p>
+              <pre class="text-xs text-primary whitespace-pre-wrap">{JSON.stringify(debugData.webdavMatch, null, 2)}</pre>
+            </div>
+          {/if}
+
+          {#if debugData.webdavMetadataError}
+            <div>
+              <p class="text-[10px] font-medium text-red-400 uppercase tracking-wider">WebDAV Metadata Error</p>
+              <pre class="text-xs text-red-400 whitespace-pre-wrap">{debugData.webdavMetadataError}</pre>
+            </div>
+          {:else if debugData.webdavRawMetadata}
+            <div>
+              <p class="text-[10px] font-medium text-muted uppercase tracking-wider">WebDAV Raw Tags</p>
+              <pre class="text-xs text-primary whitespace-pre-wrap">{JSON.stringify(debugData.webdavRawMetadata, null, 2)}</pre>
+            </div>
+          {/if}
+
+          <div>
+            <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Cached Metadata</p>
+            <pre class="text-xs text-primary whitespace-pre-wrap">{JSON.stringify(debugData.cachedMeta, null, 2)}</pre>
+          </div>
+        </div>
+      {/if}
     {/if}
 
     <div class="h-8"></div>

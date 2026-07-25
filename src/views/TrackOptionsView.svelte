@@ -25,13 +25,14 @@
       trackId: track.trackId,
       rating,
       loved,
-      filePath: existing?.filePath ?? track.filePath,
       fileType: existing?.fileType ?? track.fileType,
       syncStatus: 'pending_sync',
       lastModifiedLocally: Date.now(),
       comments: existing?.comments ?? track.comments,
       playCount: existing?.playCount ?? track.playCount,
       skipCount: existing?.skipCount ?? track.skipCount,
+      webdavPath: existing?.webdavPath,
+      webdavLastModified: existing?.webdavLastModified,
     }
     updateMetadata(meta)
   }
@@ -124,7 +125,7 @@
         </div>
         <div>
           <p class="text-xs font-medium text-muted uppercase tracking-wider">File Size</p>
-          <p class="text-sm text-primary">{meta?.filePath ? 'Stored locally' : '\u2014'}</p>
+          <p class="text-sm text-primary">{meta ? 'Stored locally' : '\u2014'}</p>
         </div>
       </div>
 

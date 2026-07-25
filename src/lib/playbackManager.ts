@@ -104,7 +104,7 @@ class PlaybackManager {
     if (!config) return ''
     const track = this._findTrack(trackId)
     if (!track) return ''
-    return buildStreamUrl(config, track.filePath)
+    return buildStreamUrl(config, track.trackId.replace(/^navidrome-/, ''))
   }
 
   private _findTrack(trackId: string): Track | undefined {

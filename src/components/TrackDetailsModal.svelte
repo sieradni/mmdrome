@@ -16,13 +16,14 @@
       trackId: track.trackId,
       rating,
       loved,
-      filePath: existing?.filePath ?? track.filePath,
       fileType: existing?.fileType ?? track.fileType,
       syncStatus: 'pending_sync',
       lastModifiedLocally: Date.now(),
       comments: existing?.comments ?? track.comments,
       playCount: existing?.playCount ?? track.playCount,
       skipCount: existing?.skipCount ?? track.skipCount,
+      webdavPath: existing?.webdavPath,
+      webdavLastModified: existing?.webdavLastModified,
     }
     updateMetadata(meta)
   }
@@ -169,8 +170,8 @@
       {/if}
 
       <div>
-        <p class="text-xs font-medium text-muted">File Path</p>
-        <p class="truncate text-sm text-primary" title={track.filePath}>{track.filePath}</p>
+        <p class="text-xs font-medium text-muted">Navidrome ID</p>
+        <p class="truncate text-sm text-primary" title={track.trackId}>{track.trackId.replace(/^navidrome-/, '')}</p>
       </div>
 
       <div class="grid grid-cols-2 gap-x-4 gap-y-2">

@@ -82,19 +82,28 @@ async function webdavPutAtomic(
   }
   if (etag) moveHeaders["If-Match"] = etag
 
-  const moveRes = await fetch(buildWebdavUrl(baseUrl, tempPath), {
-    method: "MOVE",
-    headers: moveHeaders,
-  })
+  try {
+    const moveRes = await fetch(buildWebdavUrl(baseUrl, tempPath), {
+      method: "MOVE",
+      headers: moveHeaders,
+    })
 
-  // Clean up temp file on MOVE failure
-  if (!moveRes.ok) {
+    if (!moveRes.ok) {
+      // Clean up temp file on MOVE failure
+      await fetch(buildWebdavUrl(baseUrl, tempPath), {
+        method: "DELETE",
+        headers: authHeaders,
+      }).catch(() => {})
+      if (moveRes.status === 412) throw new ConflictError(`File changed since GET for ${filePath}`)
+      throw new Error(`WebDAV MOVE failed (${moveRes.status}) for ${filePath}`)
+    }
+  } catch (err) {
+    // Attempt cleanup on any error (CORS failure, network error, etc.)
     await fetch(buildWebdavUrl(baseUrl, tempPath), {
       method: "DELETE",
       headers: authHeaders,
     }).catch(() => {})
-    if (moveRes.status === 412) throw new ConflictError(`File changed since GET for ${filePath}`)
-    throw new Error(`WebDAV MOVE failed (${moveRes.status}) for ${filePath}`)
+    throw err
   }
 }
 
@@ -210,7 +219,7 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
 
   for (const track of pending) {
     try {
-      const davPath = track.webdavPath || track.filePath
+      const davPath = track.webdavPath || track.trackId.replace(/^navidrome-/, '')
 
       // GET with ETag for concurrency detection
       const { data: raw, etag } = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)

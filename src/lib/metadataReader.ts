@@ -188,11 +188,9 @@ export function matchTrackToWebdav(
 function getMetadataChunkSize(fileType: string): number {
   switch (fileType) {
     case "mp3":
-      return 262144
     case "flac":
     case "ogg":
     case "opus":
-      return 65536
     case "m4a":
       return 262144
     default:
@@ -206,14 +204,15 @@ export async function readMetadataChunk(
   user: string,
   token: string,
   fileType: string,
+  chunkSize?: number,
 ): Promise<ArrayBuffer> {
   const url = buildWebdavUrl(baseUrl, filePath)
-  const chunkSize = getMetadataChunkSize(fileType)
+  const size = chunkSize ?? getMetadataChunkSize(fileType)
   const res = await fetch(url, {
     method: "GET",
     headers: {
       ...authHeaders(user, token),
-      Range: `bytes=0-${chunkSize - 1}`,
+      Range: `bytes=0-${size - 1}`,
     },
   })
   if (!res.ok) {
@@ -244,10 +243,12 @@ export async function extractMetadataFromBuffer(
   let comments = ''
   let playCount = 0
   let skipCount = 0
+  let taglibOpened = false
 
   try {
     const taglib = await getTagLib()
     const file = await taglib.open(new Uint8Array(buffer))
+    taglibOpened = true
 
     const r = file.getRating()
     if (r !== undefined && r !== null) {
@@ -289,8 +290,8 @@ export async function extractMetadataFromBuffer(
     }
 
     file.dispose()
-  } catch {
-    // file too small or corrupt — metadata stays at defaults
+  } catch (e) {
+    if (!taglibOpened) throw e
   }
 
   return { rating, loved, comments: comments || undefined, playCount: playCount || undefined, skipCount: skipCount || undefined }
@@ -303,8 +304,19 @@ export async function readFileMetadata(
   token: string,
   fileType: string,
 ): Promise<FileMetadata> {
-  const buffer = await readMetadataChunk(baseUrl, filePath, user, token, fileType)
-  return extractMetadataFromBuffer(buffer, fileType)
+  const maxChunkSize = 8388608
+  let chunkSize = getMetadataChunkSize(fileType)
+
+  while (true) {
+    const buffer = await readMetadataChunk(baseUrl, filePath, user, token, fileType, chunkSize)
+    const gotFullFile = buffer.byteLength < chunkSize
+    try {
+      return await extractMetadataFromBuffer(buffer, fileType)
+    } catch (err) {
+      if (chunkSize >= maxChunkSize || gotFullFile) throw err
+      chunkSize *= 2
+    }
+  }
 }
 
 export async function readFileMetadataWithIndex(
@@ -319,4 +331,18 @@ export async function readFileMetadataWithIndex(
 
   const meta = await readFileMetadata(baseUrl, match.path, user, token, track.fileType)
   return { ...meta, webdavPath: match.path }
+}
+
+export async function extractRawTagProperties(buffer: ArrayBuffer): Promise<Record<string, unknown>> {
+  const taglib = await getTagLib()
+  const file = await taglib.open(new Uint8Array(buffer))
+
+  const props = file.properties()
+  const result: Record<string, unknown> = {
+    getRating: file.getRating(),
+    properties: { ...props },
+  }
+
+  file.dispose()
+  return result
 }
