@@ -36,6 +36,7 @@ class PlaybackManager {
     await audioManager.init()
 
     audioManager.onTrackEnd = () => this._handleCrossfadeEnd()
+    audioManager.onBgTrackEnd = () => this._onBgTrackEnd()
     audioManager.onSpeedChange = (speed: number) => playbackSpeed.set(speed)
     audioManager.onPitchChange = (pitch: number) => pitchOctaves.set(pitch)
 
@@ -408,6 +409,37 @@ class PlaybackManager {
       const nextTrack = this._advanceQueue()
       if (nextTrack) {
         await this._loadAndPlay(nextTrack)
+      }
+    } finally {
+      this._handlingEnd = false
+    }
+  }
+
+  /** Track ended while in iOS background mode — advance queue and play next on _bgEl */
+  private async _onBgTrackEnd(): Promise<void> {
+    if (this._handlingEnd) return
+    if (!audioManager.isInBgMode) return /* _exitBackground already handled it */
+    this._handlingEnd = true
+    try {
+      const nextTrack = this._advanceQueue()
+      if (nextTrack) {
+        const url = this._resolveUrl(nextTrack.trackId)
+        if (url) {
+          await audioManager.playBg(url)
+          if (!audioManager.isInBgMode) {
+            /* User returned to foreground during playBg — transfer to active element */
+            const el = audioManager.activeElement
+            el.src = url
+            el.currentTime = 0
+            await el.play().catch(() => {})
+          } else {
+            audioManager.activeElement.src = url
+          }
+          setCurrentTrack(nextTrack)
+          currentTime.set(0)
+          setPlaybackState('playing')
+          this._setupNextTrack()
+        }
       }
     } finally {
       this._handlingEnd = false

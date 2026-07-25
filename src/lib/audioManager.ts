@@ -65,6 +65,8 @@ class AudioManager {
   private _bgEl: HTMLAudioElement | null = null
   private _inBgMode = false
   onTrackEnd: (() => void) | null = null
+  /** Fires when _bgEl ends while in background mode */
+  onBgTrackEnd: (() => void) | null = null
   onSpeedChange: ((speed: number) => void) | null = null
   onPitchChange: ((pitch: number) => void) | null = null
   private _isIOS: boolean
@@ -82,7 +84,13 @@ class AudioManager {
     this._bgEl = new Audio()
     this._bgEl.crossOrigin = 'anonymous'
     this._bgEl.preservesPitch = false
+    this._bgEl.preload = 'metadata' // avoid loading full track data until actually needed
     this._bgEl.volume = 0 // silent until swapped in
+    this._bgEl.addEventListener('ended', () => {
+      if (this._inBgMode) {
+        this.onBgTrackEnd?.()
+      }
+    })
   }
 
   get ctx(): AudioContext | null { return this._ctx }
@@ -148,6 +156,20 @@ class AudioManager {
     if (!this._bgEl || this._inBgMode) return
     if (this._bgEl.src !== url) {
       this._bgEl.src = url
+    }
+  }
+
+  /** Load and play a URL on the background element (used during bg track advancement) */
+  async playBg(url: string): Promise<void> {
+    if (!this._bgEl || !this._inBgMode) return
+    this._bgEl.src = url
+    this._bgEl.currentTime = 0
+    this._bgEl.volume = 1
+    this._bgEl.playbackRate = this._speed
+    try {
+      await this._bgEl.play()
+    } catch {
+      /* play may fail in rare cases — carry on */
     }
   }
 
