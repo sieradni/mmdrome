@@ -159,6 +159,9 @@ class AudioManager {
 
     this._teardownTimeupdateMonitor()
 
+    if (!this._bgEl.src || this._bgEl.src !== el.src) {
+      this._bgEl.src = el.src
+    }
     this._bgEl.volume = 1
     this._bgEl.currentTime = el.currentTime
     this._bgEl.playbackRate = this._speed
