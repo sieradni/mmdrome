@@ -1,6 +1,6 @@
 import { get } from 'svelte/store'
 import { audioManager } from './audioManager'
-import { setup as setupPreloader, teardown as teardownPreloader } from './preloader'
+import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc } from './preloader'
 import { setupMediaSession } from './mediaSession'
 import { getCoverUrl } from './coverArtCache'
 import { getCachedConfig, buildStreamUrl } from './navidromeApi'
@@ -69,6 +69,7 @@ class PlaybackManager {
     setupPreloader(audioManager.activeElement, (trackId) => this._resolveUrl(trackId))
 
     settings.subscribe((s) => {
+      audioManager.crossfadeDuration = s.crossfadeDuration ?? 0
       const track = get(currentTrack)
       if (this._initialized && track && s.replayGainMode) {
         audioManager.setReplayGainMode(s.replayGainMode)
@@ -140,9 +141,11 @@ class PlaybackManager {
 
   private async _loadAndPlay(track: Track): Promise<void> {
     this._promoteActiveTrack()
+    audioManager.cancelNextTrack()
 
-    const url = this._resolveUrl(track.trackId)
-    if (!url) return
+    const rawUrl = this._resolveUrl(track.trackId)
+    if (!rawUrl) return
+    const url = await resolveSrc(rawUrl)
 
     await audioManager.ensureWebAudioReady()
 
@@ -173,16 +176,17 @@ class PlaybackManager {
       audioManager.applyReplayGain()
     }
 
-    this._setupNextTrack()
+    await this._setupNextTrack()
   }
 
-  private _setupNextTrack(): void {
+  private async _setupNextTrack(): Promise<void> {
     const q = get(queue)
     const combined = [...q.userQueue, ...q.autoQueue]
     const nextIdx = q.activeIndex + 1
     if (nextIdx >= 0 && nextIdx < combined.length) {
-      const url = this._resolveUrl(combined[nextIdx])
-      if (url) {
+      const rawUrl = this._resolveUrl(combined[nextIdx])
+      if (rawUrl) {
+        const url = await resolveSrc(rawUrl)
         let linearGain: number | undefined
         const nextTrack = this._findTrack(combined[nextIdx])
         if (nextTrack) {
@@ -438,7 +442,7 @@ class PlaybackManager {
           setCurrentTrack(nextTrack)
           currentTime.set(0)
           setPlaybackState('playing')
-          this._setupNextTrack()
+          await this._setupNextTrack()
         }
       }
     } finally {
@@ -446,7 +450,7 @@ class PlaybackManager {
     }
   }
 
-  private _handleCrossfadeEnd(): void {
+  private async _handleCrossfadeEnd(): Promise<void> {
     if (this._handlingEnd) return
     this._handlingEnd = true
     try {
@@ -459,6 +463,7 @@ class PlaybackManager {
         const track = this._findTrack(currentId)
         if (track) setCurrentTrack(track)
       }
+      await this._setupNextTrack()
     } finally {
       this._handlingEnd = false
     }
@@ -565,6 +570,7 @@ class PlaybackManager {
 
   destroy(): void {
     teardownPreloader()
+    audioManager.cancelNextTrack()
     audioManager.onTrackEnd = null
   }
 }

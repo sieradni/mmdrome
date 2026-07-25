@@ -57,11 +57,10 @@ class AudioManager {
   private _nextTrackUrl: string | null = null
   private _nextTrackReplayGainLinear: number | null = null
   private _transitionArmed = false
+  private _crossfadeInterval: ReturnType<typeof setInterval> | null = null
   private _replayGainMode: 'off' | 'track' | 'album' = 'off'
   private _currentTrackGainDb: number | null = null
   private _currentAlbumGainDb: number | null = null
-  private _timeupdateEl: HTMLAudioElement | null = null
-  private _timeupdateHandler: ((e: Event) => void) | null = null
   private _bgEl: HTMLAudioElement | null = null
   private _inBgMode = false
   onTrackEnd: (() => void) | null = null
@@ -179,7 +178,7 @@ class AudioManager {
     const el = this.activeElement
     if (el.paused || el.ended || !el.src) return
 
-    this._teardownTimeupdateMonitor()
+    this._teardownCrossfadeMonitor()
 
     if (!this._bgEl.src || this._bgEl.src !== el.src) {
       this._bgEl.src = el.src
@@ -188,11 +187,12 @@ class AudioManager {
     this._bgEl.currentTime = el.currentTime
     this._bgEl.playbackRate = this._speed
 
-    this._bgEl.play().then(() => {
+    const bgEl = this._bgEl
+    bgEl.play().then(() => {
       this._inBgMode = true
       el.pause()
     }).catch(() => {
-      this._bgEl.volume = 0
+      bgEl.volume = 0
     })
   }
 
@@ -228,9 +228,8 @@ class AudioManager {
       await el.play().catch(() => {})
     }
 
-    /* Re-arm crossfade monitor if next track is queued */
     if (this._nextTrackUrl && this._crossfadeDuration > 0 && this._webAudioReady) {
-      this._setupTimeupdateMonitor()
+      this._setupCrossfadeMonitor()
     }
   }
 
@@ -353,13 +352,17 @@ class AudioManager {
     this._applyPitch(this._pitchOctaves)
   }
 
+  cancelNextTrack(): void {
+    this.setNextTrack(null)
+  }
+
   setNextTrack(url: string | null, replayGainLinear?: number): void {
     this._nextTrackUrl = url
     this._nextTrackReplayGainLinear = replayGainLinear ?? null
     if (url && this._crossfadeDuration > 0 && this._webAudioReady) {
-      this._setupTimeupdateMonitor()
+      this._setupCrossfadeMonitor()
     } else {
-      this._teardownTimeupdateMonitor()
+      this._teardownCrossfadeMonitor()
     }
   }
 
@@ -549,33 +552,30 @@ class AudioManager {
     return bestDist <= this._snapTolerance ? best : octaves
   }
 
-  private _setupTimeupdateMonitor(): void {
-    this._teardownTimeupdateMonitor()
+  private _setupCrossfadeMonitor(): void {
+    this._teardownCrossfadeMonitor()
     if (!this._webAudioReady || this._crossfadeDuration <= 0 || !this._nextTrackUrl) return
 
-    const el = this.activeElement
-    this._timeupdateEl = el
     this._transitionArmed = false
-    this._timeupdateHandler = () => {
+    this._crossfadeInterval = setInterval(() => {
       if (!this._nextTrackUrl || this._transitionArmed) return
-      if (!el.duration || !isFinite(el.duration)) return
+      const el = this.activeElement
+      if (!el.duration || !isFinite(el.duration) || el.paused) return
 
+      if (el.duration < this._crossfadeDuration + 1) return
       const transitionPoint = el.duration - this._crossfadeDuration
-      if (transitionPoint <= 0) return
 
       if (el.currentTime >= transitionPoint) {
         this._executeCrossfade()
       }
-    }
-    el.addEventListener('timeupdate', this._timeupdateHandler)
+    }, 100)
   }
 
-  private _teardownTimeupdateMonitor(): void {
-    if (this._timeupdateEl && this._timeupdateHandler) {
-      this._timeupdateEl.removeEventListener('timeupdate', this._timeupdateHandler)
+  private _teardownCrossfadeMonitor(): void {
+    if (this._crossfadeInterval !== null) {
+      clearInterval(this._crossfadeInterval)
+      this._crossfadeInterval = null
     }
-    this._timeupdateEl = null
-    this._timeupdateHandler = null
     this._transitionArmed = false
   }
 
@@ -613,7 +613,10 @@ class AudioManager {
     fadeInGain.gain.setValueAtTime(0.001, now)
     fadeInGain.gain.exponentialRampToValueAtTime(1.0, now + fadeDuration)
 
-    this._teardownTimeupdateMonitor()
+    const oldEl = this.activeElement
+    oldEl.pause()
+
+    this._teardownCrossfadeMonitor()
     this._activeElement = this._activeElement === 'a' ? 'b' : 'a'
     this._nextTrackUrl = null
     this._nextTrackReplayGainLinear = null
