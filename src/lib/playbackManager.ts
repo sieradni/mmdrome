@@ -66,7 +66,7 @@ class PlaybackManager {
       },
     )
 
-    setupPreloader(() => audioManager.activeElement, (trackId) => this._resolveUrl(trackId))
+    setupPreloader(() => audioManager.playbackElement, (trackId) => this._resolveUrl(trackId))
 
     settings.subscribe((s) => {
       audioManager.crossfadeDuration = s.crossfadeDuration ?? 0
@@ -77,6 +77,7 @@ class PlaybackManager {
       }
       if (s.masterGain !== undefined && audioManager.preamp) {
         audioManager.preamp.gain.value = s.masterGain
+        audioManager.syncBgVolume?.()
       }
     })
 
@@ -112,7 +113,10 @@ class PlaybackManager {
       if (el.ended) return
       setPlaybackState('paused')
     }
-    const onEnded = () => this._onTrackEnded()
+    const onEnded = (e: Event) => {
+      if ((e.target as HTMLAudioElement) !== audioManager.activeElement) return
+      this._onTrackEnded()
+    }
 
     audioManager.a.addEventListener('play', onPlay)
     audioManager.a.addEventListener('pause', onPause)
@@ -429,6 +433,13 @@ class PlaybackManager {
       if (nextTrack) {
         const url = this._resolveUrl(nextTrack.trackId)
         if (url) {
+          // Apply ReplayGain for the new track so _bgEl volume reflects it
+          const s = get(settings)
+          if (s.replayGainMode && s.replayGainMode !== 'off') {
+            audioManager.applyReplayGain(nextTrack.replayGain, nextTrack.albumReplayGain)
+          } else {
+            audioManager.applyReplayGain()
+          }
           await audioManager.playBg(url)
           if (!audioManager.isInBgMode) {
             /* User returned to foreground during playBg — transfer to active element */
