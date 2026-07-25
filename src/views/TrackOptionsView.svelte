@@ -49,13 +49,6 @@
     return segs
   }
 
-  function formatTime(sec: number): string {
-    if (!isFinite(sec) || sec < 0) return '0:00'
-    const m = Math.floor(sec / 60)
-    const s = Math.floor(sec % 60)
-    return `${m}:${s.toString().padStart(2, '0')}`
-  }
-
   function toggleLoved() {
     loved = !loved
     commit()
@@ -79,54 +72,7 @@
 
         <h2 class="mt-4 text-lg font-bold text-primary text-center truncate max-w-full">{$currentTrack.title}</h2>
         <p class="text-sm text-muted text-center truncate max-w-full">{$currentTrack.artist}</p>
-      </div>
-
-      <!-- Info Grid -->
-      <div class="mt-6 grid grid-cols-2 gap-x-4 gap-y-2">
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">Album</p>
-          <p class="truncate text-sm text-primary">{$currentTrack.album}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">Album Artist</p>
-          <p class="truncate text-sm text-primary">{$currentTrack.albumArtist || '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">Track #</p>
-          <p class="text-sm text-primary">{$currentTrack.trackNumber ?? '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">Composer</p>
-          <p class="truncate text-sm text-primary">{$currentTrack.composer || '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">Year</p>
-          <p class="text-sm text-primary">{$currentTrack.year ?? '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">Duration</p>
-          <p class="text-sm text-primary">{formatTime($currentTrack.duration)}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">Format</p>
-          <p class="text-sm text-primary uppercase">{$currentTrack.fileType}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">Bitrate</p>
-          <p class="text-sm text-primary">{$currentTrack.bitrate != null ? `${$currentTrack.bitrate} kbps` : '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">Track Gain</p>
-          <p class="text-sm text-primary">{$currentTrack.replayGain != null ? `${$currentTrack.replayGain} dB` : '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">Album Gain</p>
-          <p class="text-sm text-primary">{$currentTrack.albumReplayGain != null ? `${$currentTrack.albumReplayGain} dB` : '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted uppercase tracking-wider">File Size</p>
-          <p class="text-sm text-primary">{meta ? 'Stored locally' : '\u2014'}</p>
-        </div>
+        <p class="text-xs text-muted/60 text-center truncate max-w-full">{$currentTrack.album}</p>
       </div>
 
       <!-- Rating -->
@@ -186,21 +132,6 @@
           {/if}
           <span>{loved ? 'Loved' : 'Not loved'}</span>
         </button>
-      </div>
-
-      <!-- Play / Skip Counts -->
-      <div class="mt-6 space-y-2">
-        <p class="text-xs font-medium text-muted uppercase tracking-wider">Playback Stats</p>
-        <div class="grid grid-cols-2 gap-x-4 gap-y-2">
-          <div>
-            <p class="text-xs text-muted">Play Count</p>
-            <p class="text-sm text-primary">{meta?.playCount ?? $currentTrack.playCount ?? 0}</p>
-          </div>
-          <div>
-            <p class="text-xs text-muted">Skip Count</p>
-            <p class="text-sm text-primary">{meta?.skipCount ?? $currentTrack.skipCount ?? 0}</p>
-          </div>
-        </div>
       </div>
 
       <!-- Nav Buttons -->

@@ -2,6 +2,7 @@
   import { metadataCache, updateMetadata } from '../stores/appState'
   import type { Track } from '../stores/appState'
   import type { LocalMetadataStore } from '../lib/db'
+  import TrackDetailPanel from './TrackDetailPanel.svelte'
 
   let { track, onclose }: { track: Track; onclose: () => void } = $props()
 
@@ -46,27 +47,6 @@
     return segs
   }
 
-  function formatDate(ts?: number): string {
-    if (ts == null) return '\u2014'
-    return new Date(ts).toLocaleString()
-  }
-
-  function formatSize(bytes?: number): string {
-    if (bytes == null) return '\u2014'
-    const units = ['B', 'KB', 'MB', 'GB']
-    let i = 0
-    let s = bytes
-    while (s >= 1024 && i < units.length - 1) { s /= 1024; i++ }
-    return `${s.toFixed(1)} ${units[i]}`
-  }
-
-  function formatTime(sec: number): string {
-    if (!isFinite(sec) || sec < 0) return '0:00'
-    const m = Math.floor(sec / 60)
-    const s = Math.floor(sec % 60)
-    return `${m}:${s.toString().padStart(2, '0')}`
-  }
-
   function toggleLoved() {
     loved = !loved
     commit()
@@ -81,7 +61,7 @@
 >
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div
-    class="mx-4 w-full max-w-lg rounded-xl border border-white/10 bg-surface shadow-2xl"
+    class="mx-4 w-full max-w-lg rounded-xl border border-white/10 bg-surface shadow-2xl max-h-[80vh] overflow-y-auto"
     onclick={(e) => e.stopPropagation()}
   >
     <!-- Header -->
@@ -101,89 +81,8 @@
       </button>
     </div>
 
-    <!-- Metadata -->
-    <div class="space-y-2 px-5 py-4">
-      <div class="grid grid-cols-2 gap-x-4 gap-y-2">
-        <div>
-          <p class="text-xs font-medium text-muted">Artist</p>
-          <p class="truncate text-sm text-primary" title={track.artist}>{track.artist}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Album Artist</p>
-          <p class="truncate text-sm text-primary" title={track.albumArtist || ''}>{track.albumArtist || '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Album</p>
-          <p class="truncate text-sm text-primary" title={track.album}>{track.album}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Track #</p>
-          <p class="text-sm text-primary">{track.trackNumber ?? '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Composer</p>
-          <p class="truncate text-sm text-primary" title={track.composer || ''}>{track.composer || '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Year</p>
-          <p class="text-sm text-primary">{track.year ?? '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Format</p>
-          <p class="text-sm text-primary uppercase">{track.fileType}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Bitrate</p>
-          <p class="text-sm text-primary">{track.bitrate != null ? `${track.bitrate} kbps` : '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Size</p>
-          <p class="text-sm text-primary">{formatSize(track.size)}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Duration</p>
-          <p class="text-sm text-primary">{formatTime(track.duration)}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Track Gain</p>
-          <p class="text-sm text-primary">{track.replayGain != null ? `${track.replayGain} dB` : '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Album Gain</p>
-          <p class="text-sm text-primary">{track.albumReplayGain != null ? `${track.albumReplayGain} dB` : '\u2014'}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Play Count</p>
-          <p class="text-sm text-primary">{meta?.playCount ?? track.playCount ?? 0}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Skip Count</p>
-          <p class="text-sm text-primary">{meta?.skipCount ?? track.skipCount ?? 0}</p>
-        </div>
-      </div>
-
-      {#if track.comments}
-        <div>
-          <p class="text-xs font-medium text-muted">Comments</p>
-          <p class="text-sm text-primary whitespace-pre-wrap">{track.comments}</p>
-        </div>
-      {/if}
-
-      <div>
-        <p class="text-xs font-medium text-muted">Navidrome ID</p>
-        <p class="truncate text-sm text-primary" title={track.trackId}>{track.trackId.replace(/^navidrome-/, '')}</p>
-      </div>
-
-      <div class="grid grid-cols-2 gap-x-4 gap-y-2">
-        <div>
-          <p class="text-xs font-medium text-muted">Created</p>
-          <p class="text-sm text-primary">{formatDate(track.createdAt)}</p>
-        </div>
-        <div>
-          <p class="text-xs font-medium text-muted">Modified</p>
-          <p class="text-sm text-primary">{formatDate(track.modifiedAt)}</p>
-        </div>
-      </div>
+    <div class="px-5 py-4">
+      <TrackDetailPanel {track} {meta} />
     </div>
 
     <!-- Rating & Loved -->
@@ -221,6 +120,7 @@
             type="range"
             min="0"
             max="100"
+            step="10"
             bind:value={rating}
             onchange={commit}
             class="h-1 flex-1 accent-yellow-500"
