@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": ["AGENTS.md"],
+  "references": {
+    "project-docs": {
+      "path": ".",
+      "description": "Core project files and documentation, including AGENTS.md knowledge base. This documentation should always be modified with new or changed information."
+    }
+  }
+}
