@@ -108,9 +108,10 @@ class PlaybackManager {
 
   private _attachPlaybackListeners(): void {
     const onPlay = () => setPlaybackState('playing')
-    const onPause = () => {
-      const el = audioManager.activeElement
-      if (el.ended) return
+    const onPause = (e: Event) => {
+      const target = e.target as HTMLAudioElement
+      if (target !== audioManager.activeElement) return
+      if (target.ended) return
       setPlaybackState('paused')
     }
     const onEnded = (e: Event) => {
