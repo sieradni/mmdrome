@@ -1,35 +1,12 @@
 import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
-import { getSetting, setSetting, db } from './db'
+import { parseEqText } from './eq/eqParser'
+import type { EqFilterConfig } from './eq/eqTypes'
 
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-const PROFILE_KEY_PREFIX = 'eq_profile_'
 const DEFAULT_BAND_Q = Math.SQRT1_2
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
-}
-
-interface EqFilterConfig {
-  type: BiquadFilterType
-  frequency: number
-  gain: number
-  q: number
-}
-
-function parseEqLine(line: string): EqFilterConfig | null {
-  const m = line.match(
-    /^Filter\s+\d+:\s+(ON|OFF)\s+(PK|LSC|HSC)\s+Fc\s+([\d.]+)\s+Hz\s+Gain\s+(-?[\d.]+)\s+dB\s+Q\s+([\d.]+)$/i
-  )
-  if (!m) return null
-
-  const typeMap: Record<string, BiquadFilterType> = { PK: 'peaking', LSC: 'lowshelf', HSC: 'highshelf' }
-  const cfg: EqFilterConfig = {
-    type: typeMap[m[2].toUpperCase()] ?? 'peaking',
-    frequency: parseFloat(m[3]),
-    gain: m[1].toUpperCase() === 'ON' ? parseFloat(m[4]) : 0,
-    q: parseFloat(m[5]),
-  }
-  return cfg
 }
 
 class AudioManager {
@@ -51,7 +28,10 @@ class AudioManager {
   private _snapTolerance = 0.15
   private _eqBypassed = false
   private _eqFilters: BiquadFilterNode[] = []
+  private _eqFilterConfigs: EqFilterConfig[] = []
   private _preamp: GainNode | null = null
+  private _eqPreamp: GainNode | null = null
+  private _eqPreampDb = 0
   private _activeElement: 'a' | 'b' = 'a'
   private _crossfadeDuration = 0
   private _crossfadeCurve: 'exponential' | 'linear' | 'sigmoid' = 'sigmoid'
@@ -106,6 +86,8 @@ class AudioManager {
   get snapTolerance(): number { return this._snapTolerance }
   get eqBypassed(): boolean { return this._eqBypassed }
   get preamp(): GainNode | null { return this._preamp }
+  get preampDb(): number { return this._eqPreampDb }
+  get eqFilterConfigs(): EqFilterConfig[] { return this._eqFilterConfigs }
 
   set snapTolerance(value: number) { this._snapTolerance = Math.max(0, value) }
 
@@ -303,6 +285,8 @@ class AudioManager {
 
       this._preamp = this._ctx.createGain()
       this._preamp.gain.value = 1
+      this._eqPreamp = this._ctx.createGain()
+      this._eqPreamp.gain.value = 1
       this._buildDefaultEq()
       this._reconnectChain()
 
@@ -327,6 +311,7 @@ class AudioManager {
     if (this._rgGainB) { try { this._rgGainB.disconnect() } catch {} }
     if (this._soundTouch) { try { this._soundTouch.disconnect() } catch {} }
     if (this._preamp) { try { this._preamp.disconnect() } catch {} }
+    if (this._eqPreamp) { try { this._eqPreamp.disconnect() } catch {} }
     this._teardownFilters()
     if (this._ctx) { try { this._ctx.close() } catch {} }
     this._ctx = null
@@ -338,7 +323,9 @@ class AudioManager {
     this._rgGainB = null
     this._soundTouch = null
     this._preamp = null
+    this._eqPreamp = null
     this._eqFilters = []
+    this._eqFilterConfigs = []
     this._webAudioReady = false
   }
 
@@ -440,29 +427,24 @@ class AudioManager {
 
   parseParametricEQ(configText: string): void {
     if (!this._ctx) return
-    const lines = configText.trim().split('\n')
-    const configs: EqFilterConfig[] = []
+    const result = parseEqText(configText)
+    if (result.filters.length === 0) return
 
-    for (const line of lines) {
-      const trimmed = line.trim()
-      if (!trimmed) continue
-      const parsed = parseEqLine(trimmed)
-      if (parsed) configs.push(parsed)
-    }
+    this.setPreampDb(result.preampDb)
+    this.applyFiltersConfig(result.filters)
+  }
+
+  applyFiltersConfig(configs: EqFilterConfig[]): void {
+    if (!this._ctx) return
 
     this._teardownFilters()
-
-    if (configs.length === 0) {
-      this._eqFilters = []
-      this._reconnectChain()
-      return
-    }
+    this._eqFilterConfigs = configs
 
     this._eqFilters = configs.map(cfg => {
       const f = this._ctx!.createBiquadFilter()
       f.type = cfg.type
       f.frequency.value = cfg.frequency
-      f.gain.value = clamp(cfg.gain, -12, 12)
+      f.gain.value = clamp(cfg.enabled ? cfg.gain : 0, -12, 12)
       f.Q.value = cfg.q
       return f
     })
@@ -470,32 +452,28 @@ class AudioManager {
     this._reconnectChain()
   }
 
-  async saveEqProfile(name: string, configText: string): Promise<void> {
-    await setSetting(`${PROFILE_KEY_PREFIX}${name}`, configText)
+  setPreampDb(db: number): void {
+    this._eqPreampDb = clamp(db, -12, 12)
+    if (this._eqPreamp) {
+      this._eqPreamp.gain.value = Math.pow(10, this._eqPreampDb / 20)
+    }
   }
 
-  async loadEqProfile(name: string): Promise<void> {
-    const config = await getSetting<string>(`${PROFILE_KEY_PREFIX}${name}`)
-    if (config) this.parseParametricEQ(config)
-  }
-
-  async deleteEqProfile(name: string): Promise<void> {
-    await db.userSettings.delete(`${PROFILE_KEY_PREFIX}${name}`)
-  }
-
-  async listEqProfiles(): Promise<string[]> {
-    const entries = await db.userSettings
-      .filter(s => s.key.startsWith(PROFILE_KEY_PREFIX))
-      .toArray()
-    return entries.map(e => e.key.slice(PROFILE_KEY_PREFIX.length))
-  }
-
-  async getEqProfileConfig(name: string): Promise<string | undefined> {
-    return getSetting<string>(`${PROFILE_KEY_PREFIX}${name}`)
+  setMasterVolume(linear: number): void {
+    if (this._preamp) {
+      this._preamp.gain.value = linear
+    }
   }
 
   private _buildDefaultEq(): void {
     if (!this._ctx) return
+    this._eqFilterConfigs = EQ_FREQUENCIES.map(freq => ({
+      type: 'peaking',
+      frequency: freq,
+      gain: 0,
+      q: DEFAULT_BAND_Q,
+      enabled: true,
+    }))
     this._eqFilters = EQ_FREQUENCIES.map(freq => {
       const f = this._ctx!.createBiquadFilter()
       f.type = 'peaking'
@@ -514,9 +492,10 @@ class AudioManager {
   }
 
   private _reconnectChain(): void {
-    if (!this._soundTouch || !this._preamp || !this._ctx) return
+    if (!this._soundTouch || !this._preamp || !this._eqPreamp || !this._ctx) return
 
     this._soundTouch.disconnect()
+    this._eqPreamp.disconnect()
     this._preamp.disconnect()
 
     if (this._eqBypassed || this._eqFilters.length === 0) {
@@ -526,9 +505,10 @@ class AudioManager {
       for (let i = 0; i < this._eqFilters.length - 1; i++) {
         this._eqFilters[i].connect(this._eqFilters[i + 1])
       }
-      this._eqFilters[this._eqFilters.length - 1].connect(this._preamp)
+      this._eqFilters[this._eqFilters.length - 1].connect(this._eqPreamp)
     }
 
+    this._eqPreamp.connect(this._preamp)
     this._preamp.connect(this._ctx.destination)
   }
 

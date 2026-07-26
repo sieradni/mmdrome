@@ -47,7 +47,7 @@ class PlaybackManager {
     if (savedSpeed !== undefined && savedSpeed !== 1) audioManager.setSpeed(savedSpeed)
     if (savedPitch !== undefined && savedPitch !== 0) audioManager.setPitchOctaves(savedPitch)
     if (savedGain !== undefined && audioManager.preamp) {
-      audioManager.preamp.gain.value = savedGain
+      audioManager.setMasterVolume(savedGain)
     }
 
     // Persist speed/pitch on change
@@ -76,7 +76,7 @@ class PlaybackManager {
         audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
       }
       if (s.masterGain !== undefined && audioManager.preamp) {
-        audioManager.preamp.gain.value = s.masterGain
+        audioManager.setMasterVolume(s.masterGain)
       }
     })
 
@@ -155,7 +155,7 @@ class PlaybackManager {
 
     const s = get(settings)
     if (s.masterGain !== undefined && audioManager.preamp) {
-      audioManager.preamp.gain.value = s.masterGain
+      audioManager.setMasterVolume(s.masterGain)
     }
 
     const el = audioManager.activeElement

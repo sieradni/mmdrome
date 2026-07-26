@@ -7,9 +7,7 @@
   let volume = $state(audioManager.preamp?.gain.value ?? 1)
 
   function updateVolume() {
-    if (audioManager.preamp) {
-      audioManager.preamp.gain.value = volume
-    }
+    audioManager.setMasterVolume(volume)
     updateSetting('masterGain', volume)
   }
 </script>

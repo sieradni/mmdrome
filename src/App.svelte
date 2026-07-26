@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, toggleShuffle, metadataScanState } from './stores/appState'
+  import { initEqStore } from './lib/eq/eqStore'
   import { connectNavidrome } from './lib/syncEngine'
   import { navidromeSongToTrack, setCachedConfig } from './lib/navidromeApi'
   import { playbackManager } from './lib/playbackManager'
@@ -28,6 +29,7 @@
 
   onMount(async () => {
     await initStores()
+    await initEqStore()
 
     const s = $settings
     if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {
