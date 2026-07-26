@@ -31,12 +31,26 @@
     tapeMode = !tapeMode
     audioManager.setTapeMode(tapeMode)
   }
+
+  function resetAll() {
+    sliderVal = 50
+    pitch = 0
+    tapeMode = false
+    audioManager.setSpeed(1)
+    audioManager.setPitchOctaves(0)
+    audioManager.setTapeMode(false)
+  }
 </script>
 
 <div class="flex h-full flex-col bg-background">
   <div class="flex items-center justify-between px-4 py-3">
     <span class="text-sm font-medium text-primary">Pitch & Speed</span>
     <div class="flex items-center gap-2">
+      <button
+        onclick={resetAll}
+        class="rounded-lg px-2 py-1 text-xs text-muted transition-colors hover:text-primary"
+        aria-label="Reset speed and pitch"
+      >Reset</button>
       <button onclick={oncloseall} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Library">
         <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
       </button>
