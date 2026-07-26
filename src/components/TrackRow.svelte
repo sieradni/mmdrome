@@ -68,7 +68,7 @@
 >
   <LazyThumb {track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
   <div class="min-w-0 flex-1">
-    <p class="truncate text-sm font-bold text-primary">{track.title}</p>
+    <p class="truncate text-sm text-primary">{track.title}</p>
     <p class="truncate text-xs text-muted">
       {track.artist}
       {#if showAlbum} · {track.album}{/if}
@@ -109,13 +109,13 @@
 
   <button
     onclick={(e) => handleAdd(e, track.trackId)}
-    class="flex-shrink-0 rounded-full p-1.5 text-muted transition-colors hover:text-primary"
+    class="flex-shrink-0 self-stretch rounded-none px-2.5 text-muted transition-colors hover:text-primary"
     aria-label="Add to queue"
   >
     {#if added}
-      <svg class="h-4 w-4 text-green-400" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
+      <svg class="h-5 w-5 text-green-400" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
     {:else}
-      <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" /></svg>
+      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" /></svg>
     {/if}
   </button>
 

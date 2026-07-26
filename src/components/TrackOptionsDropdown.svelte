@@ -42,10 +42,10 @@
 <div class="relative" data-menu>
   <button
     onclick={(e) => { e.stopPropagation(); menuOpen = !menuOpen }}
-    class="flex-shrink-0 rounded-full p-1.5 text-muted transition-colors hover:text-primary"
+    class="flex-shrink-0 self-stretch rounded-none px-2 text-muted transition-colors hover:text-primary"
     aria-label="More options"
   >
-    <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
+    <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
       <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
     </svg>
   </button>
