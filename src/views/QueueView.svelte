@@ -367,18 +367,20 @@
           <span class="text-xs text-muted tabular-nums">{formatTime(sliderValue)} / {formatTime(effectiveDuration)}</span>
         </div>
 
-        <!-- Seek Bar -->
-        <div class="mt-2 flex items-center gap-2">
-          <input
-            type="range"
-            min="0"
-            max={sliderMax}
-            value={sliderValue}
-            oninput={(e) => { e.stopPropagation(); seek(e) }}
-            class="h-1 flex-1 accent-white/80 cursor-pointer"
-            step="0.1"
-          />
-        </div>
+<!-- Seek Bar -->
+          <div class="mt-2 flex items-center gap-2">
+            <input
+              type="range"
+              min="0"
+              max={sliderMax}
+              value={sliderValue}
+              oninput={(e) => { e.stopPropagation(); seek(e) }}
+              onmousedown={(e) => e.stopPropagation()}
+              onclick={(e) => e.stopPropagation()}
+              class="h-1 flex-1 accent-white/80 cursor-pointer"
+              step="0.1"
+            />
+          </div>
 
         <!-- Controls -->
         <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
