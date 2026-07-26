@@ -23,6 +23,7 @@ import {
   updateSetting,
 } from '../stores/appState'
 import { saveQueue, getSetting, setSetting } from './db'
+import { currentEqState } from './eq/eqStore'
 import type { Track, AutoQueueFilters } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
 
@@ -152,6 +153,13 @@ class PlaybackManager {
     const url = await resolveSrc(rawUrl)
 
     await audioManager.ensureWebAudioReady()
+
+    // Apply stored EQ state to audio engine
+    const eqState = get(currentEqState)
+    if (eqState && eqState.filters.length > 0) {
+      audioManager.setPreampDb(eqState.preampDb)
+      audioManager.applyFiltersConfig(eqState.filters)
+    }
 
     const s = get(settings)
     if (s.masterGain !== undefined && audioManager.preamp) {

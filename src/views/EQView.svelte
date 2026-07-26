@@ -16,35 +16,20 @@
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
   let eqBypassed = $state(audioManager.eqBypassed)
-  let preampDb = $state(audioManager.preampDb)
+  let preampDb = $state($currentEqState.preampDb)
   let showImport = $state(false)
   let importText = $state('')
   let importErrors = $state('')
   let saveDialogOpen = $state(false)
   let newPresetName = $state('')
-  let eqState = $state<EqPreset>(audioManager['_eqFilterConfigs']?.length ? {
-    id: $activePresetId,
-    name: $activePresetId,
-    mode: 'graphic',
-    preampDb: audioManager.preampDb,
-    filters: audioManager['_eqFilterConfigs'],
-  } : $currentEqState)
+  let eqState = $state<EqPreset>(structuredClone($currentEqState))
 
   const presets = $derived([...BUILTIN_PRESETS, ...$userPresets])
 
   const FREQ_LABELS = ['31', '62', '125', '250', '500', '1k', '2k', '4k', '8k', '16k']
   const FREQ_VALUES = DEFAULT_GRAPHIC_FREQUENCIES
 
-  let gains = $state(FREQ_VALUES.map((_, i) => {
-    const cfg = eqState.filters[i]
-    return cfg ? -cfg.gain : 0
-  }))
-
-  function syncToAudioManager() {
-    audioManager.setEqBypass(eqBypassed)
-    audioManager.setPreampDb(preampDb)
-    audioManager.applyFiltersConfig(eqState.filters)
-  }
+  let gains = $state($currentEqState.filters.map((f) => -f.gain))
 
   function setGain(index: number) {
     audioManager.setEqBandGain(index, -gains[index])
@@ -123,7 +108,6 @@
     importText = ''
   }
 
-  syncToAudioManager()
 </script>
 
 <div class="flex h-full flex-col bg-background">

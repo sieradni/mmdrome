@@ -1,5 +1,6 @@
 import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
 import { parseEqText } from './eq/eqParser'
+import { computeBiquadCoefficients } from './eq/eqResponseCalculator'
 import type { EqFilterConfig } from './eq/eqTypes'
 
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
@@ -29,6 +30,8 @@ class AudioManager {
   private _eqBypassed = false
   private _eqFilters: BiquadFilterNode[] = []
   private _eqFilterConfigs: EqFilterConfig[] = []
+  private _eqWorkletNode: AudioWorkletNode | null = null
+  private _eqProcessorReady = false
   private _preamp: GainNode | null = null
   private _eqPreamp: GainNode | null = null
   private _eqPreampDb = 0
@@ -287,8 +290,23 @@ class AudioManager {
       this._preamp.gain.value = 1
       this._eqPreamp = this._ctx.createGain()
       this._eqPreamp.gain.value = 1
-      this._buildDefaultEq()
-      this._reconnectChain()
+
+      try {
+        await this._ctx.audioWorklet.addModule('eq-processor.js')
+        this._eqWorkletNode = new AudioWorkletNode(this._ctx, 'eq-processor')
+        this._eqProcessorReady = true
+      } catch {
+        console.warn('EQ worklet not supported, using BiquadFilterNode fallback')
+        this._eqProcessorReady = false
+      }
+
+      if (this._eqProcessorReady) {
+        this._reconnectChain()
+        this._sendEqConfigToWorklet()
+      } else {
+        this._buildDefaultEq()
+        this._reconnectChain()
+      }
 
       this._applyTempo()
       this._applyPitch(this._pitchOctaves)
@@ -312,6 +330,7 @@ class AudioManager {
     if (this._soundTouch) { try { this._soundTouch.disconnect() } catch {} }
     if (this._preamp) { try { this._preamp.disconnect() } catch {} }
     if (this._eqPreamp) { try { this._eqPreamp.disconnect() } catch {} }
+    if (this._eqWorkletNode) { try { this._eqWorkletNode.disconnect() } catch {} }
     this._teardownFilters()
     if (this._ctx) { try { this._ctx.close() } catch {} }
     this._ctx = null
@@ -324,6 +343,8 @@ class AudioManager {
     this._soundTouch = null
     this._preamp = null
     this._eqPreamp = null
+    this._eqWorkletNode = null
+    this._eqProcessorReady = false
     this._eqFilters = []
     this._eqFilterConfigs = []
     this._webAudioReady = false
@@ -376,15 +397,30 @@ class AudioManager {
   }
 
   setEqBandGain(bandIndex: number, gainDb: number): void {
+    const clamped = clamp(gainDb, -12, 12)
+
     const filter = this._eqFilters[bandIndex]
-    if (!filter) return
-    filter.gain.value = clamp(gainDb, -12, 12)
+    if (filter) {
+      filter.gain.value = clamped
+    }
+
+    const config = this._eqFilterConfigs[bandIndex]
+    if (config) {
+      config.gain = clamped
+    }
+
+    if (this._eqProcessorReady) {
+      this._sendEqConfigToWorklet()
+    }
   }
 
   toggleEqBypass(): void {
     if (!this._webAudioReady) return
     this._eqBypassed = !this._eqBypassed
     this._reconnectChain()
+    if (this._eqWorkletNode) {
+      this._eqWorkletNode.port.postMessage({ type: 'set-bypass', bypassed: this._eqBypassed })
+    }
   }
 
   setEqBypass(enabled: boolean): void {
@@ -392,6 +428,9 @@ class AudioManager {
     if (this._eqBypassed === enabled) return
     this._eqBypassed = enabled
     this._reconnectChain()
+    if (this._eqWorkletNode) {
+      this._eqWorkletNode.port.postMessage({ type: 'set-bypass', bypassed: this._eqBypassed })
+    }
   }
 
   setReplayGainMode(mode: 'off' | 'track' | 'album'): void {
@@ -440,6 +479,12 @@ class AudioManager {
     this._teardownFilters()
     this._eqFilterConfigs = configs
 
+    if (this._eqProcessorReady && this._eqWorkletNode) {
+      this._sendEqConfigToWorklet()
+      this._reconnectChain()
+      return
+    }
+
     this._eqFilters = configs.map(cfg => {
       const f = this._ctx!.createBiquadFilter()
       f.type = cfg.type
@@ -463,6 +508,21 @@ class AudioManager {
     if (this._preamp) {
       this._preamp.gain.value = linear
     }
+  }
+
+  private _sendEqConfigToWorklet(): void {
+    if (!this._eqWorkletNode || !this._ctx) return
+
+    const sampleRate = this._ctx.sampleRate
+    const coeffs = this._eqFilterConfigs
+      .filter(c => c.enabled)
+      .map(c => computeBiquadCoefficients(c.type, c.frequency, c.gain, c.q, sampleRate))
+
+    this._eqWorkletNode.port.postMessage({
+      type: 'set-coefficients',
+      coeffs,
+      bypassed: this._eqBypassed,
+    })
   }
 
   private _buildDefaultEq(): void {
@@ -497,8 +557,16 @@ class AudioManager {
     this._soundTouch.disconnect()
     this._eqPreamp.disconnect()
     this._preamp.disconnect()
+    if (this._eqWorkletNode) { try { this._eqWorkletNode.disconnect() } catch {} }
 
-    if (this._eqBypassed || this._eqFilters.length === 0) {
+    if (this._eqProcessorReady && this._eqWorkletNode) {
+      if (this._eqBypassed || this._eqFilterConfigs.length === 0) {
+        this._soundTouch.connect(this._preamp)
+      } else {
+        this._soundTouch.connect(this._eqWorkletNode)
+        this._eqWorkletNode.connect(this._eqPreamp)
+      }
+    } else if (this._eqBypassed || this._eqFilters.length === 0) {
       this._soundTouch.connect(this._preamp)
     } else {
       this._soundTouch.connect(this._eqFilters[0])

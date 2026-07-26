@@ -1,4 +1,4 @@
-import type { EqFilterConfig } from './eqTypes'
+import type { EqFilterConfig, EqFilterType } from './eqTypes'
 
 export interface FrequencyPoint {
   frequency: number
@@ -7,30 +7,20 @@ export interface FrequencyPoint {
 
 const SAMPLE_RATE = 48000
 
-function calculateBiquadResponse(
-  filter: EqFilterConfig,
-  frequencies: Float32Array
-): Float32Array {
-  const response = new Float32Array(frequencies.length)
-  if (!filter.enabled) return response
-
-  const f0 = filter.frequency
-  const gain = filter.gain
-  const Q = Math.max(0.01, filter.q)
-  const type = filter.type
-
-  const w0 = (2 * Math.PI * f0) / SAMPLE_RATE
+function computeCoefficients(
+  type: EqFilterType,
+  f0: number,
+  gainDb: number,
+  Q: number,
+  sampleRate: number
+): [b0: number, b1: number, b2: number, a0: number, a1: number, a2: number] {
+  const w0 = (2 * Math.PI * f0) / sampleRate
   const cosW0 = Math.cos(w0)
   const sinW0 = Math.sin(w0)
-  const alpha = sinW0 / (2 * Q)
-  const A = Math.pow(10, gain / 40)
+  const alpha = sinW0 / (2 * Math.max(0.01, Q))
+  const A = Math.pow(10, gainDb / 40)
 
-  let b0 = 0,
-    b1 = 0,
-    b2 = 0,
-    a0 = 1,
-    a1 = 0,
-    a2 = 0
+  let b0 = 0, b1 = 0, b2 = 0, a0 = 1, a1 = 0, a2 = 0
 
   switch (type) {
     case 'peaking':
@@ -95,12 +85,37 @@ function calculateBiquadResponse(
       break
   }
 
-  // Normalize coefficients
-  const nb0 = b0 / a0
-  const nb1 = b1 / a0
-  const nb2 = b2 / a0
-  const na1 = a1 / a0
-  const na2 = a2 / a0
+  return [b0, b1, b2, a0, a1, a2]
+}
+
+export function computeBiquadCoefficients(
+  type: EqFilterType,
+  frequency: number,
+  gainDb: number,
+  q: number,
+  sampleRate: number
+): Float64Array {
+  const [b0, b1, b2, a0, a1, a2] = computeCoefficients(type, frequency, gainDb, q, sampleRate)
+
+  return new Float64Array([b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0])
+}
+
+function calculateBiquadResponse(
+  filter: EqFilterConfig,
+  frequencies: Float32Array
+): Float32Array {
+  const response = new Float32Array(frequencies.length)
+  if (!filter.enabled) return response
+
+  const [b0, b1, b2, a0, a1, a2] = computeCoefficients(
+    filter.type,
+    filter.frequency,
+    filter.gain,
+    filter.q,
+    SAMPLE_RATE,
+  )
+  const nb0 = b0 / a0, nb1 = b1 / a0, nb2 = b2 / a0
+  const na1 = a1 / a0, na2 = a2 / a0
 
   for (let i = 0; i < frequencies.length; i++) {
     const freq = frequencies[i]
@@ -134,9 +149,6 @@ function calculateBiquadResponse(
   return response
 }
 
-/**
- * Calculates total frequency response curve in dB across 20Hz - 20kHz.
- */
 export function calculateTotalResponse(
   preampDb: number,
   filters: EqFilterConfig[],
