@@ -74,12 +74,12 @@
     if (typeof value === 'boolean') return value ? 'Yes' : 'No'
     if (Array.isArray(value)) {
       if (value.length === 0) return '\u2014'
-      return value.map(v => formatValue(v)).join(', ')
+      return value.map(v => formatValue(v)).join('\n')
     }
     if (typeof value === 'object') {
       const entries = Object.entries(value as Record<string, unknown>).filter(([, v]) => v != null && v !== '')
       if (entries.length === 0) return '\u2014'
-      return entries.map(([k, v]) => `${k}: ${formatValue(v)}`).join(', ')
+      return entries.map(([k, v]) => `${k}: ${formatValue(v)}`).join('\n')
     }
     return String(value)
   }
@@ -207,7 +207,7 @@
                 {#each visibleEntries(technicalData.navidromeSong as unknown as Record<string, unknown>) as [key, value]}
                   <div class="flex items-start gap-2 py-0.5">
                     <span class="text-xs text-muted shrink-0 capitalize">{key.replace(/([A-Z])/g, ' $1').trim()}:</span>
-                    <span class="text-xs text-primary break-all">{key === 'replayGain' ? formatReplayGain(value) : formatValue(value)}</span>
+                    <span class="text-xs text-primary whitespace-pre-wrap break-all">{key === 'replayGain' ? formatReplayGain(value) : formatValue(value)}</span>
                   </div>
                 {/each}
               </div>
@@ -228,7 +228,7 @@
                 {#each visibleEntries(technicalData.webdavMatch as unknown as Record<string, unknown>) as [key, value]}
                   <div class="flex items-start gap-2 py-0.5">
                     <span class="text-xs text-muted shrink-0 capitalize">{key}:</span>
-                    <span class="text-xs text-primary break-all">{key === 'size' ? formatSize(Number(value)) : formatValue(value)}</span>
+                    <span class="text-xs text-primary whitespace-pre-wrap break-all">{key === 'size' ? formatSize(Number(value)) : formatValue(value)}</span>
                   </div>
                 {/each}
               </div>
@@ -249,7 +249,7 @@
                 {#each visibleEntries(technicalData.webdavRawMetadata) as [key, value]}
                   <div class="flex items-start gap-2 py-0.5">
                     <span class="text-xs text-muted shrink-0">{key}:</span>
-                    <span class="text-xs text-primary break-all">{formatValue(value)}</span>
+                    <span class="text-xs text-primary whitespace-pre-wrap break-all">{formatValue(value)}</span>
                   </div>
                 {/each}
               </div>
@@ -270,11 +270,11 @@
                 {#each visibleEntries(technicalData.cachedMeta as unknown as Record<string, unknown>) as [key, value]}
                   <div class="flex items-start gap-2 py-0.5">
                     <span class="text-xs text-muted shrink-0">{key.replace(/([A-Z])/g, ' $1').trim()}:</span>
-                    <span class="text-xs text-primary break-all">{formatValue(value)}</span>
+                    <span class="text-xs text-primary whitespace-pre-wrap break-all">{formatValue(value)}</span>
                   </div>
                 {/each}
               </div>
-            {:else}
+          {:else}
               <p class="text-xs text-muted/60">No cached metadata stored locally</p>
             {/if}
           </div>
