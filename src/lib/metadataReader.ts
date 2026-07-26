@@ -230,8 +230,6 @@ export interface FileMetadata {
   rating: number
   loved: boolean
   comments?: string
-  playCount?: number
-  skipCount?: number
 }
 
 export async function extractMetadataFromBuffer(
@@ -241,8 +239,6 @@ export async function extractMetadataFromBuffer(
   let rating = 0
   let loved = false
   let comments = ''
-  let playCount = 0
-  let skipCount = 0
   let taglibOpened = false
 
   try {
@@ -277,24 +273,12 @@ export async function extractMetadataFromBuffer(
       comments = rawComment[0]
     }
 
-    const rawPlayCount = props['PLAY COUNT']
-    if (Array.isArray(rawPlayCount)) {
-      const parsed = parseInt(rawPlayCount[0], 10)
-      if (!isNaN(parsed) && parsed > 0) playCount = parsed
-    }
-
-    const rawSkipCount = props['SKIP COUNT']
-    if (Array.isArray(rawSkipCount)) {
-      const parsed = parseInt(rawSkipCount[0], 10)
-      if (!isNaN(parsed) && parsed > 0) skipCount = parsed
-    }
-
     file.dispose()
   } catch (e) {
     if (!taglibOpened) throw e
   }
 
-  return { rating, loved, comments: comments || undefined, playCount: playCount || undefined, skipCount: skipCount || undefined }
+  return { rating, loved, comments: comments || undefined }
 }
 
 export async function readFileMetadata(

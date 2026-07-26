@@ -136,14 +136,6 @@
       <p class="text-sm text-primary">{track.albumReplayGain != null ? `${track.albumReplayGain} dB` : '\u2014'}</p>
     </div>
     <div>
-      <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Play Count</p>
-      <p class="text-sm text-primary">{meta?.playCount ?? track.playCount ?? 0}</p>
-    </div>
-    <div>
-      <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Skip Count</p>
-      <p class="text-sm text-primary">{meta?.skipCount ?? track.skipCount ?? 0}</p>
-    </div>
-    <div>
       <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Created</p>
       <p class="text-sm text-primary">{formatDate(track.createdAt)}</p>
     </div>

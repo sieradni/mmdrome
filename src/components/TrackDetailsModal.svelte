@@ -28,8 +28,6 @@
       syncStatus: 'pending_sync',
       lastModifiedLocally: Date.now(),
       comments: existing?.comments ?? track.comments,
-      playCount: existing?.playCount ?? track.playCount,
-      skipCount: existing?.skipCount ?? track.skipCount,
       webdavPath: existing?.webdavPath,
       webdavLastModified: existing?.webdavLastModified,
     }

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { audioManager } from '../lib/audioManager'
 
-  let { onback }: { onback: () => void } = $props()
+  let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
   let eqBypassed = $state(audioManager.eqBypassed)
 
@@ -30,12 +30,7 @@
 
 <div class="flex h-full flex-col bg-background">
   <div class="flex items-center justify-between px-4 py-3">
-    <div class="flex items-center gap-3">
-      <button onclick={onback} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Back">
-        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
-      </button>
-      <span class="text-sm font-medium text-primary">Equalizer</span>
-    </div>
+    <span class="text-sm font-medium text-primary">Equalizer</span>
     <div class="flex items-center gap-2">
       <button onclick={resetAll} class="rounded px-2.5 py-1 text-xs text-muted transition-colors hover:text-primary">Reset</button>
       <button
@@ -43,6 +38,12 @@
         class={"rounded px-2.5 py-1 text-xs font-medium transition-colors" + (eqBypassed ? ' bg-yellow-500/10 text-yellow-400' : ' bg-surface-hover text-primary')}
       >
         {eqBypassed ? 'Bypassed' : 'Active'}
+      </button>
+      <button onclick={oncloseall} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Library">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
+      </button>
+      <button onclick={onback} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Close">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6l-12 12" /></svg>
       </button>
     </div>
   </div>

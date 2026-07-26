@@ -1,7 +1,7 @@
 <script lang="ts">
   import { audioManager } from '../lib/audioManager'
 
-  let { onback }: { onback: () => void } = $props()
+  let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
   let sliderVal = $state(speedToSlider(audioManager.speed))
   let pitch = $state(audioManager.pitchOctaves)
@@ -34,11 +34,16 @@
 </script>
 
 <div class="flex h-full flex-col bg-background">
-  <div class="flex items-center gap-3 px-4 py-3">
-    <button onclick={onback} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Back">
-      <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
-    </button>
+  <div class="flex items-center justify-between px-4 py-3">
     <span class="text-sm font-medium text-primary">Pitch & Speed</span>
+    <div class="flex items-center gap-2">
+      <button onclick={oncloseall} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Library">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
+      </button>
+      <button onclick={onback} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Close">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6l-12 12" /></svg>
+      </button>
+    </div>
   </div>
 
   <div class="flex-1 overflow-y-auto px-6 space-y-8">

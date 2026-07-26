@@ -158,8 +158,6 @@ async function processItem(item: QueueItem): Promise<void> {
         webdavPath: match.path,
         webdavLastModified: match.lastModified,
         comments: meta.comments,
-        playCount: meta.playCount,
-        skipCount: meta.skipCount,
       })
       scannedCount++
     } catch {

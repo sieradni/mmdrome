@@ -4,7 +4,7 @@
   import type { LocalMetadataStore } from '../lib/db'
   import LazyThumb from '../components/LazyThumb.svelte'
 
-  let { onclose, onnavigate }: { onclose: () => void; onnavigate: (page: 'pitchSpeed' | 'eq' | 'volume' | 'detail' | 'settings') => void } = $props()
+  let { onclose, oncloseall, onnavigate }: { onclose: () => void; oncloseall: () => void; onnavigate: (page: 'pitchSpeed' | 'eq' | 'volume' | 'detail' | 'settings') => void } = $props()
 
   let rating = $state(0)
   let loved = $state(false)
@@ -29,8 +29,6 @@
       syncStatus: 'pending_sync',
       lastModifiedLocally: Date.now(),
       comments: existing?.comments ?? track.comments,
-      playCount: existing?.playCount ?? track.playCount,
-      skipCount: existing?.skipCount ?? track.skipCount,
       webdavPath: existing?.webdavPath,
       webdavLastModified: existing?.webdavLastModified,
     }
@@ -56,7 +54,10 @@
 </script>
 
 <div class="flex h-full flex-col bg-background">
-  <div class="flex items-center justify-end px-4 py-3">
+  <div class="flex items-center justify-end gap-2 px-4 py-3">
+    <button onclick={oncloseall} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Library">
+      <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
+    </button>
     <button onclick={onclose} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Close">
       <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6l-12 12" /></svg>
     </button>

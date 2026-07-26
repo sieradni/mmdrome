@@ -24,8 +24,6 @@ export interface Track {
   albumArtist?: string
   trackNumber?: number
   comments?: string
-  playCount?: number
-  skipCount?: number
 }
 
 export interface TrackWithMeta extends Track {
@@ -261,8 +259,6 @@ export function initMetadataForTracks(tracks: Track[]): void {
         syncStatus: 'synced',
         lastModifiedLocally: Date.now(),
         comments: t.comments,
-        playCount: t.playCount,
-        skipCount: t.skipCount,
       })
     }
   }

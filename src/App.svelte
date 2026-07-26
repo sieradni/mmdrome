@@ -343,41 +343,41 @@
 <!-- ─── Queue View ─── -->
 {#if queueOpen}
   <div class="fixed inset-0 z-40 flex flex-col bg-background safe-area-full">
-    <QueueView onclose={closeQueue} />
+    <QueueView onclose={closeQueue} oncloseall={closeAll} />
   </div>
 {/if}
 
 <!-- ─── Track Options Overlay ─── -->
 {#if overlay === 'trackOptions'}
   <div class="fixed inset-0 z-50 flex flex-col bg-background safe-area-full">
-    <TrackOptionsView onclose={closeToNowPlaying} onnavigate={navigateTo} />
+    <TrackOptionsView onclose={closeToNowPlaying} oncloseall={closeAll} onnavigate={navigateTo} />
   </div>
 {/if}
 
 <!-- ─── Pitch & Speed Overlay ─── -->
 {#if overlay === 'pitchSpeed'}
   <div class="fixed inset-0 z-50 flex flex-col bg-background safe-area-full">
-    <PitchSpeedView onback={() => overlay = 'trackOptions'} />
+    <PitchSpeedView onback={() => overlay = 'trackOptions'} oncloseall={closeAll} />
   </div>
 {/if}
 
 <!-- ─── EQ Overlay ─── -->
 {#if overlay === 'eq'}
   <div class="fixed inset-0 z-50 flex flex-col bg-background safe-area-full">
-    <EQView onback={() => overlay = 'trackOptions'} />
+    <EQView onback={() => overlay = 'trackOptions'} oncloseall={closeAll} />
   </div>
 {/if}
 
 <!-- ─── Volume Overlay ─── -->
 {#if overlay === 'volume'}
   <div class="fixed inset-0 z-50 flex flex-col bg-background safe-area-full">
-    <VolumeView onback={() => overlay = 'trackOptions'} />
+    <VolumeView onback={() => overlay = 'trackOptions'} oncloseall={closeAll} />
   </div>
 {/if}
 
 <!-- ─── Detail Overlay ─── -->
 {#if overlay === 'detail'}
   <div class="fixed inset-0 z-50 flex flex-col bg-background safe-area-full">
-    <DetailView onback={() => overlay = 'trackOptions'} />
+    <DetailView onback={() => overlay = 'trackOptions'} oncloseall={closeAll} />
   </div>
 {/if}
