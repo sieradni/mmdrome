@@ -182,8 +182,6 @@ class AudioManager {
     this._bgEl.src = url
     this._bgEl.currentTime = 0
     this._bgEl.playbackRate = this._speed
-    // Apply combined master + replay gain volume
-    this._updateBgVolume()
     try {
       await this._bgEl.play()
     } catch {
@@ -206,8 +204,6 @@ class AudioManager {
     this._bgEl.playbackRate = this._speed
 
     this._inBgMode = true
-    // Apply combined master + replay gain volume to background element
-    this._updateBgVolume()
     this._bgEl.play().then(() => {
       el.pause()
     }).catch(() => {
@@ -440,34 +436,6 @@ class AudioManager {
       activeRgGain.gain.value = 1
     }
 
-    // Sync combined volume to background element if in background mode
-    this._updateBgVolume()
-  }
-
-  /** Compute and apply combined volume (master gain × replay gain) to _bgEl */
-  private _updateBgVolume(): void {
-    if (!this._bgEl || !this._inBgMode) return
-
-    // Master gain from preamp (or 1 if WebAudio not ready)
-    let masterGain = 1
-    if (this._preamp) {
-      masterGain = this._preamp.gain.value
-    }
-
-    // Replay gain from the active track's RG gain node (or 1)
-    let replayGain = 1
-    const activeRgGain = this._activeElement === 'a' ? this._rgGainA : this._rgGainB
-    if (activeRgGain) {
-      replayGain = activeRgGain.gain.value
-    }
-
-    const combined = Math.min(1, masterGain * replayGain)
-    this._bgEl.volume = combined
-  }
-
-  /** Public hook to update _bgEl volume when settings change */
-  syncBgVolume(): void {
-    this._updateBgVolume()
   }
 
   parseParametricEQ(configText: string): void {

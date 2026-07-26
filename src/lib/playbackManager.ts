@@ -77,7 +77,6 @@ class PlaybackManager {
       }
       if (s.masterGain !== undefined && audioManager.preamp) {
         audioManager.preamp.gain.value = s.masterGain
-        audioManager.syncBgVolume?.()
       }
     })
 
@@ -455,7 +454,7 @@ class PlaybackManager {
       if (nextTrack) {
         const url = this._resolveUrl(nextTrack.trackId)
         if (url) {
-          // Apply ReplayGain for the new track so _bgEl volume reflects it
+          // Apply ReplayGain for the new track (takes effect on return to foreground)
           const s = get(settings)
           if (s.replayGainMode && s.replayGainMode !== 'off') {
             audioManager.applyReplayGain(nextTrack.replayGain, nextTrack.albumReplayGain)
