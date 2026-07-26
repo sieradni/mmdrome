@@ -184,13 +184,22 @@ function md5(input: string): string {
   }).join('')
 }
 
+let _cachedAuthUsername: string | null = null
+let _cachedAuthPassword: string | null = null
+let _cachedAuthSalt: string | null = null
+let _cachedAuthToken: string | null = null
+
 function buildAuthParams(username: string, password: string, jsonFormat = true): Record<string, string> {
-  const salt = generateSalt(16)
-  const token = md5(password + salt)
+  if (username !== _cachedAuthUsername || password !== _cachedAuthPassword) {
+    _cachedAuthSalt = generateSalt(16)
+    _cachedAuthToken = md5(password + _cachedAuthSalt)
+    _cachedAuthUsername = username
+    _cachedAuthPassword = password
+  }
   const params: Record<string, string> = {
     u: username,
-    t: token,
-    s: salt,
+    t: _cachedAuthToken!,
+    s: _cachedAuthSalt!,
     v: API_VERSION,
     c: CLIENT_NAME,
   }
