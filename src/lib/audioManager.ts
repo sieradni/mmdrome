@@ -54,6 +54,8 @@ class AudioManager {
   private _preamp: GainNode | null = null
   private _activeElement: 'a' | 'b' = 'a'
   private _crossfadeDuration = 0
+  private _crossfadeCurve: 'exponential' | 'linear' | 'sigmoid' = 'sigmoid'
+  private _sigmoidSteepness = 6
   private _nextTrackUrl: string | null = null
   private _nextTrackReplayGainLinear: number | null = null
   private _transitionArmed = false
@@ -128,6 +130,22 @@ class AudioManager {
 
   set crossfadeDuration(seconds: number) {
     this._crossfadeDuration = Math.max(0, Math.min(15, seconds))
+  }
+
+  get crossfadeCurve(): 'exponential' | 'linear' | 'sigmoid' {
+    return this._crossfadeCurve
+  }
+
+  set crossfadeCurve(curve: 'exponential' | 'linear' | 'sigmoid') {
+    this._crossfadeCurve = curve
+  }
+
+  get sigmoidSteepness(): number {
+    return this._sigmoidSteepness
+  }
+
+  set sigmoidSteepness(value: number) {
+    this._sigmoidSteepness = Math.max(1, Math.min(16, value))
   }
 
   async init(): Promise<void> {
@@ -642,16 +660,38 @@ class AudioManager {
     standbyEl.play()
     this.reapplyEffects()
 
-    fadeOutGain.gain.cancelScheduledValues(now)
-    fadeOutGain.gain.setValueAtTime(fadeOutGain.gain.value, now)
-    fadeOutGain.gain.exponentialRampToValueAtTime(0.001, now + fadeDuration)
+    const steps = 40
+    const stepTime = fadeDuration / steps
 
-    fadeInGain.gain.cancelScheduledValues(now)
-    fadeInGain.gain.setValueAtTime(0.001, now)
-    fadeInGain.gain.exponentialRampToValueAtTime(1.0, now + fadeDuration)
+    const applyCurve = (gain: GainNode, start: number, end: number) => {
+      gain.gain.cancelScheduledValues(now)
+      gain.gain.setValueAtTime(start, now)
+
+      if (this._crossfadeCurve === 'linear') {
+        gain.gain.linearRampToValueAtTime(end, now + fadeDuration)
+      } else if (this._crossfadeCurve === 'exponential') {
+        // Use audible start/end values instead of near-silent 0.001
+        gain.gain.exponentialRampToValueAtTime(end, now + fadeDuration)
+      } else {
+        // Sigmoid/S-curve: manual interpolation for natural crossfade
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps
+          // Sigmoid: 1 / (1 + exp(-k * (t - 0.5))) scaled to [0, 1]
+          const k = this._sigmoidSteepness
+          const sig = 1 / (1 + Math.exp(-k * (t - 0.5)))
+          const value = start + (end - start) * sig
+          gain.gain.setValueAtTime(value, now + i * stepTime)
+        }
+      }
+    }
+
+    // Fade out: 1 -> 0 (sigmoid inverts naturally)
+    applyCurve(fadeOutGain, fadeOutGain.gain.value, 0)
+
+    // Fade in: 0 -> 1
+    applyCurve(fadeInGain, 0, 1)
 
     const oldEl = this.activeElement
-    // Delay pause so the fade-out gain ramp on the Web Audio graph is audible
     setTimeout(() => {
       if (!oldEl.ended) oldEl.pause()
     }, fadeDuration * 1000)
