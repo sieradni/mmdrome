@@ -494,7 +494,7 @@
   function playQueueItem(trackId: string, currentCombinedIdx: number) {
     if (isDragging) return
     const activeId = $queue.activeIndex >= 0 ? combinedTracks[$queue.activeIndex]?.trackId : null
-    if (activeId !== trackId || currentCombinedIdx !== $queue.activeIndex) {
+    if (!$currentTrack || $playbackState === 'stopped' || activeId !== trackId || currentCombinedIdx !== $queue.activeIndex) {
       playbackManager.playTrackAt(currentCombinedIdx)
     } else {
       playbackManager.seek(0)

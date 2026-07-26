@@ -585,7 +585,12 @@ class PlaybackManager {
   }
 
   seek(time: number): void {
-    audioManager.activeElement.currentTime = time
+    const el = audioManager.activeElement
+    if (!get(currentTrack) || !el.src) {
+      this.play()
+      return
+    }
+    el.currentTime = time
   }
 
   private async _playFirstInQueue(): Promise<void> {
