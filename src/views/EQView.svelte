@@ -5,17 +5,19 @@
     activePresetId,
     userPresets,
     currentEqState,
+    eqBypassed,
     saveUserPreset,
     deleteUserPreset,
     applyPreset,
+    persistEqBypass,
+    persistEqState,
   } from '../lib/eq/eqStore'
   import { parseEqText } from '../lib/eq/eqParser'
-  import { DEFAULT_GRAPHIC_FREQUENCIES, BUILTIN_PRESETS } from '../lib/eq/builtInPresets'
+  import { DEFAULT_GRAPHIC_FREQUENCIES, BUILTIN_PRESETS, mergeFiltersIntoDefaultGrid } from '../lib/eq/builtInPresets'
   import type { EqPreset, EqFilterConfig } from '../lib/eq/eqTypes'
 
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
-  let eqBypassed = $state(audioManager.eqBypassed)
   let preampDb = $state($currentEqState.preampDb)
   let showImport = $state(false)
   let importText = $state('')
@@ -29,7 +31,8 @@
   const FREQ_LABELS = ['31', '62', '125', '250', '500', '1k', '2k', '4k', '8k', '16k']
   const FREQ_VALUES = DEFAULT_GRAPHIC_FREQUENCIES
 
-  let gains = $state($currentEqState.filters.map((f) => -f.gain))
+  // Only use first 10 bands for sliders (any extras are appended beyond index 9)
+  let gains = $state($currentEqState.filters.slice(0, 10).map((f) => -f.gain))
 
   function setGain(index: number) {
     audioManager.setEqBandGain(index, -gains[index])
@@ -37,8 +40,9 @@
   }
 
   function toggleBypass() {
-    eqBypassed = !eqBypassed
-    audioManager.setEqBypass(eqBypassed)
+    const newVal = !$eqBypassed
+    audioManager.setEqBypass(newVal)
+    persistEqBypass(newVal)
   }
 
   function onPreampChange() {
@@ -50,9 +54,14 @@
     const flatGains = FREQ_VALUES.map(() => 0)
     gains = flatGains
     preampDb = 0
-    eqState = { ...eqState, preampDb: 0, filters: eqState.filters.map((f, i) => ({ ...f, gain: 0 })) }
+    eqState = { ...eqState, preampDb: 0, filters: eqState.filters.map((f) => ({ ...f, gain: 0 })) }
     audioManager.setPreampDb(0)
-    gains.forEach((_, i) => audioManager.setEqBandGain(i, 0))
+    // Reset standard bands
+    for (let i = 0; i < FREQ_VALUES.length; i++) {
+      audioManager.setEqBandGain(i, 0)
+    }
+    // Reset extras via full config apply
+    audioManager.applyFiltersConfig(eqState.filters)
   }
 
   async function selectPreset(id: string) {
@@ -60,7 +69,7 @@
     if (!preset) return
     eqState = structuredClone(preset)
     preampDb = preset.preampDb
-    gains = preset.filters.map((f) => -f.gain)
+    gains = preset.filters.slice(0, 10).map((f) => -f.gain)
     audioManager.setPreampDb(preset.preampDb)
     audioManager.applyFiltersConfig(preset.filters)
   }
@@ -92,18 +101,29 @@
       return
     }
     importErrors = ''
-    const newFilters: EqFilterConfig[] = result.filters
+
+    // Merge imported filters onto the 10-band default grid
+    const { baseFilters, extraFilters } = mergeFiltersIntoDefaultGrid(result.filters)
+    const mergedFilters = [...baseFilters, ...extraFilters]
+
     preampDb = result.preampDb
-    gains = newFilters.map((f) => -f.gain)
+    gains = baseFilters.map((f) => -f.gain)
     eqState = {
       id: 'imported',
       name: 'Imported',
       mode: result.mode,
       preampDb,
-      filters: newFilters,
+      filters: mergedFilters,
     }
+
     audioManager.setPreampDb(preampDb)
-    audioManager.applyFiltersConfig(newFilters)
+    audioManager.applyFiltersConfig(mergedFilters)
+
+    // Persist to store so it survives navigation and track changes
+    currentEqState.set(eqState)
+    activePresetId.set('custom')
+    persistEqState(eqState, 'custom')
+
     showImport = false
     importText = ''
   }
@@ -116,9 +136,9 @@
     <div class="flex items-center gap-2">
       <button
         onclick={toggleBypass}
-        class={"rounded px-2.5 py-1 text-xs font-medium transition-colors " + (eqBypassed ? 'bg-yellow-500/10 text-yellow-400' : 'bg-surface-hover text-primary')}
+        class={"rounded px-2.5 py-1 text-xs font-medium transition-colors " + ($eqBypassed ? 'bg-yellow-500/10 text-yellow-400' : 'bg-surface-hover text-primary')}
       >
-        {eqBypassed ? 'Bypassed' : 'Active'}
+        {$eqBypassed ? 'Bypassed' : 'Active'}
       </button>
       <button onclick={oncloseall} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Library">
         <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
@@ -198,13 +218,13 @@
         bind:value={preampDb}
         oninput={onPreampChange}
         class="h-1 w-full accent-primary/80"
-        disabled={eqBypassed}
+        disabled={$eqBypassed}
       />
       <span class="w-14 text-right text-[10px] tabular-nums text-muted/60">{preampDb > 0 ? '+' : ''}{preampDb.toFixed(1)} dB</span>
     </div>
 
     <!-- FREQUENCY RESPONSE GRAPH -->
-    <EqGraph preampDb={eqBypassed ? 0 : preampDb} filters={eqState.filters} {eqBypassed} />
+    <EqGraph preampDb={$eqBypassed ? 0 : preampDb} filters={eqState.filters} eqBypassed={$eqBypassed} />
 
     <!-- 10-BAND GRAPHIC EQ SLIDERS -->
     <div class="flex items-end justify-between gap-1" style="height: 220px;">
@@ -219,7 +239,7 @@
             bind:value={gains[i]}
             oninput={() => setGain(i)}
             class="h-32 w-1 accent-white/80 [writing-mode:vertical-lr]"
-            disabled={eqBypassed}
+            disabled={$eqBypassed}
           />
           <span class="text-[10px] text-muted/50">{label}</span>
         </div>

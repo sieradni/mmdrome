@@ -6,10 +6,12 @@ import type { EqPreset, EqFilterConfig } from './eqTypes'
 const USER_PRESET_PREFIX = 'eq_user_preset_'
 const ACTIVE_PRESET_KEY = 'active_eq_preset'
 const CURRENT_EQ_STATE_KEY = 'current_eq_state'
+const EQ_BYPASSED_KEY = 'eq_bypassed'
 
 export const activePresetId = writable<string>('flat')
 export const userPresets = writable<EqPreset[]>([])
 export const currentEqState = writable<EqPreset>(BUILTIN_PRESETS[0])
+export const eqBypassed = writable<boolean>(false)
 
 export async function initEqStore(): Promise<void> {
   // Load user presets from IndexedDB
@@ -40,9 +42,20 @@ export async function initEqStore(): Promise<void> {
         activePresetId.set(savedPresetId)
       }
     }
+
+    // Load bypass state
+    const savedBypass = await getSetting<boolean>(EQ_BYPASSED_KEY)
+    if (savedBypass !== undefined) {
+      eqBypassed.set(savedBypass)
+    }
   } catch (err) {
     console.error('Failed to initialize EQ store:', err)
   }
+}
+
+export async function persistEqBypass(bypassed: boolean): Promise<void> {
+  eqBypassed.set(bypassed)
+  await setSetting(EQ_BYPASSED_KEY, bypassed)
 }
 
 export function getAllPresets(): EqPreset[] {

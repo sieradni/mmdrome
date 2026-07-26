@@ -5,6 +5,7 @@ import type { EqFilterConfig } from './eq/eqTypes'
 
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 const DEFAULT_BAND_Q = Math.SQRT1_2
+const WORKLET_CACHE_BUST = '1' // increment when public/*-processor.js files change
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
@@ -262,7 +263,7 @@ class AudioManager {
       }
 
       try {
-        await SoundTouchNode.register(this._ctx, 'soundtouch-processor.js')
+        await SoundTouchNode.register(this._ctx, `soundtouch-processor.js?v=${WORKLET_CACHE_BUST}`)
         const stNode = new SoundTouchNode({ context: this._ctx })
         this._soundTouch = stNode
       } catch {
@@ -292,7 +293,7 @@ class AudioManager {
       this._eqPreamp.gain.value = 1
 
       try {
-        await this._ctx.audioWorklet.addModule('eq-processor.js')
+        await this._ctx.audioWorklet.addModule(`eq-processor.js?v=${WORKLET_CACHE_BUST}`)
         this._eqWorkletNode = new AudioWorkletNode(this._ctx, 'eq-processor')
         this._eqProcessorReady = true
       } catch {
