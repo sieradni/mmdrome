@@ -52,9 +52,12 @@ class AudioManager {
   onTrackEnd: (() => void) | null = null
   /** Fires when _bgEl ends while in background mode */
   onBgTrackEnd: (() => void) | null = null
+  /** Fires when _bgEl encounters an error in background mode */
+  onBgError: (() => void) | null = null
   onSpeedChange: ((speed: number) => void) | null = null
   onPitchChange: ((pitch: number) => void) | null = null
   private _isIOS: boolean
+  private _bgTrackEndHandled = false
 
   constructor() {
     this.a = new Audio()
@@ -74,6 +77,11 @@ class AudioManager {
     this._bgEl.addEventListener('ended', () => {
       if (this._inBgMode) {
         this.onBgTrackEnd?.()
+      }
+    })
+    this._bgEl.addEventListener('error', () => {
+      if (this._inBgMode) {
+        this.onBgError?.()
       }
     })
   }
@@ -162,16 +170,24 @@ class AudioManager {
     }
   }
 
-  /** Load and play a URL on the background element (used during bg track advancement) */
-  async playBg(url: string): Promise<void> {
-    if (!this._bgEl || !this._inBgMode) return
+  /** Mark that _onBgTrackEnd has already advanced the queue and set the active element.
+   *  Used by _exitBackground to avoid conflicting src/currentTime writes. */
+  setBgTrackEndHandled(): void {
+    this._bgTrackEndHandled = true
+  }
+
+  /** Load and play a URL on the background element (used during bg track advancement).
+   *  Returns true if playback started successfully, false if it failed or was interrupted. */
+  async playBg(url: string): Promise<boolean> {
+    if (!this._bgEl || !this._inBgMode) return false
     this._bgEl.src = url
     this._bgEl.currentTime = 0
     this._bgEl.playbackRate = this._speed
     try {
       await this._bgEl.play()
+      return true
     } catch {
-      /* play may fail in rare cases — carry on */
+      return false
     }
   }
 
@@ -203,7 +219,6 @@ class AudioManager {
     this._inBgMode = false
 
     const wasPlaying = !this._bgEl.paused
-    const ended = this._bgEl.ended
     const bgTime = this._bgEl.currentTime
 
     this._bgEl.pause()
@@ -223,12 +238,18 @@ class AudioManager {
 
     const el = this.activeElement
 
-    if (ended) {
-      el.dispatchEvent(new Event('ended'))
+    if (this._bgTrackEndHandled) {
+      /* _onBgTrackEnd already advanced the queue and set the active element's
+         src to the next track.  Just resume playback from wherever it is. */
+      if (wasPlaying) {
+        await el.play().catch(() => {})
+      }
     } else if (wasPlaying) {
       el.currentTime = bgTime
       await el.play().catch(() => {})
     }
+
+    this._bgTrackEndHandled = false
 
     if (this._nextTrackUrl && this._crossfadeDuration > 0 && this._webAudioReady) {
       this._setupCrossfadeMonitor()

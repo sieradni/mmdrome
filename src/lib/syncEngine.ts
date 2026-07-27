@@ -15,10 +15,18 @@ import {
   type NavidromeConnectResult,
 } from "$lib/navidromeApi"
 
+const WEBDAV_TIMEOUT = 60000
+
 function webdavAuthHeaders(user: string, token: string): Record<string, string> {
   return {
     Authorization: `Basic ${btoa(`${user}:${token}`)}`,
   }
+}
+
+function webdavFetch(url: string, options: RequestInit): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), WEBDAV_TIMEOUT)
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer))
 }
 
 function buildWebdavUrl(baseUrl: string, filePath: string): string {
@@ -40,7 +48,7 @@ async function webdavGet(
   token: string,
 ): Promise<{ data: ArrayBuffer; etag?: string }> {
   const url = buildWebdavUrl(baseUrl, filePath)
-  const res = await fetch(url, {
+  const res = await webdavFetch(url, {
     method: "GET",
     headers: webdavAuthHeaders(user, token),
   })
@@ -63,7 +71,7 @@ async function webdavPutAtomic(
   const authHeaders = webdavAuthHeaders(user, token)
 
   // Write to temp file first — original untouched if this fails
-  const putRes = await fetch(buildWebdavUrl(baseUrl, tempPath), {
+  const putRes = await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
     method: "PUT",
     headers: {
       ...authHeaders,
@@ -83,14 +91,14 @@ async function webdavPutAtomic(
   if (etag) moveHeaders["If-Match"] = etag
 
   try {
-    const moveRes = await fetch(buildWebdavUrl(baseUrl, tempPath), {
+    const moveRes = await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
       method: "MOVE",
       headers: moveHeaders,
     })
 
     if (!moveRes.ok) {
       // Clean up temp file on MOVE failure
-      await fetch(buildWebdavUrl(baseUrl, tempPath), {
+      await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
         method: "DELETE",
         headers: authHeaders,
       }).catch(() => {})
@@ -99,7 +107,7 @@ async function webdavPutAtomic(
     }
   } catch (err) {
     // Attempt cleanup on any error (CORS failure, network error, etc.)
-    await fetch(buildWebdavUrl(baseUrl, tempPath), {
+    await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
       method: "DELETE",
       headers: authHeaders,
     }).catch(() => {})

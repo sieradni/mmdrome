@@ -219,6 +219,14 @@ function buildUrl(baseUrl: string, endpoint: string, params: Record<string, stri
   return url.toString()
 }
 
+const FETCH_TIMEOUT = 30000
+
+function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer))
+}
+
 async function callSubsonic(
   config: NavidromeConfig,
   endpoint: string,
@@ -227,9 +235,10 @@ async function callSubsonic(
   const params = { ...buildAuthParams(config.username, config.password), ...extraParams }
   const url = buildUrl(config.baseUrl, endpoint, params)
 
-  const res = await fetch(url, { method: 'GET' })
+  const res = await fetchWithTimeout(url, { method: 'GET' }, FETCH_TIMEOUT)
 
   if (!res.ok) {
+    if (res.status === 0) throw createSubsonicError(0, 'Network request failed or timed out')
     throw createSubsonicError(0, `HTTP ${res.status}: ${res.statusText}`)
   }
 
@@ -430,13 +439,13 @@ export async function testWebdavConnection(
 ): Promise<{ connected: boolean; error?: string }> {
   try {
     const url = `${baseUrl.replace(/\/+$/, '')}/`
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
       method: 'PROPFIND',
       headers: {
         Authorization: `Basic ${btoa(`${user}:${token}`)}`,
         Depth: '0',
       },
-    })
+    }, 15000)
     if (res.ok) {
       return { connected: true }
     }

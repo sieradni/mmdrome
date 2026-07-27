@@ -112,7 +112,9 @@ async function preloadNext(n: number): Promise<void> {
       if (!url) return
       const exists = await cache.match(url)
       if (exists) return
-      const res = await fetch(url)
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 15000)
+      const res = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer))
       if (res.ok) {
         await cache.put(url, res)
         didPut = true

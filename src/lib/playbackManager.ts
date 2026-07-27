@@ -30,6 +30,9 @@ import type { LocalMetadataStore } from './db'
 class PlaybackManager {
   private _initialized = false
   private _handlingEnd = false
+  private _retryTrackId: string | null = null
+  private _retryAttempt = 0
+  private _retryTimer: ReturnType<typeof setTimeout> | null = null
 
   async init(): Promise<void> {
     if (this._initialized) return
@@ -38,6 +41,7 @@ class PlaybackManager {
 
     audioManager.onTrackEnd = () => this._handleCrossfadeEnd()
     audioManager.onBgTrackEnd = () => this._onBgTrackEnd()
+    audioManager.onBgError = () => this._onBgTrackEnd()
     audioManager.onSpeedChange = (speed: number) => playbackSpeed.set(speed)
     audioManager.onPitchChange = (pitch: number) => pitchOctaves.set(pitch)
 
@@ -116,15 +120,31 @@ class PlaybackManager {
     }
     const onEnded = (e: Event) => {
       if ((e.target as HTMLAudioElement) !== audioManager.activeElement) return
+      this._clearRetry()
       this._onTrackEnded()
+    }
+    const onError = (e: Event) => {
+      const target = e.target as HTMLAudioElement
+      if (target !== audioManager.activeElement) return
+      const track = get(currentTrack)
+      if (!track) return
+      this._handlePlaybackError(track)
+    }
+    const onStalled = () => {
+      // Signal that the player is buffering — keep current playback state
+      // but don't change it (the browser will resume when buffer is filled)
     }
 
     audioManager.a.addEventListener('play', onPlay)
     audioManager.a.addEventListener('pause', onPause)
     audioManager.a.addEventListener('ended', onEnded)
+    audioManager.a.addEventListener('error', onError)
+    audioManager.a.addEventListener('stalled', onStalled)
     audioManager.b.addEventListener('play', onPlay)
     audioManager.b.addEventListener('pause', onPause)
     audioManager.b.addEventListener('ended', onEnded)
+    audioManager.b.addEventListener('error', onError)
+    audioManager.b.addEventListener('stalled', onStalled)
   }
 
   private _resolveUrl(trackId: string): string {
@@ -176,13 +196,25 @@ class PlaybackManager {
     setCurrentTrack(track)
     audioManager.syncBgSource(url)
     el.src = url
-    try {
-      await el.play()
-    } catch {
-      setCurrentTrack(null)
-      setPlaybackState('stopped')
-      return
+
+    // Retry play() up to 3 times with exponential backoff for transient failures
+    let playAttempt = 0
+    let played = false
+    while (playAttempt < 3 && !played) {
+      try {
+        await el.play()
+        played = true
+      } catch {
+        playAttempt++
+        if (playAttempt >= 3) {
+          setCurrentTrack(null)
+          setPlaybackState('stopped')
+          return
+        }
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, playAttempt) * 500))
+      }
     }
+
     audioManager.reapplyEffects()
     setPlaybackState('playing')
 
@@ -457,43 +489,88 @@ class PlaybackManager {
     }
   }
 
+  /** Load and play a track on the background element. Shared by _onBgTrackEnd
+   *  and user-initiated navigation (next/prev) while in background mode. */
+  private async _loadAndPlayInBg(track: Track): Promise<void> {
+    const url = this._resolveUrl(track.trackId)
+    if (!url) return
+
+    // Apply ReplayGain for the new track
+    const s = get(settings)
+    if (s.replayGainMode && s.replayGainMode !== 'off') {
+      audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
+    } else {
+      audioManager.applyReplayGain()
+    }
+
+    // Set the active element's src and signal BEFORE the async playBg call
+    // so _exitBackground sees a consistent state if it runs concurrently.
+    const el = audioManager.activeElement
+    el.src = url
+    el.currentTime = 0
+    audioManager.setBgTrackEndHandled()
+
+    const started = await audioManager.playBg(url)
+
+    if (!started && audioManager.isInBgMode) {
+      // Real playback failure while still in bg mode — don't touch stores
+      return
+    }
+
+    // Either playBg succeeded, or _exitBackground interrupted and took over the
+    // active element (which now has this track's src). Update stores either way.
+    setCurrentTrack(track)
+    currentTime.set(0)
+    setPlaybackState('playing')
+    await this._setupNextTrack()
+  }
+
   /** Track ended while in iOS background mode — advance queue and play next on _bgEl */
   private async _onBgTrackEnd(): Promise<void> {
     if (this._handlingEnd) return
-    if (!audioManager.isInBgMode) return /* _exitBackground already handled it */
+    if (!audioManager.isInBgMode) return
     this._handlingEnd = true
     try {
       const nextTrack = this._advanceQueue()
       this._promoteActiveTrack()
       if (nextTrack) {
-        const url = this._resolveUrl(nextTrack.trackId)
-        if (url) {
-          // Apply ReplayGain for the new track (takes effect on return to foreground)
-          const s = get(settings)
-          if (s.replayGainMode && s.replayGainMode !== 'off') {
-            audioManager.applyReplayGain(nextTrack.replayGain, nextTrack.albumReplayGain)
-          } else {
-            audioManager.applyReplayGain()
-          }
-          await audioManager.playBg(url)
-          if (!audioManager.isInBgMode) {
-            /* User returned to foreground during playBg — transfer to active element */
-            const el = audioManager.activeElement
-            el.src = url
-            el.currentTime = 0
-            await el.play().catch(() => {})
-          } else {
-            audioManager.activeElement.src = url
-          }
-          setCurrentTrack(nextTrack)
-          currentTime.set(0)
-          setPlaybackState('playing')
-          await this._setupNextTrack()
-        }
+        await this._loadAndPlayInBg(nextTrack)
       }
     } finally {
       this._handlingEnd = false
     }
+  }
+
+  private _clearRetry(): void {
+    this._retryTrackId = null
+    this._retryAttempt = 0
+    if (this._retryTimer !== null) {
+      clearTimeout(this._retryTimer)
+      this._retryTimer = null
+    }
+  }
+
+  private _handlePlaybackError(track: Track): void {
+    if (this._handlingEnd) return
+    if (get(currentTrack)?.trackId !== track.trackId) return
+    if (this._retryTrackId !== track.trackId) {
+      this._clearRetry()
+    }
+    if (this._retryAttempt >= 3) {
+      this._clearRetry()
+      this._onTrackEnded()
+      return
+    }
+    this._retryTrackId = track.trackId
+    this._retryAttempt++
+    const delay = Math.pow(2, this._retryAttempt - 1) * 1000
+    this._retryTimer = setTimeout(() => {
+      this._retryTimer = null
+      const t = get(currentTrack)
+      if (t && t.trackId === this._retryTrackId) {
+        this._loadAndPlay(t)
+      }
+    }, delay)
   }
 
   private async _handleCrossfadeEnd(): Promise<void> {
@@ -531,7 +608,11 @@ class PlaybackManager {
         saveQueue({ ...q, userQueue, activeIndex: newIndex })
         return { ...q, userQueue, activeIndex: newIndex }
       })
-      await this._loadAndPlay(track)
+      if (audioManager.isInBgMode) {
+        await this._loadAndPlayInBg(track)
+      } else {
+        await this._loadAndPlay(track)
+      }
     }
   }
 
@@ -541,7 +622,13 @@ class PlaybackManager {
 
     setActiveQueueIndex(index)
     const track = this._findTrack(combined[index])
-    if (track) await this._loadAndPlay(track)
+    if (track) {
+      if (audioManager.isInBgMode) {
+        await this._loadAndPlayInBg(track)
+      } else {
+        await this._loadAndPlay(track)
+      }
+    }
   }
 
   async play(): Promise<void> {
@@ -583,7 +670,13 @@ class PlaybackManager {
 
       setActiveQueueIndex(nextIndex)
       const track = this._findTrack(combined[nextIndex])
-      if (track) await this._loadAndPlay(track)
+      if (track) {
+        if (audioManager.isInBgMode) {
+          await this._loadAndPlayInBg(track)
+        } else {
+          await this._loadAndPlay(track)
+        }
+      }
     }
   }
 
@@ -594,7 +687,13 @@ class PlaybackManager {
       setActiveQueueIndex(prevIndex)
       const combined = [...q.userQueue, ...q.autoQueue]
       const track = this._findTrack(combined[prevIndex])
-      if (track) await this._loadAndPlay(track)
+      if (track) {
+        if (audioManager.isInBgMode) {
+          await this._loadAndPlayInBg(track)
+        } else {
+          await this._loadAndPlay(track)
+        }
+      }
     }
   }
 
@@ -620,6 +719,7 @@ class PlaybackManager {
   }
 
   destroy(): void {
+    this._clearRetry()
     teardownPreloader()
     audioManager.cancelNextTrack()
     audioManager.onTrackEnd = null

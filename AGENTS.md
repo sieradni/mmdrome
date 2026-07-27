@@ -26,11 +26,12 @@ mmdrome features an advanced custom audio pipeline built on top of the Web Audio
 ## 3. iOS Background Audio Mode (Critical Platform Quirks)
 iOS aggressively suspends `AudioContext` and throttles background timers/events. mmdrome implements a specialized background handoff mechanism:
 - **Background Element (`_bgEl`)**: A bare `HTMLAudioElement` kept warm specifically for background playback when the page hides (`visibilitychange` event).
+- **Volume Handling**: iOS does not respect `HTMLAudioElement.volume` — the hardware volume rocker is the only volume control. `_bgEl.volume` is set to `0` (and never raised) because setting it is a no-op on iOS. Volume is controlled entirely by the master preamp (`_preamp` GainNode) while in foreground, and by the iOS system volume while in background.
 - **Limitations & Workarounds in Background Mode**:
   - **Bypassed Effects**: SoundTouch and Web Audio Biquad filters (EQ) are bypassed in background mode because iOS suspends AudioContext and worklets. `_bgEl.playbackRate = speed` is applied directly to the HTML audio element.
   - **Media Session Routing**: Browser/lockscreen media session action handlers (`play`, `pause`, `seekto`, `nexttrack`, `previoustrack`) explicitly check `audioManager.isInBgMode` and route controls directly to `_bgEl`.
   - **Position Polling**: Because `timeupdate` events can stall on iOS background elements, position state and store updates (`currentTime`) are polled at a **250ms interval** while `isInBgMode` is true.
-  - **Volume Sync**: Combines master preamp gain and active track ReplayGain (`_updateBgVolume()`) to ensure consistent volume when swapping to `_bgEl`.
+  - **Race Condition Protection**: `_exitBackground` and `_onBgTrackEnd` coordinate via a `_bgTrackEndHandled` flag to prevent double queue advancement or conflicting `src`/`currentTime` writes on the active element when a track ends in background concurrent with the user returning to foreground.
 
 ---
 
