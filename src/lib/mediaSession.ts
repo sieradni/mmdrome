@@ -1,6 +1,7 @@
 import { audioManager } from './audioManager'
 import { currentTrack, currentTime, playbackState, setPlaybackState } from '../stores/appState'
 import type { Track } from '../stores/appState'
+import { get } from 'svelte/store'
 
 export function setupMediaSession(
   onPlay?: () => void,
@@ -37,10 +38,12 @@ export function setupMediaSession(
 
   function updatePositionState() {
     const el = audioManager.playbackElement
-    if (el.duration && isFinite(el.duration)) {
+    const metaDur = get(currentTrack)?.duration ?? 0
+    const dur = metaDur > 0 ? metaDur : (el.duration && isFinite(el.duration) ? el.duration : 0)
+    if (dur) {
       try {
         navigator.mediaSession.setPositionState?.({
-          duration: el.duration,
+          duration: dur,
           playbackRate: el.playbackRate,
           position: el.currentTime,
         })
