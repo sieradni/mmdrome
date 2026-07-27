@@ -93,12 +93,10 @@ class AudioManager {
     })
 
     this.a.addEventListener('durationchange', () => {
-      if (this._activeElement !== 'a') return
       const d = this.a.duration
       elementDuration.set(isFinite(d) && d > 0 ? d : 0)
     })
     this.b.addEventListener('durationchange', () => {
-      if (this._activeElement !== 'b') return
       const d = this.b.duration
       elementDuration.set(isFinite(d) && d > 0 ? d : 0)
     })
