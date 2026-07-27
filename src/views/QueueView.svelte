@@ -242,12 +242,11 @@
   function seek(e: Event) {
     const el = e.target as HTMLInputElement
     const t = parseFloat(el.value)
-    const realTime = $playbackSpeed > 0 ? t * $playbackSpeed : t
-    audioManager.playbackElement.currentTime = realTime
-    currentTime.set(realTime)
+    audioManager.playbackElement.currentTime = t
+    currentTime.set(t)
   }
 
-  let sliderValue = $derived($playbackSpeed > 0 ? $currentTime / $playbackSpeed : $currentTime)
+  let sliderValue = $derived($currentTime)
   let sliderMax = $derived($effectiveDuration > 0 ? $effectiveDuration : 1)
 
   // Drag Engine Functions

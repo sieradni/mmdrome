@@ -92,18 +92,16 @@ class AudioManager {
       }
     })
 
-    this.a.addEventListener('durationchange', () => {
-      const d = this.a.duration
+    const onDurationChange = (el: HTMLAudioElement) => {
+      if (el !== (this._inBgMode ? this._bgEl : this.activeElement)) return
+      const d = el.duration
       elementDuration.set(isFinite(d) && d > 0 ? d : 0)
-    })
-    this.b.addEventListener('durationchange', () => {
-      const d = this.b.duration
-      elementDuration.set(isFinite(d) && d > 0 ? d : 0)
-    })
+    }
+    this.a.addEventListener('durationchange', () => onDurationChange(this.a))
+    this.b.addEventListener('durationchange', () => onDurationChange(this.b))
     this._bgEl.addEventListener('durationchange', () => {
       if (!this._inBgMode) return
-      const d = this._bgEl!.duration
-      elementDuration.set(isFinite(d) && d > 0 ? d : 0)
+      onDurationChange(this._bgEl!)
     })
   }
 
@@ -806,6 +804,8 @@ class AudioManager {
 
     this._teardownCrossfadeMonitor()
     this._activeElement = this._activeElement === 'a' ? 'b' : 'a'
+    const d = this.activeElement.duration
+    elementDuration.set(isFinite(d) && d > 0 ? d : 0)
     this._nextTrackUrl = null
     this._nextTrackReplayGainLinear = null
 

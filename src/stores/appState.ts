@@ -77,10 +77,9 @@ export const currentTime = writable<number>(0)
 export const elementDuration = writable<number>(0)
 export const playbackSpeed = writable<number>(1)
 export const effectiveDuration = derived(
-  [elementDuration, currentTrack, playbackSpeed],
-  ([$elDur, $ct, $speed]) => {
-    const real = $elDur > 0 ? $elDur : ($ct?.duration ?? 0)
-    return $speed > 0 ? real / $speed : real
+  [elementDuration, currentTrack],
+  ([$elDur, $ct]) => {
+    return $elDur > 0 ? $elDur : ($ct?.duration ?? 0)
   }
 )
 export const pitchOctaves = writable<number>(0)
