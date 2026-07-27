@@ -292,8 +292,9 @@ class AudioManager {
     if (this._nextTrackUrl && this._crossfadeDuration > 0 && this._webAudioReady) {
       this._setupCrossfadeMonitor()
       const el = this.activeElement
-      if (el.duration && isFinite(el.duration) && !el.paused && el.duration >= this._crossfadeDuration + 1) {
-        if (el.currentTime >= el.duration - this._crossfadeDuration) {
+      const metaDur = this._getCurrentTrackDuration()
+      if (metaDur && metaDur >= this._crossfadeDuration + 1 && !el.paused) {
+        if (el.currentTime >= metaDur - this._crossfadeDuration) {
           this._executeCrossfade()
         }
       }
