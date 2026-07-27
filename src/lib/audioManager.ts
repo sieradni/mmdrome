@@ -60,6 +60,10 @@ class AudioManager {
   private _bgTrackEndHandled = false
   private _enterBgSeq = 0
   private _webAudioFailed = false
+  /** Estimated latency of the WebAudio processing pipeline (SoundTouch + EQ + output buffer).
+   *  Used to compensate when transitioning between WebAudio and raw element playback
+   *  on iOS to prevent audible sync jumps. Populated in ensureWebAudioReady(). */
+  private _pipelineLatency = 0
 
   constructor() {
     this.a = new Audio()
@@ -203,8 +207,23 @@ class AudioManager {
 
     if (!this._bgEl.src || this._bgEl.src !== el.src) {
       this._bgEl.src = el.src
+      // On iOS, preload is ignored and the element may not have loaded enough
+      // data for a reliable seek. Force a reinitialization so currentTime
+      // takes effect properly.
+      if (this._isIOS) {
+        this._bgEl.load()
+      }
+    } else if (this._isIOS && this._bgEl.readyState < 2) {
+      // Same src already set but element hasn't loaded enough data for accurate seeking.
+      this._bgEl.load()
     }
-    this._bgEl.currentTime = el.currentTime
+
+    // Compensate for the WebAudio pipeline latency: in foreground mode the user
+    // hears audio slightly behind the element's decode position (due to SoundTouch,
+    // EQ, and output buffering). In background mode the raw element bypasses all
+    // this, so we start slightly earlier to match what was just heard.
+    const offset = this._getTransitionOffset()
+    this._bgEl.currentTime = Math.max(0, el.currentTime - offset)
     this._bgEl.playbackRate = this._speed
 
     const seq = ++this._enterBgSeq
@@ -341,6 +360,7 @@ class AudioManager {
       this._applyPitch(this._pitchOctaves)
 
       this._webAudioReady = true
+      this._measurePipelineLatency()
     } catch (err) {
       console.warn('WebAudio init failed, using direct playback', err)
       this._cleanupWebAudio()
@@ -378,6 +398,33 @@ class AudioManager {
     this._eqFilterConfigs = []
     this._webAudioReady = false
     this._webAudioFailed = true
+  }
+
+  /** Measure the WebAudio processing pipeline latency so we can compensate
+   *  when transitioning to/from raw HTMLAudioElement playback on iOS.
+   *  The pipeline (SoundTouch worklet + EQ + output buffer) adds delay between
+   *  the element's decode position and what the user actually hears. */
+  private _measurePipelineLatency(): void {
+    if (!this._ctx) return
+    let latency = 0
+    if (typeof this._ctx.baseLatency === 'number' && this._ctx.baseLatency > 0) {
+      latency += this._ctx.baseLatency
+    }
+    if (typeof this._ctx.outputLatency === 'number' && this._ctx.outputLatency > 0) {
+      latency += this._ctx.outputLatency
+    }
+    // Fallback: empirically reasonable estimate for SoundTouch worklet + 10-band EQ
+    // on iOS. SoundTouch buffers ~1024 samples (~23ms at 44.1kHz), EQ adds group
+    // delay (~2-10ms per biquad stage), and the output device adds ~10-50ms.
+    if (latency === 0) latency = 0.15
+    this._pipelineLatency = latency
+  }
+
+  /** Returns the time offset to apply when entering background mode.
+   *  Accounts for the WebAudio pipeline latency (SoundTouch + EQ + output buffer)
+   *  so the raw _bgEl starts at the position the user was audibly hearing. */
+  private _getTransitionOffset(): number {
+    return this._pipelineLatency
   }
 
   setSpeed(value: number): void {
