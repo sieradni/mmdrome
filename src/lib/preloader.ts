@@ -75,8 +75,11 @@ export async function cleanup(url: string): Promise<void> {
 
 function poll(): void {
   const el = getAudioEl?.()
-  if (!el || !el.duration || el.paused || preloading || !urlForTrack) return
-  const remaining = el.duration - el.currentTime
+  if (!el || el.paused || preloading || !urlForTrack) return
+  const metaDur = get(currentTrack)?.duration ?? 0
+  const dur = metaDur > 0 ? metaDur : (el.duration && isFinite(el.duration) ? el.duration : 0)
+  if (!dur) return
+  const remaining = dur - el.currentTime
   if (remaining > 30) return
 
   const n = get(settings).preloadTracks ?? 0
