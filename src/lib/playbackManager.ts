@@ -464,6 +464,7 @@ class PlaybackManager {
     this._handlingEnd = true
     try {
       const nextTrack = this._advanceQueue()
+      this._promoteActiveTrack()
       if (nextTrack) {
         const url = this._resolveUrl(nextTrack.trackId)
         if (url) {
