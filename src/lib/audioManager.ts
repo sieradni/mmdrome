@@ -2,7 +2,7 @@ import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
 import { parseEqText } from './eq/eqParser'
 import { computeBiquadCoefficients } from './eq/eqResponseCalculator'
 import type { EqFilterConfig } from './eq/eqTypes'
-import { elementDuration } from '../stores/appState'
+import { elementDuration, currentTrack } from '../stores/appState'
 
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 const DEFAULT_BAND_Q = Math.SQRT1_2
@@ -713,6 +713,12 @@ class AudioManager {
     return bestDist <= this._snapTolerance ? best : octaves
   }
 
+  private _getCurrentTrackDuration(): number {
+    let dur = 0
+    currentTrack.subscribe(t => { if (t && t.duration > 0) dur = t.duration })()
+    return dur
+  }
+
   private _setupCrossfadeMonitor(): void {
     this._teardownCrossfadeMonitor()
     if (!this._webAudioReady || this._crossfadeDuration <= 0 || !this._nextTrackUrl) return
@@ -721,10 +727,11 @@ class AudioManager {
     this._crossfadeInterval = setInterval(() => {
       if (!this._nextTrackUrl || this._transitionArmed) return
       const el = this.activeElement
-      if (!el.duration || !isFinite(el.duration) || el.paused) return
+      const metaDur = this._getCurrentTrackDuration()
+      if (!metaDur || el.paused) return
 
-      if (el.duration < this._crossfadeDuration + 1) return
-      const transitionPoint = el.duration - this._crossfadeDuration
+      if (metaDur < this._crossfadeDuration + 1) return
+      const transitionPoint = metaDur - this._crossfadeDuration
 
       if (el.currentTime >= transitionPoint) {
         this._executeCrossfade()
