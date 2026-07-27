@@ -120,8 +120,10 @@
   function seek(e: Event) {
     const el = e.target as HTMLInputElement
     const t = parseFloat(el.value)
-    audioManager.playbackElement.currentTime = t
-    currentTime.set(t)
+    const playbackEl = audioManager.playbackElement
+    const clamped = Math.min(t, playbackEl.duration || t)
+    playbackEl.currentTime = clamped
+    currentTime.set(clamped)
   }
 
   $effect(() => {

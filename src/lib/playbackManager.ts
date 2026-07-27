@@ -115,7 +115,15 @@ class PlaybackManager {
       setPlaybackState('paused')
     }
     const onEnded = (e: Event) => {
-      if ((e.target as HTMLAudioElement) !== audioManager.activeElement) return
+      const target = e.target as HTMLAudioElement
+      if (target !== audioManager.activeElement) return
+      const track = get(currentTrack)
+      const metaDur = track?.duration ?? 0
+      const elemDur = target.duration || 0
+      if (metaDur > 0 && elemDur > 0 && elemDur < metaDur - 5) {
+        console.warn(`[PlaybackManager] Track ended early (element: ${elemDur}s, metadata: ${metaDur}s). Not advancing.`)
+        return
+      }
       this._clearRetry()
       this._onTrackEnded()
     }
@@ -467,7 +475,8 @@ class PlaybackManager {
       this.play()
       return
     }
-    el.currentTime = time
+    const clamped = Math.min(time, el.duration || time)
+    el.currentTime = clamped
   }
 
   private async _playFirstInQueue(): Promise<void> {
