@@ -2,7 +2,7 @@ import { writable, get } from 'svelte/store'
 import type { LocalMetadataStore, PlayQueueState } from '$lib/db'
 import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata } from '$lib/db'
 
-export type PlaybackState = 'playing' | 'paused' | 'stopped'
+export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
 
 export interface Track {
   trackId: string

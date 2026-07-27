@@ -130,21 +130,25 @@ class PlaybackManager {
       if (!track) return
       this._handlePlaybackError(track)
     }
-    const onStalled = () => {
-      // Signal that the player is buffering — keep current playback state
-      // but don't change it (the browser will resume when buffer is filled)
+    const onWaiting = () => {
+      setPlaybackState('buffering')
+    }
+    const onPlaying = () => {
+      setPlaybackState('playing')
     }
 
     audioManager.a.addEventListener('play', onPlay)
     audioManager.a.addEventListener('pause', onPause)
     audioManager.a.addEventListener('ended', onEnded)
     audioManager.a.addEventListener('error', onError)
-    audioManager.a.addEventListener('stalled', onStalled)
+    audioManager.a.addEventListener('waiting', onWaiting)
+    audioManager.a.addEventListener('playing', onPlaying)
     audioManager.b.addEventListener('play', onPlay)
     audioManager.b.addEventListener('pause', onPause)
     audioManager.b.addEventListener('ended', onEnded)
     audioManager.b.addEventListener('error', onError)
-    audioManager.b.addEventListener('stalled', onStalled)
+    audioManager.b.addEventListener('waiting', onWaiting)
+    audioManager.b.addEventListener('playing', onPlaying)
   }
 
   private _resolveUrl(trackId: string): string {

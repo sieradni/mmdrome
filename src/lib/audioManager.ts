@@ -58,6 +58,8 @@ class AudioManager {
   onPitchChange: ((pitch: number) => void) | null = null
   private _isIOS: boolean
   private _bgTrackEndHandled = false
+  private _enterBgSeq = 0
+  private _webAudioFailed = false
 
   constructor() {
     this.a = new Audio()
@@ -205,10 +207,13 @@ class AudioManager {
     this._bgEl.currentTime = el.currentTime
     this._bgEl.playbackRate = this._speed
 
+    const seq = ++this._enterBgSeq
     this._inBgMode = true
     this._bgEl.play().then(() => {
+      if (this._enterBgSeq !== seq) return
       el.pause()
     }).catch(() => {
+      if (this._enterBgSeq !== seq) return
       this._inBgMode = false
       this._bgEl!.volume = 0
     })
@@ -216,6 +221,7 @@ class AudioManager {
 
   private async _exitBackground(): Promise<void> {
     if (!this._bgEl) return
+    this._enterBgSeq++
     this._inBgMode = false
 
     const wasPlaying = !this._bgEl.paused
@@ -263,6 +269,7 @@ class AudioManager {
   }
 
   async ensureWebAudioReady(): Promise<boolean> {
+    if (this._webAudioFailed) return false
     if (this._webAudioReady) {
       if (this._ctx && this._ctx.state !== 'running') {
         try {
@@ -370,6 +377,7 @@ class AudioManager {
     this._eqFilters = []
     this._eqFilterConfigs = []
     this._webAudioReady = false
+    this._webAudioFailed = true
   }
 
   setSpeed(value: number): void {

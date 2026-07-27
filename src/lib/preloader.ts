@@ -91,7 +91,12 @@ async function enforceCacheLimit(): Promise<void> {
     const keys = await cache.keys()
     if (keys.length > MAX_CACHE_ENTRIES) {
       const toDelete = keys.slice(0, keys.length - MAX_CACHE_ENTRIES)
-      await Promise.all(toDelete.map(req => cache.delete(req)))
+      await Promise.all(toDelete.map(req => {
+        const url = req.url
+        const old = blobUrls.get(url)
+        if (old) { URL.revokeObjectURL(old); blobUrls.delete(url) }
+        return cache.delete(req)
+      }))
     }
   } catch {}
 }

@@ -32,7 +32,7 @@ export function setupMediaSession(
   })
 
   playbackState.subscribe((state) => {
-    navigator.mediaSession.playbackState = state === 'stopped' ? 'none' : state
+    navigator.mediaSession.playbackState = state === 'stopped' ? 'none' : state === 'buffering' ? 'playing' : state
   })
 
   function updatePositionState() {
@@ -92,10 +92,16 @@ export function setupMediaSession(
   })
 
   navigator.mediaSession.setActionHandler('nexttrack', () => {
+    if (audioManager.isInBgMode) {
+      /* PlaybackManager.next() routes to _loadAndPlayInBg when in bg mode */
+    }
     onNextTrack?.()
   })
 
   navigator.mediaSession.setActionHandler('previoustrack', () => {
+    if (audioManager.isInBgMode) {
+      /* PlaybackManager.prev() routes to _loadAndPlayInBg when in bg mode */
+    }
     onPreviousTrack?.()
   })
 
