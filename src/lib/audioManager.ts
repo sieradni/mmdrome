@@ -2,6 +2,7 @@ import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
 import { parseEqText } from './eq/eqParser'
 import { computeBiquadCoefficients } from './eq/eqResponseCalculator'
 import type { EqFilterConfig } from './eq/eqTypes'
+import { elementDuration } from '../stores/appState'
 
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 const DEFAULT_BAND_Q = Math.SQRT1_2
@@ -89,6 +90,22 @@ class AudioManager {
       if (this._inBgMode) {
         this.onBgError?.()
       }
+    })
+
+    this.a.addEventListener('durationchange', () => {
+      if (this._activeElement !== 'a') return
+      const d = this.a.duration
+      elementDuration.set(isFinite(d) && d > 0 ? d : 0)
+    })
+    this.b.addEventListener('durationchange', () => {
+      if (this._activeElement !== 'b') return
+      const d = this.b.duration
+      elementDuration.set(isFinite(d) && d > 0 ? d : 0)
+    })
+    this._bgEl.addEventListener('durationchange', () => {
+      if (!this._inBgMode) return
+      const d = this._bgEl!.duration
+      elementDuration.set(isFinite(d) && d > 0 ? d : 0)
     })
   }
 

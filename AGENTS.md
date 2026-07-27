@@ -37,7 +37,8 @@ iOS aggressively suspends `AudioContext` and throttles background timers/events.
 
 ## 4. State Management & Core Services
 - **Global App State (`src/stores/appState.ts`)**: Svelte stores managing current track, playback state, queue (`userQueue`, `autoQueue`), shuffle mode, settings, and library tracks.
-- **Playback Manager (`src/lib/playbackManager.ts`)**: Controls track transitions, queue navigation, shuffle/repeat logic, and syncs with `audioManager`.
+- **Queue Manager (`src/lib/queueManager.ts`)**: Encapsulates all queue logic — advancement, auto-queue replenishment/filtering, auto-to-user promotion, history management. Separated from `playbackManager` to keep concern boundaries clean.
+- **Playback Manager (`src/lib/playbackManager.ts`)**: Controls track transitions, playback (play/pause/next/prev/seek), crossfade handling, and syncs with `audioManager`. Does NOT own queue logic — delegates to `queueManager`.
 - **Sync & Metadata Engines (`src/lib/syncEngine.ts`, `metadataScanner.ts`, `navidromeApi.ts`)**: Integrates with Navidrome (Subsonic API) for streaming/syncing library data and WebDAV for local/remote indexing.
 - **Tagging (`src/lib/taglibSingleton.ts`, `tagWriter.ts`)**: Uses `taglib-wasm` for robust audio file metadata reading and writing.
 
@@ -52,3 +53,4 @@ iOS aggressively suspends `AudioContext` and throttles background timers/events.
 ## 6. Learned Information & Operational Log
 *(Add new technical discoveries, platform workarounds, or architectural decisions here as you encounter them during development).*
 - *[2026-07-25]* Established comprehensive context guide to replace minimal AGENTS.md, eliminating redundant codebase analysis loops.
+- *[2026-07-26]* Extracted queue management from `playbackManager.ts` into dedicated `src/lib/queueManager.ts`. Cleared dead `src/stores/queueManager.ts` and empty `src/lib/{api,audio,database,sync}/` directories. Fixed `DEFAULT_BAND_Q` inconsistency (both `audioManager.ts` and `builtInPresets.ts` now use `Math.SQRT1_2`). Moved `promoteActiveTrack()` to after successful `el.play()` to prevent polluting user queue on playback failure.

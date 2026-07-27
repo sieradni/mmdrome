@@ -7,6 +7,7 @@
     toggleShuffle,
     currentTime,
     playbackSpeed,
+    effectiveDuration,
     playbackState,
     clearQueue,
     autoQueueFilters,
@@ -18,6 +19,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { flip } from 'svelte/animate'
   import { playbackManager } from '../lib/playbackManager'
+  import { queueManager } from '../lib/queueManager'
   import { audioManager } from '../lib/audioManager'
   import { saveQueue, getSetting, setSetting } from '../lib/db'
   import LazyThumb from '../components/LazyThumb.svelte'
@@ -64,7 +66,7 @@
   $effect(() => {
     autoQueueFilters.set({ minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery })
     setSetting('autoQueueFilters', JSON.stringify({ minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery }))
-    playbackManager.replenishAutoQueue()
+    queueManager.replenishAutoQueue()
   })
 
   // Underlying track arrays
@@ -230,23 +232,6 @@
     targetCombinedIndex > userTracks.length
   )
 
-  let duration = $state(0)
-
-  $effect(() => {
-    const handler = () => {
-      duration = audioManager.playbackElement.duration || 0
-    }
-    audioManager.a.addEventListener('durationchange', handler)
-    audioManager.b.addEventListener('durationchange', handler)
-    handler()
-    return () => {
-      audioManager.a.removeEventListener('durationchange', handler)
-      audioManager.b.removeEventListener('durationchange', handler)
-    }
-  })
-
-  let effectiveDuration = $derived($playbackSpeed > 0 ? duration / $playbackSpeed : duration)
-
   function formatTime(sec: number): string {
     if (!isFinite(sec) || sec < 0) return '0:00'
     const m = Math.floor(sec / 60)
@@ -263,7 +248,7 @@
   }
 
   let sliderValue = $derived($playbackSpeed > 0 ? $currentTime / $playbackSpeed : $currentTime)
-  let sliderMax = $derived(effectiveDuration || 1)
+  let sliderMax = $derived($effectiveDuration > 0 ? $effectiveDuration : 1)
 
   // Drag Engine Functions
   function updateTargetFromPointer(y: number) {
@@ -503,7 +488,7 @@
 
   function handleClearQueue() {
     clearQueue()
-    playbackManager.replenishAutoQueue()
+    queueManager.replenishAutoQueue()
   }
 </script>
 
@@ -552,7 +537,7 @@
             <p class="truncate text-sm font-medium text-primary">{$currentTrack.title}</p>
             <p class="truncate text-xs text-muted">{$currentTrack.artist}</p>
           </div>
-          <span class="text-xs text-muted tabular-nums">{formatTime(sliderValue)} / {formatTime(effectiveDuration)}</span>
+          <span class="text-xs text-muted tabular-nums">{formatTime(sliderValue)} / {formatTime($effectiveDuration)}</span>
         </div>
 
         <!-- Seek Bar -->

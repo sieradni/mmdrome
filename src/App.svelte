@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, toggleShuffle, metadataScanState } from './stores/appState'
+  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, effectiveDuration, toggleShuffle, metadataScanState } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
   import { connectNavidrome } from './lib/syncEngine'
   import { navidromeSongToTrack, setCachedConfig } from './lib/navidromeApi'
@@ -135,23 +135,9 @@
     }
   })
 
-  let duration = $state(0)
-  let effectiveDuration = $derived($playbackSpeed > 0 ? duration / $playbackSpeed : duration)
   let sliderValue = $derived($playbackSpeed > 0 ? $currentTime / $playbackSpeed : $currentTime)
-  let sliderMax = $derived(effectiveDuration || 1)
 
-  $effect(() => {
-    const handler = () => {
-      duration = audioManager.playbackElement.duration || 0
-    }
-    audioManager.a.addEventListener('durationchange', handler)
-    audioManager.b.addEventListener('durationchange', handler)
-    handler()
-    return () => {
-      audioManager.a.removeEventListener('durationchange', handler)
-      audioManager.b.removeEventListener('durationchange', handler)
-    }
-  })
+  let sliderMax = $derived($effectiveDuration > 0 ? $effectiveDuration : 1)
 
   let combinedQueue = $derived([...$queue.userQueue, ...$queue.autoQueue])
   let queueSize = $derived(combinedQueue.length)
@@ -298,7 +284,7 @@
           class="h-1 flex-1 accent-white/80 cursor-pointer"
           step="0.1"
         />
-        <span class="w-10 text-xs tabular-nums text-muted">{formatTime(effectiveDuration)}</span>
+        <span class="w-10 text-xs tabular-nums text-muted">{formatTime($effectiveDuration)}</span>
       </div>
     {:else}
       <!-- Empty State -->

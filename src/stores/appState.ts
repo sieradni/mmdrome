@@ -1,4 +1,4 @@
-import { writable, get } from 'svelte/store'
+import { writable, get, derived } from 'svelte/store'
 import type { LocalMetadataStore, PlayQueueState } from '$lib/db'
 import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata } from '$lib/db'
 
@@ -74,7 +74,15 @@ export const navidromeConnection = writable<{ connected: boolean; error?: string
 export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string }>({ loading: false, loaded: 0, failed: 0 })
 export const shuffleEnabled = writable<boolean>(false)
 export const currentTime = writable<number>(0)
+export const elementDuration = writable<number>(0)
 export const playbackSpeed = writable<number>(1)
+export const effectiveDuration = derived(
+  [elementDuration, currentTrack, playbackSpeed],
+  ([$elDur, $ct, $speed]) => {
+    const real = $elDur > 0 ? $elDur : ($ct?.duration ?? 0)
+    return $speed > 0 ? real / $speed : real
+  }
+)
 export const pitchOctaves = writable<number>(0)
 export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0 } })
 

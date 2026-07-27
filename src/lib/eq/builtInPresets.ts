@@ -1,7 +1,7 @@
 import type { EqPreset, EqFilterConfig } from './eqTypes'
 
 export const DEFAULT_GRAPHIC_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-const DEFAULT_BAND_Q = Math.SQRT2
+const DEFAULT_BAND_Q = Math.SQRT1_2
 
 /**
  * Merge imported EQ filters onto the 10-band default grid.
