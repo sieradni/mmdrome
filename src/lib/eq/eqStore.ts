@@ -1,7 +1,7 @@
 import { writable, get } from 'svelte/store'
 import { db, getSetting, setSetting } from '../db'
 import { BUILTIN_PRESETS } from './builtInPresets'
-import type { EqPreset, EqFilterConfig } from './eqTypes'
+import type { EqPreset } from './eqTypes'
 
 const USER_PRESET_PREFIX = 'eq_user_preset_'
 const ACTIVE_PRESET_KEY = 'active_eq_preset'
@@ -11,6 +11,7 @@ const EQ_BYPASSED_KEY = 'eq_bypassed'
 export const activePresetId = writable<string>('flat')
 export const userPresets = writable<EqPreset[]>([])
 export const currentEqState = writable<EqPreset>(BUILTIN_PRESETS[0])
+export const draftState = writable<EqPreset>(BUILTIN_PRESETS[0])
 export const eqBypassed = writable<boolean>(false)
 
 export async function initEqStore(): Promise<void> {
@@ -42,6 +43,8 @@ export async function initEqStore(): Promise<void> {
         activePresetId.set(savedPresetId)
       }
     }
+
+    draftState.set(get(currentEqState))
 
     // Load bypass state
     const savedBypass = await getSetting<boolean>(EQ_BYPASSED_KEY)
@@ -89,6 +92,7 @@ export async function saveUserPreset(preset: EqPreset): Promise<void> {
 
   activePresetId.set(cleanPreset.id)
   currentEqState.set(cleanPreset)
+  draftState.set(cleanPreset)
   await persistEqState(cleanPreset, cleanPreset.id)
 }
 
@@ -103,6 +107,7 @@ export async function deleteUserPreset(id: string): Promise<void> {
     const defaultPreset = BUILTIN_PRESETS[0]
     activePresetId.set(defaultPreset.id)
     currentEqState.set(defaultPreset)
+    draftState.set(defaultPreset)
     await persistEqState(defaultPreset, defaultPreset.id)
   }
 }
@@ -113,49 +118,53 @@ export async function applyPreset(id: string): Promise<EqPreset | undefined> {
 
   activePresetId.set(id)
   currentEqState.set(preset)
+  draftState.set(preset)
   await persistEqState(preset, id)
   return preset
 }
 
-export async function updateCurrentState(
-  updater: (state: EqPreset) => EqPreset
-): Promise<EqPreset> {
-  const current = get(currentEqState)
-  const updated = updater(current)
-
-  // Check if modified from active preset
+export async function saveAsCurrentPreset(draft: EqPreset): Promise<EqPreset> {
   const activeId = get(activePresetId)
-  const activePreset = findPresetById(activeId)
+  const preset = findPresetById(activeId)
 
-  let newActiveId = activeId
-  if (activePreset && isPresetModified(activePreset, updated)) {
-    newActiveId = 'custom'
-    activePresetId.set('custom')
-  }
+  let committed: EqPreset
 
-  currentEqState.set(updated)
-  await persistEqState(updated, newActiveId)
-  return updated
-}
-
-function isPresetModified(a: EqPreset, b: EqPreset): boolean {
-  if (a.preampDb !== b.preampDb) return true
-  if (a.mode !== b.mode) return true
-  if (a.filters.length !== b.filters.length) return true
-  for (let i = 0; i < a.filters.length; i++) {
-    const f1 = a.filters[i]
-    const f2 = b.filters[i]
-    if (
-      f1.type !== f2.type ||
-      f1.frequency !== f2.frequency ||
-      f1.gain !== f2.gain ||
-      f1.q !== f2.q ||
-      f1.enabled !== f2.enabled
-    ) {
-      return true
+  if (preset && !preset.isBuiltin) {
+    committed = {
+      ...preset,
+      preampDb: draft.preampDb,
+      filters: draft.filters.map((f) => ({ ...f })),
     }
+    await setSetting(`${USER_PRESET_PREFIX}${committed.id}`, committed)
+
+    userPresets.update((list) => {
+      const idx = list.findIndex((p) => p.id === committed.id)
+      if (idx >= 0) {
+        const updated = [...list]
+        updated[idx] = committed
+        return updated
+      }
+      return list
+    })
+  } else {
+    const name = preset ? `${preset.name} (modified)` : `User Preset ${Date.now()}`
+    committed = {
+      id: `user_${Date.now()}`,
+      name,
+      mode: draft.mode,
+      preampDb: draft.preampDb,
+      filters: draft.filters.map((f) => ({ ...f })),
+      isBuiltin: false,
+    }
+    await setSetting(`${USER_PRESET_PREFIX}${committed.id}`, committed)
+    userPresets.update((list) => [...list, committed])
+    activePresetId.set(committed.id)
   }
-  return false
+
+  currentEqState.set(committed)
+  draftState.set(committed)
+  await persistEqState(committed, get(activePresetId))
+  return committed
 }
 
 export async function persistEqState(state: EqPreset, presetId: string): Promise<void> {

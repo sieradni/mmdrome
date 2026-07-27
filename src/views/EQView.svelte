@@ -1,30 +1,31 @@
 <script lang="ts">
   import { audioManager } from '../lib/audioManager'
   import EqGraph from '../components/EqGraph.svelte'
-  import {
+  import { get } from 'svelte/store'
+import {
     activePresetId,
     userPresets,
-    currentEqState,
+    draftState,
     eqBypassed,
     saveUserPreset,
     deleteUserPreset,
     applyPreset,
+    saveAsCurrentPreset,
     persistEqBypass,
-    persistEqState,
   } from '../lib/eq/eqStore'
   import { parseEqText } from '../lib/eq/eqParser'
   import { DEFAULT_GRAPHIC_FREQUENCIES, BUILTIN_PRESETS, mergeFiltersIntoDefaultGrid } from '../lib/eq/builtInPresets'
-  import type { EqPreset, EqFilterConfig } from '../lib/eq/eqTypes'
+  import type { EqPreset } from '../lib/eq/eqTypes'
 
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
-  let preampDb = $state($currentEqState.preampDb)
+  let preampDb = $state($draftState.preampDb)
   let showImport = $state(false)
   let importText = $state('')
   let importErrors = $state('')
   let saveDialogOpen = $state(false)
   let newPresetName = $state('')
-  let eqState = $state<EqPreset>(structuredClone($currentEqState))
+  let eqState = $state<EqPreset>(structuredClone(get(draftState)))
 
   const presets = $derived([...BUILTIN_PRESETS, ...$userPresets])
 
@@ -32,11 +33,16 @@
   const FREQ_VALUES = DEFAULT_GRAPHIC_FREQUENCIES
 
   // Only use first 10 bands for sliders (any extras are appended beyond index 9)
-  let gains = $state($currentEqState.filters.slice(0, 10).map((f) => -f.gain))
+  let gains = $state($draftState.filters.slice(0, 10).map((f) => -f.gain))
+
+  function syncDraft() {
+    draftState.set({ ...eqState, preampDb })
+  }
 
   function setGain(index: number) {
     audioManager.setEqBandGain(index, -gains[index])
     eqState.filters[index].gain = -gains[index]
+    syncDraft()
   }
 
   function toggleBypass() {
@@ -48,6 +54,7 @@
   function onPreampChange() {
     audioManager.setPreampDb(preampDb)
     eqState.preampDb = preampDb
+    syncDraft()
   }
 
   function resetAll() {
@@ -62,6 +69,7 @@
     }
     // Reset extras via full config apply
     audioManager.applyFiltersConfig(eqState.filters)
+    syncDraft()
   }
 
   async function selectPreset(id: string) {
@@ -94,6 +102,13 @@
     await deleteUserPreset(id)
   }
 
+  async function saveAsCurrent() {
+    const committed = await saveAsCurrentPreset({ ...eqState, preampDb })
+    eqState = structuredClone(committed)
+    preampDb = committed.preampDb
+    gains = committed.filters.slice(0, 10).map((f) => -f.gain)
+  }
+
   function handleImport() {
     const result = parseEqText(importText)
     if (result.errors.length > 0) {
@@ -119,10 +134,7 @@
     audioManager.setPreampDb(preampDb)
     audioManager.applyFiltersConfig(mergedFilters)
 
-    // Persist to store so it survives navigation and track changes
-    currentEqState.set(eqState)
-    activePresetId.set('custom')
-    persistEqState(eqState, 'custom')
+    syncDraft()
 
     showImport = false
     importText = ''
@@ -165,7 +177,8 @@
         </select>
         <svg class="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" /></svg>
       </div>
-      <button onclick={() => { saveDialogOpen = true; newPresetName = '' }} class="rounded-lg bg-white/10 px-2.5 py-2 text-xs text-primary transition-colors hover:bg-white/20 ring-1 ring-white/10" title="Save preset">Save</button>
+      <button onclick={saveAsCurrent} class="rounded-lg bg-sky-500/15 px-2.5 py-2 text-xs text-sky-400 transition-colors hover:bg-sky-500/25 ring-1 ring-sky-500/30" title="Save current slider positions as the active preset">Save as Current</button>
+      <button onclick={() => { saveDialogOpen = true; newPresetName = '' }} class="rounded-lg bg-white/10 px-2.5 py-2 text-xs text-primary transition-colors hover:bg-white/20 ring-1 ring-white/10" title="Save as new preset">Save New</button>
       <button onclick={() => { showImport = !showImport; importText = ''; importErrors = '' }} class="rounded-lg bg-surface px-2.5 py-2 text-xs text-muted transition-colors hover:text-primary ring-1 ring-white/10" title="Import AutoEQ/Parametric EQ text">
         {showImport ? 'Close' : 'Import'}
       </button>
