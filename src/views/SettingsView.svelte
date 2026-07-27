@@ -1,5 +1,6 @@
 <script lang="ts">
   import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, setLibrary, initMetadataForTracks, metadataScanState } from '../stores/appState'
+  import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, connectNavidrome } from '../lib/syncEngine'
   import { navidromeSongToTrack } from '../lib/navidromeApi'
   import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, scanAllForceRescan, resetScan, getWebdavConfigured } from '../lib/metadataScanner'
@@ -425,6 +426,11 @@
           {/if}
         </div>
       </section>
+    </div>
+    <div class="border-t border-white/10 px-4 py-3">
+      <p class="text-xs text-muted/50">
+        v{appVersion} ({commitHash}) &mdash; {new Date(buildTime).toLocaleString()}
+      </p>
     </div>
   </div>
 </div>
