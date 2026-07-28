@@ -153,10 +153,7 @@ async function loadSettings(): Promise<void> {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]
   }))
-  const s: SettingsMap = {}
-  for (const [key, value] of entries) {
-    if (value !== undefined) s[key] = value as any
-  }
+  const s = Object.fromEntries(entries.filter(([, v]) => v !== undefined)) as SettingsMap
   settings.set(s)
 }
 

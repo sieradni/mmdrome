@@ -269,6 +269,17 @@ class PlaybackManager {
       const nextTrack = queueManager.advanceQueue()
       if (nextTrack) {
         await this._loadAndPlay(nextTrack)
+      } else if (get(loopMode) === 'all') {
+        const combined = queueManager.getCombinedQueue()
+        if (combined.length > 0) {
+          setActiveQueueIndex(0)
+          const track = queueManager.findTrack(combined[0])
+          if (track) await this._loadAndPlay(track)
+        } else {
+          setPlaybackState('stopped')
+          setCurrentTrack(null)
+          audioManager.activeElement.src = ''
+        }
       } else {
         setPlaybackState('stopped')
         setCurrentTrack(null)
@@ -329,6 +340,13 @@ class PlaybackManager {
       queueManager.promoteActiveTrack()
       if (nextTrack) {
         await this._loadAndPlayInBg(nextTrack)
+      } else if (get(loopMode) === 'all') {
+        const combined = queueManager.getCombinedQueue()
+        if (combined.length > 0) {
+          setActiveQueueIndex(0)
+          const track = queueManager.findTrack(combined[0])
+          if (track) await this._loadAndPlayInBg(track)
+        }
       }
     } finally {
       this._handlingEnd = false
@@ -380,7 +398,13 @@ class PlaybackManager {
 
     this._handlingEnd = true
     try {
-      queueManager.advanceQueue()
+      const advanced = queueManager.advanceQueue()
+      if (!advanced && get(loopMode) === 'all') {
+        const combined = queueManager.getCombinedQueue()
+        if (combined.length > 0) {
+          setActiveQueueIndex(0)
+        }
+      }
       queueManager.promoteActiveTrack()
       const combined = queueManager.getCombinedQueue()
       const q = get(queue)
@@ -502,15 +526,16 @@ class PlaybackManager {
   }
 
 seek(time: number): void {
-     const el = audioManager.activeElement
-     const track = get(currentTrack)
-     if (!track || !el.src) {
+     const el = audioManager.playbackElement
+     if (!el.src) {
        this.play()
        return
      }
-     const metaDur = track.duration || time
+     const track = get(currentTrack)
+     const metaDur = (track?.duration) || time
      const clamped = Math.min(time, metaDur)
      el.currentTime = clamped
+     currentTime.set(clamped)
    }
 
   private async _playFirstInQueue(): Promise<void> {

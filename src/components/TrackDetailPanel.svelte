@@ -62,7 +62,7 @@
     return String(rg)
   }
 
-  function visibleEntries(obj: Record<string, unknown> | null | undefined): [string, unknown][] {
+  function visibleEntries(obj: object | null | undefined): [string, unknown][] {
     if (!obj) return []
     return Object.entries(obj).filter(([, v]) => v != null && v !== '')
   }
@@ -204,7 +204,7 @@
             <div>
               <p class="text-[10px] font-medium text-muted uppercase tracking-wider mb-1">Navidrome Song</p>
               <div class="rounded-lg bg-surface-hover px-3 py-2 max-h-56 overflow-y-auto">
-                {#each visibleEntries(technicalData.navidromeSong as unknown as Record<string, unknown>) as [key, value]}
+                {#each visibleEntries(technicalData.navidromeSong) as [key, value]}
                   <div class="flex items-start gap-2 py-0.5">
                     <span class="text-xs text-muted shrink-0 capitalize">{key.replace(/([A-Z])/g, ' $1').trim()}:</span>
                     <span class="text-xs text-primary whitespace-pre-wrap break-all">{key === 'replayGain' ? formatReplayGain(value) : formatValue(value)}</span>
@@ -225,7 +225,7 @@
             <div>
               <p class="text-[10px] font-medium text-muted uppercase tracking-wider mb-1">WebDAV File</p>
               <div class="rounded-lg bg-surface-hover px-3 py-2">
-                {#each visibleEntries(technicalData.webdavMatch as unknown as Record<string, unknown>) as [key, value]}
+                {#each visibleEntries(technicalData.webdavMatch) as [key, value]}
                   <div class="flex items-start gap-2 py-0.5">
                     <span class="text-xs text-muted shrink-0 capitalize">{key}:</span>
                     <span class="text-xs text-primary whitespace-pre-wrap break-all">{key === 'size' ? formatSize(Number(value)) : formatValue(value)}</span>
@@ -267,7 +267,7 @@
             <p class="text-[10px] font-medium text-muted uppercase tracking-wider mb-1">Cached Metadata</p>
             {#if technicalData.cachedMeta}
               <div class="rounded-lg bg-surface-hover px-3 py-2">
-                {#each visibleEntries(technicalData.cachedMeta as unknown as Record<string, unknown>) as [key, value]}
+                {#each visibleEntries(technicalData.cachedMeta) as [key, value]}
                   <div class="flex items-start gap-2 py-0.5">
                     <span class="text-xs text-muted shrink-0">{key.replace(/([A-Z])/g, ' $1').trim()}:</span>
                     <span class="text-xs text-primary whitespace-pre-wrap break-all">{formatValue(value)}</span>

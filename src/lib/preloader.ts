@@ -114,8 +114,10 @@ async function preloadNext(n: number): Promise<void> {
     if (nextIds.length === 0) return
     const cache = await caches.open(CACHE_NAME)
     let didPut = false
+    const resolver = urlForTrack
+    if (!resolver) return
     await Promise.all(nextIds.map(async id => {
-      const url = urlForTrack!(id)
+      const url = resolver(id)
       if (!url) return
       const exists = await cache.match(url)
       if (exists) return

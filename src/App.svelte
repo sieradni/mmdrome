@@ -26,10 +26,21 @@
   let overlay: 'trackOptions' | 'pitchSpeed' | 'eq' | 'volume' | 'detail' | null = $state(null)
   let searchQuery = $state('')
   let view = $state<'songs' | 'albums' | 'artists' | 'settings'>('songs')
+  let initError = $state('')
 
   onMount(async () => {
-    await initStores()
-    await initEqStore()
+    try {
+      await initStores()
+    } catch (err) {
+      initError = 'Failed to initialize local storage: ' + (err instanceof Error ? err.message : String(err))
+      return
+    }
+    try {
+      await initEqStore()
+    } catch (err) {
+      initError = 'Failed to initialize EQ settings: ' + (err instanceof Error ? err.message : String(err))
+      return
+    }
 
     const s = $settings
     if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {
@@ -118,16 +129,12 @@
   }
 
   function toggleLoop() {
-    loopMode.update((m) => m === 'one' ? 'none' : 'one')
+    loopMode.update((m) => m === 'none' ? 'one' : m === 'one' ? 'all' : 'none')
   }
 
 function seek(e: Event) {
-     const el = e.target as HTMLInputElement
-     const t = parseFloat(el.value)
-     const playbackEl = audioManager.playbackElement
-     const clamped = Math.min(t, $effectiveDuration || t)
-     playbackEl.currentTime = clamped
-     currentTime.set(clamped)
+     const t = parseFloat((e.target as HTMLInputElement).value)
+     playbackManager.seek(t)
    }
 
   $effect(() => {
@@ -175,6 +182,12 @@ function seek(e: Event) {
       </div>
     </div>
   </header>
+
+  {#if initError}
+    <div class="mx-4 mt-2 rounded-lg bg-red-900/40 px-4 py-3 text-xs text-red-300 ring-1 ring-red-800/50">
+      {initError}
+    </div>
+  {/if}
 
   <!-- ─── Main View Container ─── -->
   <main class="flex flex-col overflow-hidden">
@@ -311,11 +324,13 @@ function seek(e: Event) {
       <button onclick={() => { toggleShuffle() }} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$shuffleEnabled} class:text-muted={!$shuffleEnabled} aria-label="Toggle shuffle">
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
       </button>
-      <button onclick={toggleLoop} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$loopMode === 'one'} class:text-muted={$loopMode !== 'one'} aria-label="Toggle loop">
+      <button onclick={toggleLoop} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$loopMode !== 'none'} class:text-muted={$loopMode === 'none'} aria-label="Toggle loop">
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
           <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
           {#if $loopMode === 'one'}
             <text x="12" y="16" text-anchor="middle" font-size="7" font-weight="bold" fill="currentColor">1</text>
+          {:else if $loopMode === 'all'}
+            <text x="12" y="16" text-anchor="middle" font-size="7" font-weight="bold" fill="currentColor">A</text>
           {/if}
         </svg>
       </button>

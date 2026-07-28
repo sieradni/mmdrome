@@ -240,12 +240,8 @@
   }
 
 function seek(e: Event) {
-     const el = e.target as HTMLInputElement
-     const t = parseFloat(el.value)
-     const playbackEl = audioManager.playbackElement
-     const clamped = Math.min(t, $effectiveDuration || t)
-     playbackEl.currentTime = clamped
-     currentTime.set(clamped)
+     const t = parseFloat((e.target as HTMLInputElement).value)
+     playbackManager.seek(t)
    }
 
   let sliderValue = $derived($currentTime)

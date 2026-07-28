@@ -2,6 +2,7 @@ import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
 import { parseEqText } from './eq/eqParser'
 import { computeBiquadCoefficients } from './eq/eqResponseCalculator'
 import type { EqFilterConfig } from './eq/eqTypes'
+import { get } from 'svelte/store'
 import { currentTrack } from '../stores/appState'
 
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
@@ -703,9 +704,7 @@ class AudioManager {
   }
 
   private _getCurrentTrackDuration(): number {
-    let dur = 0
-    currentTrack.subscribe(t => { if (t && t.duration > 0) dur = t.duration })()
-    return dur
+    return get(currentTrack)?.duration ?? 0
   }
 
   private _setupCrossfadeMonitor(): void {

@@ -54,8 +54,8 @@
     selectedAlbum ? albumGroups.find(g => g.album === selectedAlbum)?.tracks ?? [] : []
   )
 
-  let scrollContainer: HTMLDivElement | null = null
-  let detailScrollContainer: HTMLDivElement | null = null
+  let scrollContainer = $state<HTMLDivElement | null>(null)
+  let detailScrollContainer = $state<HTMLDivElement | null>(null)
 
   let ready = $state(false)
 
