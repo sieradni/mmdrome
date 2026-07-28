@@ -215,6 +215,9 @@ class QueueManager {
     if (minLength !== null && track.duration < minLength) return false
     if (maxLength !== null && track.duration > maxLength) return false
 
+    if (filters.albumScope && track.album !== filters.albumScope) return false
+    if (filters.artistScope && track.artist !== filters.artistScope) return false
+
     if (filters.searchQuery) {
       const sq = filters.searchQuery.trim().toLowerCase()
       if (sq) {

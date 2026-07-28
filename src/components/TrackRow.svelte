@@ -6,12 +6,13 @@
   import LazyThumb from './LazyThumb.svelte'
   import TrackOptionsDropdown from './TrackOptionsDropdown.svelte'
 
-  let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, ondetails }: {
+  let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, ondetails, onplay }: {
     track: Track
     showAlbum?: boolean
     showDuration?: boolean
     showAlbumArtist?: boolean
     ondetails?: () => void
+    onplay?: (trackId: string) => void
   } = $props()
 
   function formatDuration(s: number): string {
@@ -54,8 +55,11 @@
   }
 
   function handlePlay(trackId: string) {
-    addToUserQueue(trackId)
-    playbackManager.playTrackById(trackId)
+    if (onplay) {
+      onplay(trackId)
+    } else {
+      playbackManager.playTrackById(trackId)
+    }
   }
 </script>
 

@@ -93,7 +93,11 @@ export interface AutoQueueFilters {
   minLength: number | ''
   maxLength: number | ''
   searchQuery?: string
+  albumScope?: string
+  artistScope?: string
 }
+
+export type LoopMode = 'none' | 'one' | 'all'
 
 export const autoQueueFilters = writable<AutoQueueFilters>({
   minRating: 0,
@@ -105,6 +109,8 @@ export const autoQueueFilters = writable<AutoQueueFilters>({
   maxLength: '',
   searchQuery: '',
 })
+
+export const loopMode = writable<LoopMode>('none')
 
 export function setLibrary(tracks: Track[]): void {
   library.set(tracks)
@@ -239,6 +245,7 @@ export function removeMetadata(trackId: string): void {
 
 export function toggleShuffle(): void {
   shuffleEnabled.update((v) => !v)
+  autoQueueFilters.update((f) => ({ ...f, albumScope: undefined, artistScope: undefined }))
 }
 
 export function clearQueue(): void {

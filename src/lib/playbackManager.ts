@@ -15,6 +15,7 @@ import {
   playbackSpeed,
   pitchOctaves,
   currentTime,
+  loopMode,
   setCurrentTrack,
   setPlaybackState,
   setActiveQueueIndex,
@@ -205,6 +206,7 @@ class PlaybackManager {
 
     // Track is now playing — promote it from auto to user queue
     queueManager.promoteActiveTrack()
+    queueManager.replenishAutoQueue()
 
     audioManager.reapplyEffects()
     setPlaybackState('playing')
@@ -217,6 +219,9 @@ class PlaybackManager {
     }
 
     await this._setupNextTrack()
+    if (get(loopMode) === 'one') {
+      audioManager.cancelNextTrack()
+    }
   }
 
   private async _setupNextTrack(): Promise<void> {
@@ -246,6 +251,19 @@ class PlaybackManager {
 
   private async _onTrackEnded(): Promise<void> {
     if (this._handlingEnd) return
+
+    if (get(loopMode) === 'one') {
+      audioManager.cancelNextTrack()
+      const el = audioManager.activeElement
+      el.currentTime = 0
+      try { await el.play() } catch { /* user may have paused */ }
+      await this._setupNextTrack()
+      if (get(loopMode) === 'one') {
+        audioManager.cancelNextTrack()
+      }
+      return
+    }
+
     this._handlingEnd = true
     try {
       const nextTrack = queueManager.advanceQueue()
@@ -288,11 +306,23 @@ class PlaybackManager {
     setPlaybackState('playing')
     queueManager.promoteActiveTrack()
     await this._setupNextTrack()
+    if (get(loopMode) === 'one') {
+      audioManager.cancelNextTrack()
+    }
   }
 
   private async _onBgTrackEnd(): Promise<void> {
     if (this._handlingEnd) return
     if (!audioManager.isInBgMode) return
+
+    if (get(loopMode) === 'one') {
+      const current = get(currentTrack)
+      if (current) {
+        await this._loadAndPlayInBg(current)
+      }
+      return
+    }
+
     this._handlingEnd = true
     try {
       const nextTrack = queueManager.advanceQueue()
@@ -339,6 +369,15 @@ class PlaybackManager {
 
   private async _handleCrossfadeEnd(): Promise<void> {
     if (this._handlingEnd) return
+
+    if (get(loopMode) === 'one') {
+      const current = get(currentTrack)
+      if (current) {
+        await this._loadAndPlay(current)
+      }
+      return
+    }
+
     this._handlingEnd = true
     try {
       queueManager.advanceQueue()

@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { library, metadataCache } from '../stores/appState'
+  import { library, metadataCache, autoQueueFilters, queue } from '../stores/appState'
   import { saveViewState, restoreViewState } from '../lib/viewState'
+  import { playbackManager } from '../lib/playbackManager'
+  import { saveQueue } from '../lib/db'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import LazyThumb from '../components/LazyThumb.svelte'
@@ -88,6 +90,24 @@
     }
   })
 
+  function handlePlayFromAlbum(trackId: string) {
+    autoQueueFilters.update((f) => ({ ...f, albumScope: selectedAlbum ?? undefined, artistScope: undefined }))
+    playbackManager.playTrackById(trackId)
+  }
+
+  function playAll() {
+    const tracks = selectedTracks
+    if (tracks.length === 0) return
+    const trackIds = tracks.map((t) => t.trackId)
+    autoQueueFilters.update((f) => ({ ...f, albumScope: selectedAlbum ?? undefined, artistScope: undefined }))
+    queue.update((q) => {
+      const updated = { ...q, userQueue: trackIds, autoQueue: [], historyQueue: [], activeIndex: 0 }
+      saveQueue(updated)
+      return updated
+    })
+    playbackManager.playTrackAt(0)
+  }
+
   onMount(() => {
     const saved = restoreViewState<{ listScrollTop: number; detailScrollTop: number; selectedAlbum: string | null }>(viewName)
     if (saved) {
@@ -96,6 +116,7 @@
     ready = true
     if (saved) scrollRestorePending = true
   })
+
 </script>
 
 {#if selectedAlbum}
@@ -105,12 +126,16 @@
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
       <h2 class="truncate text-sm font-bold text-primary">{selectedAlbum}</h2>
+      <button onclick={playAll} class="ml-auto flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-medium text-background transition-opacity hover:opacity-80" aria-label="Play all">
+        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+        Play All
+      </button>
     </div>
     <div bind:this={detailScrollContainer} class="flex-1 overflow-y-auto pb-24"
          onscroll={() => { if (detailScrollContainer) saveViewState(viewName, { detailScrollTop: detailScrollContainer.scrollTop }) }}>
 <div class="px-4 py-2">
         {#each selectedTracks as track (track.trackId)}
-          <TrackRow {track} ondetails={() => detailsTrack = track} showAlbumArtist />
+          <TrackRow {track} ondetails={() => detailsTrack = track} showAlbumArtist onplay={handlePlayFromAlbum} />
         {/each}
       </div>
     </div>

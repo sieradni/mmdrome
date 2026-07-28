@@ -64,7 +64,7 @@
   })
 
   $effect(() => {
-    autoQueueFilters.set({ minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery })
+    autoQueueFilters.update((f) => ({ ...f, minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery }))
     setSetting('autoQueueFilters', JSON.stringify({ minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery }))
     queueManager.replenishAutoQueue()
   })

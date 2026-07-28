@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, effectiveDuration, toggleShuffle, metadataScanState } from './stores/appState'
+  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, effectiveDuration, toggleShuffle, metadataScanState, loopMode } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
   import { connectNavidrome } from './lib/syncEngine'
   import { navidromeSongToTrack, setCachedConfig } from './lib/navidromeApi'
@@ -115,6 +115,10 @@
     const m = Math.floor(sec / 60)
     const s = Math.floor(sec % 60)
     return `${m}:${s.toString().padStart(2, '0')}`
+  }
+
+  function toggleLoop() {
+    loopMode.update((m) => m === 'one' ? 'none' : 'one')
   }
 
 function seek(e: Event) {
@@ -303,12 +307,20 @@ function seek(e: Event) {
     {/if}
 
     <!-- Controls -->
-    <div class="flex items-center justify-center gap-6 px-6 pt-4">
+    <div class="flex items-center justify-center gap-4 px-6 pt-4">
       <button onclick={() => { toggleShuffle() }} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$shuffleEnabled} class:text-muted={!$shuffleEnabled} aria-label="Toggle shuffle">
-        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+      </button>
+      <button onclick={toggleLoop} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$loopMode === 'one'} class:text-muted={$loopMode !== 'one'} aria-label="Toggle loop">
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+          {#if $loopMode === 'one'}
+            <text x="12" y="16" text-anchor="middle" font-size="7" font-weight="bold" fill="currentColor">1</text>
+          {/if}
+        </svg>
       </button>
       <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
-        <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
       </button>
       <button class="rounded-full bg-primary p-3 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
         {#if $playbackState === 'playing'}
@@ -318,10 +330,10 @@ function seek(e: Event) {
         {/if}
       </button>
       <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
-        <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
+        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
       </button>
       <button onclick={openTrackOptions} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Options">
-        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
       </button>
     </div>
 
