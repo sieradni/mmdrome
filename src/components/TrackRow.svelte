@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { addToUserQueue } from '../stores/appState'
+  import { addToUserQueue, autoQueueFilters } from '../stores/appState'
   import { metadataCache } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
   import type { Track } from '../stores/appState'
@@ -58,6 +58,7 @@
     if (onplay) {
       onplay(trackId)
     } else {
+      autoQueueFilters.update((f) => ({ ...f, albumScope: undefined, artistScope: undefined }))
       playbackManager.playTrackById(trackId)
     }
   }
