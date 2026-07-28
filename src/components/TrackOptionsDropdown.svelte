@@ -1,6 +1,5 @@
 <script lang="ts">
   import { addToUserQueue, playNext } from '../stores/appState'
-  import { playbackManager } from '../lib/playbackManager'
   import type { Track } from '../stores/appState'
 
   let { track, ondetails }: { track: Track; ondetails?: () => void } = $props()
@@ -20,7 +19,6 @@
 
   function handlePlayNext() {
     playNext(track.trackId)
-    playbackManager.next()
     menuOpen = false
   }
 
