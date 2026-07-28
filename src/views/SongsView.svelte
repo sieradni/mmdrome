@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount } from 'svelte'
   import { library, metadataCache, addToUserQueue, playNext } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
   import { saveViewState, restoreViewState } from '../lib/viewState'
@@ -36,9 +36,38 @@
   let listContainer: HTMLDivElement
   let sentinelEl: HTMLDivElement
 
+  let ready = $state(false)
+
   $effect(() => {
-    JSON.stringify({ minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, sortBy, sortAsc, searchQuery })
-    limit = CHUNK
+    if (!ready) return
+    saveViewState(viewName, {
+      filterOpen,
+      sortOpen,
+      minRating,
+      maxRating,
+      lovedOnly,
+      fromYear,
+      toYear,
+      minLength,
+      maxLength,
+      sortBy,
+      sortAsc,
+      limit
+    })
+  })
+
+  let scrollRestorePending = $state(false)
+
+  $effect(() => {
+    if (!scrollRestorePending || !listContainer) return
+    const count = visible.length
+    if (count > 0 && listContainer.scrollHeight > listContainer.clientHeight) {
+      const saved = restoreViewState<{ scrollTop: number }>(viewName)
+      if (saved?.scrollTop) {
+        listContainer.scrollTop = saved.scrollTop
+      }
+      scrollRestorePending = false
+    }
   })
 
   onMount(() => {
@@ -70,9 +99,13 @@
       sortBy = saved.sortBy
       sortAsc = saved.sortAsc
       limit = saved.limit
-      if (listContainer) listContainer.scrollTop = saved.scrollTop
     }
-    if (!listContainer || !sentinelEl) return
+    ready = true
+    if (saved?.scrollTop) scrollRestorePending = true
+  })
+
+  onMount(() => {
+    if (!listContainer || !sentinelEl) return () => {}
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && listContainer.offsetHeight > 0) limit += CHUNK
@@ -81,24 +114,6 @@
     )
     observer.observe(sentinelEl)
     return () => observer.disconnect()
-  })
-
-  onDestroy(() => {
-    saveViewState(viewName, {
-      scrollTop: listContainer?.scrollTop ?? 0,
-      filterOpen,
-      sortOpen,
-      minRating,
-      maxRating,
-      lovedOnly,
-      fromYear,
-      toYear,
-      minLength,
-      maxLength,
-      sortBy,
-      sortAsc,
-      limit
-    })
   })
 
   function getMeta(trackId: string) {
@@ -114,16 +129,19 @@
   }
 
   function toggleFilter() {
+    limit = CHUNK
     filterOpen = !filterOpen
     if (filterOpen) sortOpen = false
   }
 
   function toggleSort() {
+    limit = CHUNK
     sortOpen = !sortOpen
     if (sortOpen) filterOpen = false
   }
 
   function setSort(key: SortKey) {
+    limit = CHUNK
     if (sortBy === key) {
       sortAsc = !sortAsc
     } else {
@@ -326,7 +344,8 @@
     </div>
   {/if}
 
-  <div bind:this={listContainer} class="flex-1 overflow-y-auto pb-24">
+  <div bind:this={listContainer} class="flex-1 overflow-y-auto pb-24"
+       onscroll={() => { if (listContainer) saveViewState(viewName, { scrollTop: listContainer.scrollTop }) }}>
     <div class="px-4 py-2">
       {#each visible as track (track.trackId)}
         <TrackRow {track} showAlbum={false} ondetails={() => detailsTrack = track} />

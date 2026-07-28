@@ -1,9 +1,12 @@
 <script lang="ts">
+  import { onMount } from 'svelte'
   import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, setLibrary, initMetadataForTracks, metadataScanState } from '../stores/appState'
+  import { saveViewState, restoreViewState } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, connectNavidrome } from '../lib/syncEngine'
   import { navidromeSongToTrack } from '../lib/navidromeApi'
   import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, scanAllForceRescan, resetScan, getWebdavConfigured } from '../lib/metadataScanner'
+  import { tick } from 'svelte'
   import type { Track } from '../stores/appState'
 
   let webdavUrl = $state('')
@@ -20,6 +23,24 @@
   let syncing = $state(false)
   let syncResult = $state('')
   let indexing = $state(false)
+  let scrollContainer: HTMLDivElement | null = null
+
+  $effect(() => {
+    saveViewState('settings', {
+      scrollTop: scrollContainer?.scrollTop ?? 0,
+      webdavUrl, webdavUser, webdavToken,
+      navidromeUrl, navidromeUser, navidromePassword,
+      preloadTracks, crossfadeDuration, tapeMode, snapTolerance, replayGainMode
+    })
+  })
+
+  onMount(async () => {
+    const saved = restoreViewState<{ scrollTop: number }>('settings')
+    if (saved && scrollContainer) {
+      await tick()
+      scrollContainer.scrollTop = saved.scrollTop
+    }
+  })
 
   $effect(() => {
     const s = $settings
@@ -162,7 +183,8 @@
   <div class="border-b border-white/10 px-4 py-3">
     <h2 class="text-xs font-medium uppercase tracking-wider text-muted">Settings</h2>
   </div>
-  <div class="flex-1 overflow-y-auto pb-24">
+  <div class="flex-1 overflow-y-auto pb-24" bind:this={scrollContainer}
+       onscroll={() => { if (scrollContainer) saveViewState('settings', { scrollTop: scrollContainer.scrollTop }) }}>
     <div class="divide-y divide-white/10">
       <!-- Preload -->
       <section class="px-4 py-4">

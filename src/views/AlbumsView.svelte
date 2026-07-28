@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount } from 'svelte'
   import { library, metadataCache } from '../stores/appState'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import type { Track } from '../stores/appState'
@@ -55,21 +55,46 @@
   let scrollContainer: HTMLDivElement | null = null
   let detailScrollContainer: HTMLDivElement | null = null
 
-  onMount(() => {
-    const saved = restoreViewState<{ scrollTop: number; selectedAlbum: string | null }>(viewName)
-    if (saved) {
-      selectedAlbum = saved.selectedAlbum
-      const container = selectedAlbum ? detailScrollContainer : scrollContainer
-      if (container) container.scrollTop = saved.scrollTop
+  let ready = $state(false)
+
+  $effect(() => {
+    if (!ready) return
+    saveViewState(viewName, { selectedAlbum })
+  })
+
+  let scrollRestorePending = $state(false)
+
+  $effect(() => {
+    const groups = albumGroups
+    if (!scrollRestorePending) return
+    if (selectedAlbum) {
+      if (!detailScrollContainer) return
+      if (detailScrollContainer.scrollHeight > detailScrollContainer.clientHeight) {
+        const saved = restoreViewState<{ detailScrollTop: number }>(viewName)
+        if (saved?.detailScrollTop) {
+          detailScrollContainer.scrollTop = saved.detailScrollTop
+        }
+        scrollRestorePending = false
+      }
+    } else {
+      if (!scrollContainer) return
+      if (scrollContainer.scrollHeight > scrollContainer.clientHeight) {
+        const saved = restoreViewState<{ listScrollTop: number }>(viewName)
+        if (saved?.listScrollTop) {
+          scrollContainer.scrollTop = saved.listScrollTop
+        }
+        scrollRestorePending = false
+      }
     }
   })
 
-  onDestroy(() => {
-    const container = selectedAlbum ? detailScrollContainer : scrollContainer
-    saveViewState(viewName, {
-      scrollTop: container?.scrollTop ?? 0,
-      selectedAlbum
-    })
+  onMount(() => {
+    const saved = restoreViewState<{ listScrollTop: number; detailScrollTop: number; selectedAlbum: string | null }>(viewName)
+    if (saved) {
+      selectedAlbum = saved.selectedAlbum
+    }
+    ready = true
+    if (saved) scrollRestorePending = true
   })
 </script>
 
@@ -81,14 +106,15 @@
       </button>
       <h2 class="truncate text-sm font-bold text-primary">{selectedAlbum}</h2>
     </div>
-    <div bind:this={detailScrollContainer} class="flex-1 overflow-y-auto pb-24">
+    <div bind:this={detailScrollContainer} class="flex-1 overflow-y-auto pb-24"
+         onscroll={() => { if (detailScrollContainer) saveViewState(viewName, { detailScrollTop: detailScrollContainer.scrollTop }) }}>
 <div class="px-4 py-2">
         {#each selectedTracks as track (track.trackId)}
           <TrackRow {track} ondetails={() => detailsTrack = track} showAlbumArtist />
         {/each}
       </div>
+    </div>
   </div>
-</div>
 
 {#if detailsTrack}
   <TrackDetailsModal track={detailsTrack} onclose={() => detailsTrack = null} />
@@ -98,7 +124,8 @@
     <div class="border-b border-white/10 px-4 py-3">
       <h2 class="text-xs font-medium uppercase tracking-wider text-muted">Albums · {albumGroups.length}</h2>
     </div>
-    <div bind:this={scrollContainer} class="flex-1 overflow-y-auto pb-24">
+    <div bind:this={scrollContainer} class="flex-1 overflow-y-auto pb-24"
+         onscroll={() => { if (scrollContainer) saveViewState(viewName, { listScrollTop: scrollContainer.scrollTop }) }}>
       <div class="grid grid-cols-2 gap-4 px-4 py-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
         {#each albumGroups as group (group.album)}
           <button onclick={() => selectedAlbum = group.album} class="group text-left transition-transform hover:scale-[1.02]">
