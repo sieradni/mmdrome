@@ -36,17 +36,16 @@ export function setupMediaSession(
     navigator.mediaSession.playbackState = state === 'stopped' ? 'none' : state === 'buffering' ? 'playing' : state
   })
 
-  function updatePositionState() {
-    const el = audioManager.playbackElement
-    const metaDur = get(currentTrack)?.duration ?? 0
-    const dur = metaDur > 0 ? metaDur : (el.duration && isFinite(el.duration) ? el.duration : 0)
-    if (dur) {
-      try {
-        navigator.mediaSession.setPositionState?.({
-          duration: dur,
-          playbackRate: el.playbackRate,
-          position: el.currentTime,
-        })
+function updatePositionState() {
+     const el = audioManager.playbackElement
+     const metaDur = get(currentTrack)?.duration ?? 0
+     if (metaDur) {
+       try {
+         navigator.mediaSession.setPositionState?.({
+           duration: metaDur,
+           playbackRate: el.playbackRate,
+           position: el.currentTime,
+         })
       } catch {
         /* setPositionState may throw if metadata hasn't been set yet */
       }

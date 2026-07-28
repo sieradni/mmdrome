@@ -74,13 +74,11 @@ export const navidromeConnection = writable<{ connected: boolean; error?: string
 export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string }>({ loading: false, loaded: 0, failed: 0 })
 export const shuffleEnabled = writable<boolean>(false)
 export const currentTime = writable<number>(0)
-export const elementDuration = writable<number>(0)
 export const playbackSpeed = writable<number>(1)
 export const effectiveDuration = derived(
-  [elementDuration, currentTrack],
-  ([$elDur, $ct]) => {
-    const meta = $ct?.duration ?? 0
-    return meta > 0 ? meta : ($elDur > 0 ? $elDur : 0)
+  [currentTrack],
+  ([$ct]) => {
+    return $ct?.duration ?? 0
   }
 )
 export const pitchOctaves = writable<number>(0)

@@ -1,11 +1,15 @@
 <script lang="ts">
+  import { onMount, onDestroy } from 'svelte'
   import { library, metadataCache } from '../stores/appState'
+  import { saveViewState, restoreViewState } from '../lib/viewState'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackRow from '../components/TrackRow.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
+
+  const viewName = 'albums'
 
   let selectedAlbum = $state<string | null>(null)
   let detailsTrack: Track | null = $state(null)
@@ -48,7 +52,26 @@
     selectedAlbum ? albumGroups.find(g => g.album === selectedAlbum)?.tracks ?? [] : []
   )
 
-  </script>
+  let scrollContainer: HTMLDivElement | null = null
+  let detailScrollContainer: HTMLDivElement | null = null
+
+  onMount(() => {
+    const saved = restoreViewState<{ scrollTop: number; selectedAlbum: string | null }>(viewName)
+    if (saved) {
+      selectedAlbum = saved.selectedAlbum
+      const container = selectedAlbum ? detailScrollContainer : scrollContainer
+      if (container) container.scrollTop = saved.scrollTop
+    }
+  })
+
+  onDestroy(() => {
+    const container = selectedAlbum ? detailScrollContainer : scrollContainer
+    saveViewState(viewName, {
+      scrollTop: container?.scrollTop ?? 0,
+      selectedAlbum
+    })
+  })
+</script>
 
 {#if selectedAlbum}
   <div class="flex h-full flex-col">
@@ -58,7 +81,7 @@
       </button>
       <h2 class="truncate text-sm font-bold text-primary">{selectedAlbum}</h2>
     </div>
-    <div class="flex-1 overflow-y-auto pb-24">
+    <div bind:this={detailScrollContainer} class="flex-1 overflow-y-auto pb-24">
 <div class="px-4 py-2">
         {#each selectedTracks as track (track.trackId)}
           <TrackRow {track} ondetails={() => detailsTrack = track} showAlbumArtist />
@@ -75,7 +98,7 @@
     <div class="border-b border-white/10 px-4 py-3">
       <h2 class="text-xs font-medium uppercase tracking-wider text-muted">Albums · {albumGroups.length}</h2>
     </div>
-    <div class="flex-1 overflow-y-auto pb-24">
+    <div bind:this={scrollContainer} class="flex-1 overflow-y-auto pb-24">
       <div class="grid grid-cols-2 gap-4 px-4 py-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
         {#each albumGroups as group (group.album)}
           <button onclick={() => selectedAlbum = group.album} class="group text-left transition-transform hover:scale-[1.02]">

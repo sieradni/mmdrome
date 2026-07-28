@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import { library, metadataCache, addToUserQueue, playNext } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
+  import { saveViewState, restoreViewState } from '../lib/viewState'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import LazyThumb from '../components/LazyThumb.svelte'
@@ -9,6 +10,8 @@
   import TrackRow from '../components/TrackRow.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
+
+  const viewName = 'songs'
 
   let filterOpen = $state(false)
   let sortOpen = $state(false)
@@ -39,15 +42,63 @@
   })
 
   onMount(() => {
+    const saved = restoreViewState<{
+      scrollTop: number
+      filterOpen: boolean
+      sortOpen: boolean
+      minRating: number
+      maxRating: number
+      lovedOnly: boolean
+      fromYear: number | ''
+      toYear: number | ''
+      minLength: number | ''
+      maxLength: number | ''
+      sortBy: SortKey | null
+      sortAsc: boolean
+      limit: number
+    }>(viewName)
+    if (saved) {
+      filterOpen = saved.filterOpen
+      sortOpen = saved.sortOpen
+      minRating = saved.minRating
+      maxRating = saved.maxRating
+      lovedOnly = saved.lovedOnly
+      fromYear = saved.fromYear
+      toYear = saved.toYear
+      minLength = saved.minLength
+      maxLength = saved.maxLength
+      sortBy = saved.sortBy
+      sortAsc = saved.sortAsc
+      limit = saved.limit
+      if (listContainer) listContainer.scrollTop = saved.scrollTop
+    }
     if (!listContainer || !sentinelEl) return
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) limit += CHUNK
+        if (entry.isIntersecting && listContainer.offsetHeight > 0) limit += CHUNK
       },
       { root: listContainer, rootMargin: '200px' }
     )
     observer.observe(sentinelEl)
     return () => observer.disconnect()
+  })
+
+  onDestroy(() => {
+    saveViewState(viewName, {
+      scrollTop: listContainer?.scrollTop ?? 0,
+      filterOpen,
+      sortOpen,
+      minRating,
+      maxRating,
+      lovedOnly,
+      fromYear,
+      toYear,
+      minLength,
+      maxLength,
+      sortBy,
+      sortAsc,
+      limit
+    })
   })
 
   function getMeta(trackId: string) {

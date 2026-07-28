@@ -239,14 +239,14 @@
     return `${m}:${s.toString().padStart(2, '0')}`
   }
 
-  function seek(e: Event) {
-    const el = e.target as HTMLInputElement
-    const t = parseFloat(el.value)
-    const playbackEl = audioManager.playbackElement
-    const clamped = Math.min(t, playbackEl.duration || t)
-    playbackEl.currentTime = clamped
-    currentTime.set(clamped)
-  }
+function seek(e: Event) {
+     const el = e.target as HTMLInputElement
+     const t = parseFloat(el.value)
+     const playbackEl = audioManager.playbackElement
+     const clamped = Math.min(t, $effectiveDuration || t)
+     playbackEl.currentTime = clamped
+     currentTime.set(clamped)
+   }
 
   let sliderValue = $derived($currentTime)
   let sliderMax = $derived($effectiveDuration > 0 ? $effectiveDuration : 1)

@@ -2,7 +2,7 @@ import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
 import { parseEqText } from './eq/eqParser'
 import { computeBiquadCoefficients } from './eq/eqResponseCalculator'
 import type { EqFilterConfig } from './eq/eqTypes'
-import { elementDuration, currentTrack } from '../stores/appState'
+import { currentTrack } from '../stores/appState'
 
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 const DEFAULT_BAND_Q = Math.SQRT1_2
@@ -90,18 +90,6 @@ class AudioManager {
       if (this._inBgMode) {
         this.onBgError?.()
       }
-    })
-
-    const onDurationChange = (el: HTMLAudioElement) => {
-      if (el !== (this._inBgMode ? this._bgEl : this.activeElement)) return
-      const d = el.duration
-      elementDuration.set(isFinite(d) && d > 0 ? d : 0)
-    }
-    this.a.addEventListener('durationchange', () => onDurationChange(this.a))
-    this.b.addEventListener('durationchange', () => onDurationChange(this.b))
-    this._bgEl.addEventListener('durationchange', () => {
-      if (!this._inBgMode) return
-      onDurationChange(this._bgEl!)
     })
   }
 
@@ -812,8 +800,6 @@ class AudioManager {
 
     this._teardownCrossfadeMonitor()
     this._activeElement = this._activeElement === 'a' ? 'b' : 'a'
-    const d = this.activeElement.duration
-    elementDuration.set(isFinite(d) && d > 0 ? d : 0)
     this._nextTrackUrl = null
     this._nextTrackReplayGainLinear = null
 
