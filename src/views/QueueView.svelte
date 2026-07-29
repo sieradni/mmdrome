@@ -16,12 +16,13 @@
     type Track,
     type QueueState,
   } from '../stores/appState'
-  import { onMount, onDestroy } from 'svelte'
+  import { onMount, onDestroy, tick } from 'svelte'
   import { flip } from 'svelte/animate'
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
   import { audioManager } from '../lib/audioManager'
   import { saveQueue, getSetting, setSetting } from '../lib/db'
+  import { saveViewState, restoreViewState } from '../lib/viewState'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
 
@@ -60,6 +61,11 @@
         if (p.maxLength !== undefined) maxLength = norm(p.maxLength)
         if (p.searchQuery !== undefined) searchQuery = p.searchQuery || ''
       } catch { /* ignore corrupt saved filter */ }
+    }
+    const savedScroll = restoreViewState<{ scrollTop: number }>('queue')
+    if (savedScroll && listContainerEl) {
+      await tick()
+      listContainerEl.scrollTop = savedScroll.scrollTop
     }
   })
 
@@ -518,7 +524,7 @@ function seek(e: Event) {
   </div>
 
   <!-- Queue List Scroll Container -->
-  <div bind:this={listContainerEl} class="flex-1 overflow-y-auto pb-4 touch-pan-y">
+  <div bind:this={listContainerEl} class="flex-1 overflow-y-auto pb-4 touch-pan-y" onscroll={() => { if (listContainerEl) saveViewState('queue', { scrollTop: listContainerEl.scrollTop }) }}>
     {#if $queue.userQueue.length === 0 && $queue.autoQueue.length === 0}
       <div class="flex h-full items-center justify-center">
         <p class="text-xs text-muted">Queue is empty</p>
