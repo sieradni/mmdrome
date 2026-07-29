@@ -124,8 +124,8 @@ export async function initStores(): Promise<void> {
   const [q, allMeta] = await Promise.all([
     getQueue(),
     getAllMetadata(),
-    loadSettings(),
   ])
+  await loadSettings()
 
   if (q) {
     queue.set({ userQueue: q.userQueue, autoQueue: q.autoQueue, historyQueue: q.historyQueue, activeIndex: q.activeIndex })

@@ -1,12 +1,12 @@
 import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
 import { parseEqText } from './eq/eqParser'
 import { computeBiquadCoefficients } from './eq/eqResponseCalculator'
+import { DEFAULT_EQ_Q } from './eq/eqTypes'
 import type { EqFilterConfig } from './eq/eqTypes'
 import { get } from 'svelte/store'
 import { currentTrack } from '../stores/appState'
 
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-const DEFAULT_BAND_Q = Math.SQRT1_2
 const WORKLET_CACHE_BUST = '1' // increment when public/*-processor.js files change
 
 function clamp(value: number, min: number, max: number): number {
@@ -281,7 +281,7 @@ class AudioManager {
     if (this._nextTrackUrl && this._crossfadeDuration > 0 && this._webAudioReady) {
       this._setupCrossfadeMonitor()
       const el = this.activeElement
-      const metaDur = this._getCurrentTrackDuration()
+      const metaDur = get(currentTrack)?.duration ?? 0
       if (metaDur && metaDur >= this._crossfadeDuration + 1 && !el.paused) {
         if (el.currentTime >= metaDur - this._crossfadeDuration) {
           this._executeCrossfade()
@@ -611,7 +611,7 @@ class AudioManager {
       type: 'peaking',
       frequency: freq,
       gain: 0,
-      q: DEFAULT_BAND_Q,
+      q: DEFAULT_EQ_Q,
       enabled: true,
     }))
     this._eqFilters = EQ_FREQUENCIES.map(freq => {
@@ -619,7 +619,7 @@ class AudioManager {
       f.type = 'peaking'
       f.frequency.value = freq
       f.gain.value = 0
-      f.Q.value = DEFAULT_BAND_Q
+      f.Q.value = DEFAULT_EQ_Q
       return f
     })
   }
@@ -703,10 +703,6 @@ class AudioManager {
     return bestDist <= this._snapTolerance ? best : octaves
   }
 
-  private _getCurrentTrackDuration(): number {
-    return get(currentTrack)?.duration ?? 0
-  }
-
   private _setupCrossfadeMonitor(): void {
     this._teardownCrossfadeMonitor()
     if (!this._webAudioReady || this._crossfadeDuration <= 0 || !this._nextTrackUrl) return
@@ -715,7 +711,7 @@ class AudioManager {
     this._crossfadeInterval = setInterval(() => {
       if (!this._nextTrackUrl || this._transitionArmed) return
       const el = this.activeElement
-      const metaDur = this._getCurrentTrackDuration()
+      const metaDur = get(currentTrack)?.duration ?? 0
       if (!metaDur || el.paused) return
 
       if (metaDur < this._crossfadeDuration + 1) return

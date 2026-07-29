@@ -1,3 +1,5 @@
+export const DEFAULT_EQ_Q = Math.SQRT1_2
+
 export type EqFilterType =
   | 'peaking'
   | 'lowshelf'

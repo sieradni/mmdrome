@@ -21,6 +21,7 @@ interface QueueItem {
 let queue: QueueItem[] = []
 let activeCount = 0
 let cancelled = false
+let scanGen = 0
 let index: WebdavFileEntry[] = []
 let indexBuilt = false
 let serverLastScan = ""
@@ -76,13 +77,15 @@ let failedCount = 0
 let totalTracks = 0
 
 export async function scanAllNow(forceRescan = false): Promise<void> {
-  cancelled = false
+  cancelled = true
+  const myGen = ++scanGen
   queue = []
   scannedCount = 0
   failedCount = 0
   totalTracks = 0
 
   if (!webdavUrl || !webdavUser || !webdavToken) return
+  if (scanGen !== myGen) return
 
   metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0 } })
 
@@ -112,6 +115,8 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
   }).length
 
   totalTracks = queue.length
+  if (scanGen !== myGen) return
+  cancelled = false
   metadataScanState.set({
     status: "scanning",
     progress: { scanned: 0, total: totalTracks, failed: 0 },
@@ -135,39 +140,36 @@ async function drain(): Promise<void> {
 }
 
 async function processItem(item: QueueItem): Promise<void> {
+  const startedGen = scanGen
   const tracks = get(library)
   const track = tracks.find((t) => t.trackId === item.trackId)
-  if (!track) return
+  if (!track || scanGen !== startedGen) return
 
   const match = matchTrackToWebdav(track, index)
-  if (!match) {
+  if (!match || scanGen !== startedGen) {
     scannedCount++
     updateScanProgress()
     return
   }
 
-    try {
-      const meta = await readFileMetadata(webdavUrl, match.path, webdavUser, webdavToken, track.fileType)
-      updateMetadata({
-        trackId: track.trackId,
-        rating: meta.rating,
-        loved: meta.loved,
-        fileType: track.fileType,
-        syncStatus: "synced",
-        lastModifiedLocally: Date.now(),
-        webdavPath: match.path,
-        webdavLastModified: match.lastModified,
-        comments: meta.comments,
-      })
-      scannedCount++
-    } catch {
-      const existing = get(metadataCache).get(track.trackId)
-      if (existing?.webdavPath) {
-        updateMetadata({ ...existing, webdavPath: undefined, webdavLastModified: undefined })
-      }
-      failedCount++
-    }
-  updateScanProgress()
+  try {
+    const meta = await readFileMetadata(webdavUrl, match.path, webdavUser, webdavToken, track.fileType)
+    updateMetadata({
+      trackId: track.trackId,
+      rating: meta.rating,
+      loved: meta.loved,
+      fileType: track.fileType,
+      syncStatus: "synced",
+      lastModifiedLocally: Date.now(),
+      webdavPath: match.path,
+      webdavLastModified: match.lastModified,
+      comments: meta.comments,
+    })
+    if (scanGen === startedGen) scannedCount++
+  } catch {
+    if (scanGen === startedGen) failedCount++
+  }
+  if (scanGen === startedGen) updateScanProgress()
 }
 
 function updateScanProgress(): void {
@@ -186,13 +188,15 @@ function updateScanProgress(): void {
 }
 
 export async function scanAllForceRescan(): Promise<void> {
-  cancelled = false
+  cancelled = true
+  const myGen = ++scanGen
   queue = []
   scannedCount = 0
   failedCount = 0
   totalTracks = 0
 
   if (!webdavUrl || !webdavUser || !webdavToken) return
+  if (scanGen !== myGen) return
 
   metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0 } })
 
@@ -202,6 +206,8 @@ export async function scanAllForceRescan(): Promise<void> {
   for (const t of tracks) queue.push({ trackId: t.trackId })
 
   totalTracks = queue.length
+  if (scanGen !== myGen) return
+  cancelled = false
   metadataScanState.set({
     status: "scanning",
     progress: { scanned: 0, total: totalTracks, failed: 0 },

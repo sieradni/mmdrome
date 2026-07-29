@@ -1,27 +1,9 @@
+import { webdavFetch, authHeaders, buildWebdavUrl, normalizeUrl } from "./webdavUtils"
 import { getTagLib } from "./taglibSingleton"
 import type { Track } from "../stores/appState"
 import type { WebdavFileEntry, LocalMetadataStore } from "./db"
 
 const METADATA_FETCH_TIMEOUT = 30000
-
-function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), METADATA_FETCH_TIMEOUT)
-  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer))
-}
-
-function authHeaders(user: string, token: string): Record<string, string> {
-  return { Authorization: `Basic ${btoa(`${user}:${token}`)}` }
-}
-
-function normalizeUrl(base: string): string {
-  return base.replace(/\/+$/, "")
-}
-
-function buildWebdavUrl(base: string, path: string): string {
-  const encodedPath = path.split("/").map((s) => encodeURIComponent(s)).join("/")
-  return `${normalizeUrl(base)}/${encodedPath.replace(/^\/+/, "")}`
-}
 
 function parseXml(text: string): Document {
   return new DOMParser().parseFromString(text, "text/xml")
@@ -53,13 +35,13 @@ export async function buildWebdavFileIndex(
   token: string,
 ): Promise<WebdavFileEntry[]> {
   const url = buildWebdavUrl(baseUrl, "/")
-  const res = await fetchWithTimeout(url, {
+  const res = await webdavFetch(url, {
     method: "PROPFIND",
     headers: {
       ...authHeaders(user, token),
       Depth: "infinity",
     },
-  })
+  }, METADATA_FETCH_TIMEOUT)
   if (!res.ok) throw new Error(`PROPFIND / failed: ${res.status}`)
   const xml = await res.text()
   const doc = parseXml(xml)
@@ -216,16 +198,16 @@ export async function readMetadataChunk(
 ): Promise<ArrayBuffer> {
   const url = buildWebdavUrl(baseUrl, filePath)
   const size = chunkSize ?? getMetadataChunkSize(fileType)
-  const res = await fetchWithTimeout(url, {
+  const res = await webdavFetch(url, {
     method: "GET",
     headers: {
       ...authHeaders(user, token),
       Range: `bytes=0-${size - 1}`,
     },
-  })
+  }, METADATA_FETCH_TIMEOUT)
   if (!res.ok) {
     if (res.status === 416) {
-      const fullRes = await fetchWithTimeout(url, { headers: authHeaders(user, token) })
+      const fullRes = await webdavFetch(url, { headers: authHeaders(user, token) }, METADATA_FETCH_TIMEOUT)
       if (!fullRes.ok) throw new Error(`GET ${filePath} failed: ${fullRes.status}`)
       return fullRes.arrayBuffer()
     }

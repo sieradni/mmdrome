@@ -1,3 +1,4 @@
+import { DEFAULT_EQ_Q } from './eqTypes'
 import type { EqFilterConfig, EqFilterType, ParseEqResult } from './eqTypes'
 
 const FILTER_TYPE_MAP: Record<string, EqFilterType> = {
@@ -68,7 +69,7 @@ export function parseEqText(text: string): ParseEqResult {
               type: 'peaking',
               frequency: freq,
               gain,
-              q: 1.41,
+              q: DEFAULT_EQ_Q,
               enabled: true,
             })
           }

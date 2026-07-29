@@ -1,7 +1,7 @@
+import { DEFAULT_EQ_Q } from './eqTypes'
 import type { EqPreset, EqFilterConfig } from './eqTypes'
 
 export const DEFAULT_GRAPHIC_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
-const DEFAULT_BAND_Q = Math.SQRT1_2
 
 /**
  * Merge imported EQ filters onto the 10-band default grid.
@@ -15,7 +15,7 @@ export function mergeFiltersIntoDefaultGrid(
     type: 'peaking',
     frequency: freq,
     gain: 0,
-    q: DEFAULT_BAND_Q,
+    q: DEFAULT_EQ_Q,
     enabled: true,
   }))
 
@@ -68,7 +68,7 @@ function createGraphicPreset(id: string, name: string, gains: number[], preampDb
       type: 'peaking',
       frequency: freq,
       gain: gains[i] ?? 0,
-      q: 1.41,
+      q: DEFAULT_EQ_Q,
       enabled: true,
     })),
   }

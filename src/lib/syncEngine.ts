@@ -1,3 +1,4 @@
+import { webdavFetch, authHeaders, buildWebdavUrl } from "./webdavUtils"
 import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache, saveSongLibraryCache } from "$lib/db"
 import { modifyMetadataBuffer } from "$lib/tagWriter"
 import {
@@ -17,23 +18,6 @@ import {
 
 const WEBDAV_TIMEOUT = 60000
 
-function webdavAuthHeaders(user: string, token: string): Record<string, string> {
-  return {
-    Authorization: `Basic ${btoa(`${user}:${token}`)}`,
-  }
-}
-
-function webdavFetch(url: string, options: RequestInit): Promise<Response> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), WEBDAV_TIMEOUT)
-  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer))
-}
-
-function buildWebdavUrl(baseUrl: string, filePath: string): string {
-  const encodedPath = filePath.split("/").map((s) => encodeURIComponent(s)).join("/")
-  return `${baseUrl.replace(/\/+$/, "")}/${encodedPath.replace(/^\/+/, "")}`
-}
-
 class ConflictError extends Error {
   constructor(message: string) {
     super(message)
@@ -50,8 +34,8 @@ async function webdavGet(
   const url = buildWebdavUrl(baseUrl, filePath)
   const res = await webdavFetch(url, {
     method: "GET",
-    headers: webdavAuthHeaders(user, token),
-  })
+    headers: authHeaders(user, token),
+  }, WEBDAV_TIMEOUT)
   if (!res.ok) throw new Error(`WebDAV GET failed (${res.status}) for ${filePath}`)
   return {
     data: await res.arrayBuffer(),
@@ -68,23 +52,23 @@ async function webdavPutAtomic(
   etag?: string,
 ): Promise<void> {
   const tempPath = `${filePath}.mmdrome-tmp`
-  const authHeaders = webdavAuthHeaders(user, token)
+  const headers = authHeaders(user, token)
 
   // Write to temp file first — original untouched if this fails
   const putRes = await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
     method: "PUT",
     headers: {
-      ...authHeaders,
+      ...headers,
       "Content-Type": "application/octet-stream",
     },
     body: data,
-  })
+  }, WEBDAV_TIMEOUT)
   if (!putRes.ok) throw new Error(`WebDAV PUT to temp failed (${putRes.status}) for ${filePath}`)
 
   // Atomically replace via MOVE with optional concurrency check
   const destUrl = buildWebdavUrl(baseUrl, filePath)
   const moveHeaders: Record<string, string> = {
-    ...authHeaders,
+    ...headers,
     Destination: destUrl,
     Overwrite: "T",
   }
@@ -94,14 +78,14 @@ async function webdavPutAtomic(
     const moveRes = await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
       method: "MOVE",
       headers: moveHeaders,
-    })
+    }, WEBDAV_TIMEOUT)
 
     if (!moveRes.ok) {
       // Clean up temp file on MOVE failure
       await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
         method: "DELETE",
-        headers: authHeaders,
-      }).catch(() => {})
+        headers,
+      }, WEBDAV_TIMEOUT).catch(() => {})
       if (moveRes.status === 412) throw new ConflictError(`File changed since GET for ${filePath}`)
       throw new Error(`WebDAV MOVE failed (${moveRes.status}) for ${filePath}`)
     }
@@ -109,8 +93,8 @@ async function webdavPutAtomic(
     // Attempt cleanup on any error (CORS failure, network error, etc.)
     await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
       method: "DELETE",
-      headers: authHeaders,
-    }).catch(() => {})
+      headers,
+    }, WEBDAV_TIMEOUT).catch(() => {})
     throw err
   }
 }

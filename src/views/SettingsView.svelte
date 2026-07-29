@@ -85,6 +85,8 @@
     updateSetting('snapTolerance', val)
   }
 
+  let settingDebounce: ReturnType<typeof setTimeout> | null = null
+
   function updateField(field: 'webdavUrl' | 'webdavUser' | 'webdavToken' | 'navidromeUrl' | 'navidromeUser' | 'navidromePassword') {
     return (e: Event) => {
       const val = (e.target as HTMLInputElement).value
@@ -94,7 +96,8 @@
       if (field === 'navidromeUrl') navidromeUrl = val
       if (field === 'navidromeUser') navidromeUser = val
       if (field === 'navidromePassword') navidromePassword = val
-      updateSetting(field, val)
+      if (settingDebounce) clearTimeout(settingDebounce)
+      settingDebounce = setTimeout(() => updateSetting(field, val), 300)
     }
   }
 

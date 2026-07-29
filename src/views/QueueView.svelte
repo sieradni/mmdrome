@@ -63,10 +63,17 @@
     }
   })
 
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null
+
   $effect(() => {
     autoQueueFilters.update((f) => ({ ...f, minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery }))
     setSetting('autoQueueFilters', JSON.stringify({ minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery }))
-    queueManager.replenishAutoQueue()
+    if (debounceTimer) clearTimeout(debounceTimer)
+    debounceTimer = setTimeout(() => queueManager.replenishAutoQueue(), 300)
+  })
+
+  onDestroy(() => {
+    if (debounceTimer) clearTimeout(debounceTimer)
   })
 
   // Underlying track arrays

@@ -9,10 +9,12 @@ export function setupMediaSession(
   onNextTrack?: () => void,
   onPreviousTrack?: () => void,
   getCoverBlobUrl?: (track: Track) => string | undefined
-): void {
-  if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return
+): () => void {
+  const cleanup: (() => void)[] = []
 
-  currentTrack.subscribe((track) => {
+  if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return () => {}
+
+  const unsubTrack = currentTrack.subscribe((track) => {
     if (!track) {
       navigator.mediaSession.metadata = null
       return
@@ -31,10 +33,12 @@ export function setupMediaSession(
       artwork,
     })
   })
+  cleanup.push(unsubTrack)
 
-  playbackState.subscribe((state) => {
+  const unsubPlayState = playbackState.subscribe((state) => {
     navigator.mediaSession.playbackState = state === 'stopped' ? 'none' : state === 'buffering' ? 'playing' : state
   })
+  cleanup.push(unsubPlayState)
 
 function updatePositionState() {
      const el = audioManager.playbackElement
@@ -55,6 +59,10 @@ function updatePositionState() {
   const onTimeUpdate = () => updatePositionState()
   audioManager.a.addEventListener('timeupdate', onTimeUpdate)
   audioManager.b.addEventListener('timeupdate', onTimeUpdate)
+  cleanup.push(() => {
+    audioManager.a.removeEventListener('timeupdate', onTimeUpdate)
+    audioManager.b.removeEventListener('timeupdate', onTimeUpdate)
+  })
 
   // Poll position state during background mode (iOS timeupdate can stall)
   let bgInterval: ReturnType<typeof setInterval> | null = null
@@ -70,9 +78,9 @@ function updatePositionState() {
       if (bgInterval) { clearInterval(bgInterval); bgInterval = null }
     }
   }
-  // Re-check bg mode whenever playback state changes
-  playbackState.subscribe(bgCheck)
-  currentTrack.subscribe(bgCheck)
+  const unsubBgPlay = playbackState.subscribe(bgCheck)
+  const unsubBgTrack = currentTrack.subscribe(bgCheck)
+  cleanup.push(unsubBgPlay, unsubBgTrack, () => { if (bgInterval) clearInterval(bgInterval) })
 
   navigator.mediaSession.setActionHandler('play', () => {
     if (audioManager.isInBgMode) {
@@ -113,4 +121,6 @@ function updatePositionState() {
       updatePositionState()
     }
   })
+
+  return () => { for (const fn of cleanup) fn() }
 }
