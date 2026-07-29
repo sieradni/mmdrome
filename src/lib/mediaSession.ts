@@ -71,7 +71,13 @@ function updatePositionState() {
       if (!bgInterval) {
         bgInterval = setInterval(() => {
           updatePositionState()
-          currentTime.set(audioManager.playbackElement.currentTime)
+          const t = audioManager.playbackElement.currentTime
+          currentTime.set(t)
+          // End-of-track watchdog: iOS can stall events in background
+          const track = get(currentTrack)
+          if (track && track.duration > 0 && t >= track.duration - 0.25) {
+            audioManager.onBgTrackEnd?.()
+          }
         }, 250)
       }
     } else {

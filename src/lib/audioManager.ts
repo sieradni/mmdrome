@@ -11,6 +11,12 @@ import { currentTrack } from '../stores/appState'
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 const WORKLET_CACHE_BUST = '1' // increment when public/*-processor.js files change
 
+export interface BgTransitionState {
+  ended: boolean
+  wasPlaying: boolean
+  currentTime: number
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
@@ -61,10 +67,10 @@ class AudioManager {
   onBgTrackEnd: (() => void) | null = null
   /** Fires when _bgEl encounters an error in background mode */
   onBgError: (() => void) | null = null
+  onExitBackground: ((state: BgTransitionState) => void) | null = null
   onSpeedChange: ((speed: number) => void) | null = null
   onPitchChange: ((pitch: number) => void) | null = null
   private _isIOS: boolean
-  private _bgTrackEndHandled = false
   private _enterBgSeq = 0
   private _webAudioFailed = false
   /** Estimated latency of the WebAudio processing pipeline (SoundTouch + EQ + output buffer).
@@ -185,12 +191,6 @@ class AudioManager {
     }
   }
 
-  /** Mark that _onBgTrackEnd has already advanced the queue and set the active element.
-   *  Used by _exitBackground to avoid conflicting src/currentTime writes. */
-  setBgTrackEndHandled(): void {
-    this._bgTrackEndHandled = true
-  }
-
   /** Load and play a URL on the background element (used during bg track advancement).
    *  Returns true if playback started successfully, false if it failed or was interrupted. */
   async playBg(url: string): Promise<boolean> {
@@ -249,11 +249,15 @@ class AudioManager {
 
   private async _exitBackground(): Promise<void> {
     if (!this._bgEl) return
+
+    const state: BgTransitionState = {
+      ended: this._bgEl.ended,
+      wasPlaying: !this._bgEl.paused,
+      currentTime: this._bgEl.currentTime,
+    }
+
     this._enterBgSeq++
     this._inBgMode = false
-
-    const wasPlaying = !this._bgEl.paused
-    const bgTime = this._bgEl.currentTime
 
     this._bgEl.pause()
     this._bgEl.removeAttribute('src')
@@ -270,20 +274,7 @@ class AudioManager {
       this.reapplyEffects()
     }
 
-    const el = this.activeElement
-
-    if (this._bgTrackEndHandled) {
-      /* _onBgTrackEnd already advanced the queue and set the active element's
-         src to the next track.  Just resume playback from wherever it is. */
-      if (wasPlaying) {
-        await el.play().catch(() => {})
-      }
-    } else if (wasPlaying) {
-      el.currentTime = bgTime
-      await el.play().catch(() => {})
-    }
-
-    this._bgTrackEndHandled = false
+    this.onExitBackground?.(state)
 
     if (this._nextTrackUrl && this._crossfadeDuration > 0 && this._webAudioReady) {
       this._setupCrossfadeMonitor()

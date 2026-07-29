@@ -42,6 +42,7 @@ class PlaybackManager {
     audioManager.onTrackEnd = () => this._handleCrossfadeEnd()
     audioManager.onBgTrackEnd = () => this._onBgTrackEnd()
     audioManager.onBgError = () => this._onBgTrackEnd()
+    audioManager.onExitBackground = (state) => this._handleExitBackground(state)
     audioManager.onSpeedChange = (speed: number) => playbackSpeed.set(speed)
     audioManager.onPitchChange = (pitch: number) => pitchOctaves.set(pitch)
 
@@ -310,14 +311,14 @@ class PlaybackManager {
       audioManager.applyReplayGain()
     }
 
-    const el = audioManager.activeElement
-    el.src = url
-    el.currentTime = 0
-    audioManager.setBgTrackEndHandled()
-
     const started = await audioManager.playBg(url)
 
     if (!started && audioManager.isInBgMode) {
+      return
+    }
+
+    if (!audioManager.isInBgMode) {
+      await this._loadAndPlay(track)
       return
     }
 
@@ -346,7 +347,6 @@ class PlaybackManager {
     this._handlingEnd = true
     try {
       const nextTrack = queueManager.advanceQueue()
-      queueManager.promoteActiveTrack()
       if (nextTrack) {
         await this._loadAndPlayInBg(nextTrack)
       } else if (get(loopMode) === 'all') {
@@ -356,6 +356,41 @@ class PlaybackManager {
           const track = queueManager.findTrack(q.userQueue[0])
           if (track) await this._loadAndPlayInBg(track)
         }
+      }
+    } finally {
+      this._handlingEnd = false
+    }
+  }
+
+  private async _handleExitBackground(state: { ended: boolean; wasPlaying: boolean; currentTime: number }): Promise<void> {
+    if (this._handlingEnd) return
+
+    this._handlingEnd = true
+    try {
+      if (state.ended) {
+        const nextTrack = queueManager.advanceQueue()
+        if (nextTrack) {
+          await this._loadAndPlay(nextTrack)
+        } else if (get(loopMode) === 'all') {
+          const q = get(queue)
+          if (q.userQueue.length > 0) {
+            setActiveQueueIndex(0)
+            const track = queueManager.findTrack(q.userQueue[0])
+            if (track) await this._loadAndPlay(track)
+          } else {
+            setPlaybackState('stopped')
+            setCurrentTrack(null)
+            audioManager.activeElement.src = ''
+          }
+        } else {
+          setPlaybackState('stopped')
+          setCurrentTrack(null)
+          audioManager.activeElement.src = ''
+        }
+      } else if (state.wasPlaying) {
+        const el = audioManager.activeElement
+        el.currentTime = state.currentTime
+        await el.play().catch(() => {})
       }
     } finally {
       this._handlingEnd = false
