@@ -32,6 +32,7 @@ class PlaybackManager {
   private _retryTrackId: string | null = null
   private _retryAttempt = 0
   private _retryTimer: ReturnType<typeof setTimeout> | null = null
+  private _crossfadeTrackId: string | null = null
 
   async init(): Promise<void> {
     if (this._initialized) return
@@ -158,6 +159,7 @@ class PlaybackManager {
   }
 
   private async _loadAndPlay(track: Track): Promise<void> {
+    this._crossfadeTrackId = null
     audioManager.cancelNextTrack()
 
     const rawUrl = this._resolveUrl(track.trackId)
@@ -229,6 +231,7 @@ class PlaybackManager {
     const q = get(queue)
     const nextIdx = q.activeIndex + 1
     if (nextIdx >= 0 && nextIdx < combined.length) {
+      this._crossfadeTrackId = combined[nextIdx]
       const rawUrl = this._resolveUrl(combined[nextIdx])
       if (rawUrl) {
         const url = await resolveSrc(rawUrl)
@@ -245,6 +248,7 @@ class PlaybackManager {
         audioManager.setNextTrack(url, linearGain)
       }
     } else {
+      this._crossfadeTrackId = null
       audioManager.setNextTrack(null)
     }
   }
@@ -270,10 +274,10 @@ class PlaybackManager {
       if (nextTrack) {
         await this._loadAndPlay(nextTrack)
       } else if (get(loopMode) === 'all') {
-        const combined = queueManager.getCombinedQueue()
-        if (combined.length > 0) {
+        const q = get(queue)
+        if (q.userQueue.length > 0) {
           setActiveQueueIndex(0)
-          const track = queueManager.findTrack(combined[0])
+          const track = queueManager.findTrack(q.userQueue[0])
           if (track) await this._loadAndPlay(track)
         } else {
           setPlaybackState('stopped')
@@ -291,6 +295,7 @@ class PlaybackManager {
   }
 
   private async _loadAndPlayInBg(track: Track): Promise<void> {
+    this._crossfadeTrackId = null
     const url = this._resolveUrl(track.trackId)
     if (!url) return
 
@@ -341,10 +346,10 @@ class PlaybackManager {
       if (nextTrack) {
         await this._loadAndPlayInBg(nextTrack)
       } else if (get(loopMode) === 'all') {
-        const combined = queueManager.getCombinedQueue()
-        if (combined.length > 0) {
+        const q = get(queue)
+        if (q.userQueue.length > 0) {
           setActiveQueueIndex(0)
-          const track = queueManager.findTrack(combined[0])
+          const track = queueManager.findTrack(q.userQueue[0])
           if (track) await this._loadAndPlayInBg(track)
         }
       }
@@ -399,12 +404,40 @@ class PlaybackManager {
     this._handlingEnd = true
     try {
       const advanced = queueManager.advanceQueue()
-      if (!advanced && get(loopMode) === 'all') {
+
+      // Reconcile queue state with the track that is actually playing via crossfade
+      if (this._crossfadeTrackId) {
+        const q = get(queue)
         const combined = queueManager.getCombinedQueue()
-        if (combined.length > 0) {
-          setActiveQueueIndex(0)
+        const playingIdx = combined.indexOf(this._crossfadeTrackId)
+
+        if (playingIdx >= 0) {
+          // Track still in queue — ensure activeIndex points to it
+          if (q.activeIndex !== playingIdx) {
+            setActiveQueueIndex(playingIdx)
+          }
+        } else {
+          // Track was removed from queue mid-crossfade — re-insert it
+          queue.update((q) => {
+            const userQueue = [this._crossfadeTrackId!, ...q.userQueue]
+            const updated = { ...q, userQueue, activeIndex: 0 }
+            saveQueue(updated)
+            return updated
+          })
         }
+
+        // Loop-all: if advanced exhausted the queue, wrap to start
+        if (!advanced && get(loopMode) === 'all') {
+          const q2 = get(queue)
+          if (q2.userQueue.length > 0) {
+            const wrapIdx = queueManager.getCombinedQueue().indexOf(q2.userQueue[0])
+            setActiveQueueIndex(wrapIdx >= 0 ? wrapIdx : 0)
+          }
+        }
+
+        this._crossfadeTrackId = null
       }
+
       queueManager.promoteActiveTrack()
       const combined = queueManager.getCombinedQueue()
       const q = get(queue)
@@ -551,6 +584,7 @@ seek(time: number): void {
   }
 
   destroy(): void {
+    this._crossfadeTrackId = null
     this._clearRetry()
     teardownPreloader()
     audioManager.cancelNextTrack()
