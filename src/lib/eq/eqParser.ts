@@ -1,5 +1,5 @@
 import { DEFAULT_EQ_Q } from './eqTypes'
-import type { EqFilterConfig, EqFilterType, ParseEqResult } from './eqTypes'
+import type { EqFilterConfig, EqFilterType, EqPoint, ParseEqResult } from './eqTypes'
 
 const FILTER_TYPE_MAP: Record<string, EqFilterType> = {
   PK: 'peaking',
@@ -35,6 +35,7 @@ export function parseEqText(text: string): ParseEqResult {
   const lines = text.split(/\r?\n/)
   let preampDb = 0
   const filters: EqFilterConfig[] = []
+  const graphicEqCurves: EqPoint[][] = []
   const errors: string[] = []
   let mode: 'graphic' | 'parametric' = 'parametric'
 
@@ -59,12 +60,14 @@ export function parseEqText(text: string): ParseEqResult {
       mode = 'graphic'
       const dataStr = rawLine.slice(10).trim()
       const pairs = dataStr.split(';').map((s) => s.trim()).filter(Boolean)
+      const curvePoints: EqPoint[] = []
       for (const pair of pairs) {
         const parts = pair.split(/\s+/)
         if (parts.length >= 2) {
           const freq = parseFloat(parts[0])
           const gain = parseFloat(parts[1])
           if (!isNaN(freq) && !isNaN(gain)) {
+            curvePoints.push({ frequency: freq, gainDb: gain })
             filters.push({
               type: 'peaking',
               frequency: freq,
@@ -74,6 +77,9 @@ export function parseEqText(text: string): ParseEqResult {
             })
           }
         }
+      }
+      if (curvePoints.length > 0) {
+        graphicEqCurves.push(curvePoints)
       }
       continue
     }
@@ -116,7 +122,13 @@ export function parseEqText(text: string): ParseEqResult {
     }
   }
 
-  return { preampDb, filters, errors, mode }
+  return {
+    preampDb,
+    filters,
+    errors,
+    mode,
+    graphicEqCurves: graphicEqCurves.length > 0 ? graphicEqCurves : undefined,
+  }
 }
 
 /**

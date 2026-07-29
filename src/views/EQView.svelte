@@ -64,7 +64,7 @@ import {
     eqState = { ...eqState, preampDb: 0, filters: eqState.filters.map((f) => ({ ...f, gain: 0 })) }
     audioManager.setPreampDb(0)
     if (eqState.mode === 'graphic') {
-      audioManager.applyGraphicEQ(eqState.filters)
+      audioManager.applyGraphicEQ(eqState.filters, eqState.graphicEqCurves)
     } else {
       for (let i = 0; i < FREQ_VALUES.length; i++) {
         audioManager.setEqBandGain(i, 0)
@@ -81,8 +81,8 @@ import {
     preampDb = preset.preampDb
     gains = preset.filters.slice(0, 10).map((f) => -f.gain)
     audioManager.setPreampDb(preset.preampDb)
-    if (preset.mode === 'graphic') {
-      audioManager.applyGraphicEQ(preset.filters)
+    if (preset.mode === 'graphic' && !preset.isBuiltin) {
+      audioManager.applyGraphicEQ(preset.filters, preset.graphicEqCurves)
     } else {
       audioManager.applyFiltersConfig(preset.filters)
     }
@@ -97,6 +97,7 @@ import {
       mode: eqState.mode,
       preampDb,
       filters: eqState.filters.map((f) => ({ ...f })),
+      graphicEqCurves: eqState.graphicEqCurves ? eqState.graphicEqCurves.map((c) => c.map((p) => ({ ...p }))) : undefined,
     }
     await saveUserPreset(preset)
     saveDialogOpen = false
@@ -129,14 +130,17 @@ import {
     if (result.mode === 'graphic') {
       // GraphicEQ: use ALL parsed filters directly via convolution (no grid merging)
       // Linear-interpolation on log-frequency preserves the exact jagged curve
+      // Multiple GraphicEQ: lines are stacked by summing their dB gains per bin
+      const curves = result.graphicEqCurves
       eqState = {
         id: 'imported',
         name: 'Imported',
         mode: 'graphic',
         preampDb,
         filters: result.filters,
+        graphicEqCurves: curves,
       }
-      audioManager.applyGraphicEQ(result.filters)
+      audioManager.applyGraphicEQ(result.filters, curves)
       gains = result.filters.slice(0, 10).map((f) => -f.gain)
     } else {
       // Parametric/AutoEQ: merge onto 10-band grid (existing behavior)
@@ -260,6 +264,7 @@ import {
       filters={eqState.filters}
       eqBypassed={$eqBypassed}
       eqMode={eqState.mode}
+      graphicEqCurves={eqState.graphicEqCurves}
     />
 
     <!-- 10-BAND GRAPHIC EQ SLIDERS -->

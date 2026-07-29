@@ -171,8 +171,8 @@ class PlaybackManager {
     const eqState = get(currentEqState)
     if (eqState && eqState.filters.length > 0) {
       audioManager.setPreampDb(eqState.preampDb)
-      if (eqState.mode === 'graphic') {
-        audioManager.applyGraphicEQ(eqState.filters)
+      if (eqState.mode === 'graphic' && !eqState.isBuiltin) {
+        audioManager.applyGraphicEQ(eqState.filters, eqState.graphicEqCurves)
       } else {
         audioManager.applyFiltersConfig(eqState.filters)
       }

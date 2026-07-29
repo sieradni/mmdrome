@@ -1,9 +1,5 @@
 import type { EqFilterConfig } from './eqTypes'
-
-export interface Point {
-  frequency: number
-  gainDb: number
-}
+import type { EqPoint } from './eqTypes'
 
 /**
   Radix-2 Cooley-Tukey FFT / IFFT for power-of-two size N.
@@ -77,7 +73,7 @@ function fftRadix2(re: Float64Array, im: Float64Array, inverse: boolean): void {
 /**
  * Linearly interpolates gain (dB) on a log-frequency axis.
  */
-export function interpolateGraphicEqPoints(points: Point[], targetFreq: number): number {
+export function interpolateGraphicEqPoints(points: EqPoint[], targetFreq: number): number {
   if (points.length === 0) return 0
   if (points.length === 1) return points[0].gainDb
 
@@ -108,7 +104,7 @@ export function interpolateGraphicEqPoints(points: Point[], targetFreq: number):
 /**
  * Extracts frequency-gain pairs from EqFilterConfig array.
  */
-export function filtersToPoints(filters: EqFilterConfig[]): Point[] {
+export function filtersToPoints(filters: EqFilterConfig[]): EqPoint[] {
   return filters
     .filter((f) => f.enabled)
     .map((f) => ({ frequency: f.frequency, gainDb: f.gain }))
@@ -116,40 +112,48 @@ export function filtersToPoints(filters: EqFilterConfig[]): Point[] {
 }
 
 /**
- * Generates a minimum-phase impulse response from a GraphicEQ curve via real cepstrum minimum-phase reconstruction.
+ * Generates a minimum-phase impulse response from one or more GraphicEQ curves.
+ * When multiple curves are given, their dB gains are summed per frequency bin
+ * (matching EqualizerAPO's stacking behavior for multiple GraphicEQ: lines).
  *
- * @param points Array of { frequency, gainDb }
+ * @param curveGroups Array of curve groups, each containing frequency-gain pairs
  * @param sampleRate AudioContext sample rate (e.g. 44100, 48000)
  * @param fftSize FFT length, must be a power of two (default 4096)
  * @returns Float32Array containing time-domain impulse response
  */
 export function generateMinimumPhaseIR(
-  points: Point[],
+  curveGroups: EqPoint[][],
   sampleRate = 48000,
   fftSize = 4096
 ): Float32Array {
-  const sortedPoints = [...points].sort((a, b) => a.frequency - b.frequency)
+  const sortedGroups = curveGroups
+    .filter((g) => g.length > 0)
+    .map((g) => [...g].sort((a, b) => a.frequency - b.frequency))
+
   const half = fftSize / 2
 
-  // 1. Compute target magnitude response at each FFT frequency bin
+  const minValDb = -60
+
   const logMag = new Float64Array(fftSize)
   const im = new Float64Array(fftSize)
 
-  const minValDb = -60 // clamp floor for log(0) safety
-
   for (let k = 0; k <= half; k++) {
     const freq = (k * sampleRate) / fftSize
-    // Use DC frequency as lowest point frequency
     const evalFreq = Math.max(20, freq)
-    const gainDb = sortedPoints.length > 0 ? interpolateGraphicEqPoints(sortedPoints, evalFreq) : 0
-    const clampedDb = Math.max(minValDb, Math.min(36, gainDb))
-    // Linear amplitude = 10^(dB / 20)
+
+    let totalGainDb = 0
+    for (const group of sortedGroups) {
+      totalGainDb += interpolateGraphicEqPoints(group, evalFreq)
+    }
+    if (sortedGroups.length === 0) totalGainDb = 0
+
+    const clampedDb = Math.max(minValDb, Math.min(36, totalGainDb))
     const amplitude = Math.pow(10, clampedDb / 20)
     const logAmp = Math.log(Math.max(1e-6, amplitude))
 
     logMag[k] = logAmp
     if (k > 0 && k < half) {
-      logMag[fftSize - k] = logAmp // Hermitian symmetry
+      logMag[fftSize - k] = logAmp
     }
   }
 
@@ -210,13 +214,23 @@ export function generateMinimumPhaseIR(
  */
 export function createGraphicEqAudioBuffer(
   ctx: AudioContext,
-  points: Point[],
+  curveGroups: EqPoint[][],
   fftSize = 4096
 ): AudioBuffer {
-  const irData = generateMinimumPhaseIR(points, ctx.sampleRate, fftSize)
-  // Stereo impulse response buffer with identical left/right channels
+  const irData = generateMinimumPhaseIR(curveGroups, ctx.sampleRate, fftSize)
   const buffer = ctx.createBuffer(2, irData.length, ctx.sampleRate)
   buffer.getChannelData(0).set(irData)
   buffer.getChannelData(1).set(irData)
   return buffer
+}
+
+/**
+ * Convenience wrapper for a single curve group.
+ */
+export function createSingleCurveEqAudioBuffer(
+  ctx: AudioContext,
+  points: EqPoint[],
+  fftSize = 4096
+): AudioBuffer {
+  return createGraphicEqAudioBuffer(ctx, [points], fftSize)
 }

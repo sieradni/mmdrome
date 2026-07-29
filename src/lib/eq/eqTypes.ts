@@ -17,6 +17,12 @@ export interface EqFilterConfig {
   enabled: boolean
 }
 
+/** A single GraphicEQ frequency-gain point */
+export interface EqPoint {
+  frequency: number
+  gainDb: number
+}
+
 export interface EqPreset {
   id: string
   name: string
@@ -25,6 +31,8 @@ export interface EqPreset {
   preampDb: number
   filters: EqFilterConfig[]
   rawText?: string
+  /** Separate GraphicEQ curve groups for stacked lines */
+  graphicEqCurves?: EqPoint[][]
 }
 
 export interface ParseEqResult {
@@ -32,4 +40,6 @@ export interface ParseEqResult {
   filters: EqFilterConfig[]
   errors: string[]
   mode: 'graphic' | 'parametric'
+  /** Separate GraphicEQ curve groups (each array is one GraphicEQ: line) */
+  graphicEqCurves?: EqPoint[][]
 }

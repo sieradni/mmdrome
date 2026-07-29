@@ -4,6 +4,7 @@ import { computeBiquadCoefficients } from './eq/eqResponseCalculator'
 import { createGraphicEqAudioBuffer, filtersToPoints } from './eq/graphicEqEngine'
 import { DEFAULT_EQ_Q } from './eq/eqTypes'
 import type { EqFilterConfig } from './eq/eqTypes'
+import type { EqPoint } from './eq/eqTypes'
 import { get } from 'svelte/store'
 import { currentTrack } from '../stores/appState'
 
@@ -38,6 +39,7 @@ class AudioManager {
   private _eqProcessorReady = false
   private _convolverNode: ConvolverNode | null = null
   private _graphicEqMode = false
+  private _graphicEqCurves: EqPoint[][] = []
   private _preamp: GainNode | null = null
   private _eqPreamp: GainNode | null = null
   private _eqPreampDb = 0
@@ -112,6 +114,7 @@ class AudioManager {
   get preampDb(): number { return this._eqPreampDb }
   get eqFilterConfigs(): EqFilterConfig[] { return this._eqFilterConfigs }
   get graphicEqMode(): boolean { return this._graphicEqMode }
+  get graphicEqCurves(): EqPoint[][] { return this._graphicEqCurves }
 
   set snapTolerance(value: number) { this._snapTolerance = Math.max(0, value) }
 
@@ -406,6 +409,7 @@ class AudioManager {
     this._eqWorkletNode = null
     this._convolverNode = null
     this._graphicEqMode = false
+    this._graphicEqCurves = []
     this._eqProcessorReady = false
     this._eqFilters = []
     this._eqFilterConfigs = []
@@ -568,10 +572,11 @@ class AudioManager {
     }
   }
 
-  applyGraphicEQ(configs: EqFilterConfig[]): void {
+  applyGraphicEQ(configs: EqFilterConfig[], curves?: EqPoint[][]): void {
     this._teardownFilters()
     this._graphicEqMode = true
     this._eqFilterConfigs = configs
+    this._graphicEqCurves = curves ?? []
 
     if (this._ctx) {
       this._updateConvolverBuffer()
@@ -582,6 +587,7 @@ class AudioManager {
   applyFiltersConfig(configs: EqFilterConfig[]): void {
     this._teardownFilters()
     this._graphicEqMode = false
+    this._graphicEqCurves = []
     this._eqFilterConfigs = configs
 
     if (!this._ctx) return
@@ -664,12 +670,17 @@ class AudioManager {
       this._convolverNode = this._ctx.createConvolver()
       this._convolverNode.normalize = false
     }
-    const points = filtersToPoints(this._eqFilterConfigs)
-    if (points.length > 0) {
-      const buffer = createGraphicEqAudioBuffer(this._ctx, points)
+    if (this._graphicEqCurves.length > 0) {
+      const buffer = createGraphicEqAudioBuffer(this._ctx, this._graphicEqCurves)
       this._convolverNode.buffer = buffer
     } else {
-      this._convolverNode.buffer = null
+      const points = filtersToPoints(this._eqFilterConfigs)
+      if (points.length > 0) {
+        const buffer = createGraphicEqAudioBuffer(this._ctx, [points])
+        this._convolverNode.buffer = buffer
+      } else {
+        this._convolverNode.buffer = null
+      }
     }
   }
 

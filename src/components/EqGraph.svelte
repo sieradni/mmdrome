@@ -2,17 +2,20 @@
   import { calculateTotalResponse } from '../lib/eq/eqResponseCalculator'
   import { calculateGraphicTotalResponse } from '../lib/eq/graphicEqResponseCalculator'
   import type { EqFilterConfig } from '../lib/eq/eqTypes'
+  import type { EqPoint } from '../lib/eq/eqTypes'
 
   let {
     preampDb = 0,
     filters = [],
     eqBypassed = false,
     eqMode = 'parametric' as 'parametric' | 'graphic',
+    graphicEqCurves,
   }: {
     preampDb?: number
     filters?: EqFilterConfig[]
     eqBypassed?: boolean
     eqMode?: 'parametric' | 'graphic'
+    graphicEqCurves?: EqPoint[][]
   } = $props()
 
   const FREQ_GRID = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
@@ -64,7 +67,7 @@
     eqBypassed
       ? calculateTotalResponse(0, [], 100)
       : eqMode === 'graphic'
-        ? calculateGraphicTotalResponse(preampDb, filters, 150)
+        ? calculateGraphicTotalResponse(preampDb, filters, graphicEqCurves, 150)
         : calculateTotalResponse(preampDb, filters, 150)
   )
 
