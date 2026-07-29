@@ -1,15 +1,18 @@
 <script lang="ts">
   import { calculateTotalResponse } from '../lib/eq/eqResponseCalculator'
+  import { calculateGraphicTotalResponse } from '../lib/eq/graphicEqResponseCalculator'
   import type { EqFilterConfig } from '../lib/eq/eqTypes'
 
   let {
     preampDb = 0,
     filters = [],
     eqBypassed = false,
+    eqMode = 'parametric' as 'parametric' | 'graphic',
   }: {
     preampDb?: number
     filters?: EqFilterConfig[]
     eqBypassed?: boolean
+    eqMode?: 'parametric' | 'graphic'
   } = $props()
 
   const FREQ_GRID = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
@@ -58,7 +61,11 @@
 
   // Frequency response points
   let points = $derived(
-    eqBypassed ? calculateTotalResponse(0, [], 100) : calculateTotalResponse(preampDb, filters, 150)
+    eqBypassed
+      ? calculateTotalResponse(0, [], 100)
+      : eqMode === 'graphic'
+        ? calculateGraphicTotalResponse(preampDb, filters, 150)
+        : calculateTotalResponse(preampDb, filters, 150)
   )
 
   let pathD = $derived.by(() => {

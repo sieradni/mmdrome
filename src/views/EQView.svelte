@@ -63,12 +63,14 @@ import {
     preampDb = 0
     eqState = { ...eqState, preampDb: 0, filters: eqState.filters.map((f) => ({ ...f, gain: 0 })) }
     audioManager.setPreampDb(0)
-    // Reset standard bands
-    for (let i = 0; i < FREQ_VALUES.length; i++) {
-      audioManager.setEqBandGain(i, 0)
+    if (eqState.mode === 'graphic') {
+      audioManager.applyGraphicEQ(eqState.filters)
+    } else {
+      for (let i = 0; i < FREQ_VALUES.length; i++) {
+        audioManager.setEqBandGain(i, 0)
+      }
+      audioManager.applyFiltersConfig(eqState.filters)
     }
-    // Reset extras via full config apply
-    audioManager.applyFiltersConfig(eqState.filters)
     syncDraft()
   }
 
@@ -79,7 +81,11 @@ import {
     preampDb = preset.preampDb
     gains = preset.filters.slice(0, 10).map((f) => -f.gain)
     audioManager.setPreampDb(preset.preampDb)
-    audioManager.applyFiltersConfig(preset.filters)
+    if (preset.mode === 'graphic') {
+      audioManager.applyGraphicEQ(preset.filters)
+    } else {
+      audioManager.applyFiltersConfig(preset.filters)
+    }
   }
 
   async function saveCurrentPreset() {
@@ -117,25 +123,37 @@ import {
     }
     importErrors = ''
 
-    // Merge imported filters onto the 10-band default grid
-    const { baseFilters, extraFilters } = mergeFiltersIntoDefaultGrid(result.filters)
-    const mergedFilters = [...baseFilters, ...extraFilters]
-
     preampDb = result.preampDb
-    gains = baseFilters.map((f) => -f.gain)
-    eqState = {
-      id: 'imported',
-      name: 'Imported',
-      mode: result.mode,
-      preampDb,
-      filters: mergedFilters,
+    audioManager.setPreampDb(preampDb)
+
+    if (result.mode === 'graphic') {
+      // GraphicEQ: use ALL parsed filters directly via convolution (no grid merging)
+      // Linear-interpolation on log-frequency preserves the exact jagged curve
+      eqState = {
+        id: 'imported',
+        name: 'Imported',
+        mode: 'graphic',
+        preampDb,
+        filters: result.filters,
+      }
+      audioManager.applyGraphicEQ(result.filters)
+      gains = result.filters.slice(0, 10).map((f) => -f.gain)
+    } else {
+      // Parametric/AutoEQ: merge onto 10-band grid (existing behavior)
+      const { baseFilters, extraFilters } = mergeFiltersIntoDefaultGrid(result.filters)
+      const mergedFilters = [...baseFilters, ...extraFilters]
+      gains = baseFilters.map((f) => -f.gain)
+      eqState = {
+        id: 'imported',
+        name: 'Imported',
+        mode: 'parametric',
+        preampDb,
+        filters: mergedFilters,
+      }
+      audioManager.applyFiltersConfig(mergedFilters)
     }
 
-    audioManager.setPreampDb(preampDb)
-    audioManager.applyFiltersConfig(mergedFilters)
-
     syncDraft()
-
     showImport = false
     importText = ''
   }
@@ -237,7 +255,12 @@ import {
     </div>
 
     <!-- FREQUENCY RESPONSE GRAPH -->
-    <EqGraph preampDb={$eqBypassed ? 0 : preampDb} filters={eqState.filters} eqBypassed={$eqBypassed} />
+    <EqGraph
+      preampDb={$eqBypassed ? 0 : preampDb}
+      filters={eqState.filters}
+      eqBypassed={$eqBypassed}
+      eqMode={eqState.mode}
+    />
 
     <!-- 10-BAND GRAPHIC EQ SLIDERS -->
     <div class="flex items-end justify-between gap-1" style="height: 220px;">

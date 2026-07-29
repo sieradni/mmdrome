@@ -62,7 +62,7 @@ function createGraphicPreset(id: string, name: string, gains: number[], preampDb
     id,
     name,
     isBuiltin: true,
-    mode: 'graphic',
+    mode: 'parametric',
     preampDb,
     filters: DEFAULT_GRAPHIC_FREQUENCIES.map((freq, i) => ({
       type: 'peaking',

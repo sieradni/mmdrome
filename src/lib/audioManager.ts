@@ -1,6 +1,7 @@
 import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
 import { parseEqText } from './eq/eqParser'
 import { computeBiquadCoefficients } from './eq/eqResponseCalculator'
+import { createGraphicEqAudioBuffer, filtersToPoints } from './eq/graphicEqEngine'
 import { DEFAULT_EQ_Q } from './eq/eqTypes'
 import type { EqFilterConfig } from './eq/eqTypes'
 import { get } from 'svelte/store'
@@ -35,6 +36,8 @@ class AudioManager {
   private _eqFilterConfigs: EqFilterConfig[] = []
   private _eqWorkletNode: AudioWorkletNode | null = null
   private _eqProcessorReady = false
+  private _convolverNode: ConvolverNode | null = null
+  private _graphicEqMode = false
   private _preamp: GainNode | null = null
   private _eqPreamp: GainNode | null = null
   private _eqPreampDb = 0
@@ -108,6 +111,7 @@ class AudioManager {
   get preamp(): GainNode | null { return this._preamp }
   get preampDb(): number { return this._eqPreampDb }
   get eqFilterConfigs(): EqFilterConfig[] { return this._eqFilterConfigs }
+  get graphicEqMode(): boolean { return this._graphicEqMode }
 
   set snapTolerance(value: number) { this._snapTolerance = Math.max(0, value) }
 
@@ -351,7 +355,10 @@ class AudioManager {
         this._eqProcessorReady = false
       }
 
-      if (this._eqProcessorReady) {
+      if (this._graphicEqMode && this._eqFilterConfigs.length > 0) {
+        this._updateConvolverBuffer()
+        this._reconnectChain()
+      } else if (this._eqProcessorReady) {
         this._reconnectChain()
         this._sendEqConfigToWorklet()
       } else {
@@ -383,6 +390,7 @@ class AudioManager {
     if (this._preamp) { try { this._preamp.disconnect() } catch {} }
     if (this._eqPreamp) { try { this._eqPreamp.disconnect() } catch {} }
     if (this._eqWorkletNode) { try { this._eqWorkletNode.disconnect() } catch {} }
+    if (this._convolverNode) { try { this._convolverNode.disconnect() } catch {} }
     this._teardownFilters()
     if (this._ctx) { try { this._ctx.close() } catch {} }
     this._ctx = null
@@ -396,6 +404,8 @@ class AudioManager {
     this._preamp = null
     this._eqPreamp = null
     this._eqWorkletNode = null
+    this._convolverNode = null
+    this._graphicEqMode = false
     this._eqProcessorReady = false
     this._eqFilters = []
     this._eqFilterConfigs = []
@@ -489,7 +499,9 @@ class AudioManager {
       config.gain = clamped
     }
 
-    if (this._eqProcessorReady) {
+    if (this._graphicEqMode) {
+      this._updateConvolverBuffer()
+    } else if (this._eqProcessorReady) {
       this._sendEqConfigToWorklet()
     }
   }
@@ -545,19 +557,34 @@ class AudioManager {
   }
 
   parseParametricEQ(configText: string): void {
-    if (!this._ctx) return
     const result = parseEqText(configText)
     if (result.filters.length === 0) return
 
     this.setPreampDb(result.preampDb)
-    this.applyFiltersConfig(result.filters)
+    if (result.mode === 'graphic') {
+      this.applyGraphicEQ(result.filters)
+    } else {
+      this.applyFiltersConfig(result.filters)
+    }
+  }
+
+  applyGraphicEQ(configs: EqFilterConfig[]): void {
+    this._teardownFilters()
+    this._graphicEqMode = true
+    this._eqFilterConfigs = configs
+
+    if (this._ctx) {
+      this._updateConvolverBuffer()
+      this._reconnectChain()
+    }
   }
 
   applyFiltersConfig(configs: EqFilterConfig[]): void {
-    if (!this._ctx) return
-
     this._teardownFilters()
+    this._graphicEqMode = false
     this._eqFilterConfigs = configs
+
+    if (!this._ctx) return
 
     if (this._eqProcessorReady && this._eqWorkletNode) {
       this._sendEqConfigToWorklet()
@@ -631,6 +658,21 @@ class AudioManager {
     this._eqFilters = []
   }
 
+  private _updateConvolverBuffer(): void {
+    if (!this._ctx) return
+    if (!this._convolverNode) {
+      this._convolverNode = this._ctx.createConvolver()
+      this._convolverNode.normalize = false
+    }
+    const points = filtersToPoints(this._eqFilterConfigs)
+    if (points.length > 0) {
+      const buffer = createGraphicEqAudioBuffer(this._ctx, points)
+      this._convolverNode.buffer = buffer
+    } else {
+      this._convolverNode.buffer = null
+    }
+  }
+
   private _reconnectChain(): void {
     if (!this._soundTouch || !this._preamp || !this._eqPreamp || !this._ctx) return
 
@@ -638,8 +680,16 @@ class AudioManager {
     this._eqPreamp.disconnect()
     this._preamp.disconnect()
     if (this._eqWorkletNode) { try { this._eqWorkletNode.disconnect() } catch {} }
+    if (this._convolverNode) { try { this._convolverNode.disconnect() } catch {} }
 
-    if (this._eqProcessorReady && this._eqWorkletNode) {
+    if (this._graphicEqMode && this._convolverNode && this._convolverNode.buffer) {
+      if (this._eqBypassed || this._eqFilterConfigs.length === 0) {
+        this._soundTouch.connect(this._preamp)
+      } else {
+        this._soundTouch.connect(this._convolverNode)
+        this._convolverNode.connect(this._eqPreamp)
+      }
+    } else if (this._eqProcessorReady && this._eqWorkletNode) {
       if (this._eqBypassed || this._eqFilterConfigs.length === 0) {
         this._soundTouch.connect(this._preamp)
       } else {
