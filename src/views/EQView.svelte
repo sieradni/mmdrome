@@ -5,6 +5,7 @@
 import {
     activePresetId,
     userPresets,
+    currentEqState,
     draftState,
     eqBypassed,
     saveUserPreset,
@@ -19,13 +20,13 @@ import {
 
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
-  let preampDb = $state($draftState.preampDb)
+  let preampDb = $state($currentEqState.preampDb)
   let showImport = $state(false)
   let importText = $state('')
   let importErrors = $state('')
   let saveDialogOpen = $state(false)
   let newPresetName = $state('')
-  let eqState = $state<EqPreset>(structuredClone(get(draftState)))
+  let eqState = $state<EqPreset>(structuredClone(get(currentEqState)))
 
   const presets = $derived([...BUILTIN_PRESETS, ...$userPresets])
 
@@ -33,10 +34,14 @@ import {
   const FREQ_VALUES = DEFAULT_GRAPHIC_FREQUENCIES
 
   // Only use first 10 bands for sliders (any extras are appended beyond index 9)
-  let gains = $state($draftState.filters.slice(0, 10).map((f) => -f.gain))
+  let gains = $state($currentEqState.filters.slice(0, 10).map((f) => -f.gain))
 
   function syncDraft() {
-    draftState.set({ ...eqState, preampDb })
+    draftState.set({
+      ...eqState,
+      preampDb,
+      filters: eqState.filters.map(f => ({ ...f }))
+    })
   }
 
   function setGain(index: number) {
@@ -58,18 +63,33 @@ import {
   }
 
   function resetAll() {
-    const flatGains = FREQ_VALUES.map(() => 0)
-    gains = flatGains
-    preampDb = 0
-    eqState = { ...eqState, preampDb: 0, filters: eqState.filters.map((f) => ({ ...f, gain: 0 })) }
-    audioManager.setPreampDb(0)
-    if (eqState.mode === 'graphic') {
-      audioManager.applyGraphicEQ(eqState.filters, eqState.graphicEqCurves)
-    } else {
-      for (let i = 0; i < FREQ_VALUES.length; i++) {
-        audioManager.setEqBandGain(i, 0)
+    if (eqState.id === 'imported') {
+      // Unsaved imported EQ — reset to flat
+      const flatGains = FREQ_VALUES.map(() => 0)
+      gains = flatGains
+      preampDb = 0
+      eqState = { ...eqState, preampDb: 0, filters: eqState.filters.map((f) => ({ ...f, gain: 0 })) }
+      audioManager.setPreampDb(0)
+      if (eqState.mode === 'graphic') {
+        audioManager.applyGraphicEQ(eqState.filters, eqState.graphicEqCurves)
+      } else {
+        for (let i = 0; i < FREQ_VALUES.length; i++) {
+          audioManager.setEqBandGain(i, 0)
+        }
+        audioManager.applyFiltersConfig(eqState.filters)
       }
-      audioManager.applyFiltersConfig(eqState.filters)
+    } else {
+      // On a named preset — restore the last saved/committed version
+      const saved = get(currentEqState)
+      eqState = structuredClone(saved)
+      preampDb = saved.preampDb
+      gains = saved.filters.slice(0, 10).map((f) => -f.gain)
+      audioManager.setPreampDb(saved.preampDb)
+      if (saved.mode === 'graphic') {
+        audioManager.applyGraphicEQ(saved.filters, saved.graphicEqCurves)
+      } else {
+        audioManager.applyFiltersConfig(saved.filters)
+      }
     }
     syncDraft()
   }

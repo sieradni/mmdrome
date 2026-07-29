@@ -132,6 +132,7 @@ export async function saveAsCurrentPreset(draft: EqPreset): Promise<EqPreset> {
   if (preset && !preset.isBuiltin) {
     committed = {
       ...preset,
+      mode: draft.mode,
       preampDb: draft.preampDb,
       filters: draft.filters.map((f) => ({ ...f })),
     }
