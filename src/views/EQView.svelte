@@ -13,6 +13,7 @@ import {
     applyPreset,
     saveAsCurrentPreset,
     persistEqBypass,
+    findPresetById,
   } from '../lib/eq/eqStore'
   import { parseEqText } from '../lib/eq/eqParser'
   import { DEFAULT_GRAPHIC_FREQUENCIES, BUILTIN_PRESETS, mergeFiltersIntoDefaultGrid } from '../lib/eq/builtInPresets'
@@ -35,6 +36,20 @@ import {
 
   // Only use first 10 bands for sliders (any extras are appended beyond index 9)
   let gains = $state($currentEqState.filters.slice(0, 10).map((f) => -f.gain))
+
+  let presetMenuOpened = $state(false)
+
+  function handlePresetChange(e: Event) {
+    presetMenuOpened = false
+    selectPreset((e.target as HTMLSelectElement).value)
+  }
+
+  function handlePresetBlur() {
+    if (presetMenuOpened) {
+      presetMenuOpened = false
+      selectPreset($activePresetId)
+    }
+  }
 
   function syncDraft() {
     draftState.set({
@@ -79,9 +94,11 @@ import {
         audioManager.applyFiltersConfig(eqState.filters)
       }
     } else {
-      // On a named preset — restore the last saved/committed version
-      const saved = get(currentEqState)
-      eqState = structuredClone(saved)
+      // On a named preset — restore from the original saved preset
+      const preset = findPresetById(get(activePresetId))
+      if (!preset) return
+      const saved = structuredClone(preset)
+      eqState = saved
       preampDb = saved.preampDb
       gains = saved.filters.slice(0, 10).map((f) => -f.gain)
       audioManager.setPreampDb(saved.preampDb)
@@ -211,7 +228,9 @@ import {
         <select
           class="w-full appearance-none rounded-lg bg-surface px-3 py-2 text-xs text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40"
           value={$activePresetId}
-          onchange={(e) => selectPreset((e.target as HTMLSelectElement).value)}
+          onmousedown={() => presetMenuOpened = true}
+          onchange={handlePresetChange}
+          onblur={handlePresetBlur}
         >
           {#each presets as p}
             <option value={p.id}>{p.name}</option>

@@ -575,8 +575,8 @@ class AudioManager {
   applyGraphicEQ(configs: EqFilterConfig[], curves?: EqPoint[][]): void {
     this._teardownFilters()
     this._graphicEqMode = true
-    this._eqFilterConfigs = configs
-    this._graphicEqCurves = curves ?? []
+    this._eqFilterConfigs = configs.map(c => ({ ...c }))
+    this._graphicEqCurves = curves ? curves.map(c => c.map(p => ({ ...p }))) : []
 
     if (this._ctx) {
       this._updateConvolverBuffer()
@@ -588,7 +588,7 @@ class AudioManager {
     this._teardownFilters()
     this._graphicEqMode = false
     this._graphicEqCurves = []
-    this._eqFilterConfigs = configs
+    this._eqFilterConfigs = configs.map(c => ({ ...c }))
 
     if (!this._ctx) return
 
