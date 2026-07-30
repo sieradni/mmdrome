@@ -75,7 +75,3 @@ WebDAV is optional and lets mmdrome read and write audio metadata (rating, loved
 | Database | Dexie (IndexedDB) |
 | Audio | Web Audio API, @soundtouchjs/audio-worklet |
 | Tagging | taglib-wasm |
-
-## License
-
-Not currently open-source licensed.
