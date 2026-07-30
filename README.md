@@ -6,7 +6,8 @@ A self-hosted, mobile-first music player PWA. Streams from a Navidrome server vi
 
 - **Navidrome integration** — browse and stream your music library
 - **Custom audio engine** — gapless playback, crossfading (up to 15s), ReplayGain (track/album), independent pitch and speed control via Web Audio API + SoundTouch
-- **10-band graphic equalizer** — custom EQ presets stored locally
+- **10-band graphic equalizer** — custom modifiable EQ presets stored locally
+- **EQ Import** — Supports autoEQ parametric and GraphicEQ(EqualizerAPO).
 - **iOS background audio** — handoff mechanism with media session controls, position polling, and EQ/filter bypass
 - **Queue system** — user queue + auto-queue, shuffle, loop-one/loop-all, album/artist scoping
 - **WebDAV metadata writing** — edit ratings, loved status, and comments back to your audio files via taglib-wasm
