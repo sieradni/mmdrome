@@ -9,6 +9,18 @@
   import { tick } from 'svelte'
   import type { Track } from '../stores/appState'
 
+  type SettingsTab = 'sources' | 'playback' | 'library' | 'about'
+
+  let tab = $state<SettingsTab>('sources')
+  let scrollTops = $state<Record<string, number>>({ sources: 0, playback: 0, library: 0, about: 0 })
+
+  const tabs: { id: SettingsTab; label: string }[] = [
+    { id: 'sources', label: 'Sources' },
+    { id: 'playback', label: 'Playback' },
+    { id: 'library', label: 'Library' },
+    { id: 'about', label: 'About' },
+  ]
+
   let webdavUrl = $state('')
   let webdavUser = $state('')
   let webdavToken = $state('')
@@ -26,8 +38,11 @@
   let scrollContainer: HTMLDivElement | null = null
 
   $effect(() => {
+    const st = scrollContainer?.scrollTop ?? 0
+    if (scrollTops[tab] !== st) scrollTops[tab] = st
     saveViewState('settings', {
-      scrollTop: scrollContainer?.scrollTop ?? 0,
+      tab,
+      scrollTops,
       webdavUrl, webdavUser, webdavToken,
       navidromeUrl, navidromeUser, navidromePassword,
       preloadTracks, crossfadeDuration, tapeMode, snapTolerance, replayGainMode
@@ -35,12 +50,23 @@
   })
 
   onMount(async () => {
-    const saved = restoreViewState<{ scrollTop: number }>('settings')
-    if (saved && scrollContainer) {
+    const saved = restoreViewState<{ tab?: SettingsTab; scrollTops?: Record<string, number> }>('settings')
+    if (saved) {
+      if (saved.tab) tab = saved.tab
+      if (saved.scrollTops) scrollTops = { sources: 0, playback: 0, library: 0, about: 0, ...saved.scrollTops }
       await tick()
-      scrollContainer.scrollTop = saved.scrollTop
+      if (scrollContainer) scrollContainer.scrollTop = scrollTops[tab]
     }
   })
+
+  function switchTab(t: SettingsTab) {
+    if (t === tab) return
+    if (scrollContainer) scrollTops[tab] = scrollContainer.scrollTop
+    tab = t
+    tick().then(() => {
+      if (scrollContainer) scrollContainer.scrollTop = scrollTops[t]
+    })
+  }
 
   $effect(() => {
     const s = $settings
@@ -184,278 +210,301 @@
 
 <div class="flex h-full flex-col">
   <div class="border-b border-white/10 px-4 py-3">
-    <h2 class="text-xs font-medium uppercase tracking-wider text-muted">Settings</h2>
+    <h2 class="text-sm font-medium uppercase tracking-wider text-muted">Settings</h2>
+    <div class="mt-2 flex gap-1">
+      {#each tabs as t (t.id)}
+        <button
+          onclick={() => switchTab(t.id)}
+          class="rounded-lg px-4 py-1.5 text-sm font-medium transition-colors"
+          class:bg-surface-hover={tab === t.id}
+          class:text-primary={tab === t.id}
+          class:text-muted={tab !== t.id}
+        >{t.label}</button>
+      {/each}
+    </div>
   </div>
   <div class="flex-1 overflow-y-auto pb-24" bind:this={scrollContainer}
-       onscroll={() => { if (scrollContainer) saveViewState('settings', { scrollTop: scrollContainer.scrollTop }) }}>
+       onscroll={() => { if (scrollContainer) scrollTops[tab] = scrollContainer.scrollTop }}>
     <div class="divide-y divide-white/10">
-      <!-- Preload -->
-      <section class="px-4 py-4">
-        <h3 class="mb-3 text-sm font-medium text-primary">Preloading</h3>
-        <p class="mb-2 text-xs text-muted">Number of upcoming tracks to preload</p>
-        <div class="flex gap-2">
-          {#each [0, 1, 2, 3, 5] as n}
-            <button
-              onclick={() => setPreload(n)}
-              class="rounded-lg px-4 py-2 text-xs font-medium transition-colors"
-              class:bg-primary={preloadTracks === n}
-              class:text-background={preloadTracks === n}
-              class:bg-surface-hover={preloadTracks !== n}
-              class:text-muted={preloadTracks !== n}
-            >{n === 0 ? 'Off' : n}</button>
-          {/each}
-        </div>
-      </section>
-
-      <!-- Crossfade -->
-      <section class="px-4 py-4">
-        <h3 class="mb-3 text-sm font-medium text-primary">Crossfade</h3>
-        <div class="flex items-center gap-3">
-          <input
-            type="range"
-            min="0"
-            max="15"
-            step="0.5"
-            value={crossfadeDuration}
-            oninput={setCrossfade}
-            class="h-1 flex-1 accent-yellow-500"
-          />
-          <span class="w-10 text-right text-xs text-muted">{crossfadeDuration}s</span>
-        </div>
-      </section>
-
-      <!-- Pitch / Speed -->
-      <section class="px-4 py-4">
-        <h3 class="mb-3 text-sm font-medium text-primary">Pitch & Speed</h3>
-        <div class="space-y-3">
-          <label class="flex cursor-pointer items-center gap-3">
-            <input type="checkbox" checked={tapeMode} onchange={setTapeMode} class="accent-yellow-500" />
-            <div>
-              <p class="text-sm text-primary">Tape Mode</p>
-              <p class="text-xs text-muted">Link pitch and speed changes together</p>
-            </div>
-          </label>
-          <div>
-            <p class="mb-1 text-xs text-muted">Snap tolerance: {snapTolerance.toFixed(2)}</p>
+      {#if tab === 'sources'}
+        <!-- WebDAV -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">WebDAV Sync</h3>
+          <p class="mb-2 text-sm text-muted">Requires CORS to be configured on the server.</p>
+          <div class="space-y-3">
             <input
-              type="range"
-              min="0"
-              max="0.5"
-              step="0.01"
-              value={snapTolerance}
-              oninput={setSnapTolerance}
-              class="h-1 w-full accent-yellow-500"
+              type="url"
+              placeholder="https://example.com/remote.php/dav/files/user/"
+              value={webdavUrl}
+              oninput={updateField('webdavUrl')}
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
             />
-          </div>
-        </div>
-      </section>
-
-      <!-- Replay Gain -->
-      <section class="px-4 py-4">
-        <h3 class="mb-3 text-sm font-medium text-primary">Replay Gain</h3>
-        <p class="mb-2 text-xs text-muted">Apply loudness normalization based on file metadata</p>
-        <div class="flex gap-2">
-          {#each ['off', 'track', 'album'] as mode}
+            <input
+              type="text"
+              placeholder="Username"
+              value={webdavUser}
+              oninput={updateField('webdavUser')}
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+            />
+            <input
+              type="password"
+              placeholder="Password / Token"
+              value={webdavToken}
+              oninput={updateField('webdavToken')}
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+            />
+            <div class="flex items-center gap-3">
+              <button
+                onclick={testWebdav}
+                disabled={$webdavConnection.checking}
+                class="flex items-center justify-center gap-2 rounded-lg bg-surface-hover px-5 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+              >
+                {#if $webdavConnection.checking}
+                  <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Testing…
+                {:else}
+                  Test Connection
+                {/if}
+              </button>
+              {#if $webdavConnection.connected}
+                <span class="text-sm text-green-400">Connected</span>
+              {:else if $webdavConnection.error}
+                <span class="text-sm text-red-400">{$webdavConnection.error}</span>
+              {/if}
+            </div>
             <button
-              onclick={() => setReplayGainMode(mode as 'off' | 'track' | 'album')}
-              class="rounded-lg px-4 py-2 text-xs font-medium transition-colors"
-              class:bg-primary={replayGainMode === mode}
-              class:text-background={replayGainMode === mode}
-              class:bg-surface-hover={replayGainMode !== mode}
-              class:text-muted={replayGainMode !== mode}
-            >{mode === 'off' ? 'Off' : mode === 'track' ? 'Track Gain' : 'Album Gain'}</button>
-          {/each}
-        </div>
-      </section>
-
-      <!-- WebDAV -->
-      <section class="px-4 py-4">
-        <h3 class="mb-3 text-sm font-medium text-primary">WebDAV Sync</h3>
-        <p class="mb-2 text-xs text-muted">Requires CORS to be configured on the server.</p>
-        <div class="space-y-3">
-          <input
-            type="url"
-            placeholder="https://example.com/remote.php/dav/files/user/"
-            value={webdavUrl}
-            oninput={updateField('webdavUrl')}
-            class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-          />
-          <input
-            type="text"
-            placeholder="Username"
-            value={webdavUser}
-            oninput={updateField('webdavUser')}
-            class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-          />
-          <input
-            type="password"
-            placeholder="Password / Token"
-            value={webdavToken}
-            oninput={updateField('webdavToken')}
-            class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-          />
-          <div class="flex items-center gap-2">
-            <button
-              onclick={testWebdav}
-              disabled={$webdavConnection.checking}
-              class="flex items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-2 text-xs font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+              onclick={syncNow}
+              disabled={syncing}
+              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
             >
-              {#if $webdavConnection.checking}
-                <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+              {#if syncing}
+                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                Testing…
+                Syncing…
               {:else}
-                Test Connection
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                Sync Now
               {/if}
             </button>
-            {#if $webdavConnection.connected}
-              <span class="text-xs text-green-400">Connected</span>
-            {:else if $webdavConnection.error}
-              <span class="text-xs text-red-400">{$webdavConnection.error}</span>
+            {#if syncResult}
+              <p class="text-sm text-muted">{syncResult}</p>
             {/if}
           </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- Navidrome -->
-      <section class="px-4 py-4">
-        <h3 class="mb-3 text-sm font-medium text-primary">Navidrome</h3>
-        <div class="space-y-3">
-          <input
-            type="url"
-            placeholder="https://music.example.com"
-            value={navidromeUrl}
-            oninput={updateField('navidromeUrl')}
-            class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-          />
-          <input
-            type="text"
-            placeholder="Username"
-            value={navidromeUser}
-            oninput={updateField('navidromeUser')}
-            class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={navidromePassword}
-            oninput={updateField('navidromePassword')}
-            class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-          />
-          <button
-            onclick={connectNavidromeHandler}
-            disabled={$navidromeConnection.checking || $navidromeLoadStatus.loading}
-            class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
-          >
-            {#if $navidromeConnection.checking || $navidromeLoadStatus.loading}
-              <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              {$navidromeConnection.checking ? 'Connecting…' : 'Loading Songs…'}
-            {:else}
-              Connect & Load Songs
+        <!-- Navidrome -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Navidrome</h3>
+          <div class="space-y-3">
+            <input
+              type="url"
+              placeholder="https://music.example.com"
+              value={navidromeUrl}
+              oninput={updateField('navidromeUrl')}
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+            />
+            <input
+              type="text"
+              placeholder="Username"
+              value={navidromeUser}
+              oninput={updateField('navidromeUser')}
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+            />
+            <input
+              type="password"
+              placeholder="Password"
+              value={navidromePassword}
+              oninput={updateField('navidromePassword')}
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+            />
+            <button
+              onclick={connectNavidromeHandler}
+              disabled={$navidromeConnection.checking || $navidromeLoadStatus.loading}
+              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
+            >
+              {#if $navidromeConnection.checking || $navidromeLoadStatus.loading}
+                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                {$navidromeConnection.checking ? 'Connecting…' : 'Loading Songs…'}
+              {:else}
+                Connect & Load Songs
+              {/if}
+            </button>
+            {#if $navidromeConnection.connected}
+              <p class="text-sm text-green-400">
+                Connected{$navidromeConnection.serverVersion ? ' (' + $navidromeConnection.serverVersion + ')' : ''}
+              </p>
+            {:else if $navidromeConnection.error}
+              <p class="text-sm text-red-400">{$navidromeConnection.error}</p>
             {/if}
-          </button>
-          {#if $navidromeConnection.connected}
-            <p class="text-xs text-green-400">
-              Connected{$navidromeConnection.serverVersion ? ' (' + $navidromeConnection.serverVersion + ')' : ''}
-            </p>
-          {:else if $navidromeConnection.error}
-            <p class="text-xs text-red-400">{$navidromeConnection.error}</p>
-          {/if}
-          {#if $navidromeLoadStatus.loaded > 0 || $navidromeLoadStatus.error}
-            <p class="text-xs text-muted">
-              {$navidromeLoadStatus.error
-                ? `Error: ${$navidromeLoadStatus.error}`
-                : `Loaded ${$navidromeLoadStatus.loaded} song(s), ${$navidromeLoadStatus.failed} failed`}
-            </p>
-          {/if}
+            {#if $navidromeLoadStatus.loaded > 0 || $navidromeLoadStatus.error}
+              <p class="text-sm text-muted">
+                {$navidromeLoadStatus.error
+                  ? `Error: ${$navidromeLoadStatus.error}`
+                  : `Loaded ${$navidromeLoadStatus.loaded} song(s), ${$navidromeLoadStatus.failed} failed`}
+              </p>
+            {/if}
+          </div>
+        </section>
+      {/if}
 
-          <button
-            onclick={syncNow}
-            disabled={syncing}
-            class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
-          >
-            {#if syncing}
-              <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              Syncing…
-            {:else}
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-              Sync Now
-            {/if}
-          </button>
-          {#if syncResult}
-            <p class="text-xs text-muted">{syncResult}</p>
-          {/if}
-        </div>
-      </section>
+      {#if tab === 'playback'}
+        <!-- Preload -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Preloading</h3>
+          <p class="mb-2 text-sm text-muted">Number of upcoming tracks to preload</p>
+          <div class="flex gap-2">
+            {#each [0, 1, 2, 3, 5] as n}
+              <button
+                onclick={() => setPreload(n)}
+                class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors"
+                class:bg-primary={preloadTracks === n}
+                class:text-background={preloadTracks === n}
+                class:bg-surface-hover={preloadTracks !== n}
+                class:text-muted={preloadTracks !== n}
+              >{n === 0 ? 'Off' : n}</button>
+            {/each}
+          </div>
+        </section>
 
-      <!-- Metadata Scan -->
-      <section class="px-4 py-4">
-        <h3 class="mb-3 text-sm font-medium text-primary">Metadata Scan</h3>
-        <p class="mb-2 text-xs text-muted">Read ratings and loved status from file tags via WebDAV. Runs incremental check on library load (1 request, only reads changed files).</p>
-        <div class="space-y-3">
-          <button
-            onclick={startMetadataScan}
-            disabled={$metadataScanState.status === 'scanning'}
-            class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
-          >
-            {#if $metadataScanState.status === 'scanning'}
-              <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
-            {:else}
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
-              Check Modified Ratings
+        <!-- Crossfade -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Crossfade</h3>
+          <div class="flex items-center gap-3">
+            <input
+              type="range"
+              min="0"
+              max="15"
+              step="0.5"
+              value={crossfadeDuration}
+              oninput={setCrossfade}
+              class="h-1 flex-1 accent-yellow-500"
+            />
+            <span class="w-10 text-right text-sm text-muted">{crossfadeDuration}s</span>
+          </div>
+        </section>
+
+        <!-- Pitch / Speed -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Pitch & Speed</h3>
+          <div class="space-y-3">
+            <label class="flex cursor-pointer items-center gap-3">
+              <input type="checkbox" checked={tapeMode} onchange={setTapeMode} class="accent-yellow-500" />
+              <div>
+                <p class="text-base text-primary">Tape Mode</p>
+                <p class="text-sm text-muted">Link pitch and speed changes together</p>
+              </div>
+            </label>
+            <div>
+              <p class="mb-1 text-sm text-muted">Snap tolerance: {snapTolerance.toFixed(2)}</p>
+              <input
+                type="range"
+                min="0"
+                max="0.5"
+                step="0.01"
+                value={snapTolerance}
+                oninput={setSnapTolerance}
+                class="h-1 w-full accent-yellow-500"
+              />
+            </div>
+          </div>
+        </section>
+
+        <!-- Replay Gain -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Replay Gain</h3>
+          <p class="mb-2 text-sm text-muted">Apply loudness normalization based on file metadata</p>
+          <div class="flex gap-2">
+            {#each ['off', 'track', 'album'] as mode}
+              <button
+                onclick={() => setReplayGainMode(mode as 'off' | 'track' | 'album')}
+                class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors"
+                class:bg-primary={replayGainMode === mode}
+                class:text-background={replayGainMode === mode}
+                class:bg-surface-hover={replayGainMode !== mode}
+                class:text-muted={replayGainMode !== mode}
+              >{mode === 'off' ? 'Off' : mode === 'track' ? 'Track Gain' : 'Album Gain'}</button>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
+      {#if tab === 'library'}
+        <!-- Metadata Scan -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Metadata Scan</h3>
+          <p class="mb-2 text-sm text-muted">Read ratings and loved status from file tags via WebDAV. Runs incremental check on library load (1 request, only reads changed files).</p>
+          <div class="space-y-3">
+            <button
+              onclick={startMetadataScan}
+              disabled={$metadataScanState.status === 'scanning'}
+              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
+            >
+              {#if $metadataScanState.status === 'scanning'}
+                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
+              {:else}
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
+                Check Modified Ratings
+              {/if}
+            </button>
+            <button
+              onclick={rescanAllMetadata}
+              disabled={$metadataScanState.status === 'scanning'}
+              class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-3 text-base font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+            >
+              {#if $metadataScanState.status === 'scanning'}
+                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
+              {:else}
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
+                Rescan All Metadata
+              {/if}
+            </button>
+            <button
+              onclick={buildIndex}
+              disabled={indexing}
+              class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-3 text-base font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+            >
+              {#if indexing}
+                Indexing...
+              {:else}
+                Rebuild WebDAV File Index
+              {/if}
+            </button>
+            {#if $metadataScanState.status === 'complete'}
+              <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed</p>
+            {:else if $metadataScanState.status === 'scanning'}
+              <p class="text-sm text-muted">Progress: {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
             {/if}
-          </button>
-          <button
-            onclick={rescanAllMetadata}
-            disabled={$metadataScanState.status === 'scanning'}
-            class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
-          >
-            {#if $metadataScanState.status === 'scanning'}
-              <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
-              Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
-            {:else}
-              <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
-              Rescan All Metadata
-            {/if}
-          </button>
-          <button
-            onclick={buildIndex}
-            disabled={indexing}
-            class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
-          >
-            {#if indexing}
-              Indexing...
-            {:else}
-              Rebuild WebDAV File Index
-            {/if}
-          </button>
-          {#if $metadataScanState.status === 'complete'}
-            <p class="text-xs text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed</p>
-          {:else if $metadataScanState.status === 'scanning'}
-            <p class="text-xs text-muted">Progress: {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
-          {/if}
-        </div>
-      </section>
-    </div>
-    <div class="border-t border-white/10 px-4 py-3">
-      <p class="text-xs text-muted/50">
-        v{appVersion} ({commitHash}) &mdash; {new Date(buildTime).toLocaleString()}
-      </p>
+          </div>
+        </section>
+      {/if}
+
+      {#if tab === 'about'}
+        <section class="px-4 py-6">
+          <h3 class="mb-3 text-base font-medium text-primary">mmdrome</h3>
+          <p class="text-sm text-muted">
+            v{appVersion} ({commitHash}) &mdash; {new Date(buildTime).toLocaleString()}
+          </p>
+          <p class="mt-4 text-sm text-muted">
+            A minimalist music player for your Navidrome / WebDAV library.
+          </p>
+        </section>
+      {/if}
     </div>
   </div>
 </div>

@@ -65,7 +65,7 @@
 </script>
 
 <div
-  class="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-surface-hover"
+  class="flex cursor-pointer items-center gap-2 rounded-lg py-2 pl-1.5 pr-1 transition-colors hover:bg-surface-hover"
   role="button"
   tabindex="0"
   onclick={() => handlePlay(track.trackId)}
@@ -82,7 +82,7 @@
     </p>
   </div>
 
-  <div class="flex flex-shrink-0 items-center gap-0.5">
+  <div class="-ml-1 flex flex-shrink-0 items-center gap-0.5">
     {#each starSegments(getRating(track.trackId)) as seg, si}
       <svg class="h-3.5 w-3.5" viewBox="0 0 24 24">
         {#if seg === 'half'}
@@ -114,7 +114,7 @@
 
   <button
     onclick={(e) => handleAdd(e, track.trackId)}
-    class="flex-shrink-0 self-stretch rounded-none px-2.5 text-muted transition-colors hover:text-primary"
+    class="flex-shrink-0 self-stretch rounded-none px-0.5 text-muted transition-colors hover:text-primary"
     aria-label="Add to queue"
   >
     {#if added}

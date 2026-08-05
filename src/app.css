@@ -29,3 +29,17 @@
     env(safe-area-inset-bottom, 0px)
     env(safe-area-inset-left, 0px);
 }
+
+/* Prevent iOS auto-zoom on input focus: keep all text inputs at 16px+ */
+input:not([type="range"]):not([type="checkbox"]):not([type="radio"]),
+textarea,
+select {
+  font-size: 16px;
+}
+
+/* Dark border on all sliders */
+input[type="range"] {
+  border: 1px solid rgb(255 255 255 / 0.15);
+  border-radius: 9999px;
+  background: transparent;
+}

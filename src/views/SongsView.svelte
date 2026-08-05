@@ -210,27 +210,7 @@
   }
 </script>
 
-<div class="flex h-full flex-col">
-  <div class="flex items-center gap-2 border-b border-white/10 px-4 py-2">
-    <button
-      onclick={toggleFilter}
-      class="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors"
-      class:bg-surface-hover={filterOpen}
-      class:text-primary={filterOpen}
-      class:text-muted={!filterOpen}
-    >Filter</button>
-    <button
-      onclick={toggleSort}
-      class="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors"
-      class:bg-surface-hover={sortOpen}
-      class:text-primary={sortOpen}
-      class:text-muted={!sortOpen}
-    >Sort</button>
-    {#if sortBy}
-      <span class="ml-auto text-xs text-muted">Sorted by {sortLabels[sortBy]} {sortAsc ? '↑' : '↓'}</span>
-    {/if}
-  </div>
-
+<div class="relative flex h-full flex-col">
   {#if filterOpen}
     <div class="border-b border-white/10 bg-surface/50 px-4 py-3">
       <div class="space-y-3">
@@ -353,14 +333,30 @@
 
       <div bind:this={sentinelEl} class="py-6 text-center">
         {#if $library.length === 0}
-          <p class="text-xs text-muted">Your library is empty. Scan your music to get started.</p>
+          <p class="text-sm text-muted">Your library is empty. Scan your music to get started.</p>
         {:else if hasMore}
-          <p class="text-xs text-muted">Loading more...</p>
+          <p class="text-sm text-muted">Loading more...</p>
         {:else}
-          <p class="text-xs text-muted">All {processed.length} tracks loaded</p>
+          <p class="text-sm text-muted">All {processed.length} tracks loaded</p>
         {/if}
       </div>
     </div>
+  </div>
+
+  <!-- Floating Filter / Sort Buttons -->
+  <div class="absolute bottom-5 left-4 z-20 flex gap-2">
+    <button
+      onclick={toggleFilter}
+      class="rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 ring-white/10"
+      class:bg-surface-hover={filterOpen}
+      class:bg-surface={!filterOpen}
+    >Filter</button>
+    <button
+      onclick={toggleSort}
+      class="rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 ring-white/10"
+      class:bg-surface-hover={sortOpen}
+      class:bg-surface={!sortOpen}
+    >Sort{sortBy ? `: ${sortLabels[sortBy]} ${sortAsc ? '↑' : '↓'}` : ''}</button>
   </div>
 </div>
 

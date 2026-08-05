@@ -40,7 +40,7 @@
 <div class="relative" data-menu>
   <button
     onclick={(e) => { e.stopPropagation(); menuOpen = !menuOpen }}
-    class="flex-shrink-0 self-stretch rounded-none px-2 text-muted transition-colors hover:text-primary"
+    class="flex-shrink-0 self-stretch rounded-none px-0.5 text-muted transition-colors hover:text-primary"
     aria-label="More options"
   >
     <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">

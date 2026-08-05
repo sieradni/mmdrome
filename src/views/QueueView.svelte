@@ -109,6 +109,8 @@
   let pointerX = $state(0)
   let pointerY = $state(0)
   let dragProxyWidth = $state(320)
+  let dragOffsetX = $state(0)
+  let dragOffsetY = $state(0)
 
   let autoScrollFrameId: number | null = null
 
@@ -300,7 +302,10 @@ function seek(e: Event) {
 
     const rowEl = targetEl.closest('.queue-track-item') as HTMLElement
     if (rowEl) {
-      dragProxyWidth = rowEl.getBoundingClientRect().width
+      const rect = rowEl.getBoundingClientRect()
+      dragProxyWidth = rect.width
+      dragOffsetX = e.clientX - rect.left
+      dragOffsetY = e.clientY - rect.top
     }
 
     window.addEventListener('pointermove', handlePointerMove)
@@ -504,38 +509,31 @@ function seek(e: Event) {
 
 <div class="flex h-full flex-col bg-background select-none">
   <!-- Header -->
-  <div class="flex items-center justify-between px-4 py-3">
-    <div class="flex items-center gap-2">
-      <button onclick={oncloseall} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Library">
-        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
+  <div class="grid grid-cols-3 items-center border-b border-white/10 px-4 py-2.5">
+    <div class="flex items-center gap-1">
+      <button onclick={oncloseall} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Library">
+        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
       </button>
-      <button onclick={onclose} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Close queue">
-        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+      <button onclick={onclose} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Close queue">
+        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
     </div>
-    <span class="text-sm font-medium text-muted">Queue</span>
+    <span class="text-center text-base font-medium text-muted">Queue</span>
     <button
       onclick={handleClearQueue}
-      class="rounded-lg px-2 py-1 text-xs text-muted transition-colors hover:text-red-400"
+      class="justify-self-end rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-colors hover:text-red-400"
       aria-label="Clear queue"
     >
       Clear
     </button>
   </div>
 
-  <!-- Queue List Scroll Container -->
-  <div bind:this={listContainerEl} class="flex-1 overflow-y-auto pb-4 touch-pan-y" onscroll={() => { if (listContainerEl) saveViewState('queue', { scrollTop: listContainerEl.scrollTop }) }}>
-    {#if $queue.userQueue.length === 0 && $queue.autoQueue.length === 0}
-      <div class="flex h-full items-center justify-center">
-        <p class="text-xs text-muted">Queue is empty</p>
-      </div>
-    {/if}
-
-    <!-- Now Playing Section -->
-    {#if $currentTrack}
+  <!-- Now Playing Section (pinned, always visible) -->
+  {#if $currentTrack}
+    <div class="shrink-0 px-4 pb-3 pt-3">
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
-        class="mx-4 mb-3 rounded-lg bg-surface/50 px-3 py-2.5 ring-1 ring-white/10"
+        class="rounded-lg bg-surface/50 px-3 py-2.5 ring-1 ring-white/10"
         role="button"
         tabindex="0"
         onclick={onclose}
@@ -597,6 +595,15 @@ function seek(e: Event) {
           <span class="w-5"></span>
         </div>
       </div>
+    </div>
+  {/if}
+
+  <!-- Queue List Scroll Container -->
+  <div bind:this={listContainerEl} class="flex-1 overflow-y-auto pb-4 touch-pan-y" onscroll={() => { if (listContainerEl) saveViewState('queue', { scrollTop: listContainerEl.scrollTop }) }}>
+    {#if $queue.userQueue.length === 0 && $queue.autoQueue.length === 0}
+      <div class="flex h-full items-center justify-center">
+        <p class="text-sm text-muted">Queue is empty</p>
+      </div>
     {/if}
 
     <!-- === USER QUEUE === -->
@@ -615,8 +622,8 @@ function seek(e: Event) {
             role="button"
             tabindex="0"
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(item.track.trackId, itemIndex) }}
-            class={"queue-track-item flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors " +
-              (isCurrentTrack(item.track.trackId, itemIndex) ? 'bg-white/5 ' : 'hover:bg-surface-hover ') +
+            class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
+              (isCurrentTrack(item.track.trackId, itemIndex) ? 'bg-white/10 ' : 'hover:bg-surface-hover ') +
               (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-yellow-500/50 bg-yellow-500/10 ' : '')
             }
             data-combined-index={itemIndex}
@@ -624,7 +631,7 @@ function seek(e: Event) {
             <!-- Drag Handle -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
             <div
-              class="drag-handle touch-none flex-shrink-0 cursor-grab active:cursor-grabbing rounded p-1 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover"
+              class="drag-handle touch-none flex-shrink-0 cursor-grab active:cursor-grabbing rounded py-1 pl-1 pr-0.5 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover"
               aria-label="Drag to reorder"
               onclick={(e) => e.stopPropagation()}
               onpointerdown={(e) => startPointerDrag(e, item.originalCombinedIdx)}
@@ -635,16 +642,6 @@ function seek(e: Event) {
               </svg>
             </div>
 
-            {#if isCurrentTrack(item.track.trackId, itemIndex)}
-              <div class="flex-shrink-0">
-                <svg class="h-3 w-3 text-yellow-500" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z"/>
-                </svg>
-              </div>
-            {:else}
-              <span class="w-3 flex-shrink-0 text-[10px] text-muted/50 tabular-nums text-center">{itemIndex + 1}</span>
-            {/if}
-
             <LazyThumb track={item.track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
 
             <div class="min-w-0 flex-1">
@@ -654,7 +651,7 @@ function seek(e: Event) {
 
             <!-- Action Buttons -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-            <div class="flex flex-shrink-0 items-center gap-1" onclick={(e) => e.stopPropagation()} role="presentation">
+            <div class="flex flex-shrink-0 items-center gap-0.5" onclick={(e) => e.stopPropagation()} role="presentation">
               <button
                 onclick={() => detailsTrack = item.track}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-primary"
@@ -699,21 +696,19 @@ function seek(e: Event) {
 
     <!-- ── Boundary Indicator ── -->
     <div
-      class={"mx-4 my-2 flex items-center gap-2 px-1 transition-all duration-200 " + (isConvertingUserToAuto ? 'opacity-100 scale-[1.01]' : 'opacity-40')}
+      class={"mx-4 my-2 flex items-center gap-2 px-1 transition-all duration-200 " + (isConvertingUserToAuto ? 'opacity-100 scale-[1.01]' : 'opacity-60')}
       role="separator"
       aria-label="Auto queue boundary"
     >
-      <div class={"h-0.5 flex-1 rounded-full transition-colors duration-200 " + (isConvertingUserToAuto ? 'bg-yellow-500 shadow-sm shadow-yellow-500/50' : 'bg-white/20')}></div>
-      <span class="flex items-center gap-2">
-        <span class={"text-[10px] font-medium uppercase tracking-wider transition-colors duration-200 " + (isConvertingUserToAuto ? 'text-yellow-400 font-semibold' : 'text-muted/50')}>
-          {isConvertingUserToAuto ? 'Release to convert to User Queue' : 'Auto Queue'}
-        </span>
-        <button
-          onclick={() => filterOpen = !filterOpen}
-          class={"rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider transition-colors " + (filterOpen ? 'bg-white/10 text-white' : 'text-muted/50 hover:text-white')}
-        >Filter</button>
-      </span>
-      <div class={"h-0.5 flex-1 rounded-full transition-colors duration-200 " + (isConvertingUserToAuto ? 'bg-yellow-500 shadow-sm shadow-yellow-500/50' : 'bg-white/20')}></div>
+      <div class={"h-0.5 flex-1 rounded-full transition-colors duration-200 " + (isConvertingUserToAuto ? 'bg-yellow-500 shadow-sm shadow-yellow-500/50' : 'bg-white/30')}></div>
+      {#if isConvertingUserToAuto}
+        <span class="text-xs font-medium uppercase tracking-wider text-yellow-400">Release to convert to User Queue</span>
+      {/if}
+      <button
+        onclick={() => filterOpen = !filterOpen}
+        class={"rounded-lg px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-white transition-colors " + (filterOpen ? 'bg-white/25' : 'bg-white/15 hover:bg-white/25')}
+      >Filter</button>
+      <div class={"h-0.5 flex-1 rounded-full transition-colors duration-200 " + (isConvertingUserToAuto ? 'bg-yellow-500 shadow-sm shadow-yellow-500/50' : 'bg-white/30')}></div>
     </div>
 
     {#if filterOpen}
@@ -776,8 +771,8 @@ function seek(e: Event) {
             role="button"
             tabindex="0"
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(item.track.trackId, itemCombinedIndex) }}
-            class={"queue-track-item flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition-colors " +
-              (isCurrentTrack(item.track.trackId, itemCombinedIndex) ? 'bg-white/5 ' : 'hover:bg-surface-hover ') +
+            class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
+              (isCurrentTrack(item.track.trackId, itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-surface-hover ') +
               (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-yellow-500/50 bg-yellow-500/10 ' : '')
             }
             data-combined-index={itemCombinedIndex}
@@ -785,7 +780,7 @@ function seek(e: Event) {
             <!-- Drag Handle -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
             <div
-              class="drag-handle touch-none flex-shrink-0 cursor-grab active:cursor-grabbing rounded p-1 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover"
+              class="drag-handle touch-none flex-shrink-0 cursor-grab active:cursor-grabbing rounded py-1 pl-1 pr-0.5 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover"
               aria-label="Drag to reorder"
               onclick={(e) => e.stopPropagation()}
               onpointerdown={(e) => startPointerDrag(e, item.originalCombinedIdx)}
@@ -796,16 +791,6 @@ function seek(e: Event) {
               </svg>
             </div>
 
-            {#if isCurrentTrack(item.track.trackId, itemCombinedIndex)}
-              <div class="flex-shrink-0">
-                <svg class="h-3 w-3 text-yellow-500" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M8 5v14l11-7z"/>
-                </svg>
-              </div>
-            {:else}
-              <span class="w-3 flex-shrink-0 text-[10px] text-muted/50 tabular-nums text-center">{idx + 1}</span>
-            {/if}
-
             <LazyThumb track={item.track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
 
             <div class="min-w-0 flex-1">
@@ -815,7 +800,7 @@ function seek(e: Event) {
 
             <!-- Action Buttons -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-            <div class="flex flex-shrink-0 items-center gap-1" onclick={(e) => e.stopPropagation()} role="presentation">
+            <div class="flex flex-shrink-0 items-center gap-0.5" onclick={(e) => e.stopPropagation()} role="presentation">
               <button
                 onclick={() => detailsTrack = item.track}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-primary"
@@ -857,7 +842,7 @@ function seek(e: Event) {
         {/each}
       </div>
     {:else if previewUserItems.length > 0}
-      <p class="px-6 py-4 text-center text-xs text-muted/50">Auto queue is empty</p>
+      <p class="px-6 py-4 text-center text-sm text-muted/50">Auto queue is empty</p>
     {/if}
   </div>
 </div>
@@ -866,7 +851,7 @@ function seek(e: Event) {
 {#if isDragging && draggedTrack}
   <div
     class="pointer-events-none fixed z-50 flex items-center gap-2.5 rounded-lg bg-surface/95 px-3 py-2 text-primary shadow-2xl ring-1 ring-white/20 backdrop-blur-md opacity-95 transition-transform duration-75"
-    style="left: {pointerX}px; top: {pointerY}px; width: {dragProxyWidth}px; transform: translate(-50%, -50%) scale(1.02);"
+    style="left: {pointerX - dragOffsetX}px; top: {pointerY - dragOffsetY}px; width: {dragProxyWidth}px; transform-origin: top left; transform: scale(1.02);"
   >
     <LazyThumb track={draggedTrack} wrapperClass="h-10 w-10 flex-shrink-0 rounded shadow" />
     <div class="min-w-0 flex-1">

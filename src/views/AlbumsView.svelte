@@ -121,13 +121,13 @@
 
 {#if selectedAlbum}
   <div class="flex h-full flex-col">
-    <div class="flex items-center gap-2 border-b border-white/10 px-4 py-3">
-      <button onclick={() => selectedAlbum = null} class="rounded-full p-1 text-muted transition-colors hover:text-primary" aria-label="Back">
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+    <div class="flex items-center gap-3 border-b border-white/10 px-4 py-2.5">
+      <button onclick={() => selectedAlbum = null} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Back">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
-      <h2 class="truncate text-sm font-bold text-primary">{selectedAlbum}</h2>
-      <button onclick={playAll} class="ml-auto flex items-center gap-1 rounded-full bg-primary px-3 py-1 text-xs font-medium text-background transition-opacity hover:opacity-80" aria-label="Play all">
-        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+      <h2 class="truncate text-lg font-bold text-primary">{selectedAlbum}</h2>
+      <button onclick={playAll} class="ml-auto flex items-center gap-1.5 rounded-full bg-surface-hover px-4 py-2 text-sm font-medium text-primary transition-opacity hover:opacity-80" aria-label="Play all">
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         Play All
       </button>
     </div>

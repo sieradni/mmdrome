@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { Capacitor, SystemBars, SystemBarType, SystemBarsStyle } from '@capacitor/core'
-  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, effectiveDuration, toggleShuffle, metadataScanState, loopMode } from './stores/appState'
+  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, effectiveDuration, toggleShuffle, metadataScanState, loopMode, updateSetting } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
   import { connectNavidrome } from './lib/syncEngine'
   import { navidromeSongToTrack, setCachedConfig } from './lib/navidromeApi'
   import { playbackManager } from './lib/playbackManager'
   import { audioManager } from './lib/audioManager'
+  import { engine } from './lib/engineFacade'
   import { setWebdavCredentials, ensureIndex, scanAllNow, setServerLastScan, getWebdavConfigured } from './lib/metadataScanner'
   import { getTagLib } from './lib/taglibSingleton'
   import type { Track } from './stores/appState'
@@ -137,6 +138,24 @@
     loopMode.update((m) => m === 'none' ? 'one' : m === 'one' ? 'all' : 'none')
   }
 
+  let volOpen = $state(false)
+  let volValue = $state(engine.volume)
+
+  function updateVolumePopover() {
+    engine.setMasterVolume(volValue)
+    updateSetting('masterGain', volValue)
+  }
+
+  $effect(() => {
+    if (!volOpen) return
+    volValue = engine.volume
+    function handler(e: MouseEvent) {
+      if (!(e.target as HTMLElement).closest('[data-volume-popover]')) volOpen = false
+    }
+    document.addEventListener('click', handler)
+    return () => document.removeEventListener('click', handler)
+  })
+
 function seek(e: Event) {
      const t = parseFloat((e.target as HTMLInputElement).value)
      playbackManager.seek(t)
@@ -174,20 +193,22 @@ function seek(e: Event) {
   }
 </script>
 
-<div class="grid h-dvh grid-rows-[auto_1fr_auto] bg-background text-primary safe-area-top safe-area-x">
+<div class="flex h-dvh flex-col bg-background text-primary safe-area-top safe-area-x">
   <!-- ─── Sticky Header ─── -->
-  <header class="sticky top-0 z-30 flex flex-col bg-surface/95 backdrop-blur-lg">
-    <div class="flex items-center gap-2 px-4 py-3">
-      <div class="relative flex-1">
-        <input
-          type="search"
-          placeholder="Fuzzy Search tracks, artists, albums…"
-          bind:value={searchQuery}
-          class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-        />
+  {#if view !== 'settings'}
+    <header class="sticky top-0 z-30 flex flex-col bg-background">
+      <div class="flex items-center gap-2 px-4 py-3">
+        <div class="relative flex-1">
+          <input
+            type="search"
+            placeholder="Fuzzy Search tracks, artists, albums…"
+            bind:value={searchQuery}
+            class="w-full rounded-lg bg-white/5 px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-white/10 transition-colors focus:ring-white/20"
+          />
+        </div>
       </div>
-    </div>
-  </header>
+    </header>
+  {/if}
 
   {#if initError}
     <div class="mx-4 mt-2 rounded-lg bg-red-900/40 px-4 py-3 text-xs text-red-300 ring-1 ring-red-800/50">
@@ -196,7 +217,7 @@ function seek(e: Event) {
   {/if}
 
   <!-- ─── Main View Container ─── -->
-  <main class="flex flex-col overflow-hidden">
+  <main class="flex min-h-0 flex-1 flex-col overflow-hidden">
     {#if view === 'songs'}
       <SongsView {searchQuery} />
     {:else if view === 'albums'}
@@ -219,33 +240,33 @@ function seek(e: Event) {
       class="flex cursor-pointer items-center gap-3 border-t border-white/10 bg-surface px-4 py-2.5 text-left transition-colors hover:bg-surface-hover"
     >
       {#if $currentTrack}
-        <LazyThumb track={$currentTrack} wrapperClass="h-10 w-10 flex-shrink-0 rounded-md" />
+        <LazyThumb track={$currentTrack} wrapperClass="h-12 w-12 flex-shrink-0 rounded-md" />
         <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-medium text-primary">{$currentTrack.title}</p>
-          <p class="truncate text-xs text-muted">{$currentTrack.artist}</p>
+          <p class="truncate text-base font-medium text-primary">{$currentTrack.title}</p>
+          <p class="truncate text-sm text-muted">{$currentTrack.artist}</p>
         </div>
       {:else}
-        <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-md bg-surface-hover">
-          <svg class="h-5 w-5 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+        <div class="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-md bg-surface-hover">
+          <svg class="h-6 w-6 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
         </div>
         <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-medium text-primary">Not playing</p>
-          <p class="truncate text-xs text-muted">{queueSize > 0 ? `Track ${queuePosition} of ${queueSize} in queue` : 'Queue is empty'}</p>
+          <p class="truncate text-base font-medium text-primary">Not playing</p>
+          <p class="truncate text-sm text-muted">{queueSize > 0 ? `Track ${queuePosition} of ${queueSize} in queue` : 'Queue is empty'}</p>
         </div>
       {/if}
       <div class="flex flex-shrink-0 items-center gap-1">
-        <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => { e.stopPropagation(); playbackManager.prev() }}>
-          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+        <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => { e.stopPropagation(); playbackManager.prev() }}>
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
         </button>
-        <button class="rounded-full bg-primary p-1.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
+        <button class="rounded-full bg-primary p-2 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
           {#if $playbackState === 'playing'}
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
           {:else}
-            <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
           {/if}
         </button>
-        <button class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={(e) => { e.stopPropagation(); playbackManager.next() }}>
-          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
+        <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={(e) => { e.stopPropagation(); playbackManager.next() }}>
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
         </button>
       </div>
     </div>
@@ -273,12 +294,12 @@ function seek(e: Event) {
   <div class="fixed inset-0 z-40 flex flex-col bg-background safe-area-full">
     <!-- Header -->
     <div class="flex items-center justify-between px-4 py-3">
-      <button onclick={toggleNowPlaying} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Close player">
-        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+      <button onclick={toggleNowPlaying} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Close player">
+        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
-      <span class="text-sm font-medium text-muted">Now Playing</span>
-      <button onclick={openQueue} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Open queue">
-        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+      <span class="text-base font-medium text-muted">Now Playing</span>
+      <button onclick={openQueue} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Open queue">
+        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
       </button>
     </div>
 
@@ -290,10 +311,47 @@ function seek(e: Event) {
         </div>
       </div>
 
+      <!-- Utility Row: Loop + Volume -->
+      <div class="flex w-full items-center justify-end gap-1 px-6 pt-2">
+        <button onclick={toggleLoop} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$loopMode !== 'none'} class:text-muted={$loopMode === 'none'} aria-label="Toggle loop">
+          <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
+            {#if $loopMode === 'one'}
+              <text x="12" y="16" text-anchor="middle" font-size="7" font-weight="bold" fill="currentColor">1</text>
+            {:else if $loopMode === 'all'}
+              <text x="12" y="16" text-anchor="middle" font-size="7" font-weight="bold" fill="currentColor">A</text>
+            {/if}
+          </svg>
+        </button>
+        <div class="relative" data-volume-popover>
+          <button onclick={(e) => { e.stopPropagation(); volOpen = !volOpen }} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Volume">
+            <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+            </svg>
+          </button>
+          {#if volOpen}
+            <div class="absolute bottom-full right-0 z-50 mb-2 flex flex-col items-center rounded-lg bg-surface px-3 py-3 shadow-xl ring-1 ring-white/10">
+              <span class="mb-3 text-xs tabular-nums text-muted">{(volValue * 100).toFixed(0)}%</span>
+              <div class="flex h-32 w-6 items-center justify-center">
+                <input
+                  type="range"
+                  min="0"
+                  max="2"
+                  step="0.01"
+                  bind:value={volValue}
+                  oninput={updateVolumePopover}
+                  class="h-1 w-32 -rotate-90 cursor-pointer accent-white/80"
+                />
+              </div>
+            </div>
+          {/if}
+        </div>
+      </div>
+
       <!-- Track Info -->
       <div class="w-full min-w-0 space-y-0.5 px-6 pt-2">
-        <h2 class="text-xl font-bold text-primary truncate">{$currentTrack.title}</h2>
-        <p class="text-sm text-muted truncate">{$currentTrack.artist}</p>
+        <h2 class="truncate text-2xl font-bold text-primary">{$currentTrack.title}</h2>
+        <p class="truncate text-base text-muted">{$currentTrack.artist}</p>
       </div>
 
       <!-- Seek Bar -->
@@ -326,35 +384,25 @@ function seek(e: Event) {
     {/if}
 
     <!-- Controls -->
-    <div class="flex items-center justify-center gap-4 px-6 pt-4">
-      <button onclick={() => { toggleShuffle() }} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$shuffleEnabled} class:text-muted={!$shuffleEnabled} aria-label="Toggle shuffle">
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+    <div class="flex items-center justify-center gap-3 px-6 pt-4">
+      <button onclick={() => { toggleShuffle() }} class="rounded-full p-2.5 transition-colors hover:text-primary" class:text-primary={$shuffleEnabled} class:text-muted={!$shuffleEnabled} aria-label="Toggle shuffle">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
       </button>
-      <button onclick={toggleLoop} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$loopMode !== 'none'} class:text-muted={$loopMode === 'none'} aria-label="Toggle loop">
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-          <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
-          {#if $loopMode === 'one'}
-            <text x="12" y="16" text-anchor="middle" font-size="7" font-weight="bold" fill="currentColor">1</text>
-          {:else if $loopMode === 'all'}
-            <text x="12" y="16" text-anchor="middle" font-size="7" font-weight="bold" fill="currentColor">A</text>
-          {/if}
-        </svg>
+      <button class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
+        <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
       </button>
-      <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
-        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-      </button>
-      <button class="rounded-full bg-primary p-3 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
+      <button class="rounded-full bg-primary p-3.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
         {#if $playbackState === 'playing'}
-          <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
+          <svg class="h-9 w-9" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
         {:else}
-          <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+          <svg class="h-9 w-9" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         {/if}
       </button>
-      <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
-        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
+      <button class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
+        <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
       </button>
-      <button onclick={openTrackOptions} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Options">
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+      <button onclick={openTrackOptions} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Options">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
       </button>
     </div>
 
