@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { Capacitor } from '@capacitor/core'
+  import { Capacitor, SystemBars, SystemBarType, SystemBarsStyle } from '@capacitor/core'
   import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, effectiveDuration, toggleShuffle, metadataScanState, loopMode } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
   import { connectNavidrome } from './lib/syncEngine'
@@ -30,6 +30,10 @@
   let initError = $state('')
 
   onMount(async () => {
+    if (Capacitor.isNativePlatform()) {
+      // Light status bar content over the app's dark chrome (dynamic island area).
+      SystemBars.setStyle({ style: SystemBarsStyle.Dark, bar: SystemBarType.StatusBar }).catch(() => {})
+    }
     try {
       await initStores()
     } catch (err) {
@@ -170,7 +174,7 @@ function seek(e: Event) {
   }
 </script>
 
-<div class="grid h-dvh grid-rows-[auto_1fr_auto] bg-background text-primary safe-area-top">
+<div class="grid h-dvh grid-rows-[auto_1fr_auto] bg-background text-primary safe-area-top safe-area-x">
   <!-- ─── Sticky Header ─── -->
   <header class="sticky top-0 z-30 flex flex-col bg-surface/95 backdrop-blur-lg">
     <div class="flex items-center gap-2 px-4 py-3">

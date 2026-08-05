@@ -51,6 +51,8 @@
   <array>
     <string>audio</string>
   </array>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>mmdrome accesses your local network to read music files from WebDAV servers on your LAN.</string>
   <key>NSAppTransportSecurity</key>
   <dict>
     <key>NSAllowsArbitraryLoads</key>

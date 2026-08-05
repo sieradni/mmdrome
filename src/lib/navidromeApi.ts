@@ -1,5 +1,6 @@
 import type { Track } from '../stores/appState'
 import { writable } from 'svelte/store'
+import { webdavFetch } from './webdavUtils'
 
 const API_VERSION = '1.16.1'
 const CLIENT_NAME = 'mmdrome'
@@ -439,7 +440,9 @@ export async function testWebdavConnection(
 ): Promise<{ connected: boolean; error?: string }> {
   try {
     const url = `${baseUrl.replace(/\/+$/, '')}/`
-    const res = await fetchWithTimeout(url, {
+    // Routes through webdavFetch so the test exercises the exact same code
+    // path (native CapacitorHttp / web fetch) as real sync operations.
+    const res = await webdavFetch(url, {
       method: 'PROPFIND',
       headers: {
         Authorization: `Basic ${btoa(`${user}:${token}`)}`,
@@ -449,7 +452,7 @@ export async function testWebdavConnection(
     if (res.ok) {
       return { connected: true }
     }
-    return { connected: false, error: `HTTP ${res.status}: ${res.statusText}` }
+    return { connected: false, error: `HTTP ${res.status}: ${res.statusText || res.status}` }
   } catch (err) {
     const error = err as Error
     return { connected: false, error: error.message }

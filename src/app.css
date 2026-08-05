@@ -8,7 +8,7 @@
   --color-muted: #a3a3a3;
 }
 
-/* iOS Safari safe-area helpers */
+/* iOS Safari safe-area helpers (activated by viewport-fit=cover) */
 .safe-area-top {
   padding-top: env(safe-area-inset-top, 0px);
 }
@@ -17,7 +17,15 @@
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
+/* Notch/hairline insets in landscape (inset-left/right are 0 in portrait) */
+.safe-area-x {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
+
 .safe-area-full {
-  padding-top: env(safe-area-inset-top, 0px);
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  padding: env(safe-area-inset-top, 0px)
+    env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px)
+    env(safe-area-inset-left, 0px);
 }
