@@ -1,0 +1,62 @@
+name: iOS Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-build
+  cancel-in-progress: true
+
+jobs:
+  build-ios:
+    name: Build unsigned .ipa
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build web bundle
+        run: npm run build
+
+      - name: Sync Capacitor (web assets + SPM package)
+        # macOS produces POSIX paths, so fix-spm-path is a no-op here.
+        run: npm run sync:ios
+
+      - name: List Xcode schemes (debug)
+        run: xcodebuild -project ios/App/App.xcodeproj -list
+
+      - name: Build unsigned app
+        run: |
+          xcodebuild -project ios/App/App.xcodeproj \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/App.app Payload/
+          zip -r mmdrome-unsigned.ipa Payload
+          rm -rf Payload
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mmdrome-ios
+          path: mmdrome-unsigned.ipa
+          retention-days: 14
