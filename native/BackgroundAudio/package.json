@@ -1,0 +1,11 @@
+{
+  "name": "background-audio",
+  "version": "0.1.0",
+  "description": "Local native audio engine plugin for mmdrome iOS (single-path AVAudioEngine playback with background audio)",
+  "license": "MIT",
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    }
+  }
+}

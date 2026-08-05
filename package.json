@@ -27,6 +27,7 @@
     "@capacitor/ios": "^8.5.0",
     "@soundtouchjs/audio-worklet": "^2.1.0",
     "@tailwindcss/vite": "^4.3.3",
+    "background-audio": "file:./native/BackgroundAudio",
     "dexie": "^4.4.4",
     "taglib-wasm": "^1.5.3",
     "tailwindcss": "^4.3.3"

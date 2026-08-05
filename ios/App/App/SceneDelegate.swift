@@ -1,7 +1,13 @@
 import UIKit
 import Capacitor
+import BackgroundAudio
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    /// Forces the dynamic-plugin module to be linked. The plugin class is discovered
+    /// at runtime via NSClassFromString (packageClassList); without a direct reference
+    /// the static library could be dead-stripped.
+    static let linkedNativePlugin: AnyClass = BackgroundAudioPlugin.self
+
     var window: UIWindow?
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
