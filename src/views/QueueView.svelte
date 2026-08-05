@@ -25,6 +25,7 @@
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
+  import JumpToCurrentButton from '../components/JumpToCurrentButton.svelte'
 
   let { onclose, oncloseall }: { onclose: () => void; oncloseall: () => void } = $props()
 
@@ -101,6 +102,28 @@
 
   // Drag Engine State
   let listContainerEl = $state<HTMLElement | null>(null)
+
+  let jumpScrollPending = $state(false)
+
+  function jumpToCurrent() {
+    jumpScrollPending = true
+  }
+
+  $effect(() => {
+    if (!jumpScrollPending || !listContainerEl) return
+    const id = $currentTrack?.trackId
+    if (!id) {
+      jumpScrollPending = false
+      return
+    }
+    tick().then(() => {
+      requestAnimationFrame(() => {
+        const el = listContainerEl?.querySelector(`[data-track-id="${CSS.escape(id)}"]`)
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        jumpScrollPending = false
+      })
+    })
+  })
 
   let isDragging = $state(false)
   let draggedCombinedIndex = $state<number | null>(null)
@@ -507,7 +530,7 @@ function seek(e: Event) {
   }
 </script>
 
-<div class="flex h-full flex-col bg-background select-none">
+<div class="relative flex h-full flex-col bg-background select-none">
   <!-- Header -->
   <div class="grid grid-cols-3 items-center border-b border-white/10 px-4 py-2.5">
     <div class="flex items-center gap-1">
@@ -627,6 +650,7 @@ function seek(e: Event) {
               (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-yellow-500/50 bg-yellow-500/10 ' : '')
             }
             data-combined-index={itemIndex}
+            data-track-id={item.track.trackId}
           >
             <!-- Drag Handle -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -706,7 +730,7 @@ function seek(e: Event) {
       {/if}
       <button
         onclick={() => filterOpen = !filterOpen}
-        class={"rounded-lg px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-white transition-colors " + (filterOpen ? 'bg-white/25' : 'bg-white/15 hover:bg-white/25')}
+        class={"rounded-lg px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-primary transition-colors " + (filterOpen ? 'bg-surface-raised' : 'bg-surface-hover')}
       >Filter</button>
       <div class={"h-0.5 flex-1 rounded-full transition-colors duration-200 " + (isConvertingUserToAuto ? 'bg-yellow-500 shadow-sm shadow-yellow-500/50' : 'bg-white/30')}></div>
     </div>
@@ -776,6 +800,7 @@ function seek(e: Event) {
               (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-yellow-500/50 bg-yellow-500/10 ' : '')
             }
             data-combined-index={itemCombinedIndex}
+            data-track-id={item.track.trackId}
           >
             <!-- Drag Handle -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -845,6 +870,8 @@ function seek(e: Event) {
       <p class="px-6 py-4 text-center text-sm text-muted/50">Auto queue is empty</p>
     {/if}
   </div>
+
+  <JumpToCurrentButton show={!!$currentTrack} onclick={jumpToCurrent} />
 </div>
 
 <!-- Floating Drag Proxy (Ghost) -->

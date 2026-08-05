@@ -6,11 +6,12 @@
   import LazyThumb from './LazyThumb.svelte'
   import TrackOptionsDropdown from './TrackOptionsDropdown.svelte'
 
-  let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, ondetails, onplay }: {
+  let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, dataTrackId, ondetails, onplay }: {
     track: Track
     showAlbum?: boolean
     showDuration?: boolean
     showAlbumArtist?: boolean
+    dataTrackId?: string
     ondetails?: () => void
     onplay?: (trackId: string) => void
   } = $props()
@@ -68,6 +69,7 @@
   class="flex cursor-pointer items-center gap-2 rounded-lg py-2 pl-1.5 pr-1 transition-colors hover:bg-surface-hover"
   role="button"
   tabindex="0"
+  data-track-id={dataTrackId ?? track.trackId}
   onclick={() => handlePlay(track.trackId)}
   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handlePlay(track.trackId) }}
 >

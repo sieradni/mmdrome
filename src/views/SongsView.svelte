@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
-  import { library, metadataCache, addToUserQueue, playNext } from '../stores/appState'
+  import { onMount, tick } from 'svelte'
+  import { library, metadataCache, addToUserQueue, playNext, currentTrack } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import { libraryFilters } from '../lib/libraryFilters'
@@ -10,6 +10,7 @@
   import TrackOptionsDropdown from '../components/TrackOptionsDropdown.svelte'
   import TrackRow from '../components/TrackRow.svelte'
   import FilterSortBar from '../components/FilterSortBar.svelte'
+  import JumpToCurrentButton from '../components/JumpToCurrentButton.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
 
@@ -131,13 +132,44 @@
     }
     return list
   })
-
-  let visible = $derived(processed.slice(0, limit))
+let visible = $derived(processed.slice(0, limit))
   let hasMore = $derived(limit < processed.length)
+
+  let currentIndex = $derived(
+    $currentTrack ? processed.findIndex((t) => t.trackId === $currentTrack.trackId) : -1
+  )
+  let canJumpToCurrent = $derived(currentIndex >= 0)
+
+  let jumpScrollPending = $state(false)
+
+  function jumpToCurrent() {
+    if (currentIndex < 0) return
+    if (currentIndex >= limit) {
+      limit = currentIndex + CHUNK
+    }
+    jumpScrollPending = true
+  }
+
+  $effect(() => {
+    if (!jumpScrollPending) return
+    const id = $currentTrack?.trackId
+    if (!id) {
+      jumpScrollPending = false
+      return
+    }
+    tick().then(() => {
+      requestAnimationFrame(() => {
+        const el = listContainer?.querySelector(`[data-track-id="${CSS.escape(id)}"]`)
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        jumpScrollPending = false
+      })
+    })
+  })
 </script>
 
 <div class="relative flex h-full flex-col">
   <FilterSortBar onopen={() => { limit = CHUNK }} />
+  <JumpToCurrentButton show={canJumpToCurrent} onclick={jumpToCurrent} />
 
   <div bind:this={listContainer} class="flex-1 overflow-y-auto pb-24"
        onscroll={() => { if (listContainer) saveViewState(viewName, { scrollTop: listContainer.scrollTop }) }}>

@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { getCoverUrl } from '../lib/coverArtCache'
   import { coverConfig } from '../lib/navidromeApi'
+  import { requestThumb, cancelThumb } from '../lib/thumbLoader'
   import type { Track } from '../stores/appState'
 
   let { track, wrapperClass = '', size }: { track: Track; wrapperClass?: string; size?: number } = $props()
@@ -12,20 +13,22 @@
   onMount(() => {
     const obs = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) {
-          visible = true
-          obs.disconnect()
+        if (entry.isIntersecting && !visible) {
+          requestThumb(container, () => { visible = true })
         }
       },
       { rootMargin: '100px' }
     )
     obs.observe(container)
-    return () => obs.disconnect()
+    return () => {
+      obs.disconnect()
+      cancelThumb(container)
+    }
   })
 </script>
 
 <div bind:this={container} class="{wrapperClass} overflow-hidden bg-surface-hover">
   {#if visible && $coverConfig}
-    <img src={getCoverUrl(track, $coverConfig, size)} alt="" class="h-full w-full object-cover" loading="lazy" crossorigin="anonymous" />
+    <img src={getCoverUrl(track, $coverConfig, size)} alt="" class="h-full w-full object-cover" loading="lazy" decoding="async" crossorigin="anonymous" />
   {/if}
 </div>

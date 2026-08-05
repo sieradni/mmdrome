@@ -154,10 +154,10 @@
 <div class="absolute bottom-5 left-4 z-20 flex gap-2">
   <button
     onclick={toggleFilter}
-    class={"rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 ring-white/10 " + ($libraryFilters.filterOpen ? 'bg-white/25' : 'bg-white/15')}
+    class={"rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 " + ($libraryFilters.filterOpen ? 'bg-surface-raised ring-white/20' : 'bg-surface-hover ring-white/10')}
   >Filter</button>
   <button
     onclick={toggleSort}
-    class={"rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 ring-white/10 " + ($libraryFilters.sortOpen ? 'bg-white/25' : 'bg-white/15')}
+    class={"rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 " + ($libraryFilters.sortOpen ? 'bg-surface-raised ring-white/20' : 'bg-surface-hover ring-white/10')}
   >Sort{$libraryFilters.sortBy ? `: ${sortLabels[$libraryFilters.sortBy]} ${$libraryFilters.sortAsc ? '↑' : '↓'}` : ''}</button>
 </div>
