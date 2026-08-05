@@ -26,10 +26,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build web bundle
-        run: npm run build
-
-      - name: Sync Capacitor (web assets + SPM package)
+      - name: Build web bundle + sync Capacitor (SPM package)
+        # VITE_BASE=./ (via build:ios) so asset URLs resolve under capacitor://localhost
+        # (the /mmdrome/ base used for gh-pages would 404 on native -> white screen).
         # macOS produces POSIX paths, so fix-spm-path is a no-op here.
         run: npm run sync:ios
 
