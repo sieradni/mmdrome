@@ -113,6 +113,18 @@
 
   let scrollRestorePending = $state(false)
 
+  // Re-arm the scroll restore when the list branch remounts after a detail view
+  // is closed (back button), otherwise the remounted list starts at the top.
+  let wasInDetail = $state(false)
+  $effect(() => {
+    if (selectedAlbum) {
+      wasInDetail = true
+    } else if (wasInDetail) {
+      wasInDetail = false
+      scrollRestorePending = true
+    }
+  })
+
   $effect(() => {
     const groups = albumGroups
     if (!scrollRestorePending) return
