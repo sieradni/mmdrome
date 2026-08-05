@@ -715,45 +715,45 @@ function seek(e: Event) {
       <div class="mx-4 mb-2 rounded-lg border border-white/10 bg-surface/50 px-3 py-3">
         <div class="space-y-3">
           <div>
-            <span class="text-xs font-medium text-muted">Search Query</span>
+            <span class="text-sm font-medium text-muted">Search Query</span>
             <div class="mt-1">
               <input
                 type="search"
                 placeholder="Fuzzy search title, artist, album..."
                 bind:value={searchQuery}
-                class="w-full rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted outline-none focus:ring-white/20"
+                class="w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted outline-none focus:ring-white/20"
               />
             </div>
           </div>
 
           <div>
-            <span class="text-xs font-medium text-muted">Rating range</span>
+            <span class="text-sm font-medium text-muted">Rating range</span>
             <div class="mt-1 flex items-center gap-2">
               <input type="range" min="0" max="100" bind:value={minRating} class="h-1 w-24 accent-yellow-500" />
-              <input type="number" min="0" max="100" bind:value={minRating} class="w-14 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10" />
-              <span class="text-xs text-muted">–</span>
-              <input type="number" min="0" max="100" bind:value={maxRating} class="w-14 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10" />
+              <input type="number" min="0" max="100" bind:value={minRating} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
+              <span class="text-sm text-muted">–</span>
+              <input type="number" min="0" max="100" bind:value={maxRating} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
               <input type="range" min="0" max="100" bind:value={maxRating} class="h-1 w-24 accent-yellow-500" />
             </div>
           </div>
-          <label class="flex cursor-pointer items-center gap-2 text-xs text-muted">
+          <label class="flex cursor-pointer items-center gap-2 text-sm text-muted">
             <input type="checkbox" bind:checked={lovedOnly} class="accent-yellow-500" />
             Loved tracks only
           </label>
           <div>
-            <span class="text-xs font-medium text-muted">Year</span>
+            <span class="text-sm font-medium text-muted">Year</span>
             <div class="mt-1 flex items-center gap-2">
-              <input type="number" placeholder="From" bind:value={fromYear} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
-              <span class="text-xs text-muted">to</span>
-              <input type="number" placeholder="To" bind:value={toYear} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
+              <input type="number" placeholder="From" bind:value={fromYear} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
+              <span class="text-sm text-muted">to</span>
+              <input type="number" placeholder="To" bind:value={toYear} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
             </div>
           </div>
           <div>
-            <span class="text-xs font-medium text-muted">Length (seconds)</span>
+            <span class="text-sm font-medium text-muted">Length (seconds)</span>
             <div class="mt-1 flex items-center gap-2">
-              <input type="number" placeholder="Min" bind:value={minLength} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
-              <span class="text-xs text-muted">to</span>
-              <input type="number" placeholder="Max" bind:value={maxLength} class="w-24 rounded bg-surface-hover px-2 py-1 text-xs text-primary ring-1 ring-white/10 placeholder-muted" />
+              <input type="number" placeholder="Min" bind:value={minLength} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
+              <span class="text-sm text-muted">to</span>
+              <input type="number" placeholder="Max" bind:value={maxLength} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
             </div>
           </div>
         </div>

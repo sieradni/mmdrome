@@ -15,8 +15,6 @@ import type { LocalMetadataStore } from './db'
 const MAX_AUTO_QUEUE = 50
 
 class QueueManager {
-  private _autoQueueCursor = 0
-
   getCombinedQueue(): string[] {
     const q = get(queue)
     return [...q.userQueue, ...q.autoQueue]
@@ -129,22 +127,13 @@ class QueueManager {
           [eligible[i], eligible[j]] = [eligible[j], eligible[i]]
         }
       } else {
-        const startIdx = this._autoQueueCursor % (lib.length || 1)
         const libPos = new Map(lib.map((t, i) => [t.trackId, i]))
         eligible.sort((a, b) => (libPos.get(a.trackId) ?? 0) - (libPos.get(b.trackId) ?? 0))
-        const splitAt = eligible.findIndex(t => (libPos.get(t.trackId) ?? 0) >= startIdx)
-        if (splitAt > 0) {
-          eligible = [...eligible.slice(splitAt), ...eligible.slice(0, splitAt)]
-        }
+        eligible = this._rotateAfterAnchor(eligible, libPos, q.userQueue[q.userQueue.length - 1])
       }
     }
 
     const fill = eligible.slice(0, needed)
-    if (!shuffle && fill.length > 0) {
-      const libPos = new Map(lib.map((t, i) => [t.trackId, i]))
-      const lastPickedPos = libPos.get(fill[fill.length - 1].trackId) ?? 0
-      this._autoQueueCursor = (lastPickedPos + 1) % (lib.length || 1)
-    }
 
     const fillIds = fill.map((t) => t.trackId)
     queue.update((q) => {
@@ -174,22 +163,13 @@ class QueueManager {
           [candidates[i], candidates[j]] = [candidates[j], candidates[i]]
         }
       } else {
-        const startIdx = this._autoQueueCursor % (lib.length || 1)
         const libPos = new Map(lib.map((t, i) => [t.trackId, i]))
         candidates.sort((a, b) => (libPos.get(a.trackId) ?? 0) - (libPos.get(b.trackId) ?? 0))
-        const splitAt = candidates.findIndex(t => (libPos.get(t.trackId) ?? 0) >= startIdx)
-        if (splitAt > 0) {
-          candidates = [...candidates.slice(splitAt), ...candidates.slice(0, splitAt)]
-        }
+        candidates = this._rotateAfterAnchor(candidates, libPos, q.userQueue[q.userQueue.length - 1])
       }
     }
 
     const fill = candidates.slice(0, MAX_AUTO_QUEUE)
-    if (!shuffle && fill.length > 0) {
-      const libPos = new Map(lib.map((t, i) => [t.trackId, i]))
-      const lastPickedPos = libPos.get(fill[fill.length - 1].trackId) ?? 0
-      this._autoQueueCursor = (lastPickedPos + 1) % (lib.length || 1)
-    }
 
     const fillIds = fill.map((t) => t.trackId)
     queue.update((q) => {
@@ -197,6 +177,22 @@ class QueueManager {
       saveQueue(updated)
       return updated
     })
+  }
+
+  /**
+   * Rotates a library-position-sorted pool so the first track positioned AFTER the
+   * anchor (the last user-queue track) leads, with earlier tracks wrapping to the
+   * tail. If the anchor is missing from the library, the pool is left unchanged.
+   */
+  private _rotateAfterAnchor<T extends { trackId: string }>(pool: T[], libPos: Map<string, number>, anchorId?: string): T[] {
+    if (!anchorId) return pool
+    const anchorPos = libPos.get(anchorId)
+    if (anchorPos === undefined) return pool
+    const splitAt = pool.findIndex((t) => (libPos.get(t.trackId) ?? 0) > anchorPos)
+    if (splitAt > 0) {
+      return [...pool.slice(splitAt), ...pool.slice(0, splitAt)]
+    }
+    return pool
   }
 
   private _matchesAutoQueueFilters(track: Track, filters: AutoQueueFilters, meta: Map<string, LocalMetadataStore>): boolean {

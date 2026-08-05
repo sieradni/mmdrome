@@ -2,12 +2,14 @@
   import { onMount } from 'svelte'
   import { library, metadataCache, autoQueueFilters, queue } from '../stores/appState'
   import { saveViewState, restoreViewState } from '../lib/viewState'
+  import { libraryFilters, applyFilterSort, makeGroupAggregates } from '../lib/libraryFilters'
   import { playbackManager } from '../lib/playbackManager'
   import { saveQueue } from '../lib/db'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackRow from '../components/TrackRow.svelte'
+  import FilterSortBar from '../components/FilterSortBar.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
 
@@ -21,6 +23,18 @@
     tracks: Track[]
     thumbnailTrackId: string
     rating: number
+    avgRating: number
+    lovedCount: number
+    year: number | null
+    length: number
+  }
+
+  function getRating(trackId: string): number {
+    return $metadataCache.get(trackId)?.rating ?? 0
+  }
+
+  function getLoved(trackId: string): boolean {
+    return $metadataCache.get(trackId)?.loved ?? false
   }
 
   let artistGroups = $derived.by(() => {
@@ -36,11 +50,11 @@
       let bestTrack = tracks[0]
       let bestRating = -1
       for (const t of tracks) {
-        const r = $metadataCache.get(t.trackId)?.rating ?? 0
+        const r = getRating(t.trackId)
         if (r > bestRating) { bestRating = r; bestTrack = t }
       }
       const sorted = [...tracks].sort((a, b) => (a.year ?? 0) - (b.year ?? 0) || a.album.localeCompare(b.album) || a.title.localeCompare(b.title))
-      result.push({ artist, tracks: sorted, thumbnailTrackId: bestTrack.trackId, rating: bestRating })
+      result.push({ artist, tracks: sorted, thumbnailTrackId: bestTrack.trackId, rating: bestRating, ...makeGroupAggregates(sorted, getRating, getLoved) })
     }
     result.sort((a, b) => a.artist.localeCompare(b.artist))
 
@@ -48,6 +62,8 @@
     if (q) return result.filter(g => g.artist.toLowerCase().includes(q))
     return result
   })
+
+  let visibleGroups = $derived(applyFilterSort(artistGroups, $libraryFilters))
 
   let selectedTracks = $derived(
     selectedArtist ? artistGroups.find(g => g.artist === selectedArtist)?.tracks ?? [] : []
@@ -144,14 +160,15 @@
   <TrackDetailsModal track={detailsTrack} onclose={() => detailsTrack = null} />
 {/if}
 {:else}
-  <div class="flex h-full flex-col">
+  <div class="relative flex h-full flex-col">
+    <FilterSortBar />
     <div class="border-b border-white/10 px-4 py-3">
-      <h2 class="text-xs font-medium uppercase tracking-wider text-muted">Artists · {artistGroups.length}</h2>
+      <h2 class="text-xs font-medium uppercase tracking-wider text-muted">Artists · {visibleGroups.length}</h2>
     </div>
     <div bind:this={scrollContainer} class="flex-1 overflow-y-auto pb-24"
          onscroll={() => { if (scrollContainer) saveViewState(viewName, { listScrollTop: scrollContainer.scrollTop }) }}>
       <div class="grid grid-cols-2 gap-4 px-4 py-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-        {#each artistGroups as group (group.artist)}
+        {#each visibleGroups as group (group.artist)}
           <button onclick={() => selectedArtist = group.artist} class="group text-left transition-transform hover:scale-[1.02]">
             <LazyThumb track={group.tracks.find(t => t.trackId === group.thumbnailTrackId) || group.tracks[0]} wrapperClass="mb-2 aspect-square w-full rounded-lg" />
             <p class="truncate text-sm font-bold text-primary">{group.artist}</p>
@@ -159,7 +176,7 @@
           </button>
         {/each}
       </div>
-      {#if artistGroups.length === 0}
+      {#if visibleGroups.length === 0}
         <p class="px-4 py-12 text-center text-xs text-muted">No artists found</p>
       {/if}
     </div>
