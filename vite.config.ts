@@ -14,7 +14,8 @@ try {
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [svelte(), tailwindcss()],
-  base: '/mmdrome/',
+  // Web deploy uses '/mmdrome/' (gh-pages); native builds pass VITE_BASE=./ for file/webview loading
+  base: process.env.VITE_BASE ?? '/mmdrome/',
   resolve: {
     alias: {
       $lib: path.resolve('./src/lib'),
