@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { audioManager } from '../lib/audioManager'
+  import { engine } from '../lib/engineFacade'
   import EqGraph from '../components/EqGraph.svelte'
   import { get } from 'svelte/store'
 import {
@@ -60,19 +60,19 @@ import {
   }
 
   function setGain(index: number) {
-    audioManager.setEqBandGain(index, -gains[index])
+    engine.setEqBandGain(index, -gains[index])
     eqState.filters[index].gain = -gains[index]
     syncDraft()
   }
 
   function toggleBypass() {
     const newVal = !$eqBypassed
-    audioManager.setEqBypass(newVal)
+    engine.setEqBypass(newVal)
     persistEqBypass(newVal)
   }
 
   function onPreampChange() {
-    audioManager.setPreampDb(preampDb)
+    engine.setPreampDb(preampDb)
     eqState.preampDb = preampDb
     syncDraft()
   }
@@ -84,14 +84,14 @@ import {
       gains = flatGains
       preampDb = 0
       eqState = { ...eqState, preampDb: 0, filters: eqState.filters.map((f) => ({ ...f, gain: 0 })) }
-      audioManager.setPreampDb(0)
+      engine.setPreampDb(0)
       if (eqState.mode === 'graphic') {
-        audioManager.applyGraphicEQ(eqState.filters, eqState.graphicEqCurves)
+        engine.applyGraphicEQ(eqState.filters, eqState.graphicEqCurves)
       } else {
         for (let i = 0; i < FREQ_VALUES.length; i++) {
-          audioManager.setEqBandGain(i, 0)
+          engine.setEqBandGain(i, 0)
         }
-        audioManager.applyFiltersConfig(eqState.filters)
+        engine.applyFiltersConfig(eqState.filters)
       }
     } else {
       // On a named preset — restore from the original saved preset
@@ -101,11 +101,11 @@ import {
       eqState = saved
       preampDb = saved.preampDb
       gains = saved.filters.slice(0, 10).map((f) => -f.gain)
-      audioManager.setPreampDb(saved.preampDb)
+      engine.setPreampDb(saved.preampDb)
       if (saved.mode === 'graphic') {
-        audioManager.applyGraphicEQ(saved.filters, saved.graphicEqCurves)
+        engine.applyGraphicEQ(saved.filters, saved.graphicEqCurves)
       } else {
-        audioManager.applyFiltersConfig(saved.filters)
+        engine.applyFiltersConfig(saved.filters)
       }
     }
     syncDraft()
@@ -117,11 +117,11 @@ import {
     eqState = structuredClone(preset)
     preampDb = preset.preampDb
     gains = preset.filters.slice(0, 10).map((f) => -f.gain)
-    audioManager.setPreampDb(preset.preampDb)
+    engine.setPreampDb(preset.preampDb)
     if (preset.mode === 'graphic' && !preset.isBuiltin) {
-      audioManager.applyGraphicEQ(preset.filters, preset.graphicEqCurves)
+      engine.applyGraphicEQ(preset.filters, preset.graphicEqCurves)
     } else {
-      audioManager.applyFiltersConfig(preset.filters)
+      engine.applyFiltersConfig(preset.filters)
     }
   }
 
@@ -162,7 +162,7 @@ import {
     importErrors = ''
 
     preampDb = result.preampDb
-    audioManager.setPreampDb(preampDb)
+    engine.setPreampDb(preampDb)
 
     if (result.mode === 'graphic') {
       // GraphicEQ: use ALL parsed filters directly via convolution (no grid merging)
@@ -177,7 +177,7 @@ import {
         filters: result.filters,
         graphicEqCurves: curves,
       }
-      audioManager.applyGraphicEQ(result.filters, curves)
+      engine.applyGraphicEQ(result.filters, curves)
       gains = result.filters.slice(0, 10).map((f) => -f.gain)
     } else {
       // Parametric/AutoEQ: merge onto 10-band grid (existing behavior)
@@ -191,7 +191,7 @@ import {
         preampDb,
         filters: mergedFilters,
       }
-      audioManager.applyFiltersConfig(mergedFilters)
+      engine.applyFiltersConfig(mergedFilters)
     }
 
     syncDraft()

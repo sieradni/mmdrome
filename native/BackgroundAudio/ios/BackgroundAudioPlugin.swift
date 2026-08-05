@@ -10,6 +10,8 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "initialize", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setQueue", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "refreshQueue", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setLoopMode", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "playTrackAt", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "play", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "pause", returnType: CAPPluginReturnPromise),
@@ -41,9 +43,9 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self?.engine.pause()
         }
 
-        engine.onTrackChanged = { [weak self] index in
+        engine.onTrackChanged = { [weak self] trackId in
             guard let self = self else { return }
-            self.notifyListeners("trackChanged", data: ["index": index])
+            self.notifyListeners("trackChanged", data: ["trackId": trackId])
             self.refreshNowPlaying()
         }
         engine.onPlaybackStateChanged = { [weak self] playing in
@@ -95,6 +97,26 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         let activeIndex = call.getInt("activeIndex") ?? 0
         let loopMode = NativeLoopMode(rawValue: call.getString("loopMode") ?? "none") ?? .none
         engine.setQueue(tracks: tracks, activeIndex: activeIndex, loopMode: loopMode)
+        call.resolve()
+    }
+
+    @objc func refreshQueue(_ call: CAPPluginCall) {
+        guard let array = call.getArray("tracks", JSObject.self) else {
+            call.reject("Missing tracks")
+            return
+        }
+        let tracks: [NativeTrack] = array.enumerated().compactMap { idx, object in
+            guard let dict = object as? JSObject else { return nil }
+            return NativeTrack(from: dict, index: idx)
+        }
+        let activeIndex = call.getInt("activeIndex") ?? 0
+        engine.refreshQueue(tracks: tracks, activeIndex: activeIndex)
+        call.resolve()
+    }
+
+    @objc func setLoopMode(_ call: CAPPluginCall) {
+        let mode = NativeLoopMode(rawValue: call.getString("loopMode") ?? "none") ?? .none
+        engine.setLoopMode(mode)
         call.resolve()
     }
 

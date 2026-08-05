@@ -1,10 +1,13 @@
 import { get } from 'svelte/store'
+import { Capacitor } from '@capacitor/core'
 import { audioManager } from './audioManager'
+import { engine } from './engineFacade'
+import { nativeEngine, BackgroundAudio, type NativeTrackSnapshot } from './nativePlugin'
 import { queueManager } from './queueManager'
 import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc } from './preloader'
 import { setupMediaSession } from './mediaSession'
 import { getCoverUrl } from './coverArtCache'
-import { getCachedConfig, buildStreamUrl } from './navidromeApi'
+import { getCachedConfig, buildStreamUrl, buildCoverArtUrl, resolveCoverArtId } from './navidromeApi'
 import {
   currentTrack,
   playbackState,
@@ -33,10 +36,30 @@ class PlaybackManager {
   private _retryAttempt = 0
   private _retryTimer: ReturnType<typeof setTimeout> | null = null
   private _crossfadeTrackId: string | null = null
+  private _handlingNativeEnd = false
+  private _nativeRetryTrackId: string | null = null
+  private _nativeRetryAttempt = 0
+  private _nativeRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private _hasNativeEngaged = false
+
+  private isNative(): boolean {
+    return Capacitor.isNativePlatform()
+  }
 
   async init(): Promise<void> {
     if (this._initialized) return
 
+    if (this.isNative()) {
+      await this._initNative()
+    } else {
+      await this._initWeb()
+    }
+
+    this._subscribeShared()
+    this._initialized = true
+  }
+
+  private async _initWeb(): Promise<void> {
     await audioManager.init()
 
     audioManager.onTrackEnd = () => this._handleCrossfadeEnd()
@@ -54,9 +77,6 @@ class PlaybackManager {
     if (savedGain !== undefined && audioManager.preamp) {
       audioManager.setMasterVolume(savedGain)
     }
-
-    playbackSpeed.subscribe((v) => { setSetting('playbackSpeed', v) })
-    pitchOctaves.subscribe((v) => { setSetting('pitchOctaves', v) })
 
     setupMediaSession(
       () => { this.play() },
@@ -85,6 +105,57 @@ class PlaybackManager {
     })
 
     this._attachPlaybackListeners()
+  }
+
+  private async _initNative(): Promise<void> {
+    await nativeEngine.init({
+      onTrackChanged: (trackId) => { void this._onNativeTrackChanged(trackId) },
+      onPlaybackStateChanged: (playing) => setPlaybackState(playing ? 'playing' : 'paused'),
+      onQueueEnded: () => { void this._onNativeEnd() },
+      onError: (message) => this._onNativeError(message),
+    })
+
+    const savedSpeed = await getSetting<number>('playbackSpeed')
+    const savedPitch = await getSetting<number>('pitchOctaves')
+    const savedGain = await getSetting<number>('masterGain')
+    const s = get(settings)
+    if (savedSpeed !== undefined) engine.setSpeed(savedSpeed)
+    if (savedPitch !== undefined) engine.setPitchOctaves(savedPitch)
+    if (savedGain !== undefined) engine.setMasterVolume(savedGain)
+    engine.setTapeMode(s.tapeMode ?? false)
+    engine.setCrossfade(s.crossfadeDuration ?? 0)
+    engine.pushNativeEqFromStore()
+
+    // Sync the stores so the shared subscriptions below (which fire immediately)
+    // don't clobber the restored settings with their defaults.
+    playbackSpeed.set(savedSpeed ?? 1)
+    pitchOctaves.set(savedPitch ?? 0)
+
+    BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode ?? 'off' }).catch(() => {})
+    BackgroundAudio.setLoopMode({ loopMode: get(loopMode) }).catch(() => {})
+
+    loopMode.subscribe((m) => {
+      BackgroundAudio.setLoopMode({ loopMode: m }).catch(() => {})
+    })
+
+    settings.subscribe((sv) => {
+      engine.setCrossfade(sv.crossfadeDuration ?? 0)
+      if (sv.replayGainMode) {
+        BackgroundAudio.setReplayGainMode({ mode: sv.replayGainMode }).catch(() => {})
+      }
+      if (sv.masterGain !== undefined) engine.setMasterVolume(sv.masterGain)
+      if (sv.tapeMode !== undefined) engine.setTapeMode(sv.tapeMode)
+    })
+
+    // The native engine owns the playback clock — poll position for the UI.
+    nativeEngine.setPositionPolling(true, (state) => {
+      currentTime.set(state.position)
+    })
+  }
+
+  private _subscribeShared(): void {
+    playbackSpeed.subscribe((v) => { setSetting('playbackSpeed', v); engine.setSpeed(v) })
+    pitchOctaves.subscribe((v) => { setSetting('pitchOctaves', v); engine.setPitchOctaves(v) })
 
     queueManager.replenishAutoQueue()
 
@@ -105,8 +176,6 @@ class PlaybackManager {
         queueManager.replenishAutoQueue()
       }
     })
-
-    this._initialized = true
   }
 
   private _attachPlaybackListeners(): void {
@@ -159,7 +228,193 @@ class PlaybackManager {
     return buildStreamUrl(config, track.trackId.replace(/^navidrome-/, ''))
   }
 
+  // MARK: - Native engine path
+
+  /** Builds a full queue snapshot (current combined queue) for the native engine. */
+  private _buildSnapshot(combined: string[]): NativeTrackSnapshot[] {
+    const config = getCachedConfig()
+    return combined.map((id, index) => {
+      const track = queueManager.findTrack(id)
+      const snapshot: NativeTrackSnapshot = {
+        index,
+        trackId: id,
+        title: track?.title ?? id,
+        artist: track?.artist ?? '',
+        album: track?.album ?? '',
+        duration: track?.duration ?? 0,
+        url: config ? buildStreamUrl(config, id.replace(/^navidrome-/, '')) : '',
+      }
+      if (track) {
+        if (config) snapshot.coverUrl = buildCoverArtUrl(config, resolveCoverArtId(track), 512)
+        if (track.replayGain != null) snapshot.replayGain = track.replayGain
+        if (track.albumReplayGain != null) snapshot.albumReplayGain = track.albumReplayGain
+      }
+      return snapshot
+    })
+  }
+
+  private async _nativeLoadPlay(track: Track): Promise<void> {
+    this._clearNativeRetry()
+    this._crossfadeTrackId = null
+
+    const combined = queueManager.getCombinedQueue()
+    const activeIndex = get(queue).activeIndex
+    if (activeIndex < 0 || activeIndex >= combined.length) return
+
+    const snapshot = this._buildSnapshot(combined)
+    currentTime.set(0)
+    setCurrentTrack(track)
+
+    try {
+      await BackgroundAudio.setQueue({ tracks: snapshot, activeIndex, loopMode: get(loopMode) })
+      await BackgroundAudio.playTrackAt({ index: activeIndex, autoPlay: true })
+    } catch (err) {
+      console.error('[native] failed to start playback:', err)
+      return
+    }
+
+    this._hasNativeEngaged = true
+    setPlaybackState('playing')
+    // Track is now playing — promote it from auto to user queue
+    queueManager.promoteActiveTrack()
+    queueManager.replenishAutoQueue()
+  }
+
+  /**
+   * Re-sends the current combined queue to the native engine without disturbing
+   * the actively playing track, keeping its tail in sync with JS-side queue
+   * mutations (promotions, auto-queue replenishment).
+   */
+  private async _refreshNativeQueue(): Promise<void> {
+    const combined = queueManager.getCombinedQueue()
+    const activeIndex = get(queue).activeIndex
+    if (activeIndex < 0 || activeIndex >= combined.length) return
+    const snapshot = this._buildSnapshot(combined)
+    try {
+      await BackgroundAudio.refreshQueue({ tracks: snapshot, activeIndex })
+    } catch (err) {
+      console.error('[native] refreshQueue failed:', err)
+    }
+  }
+
+  private async _onNativeTrackChanged(trackId: string): Promise<void> {
+    if (this._handlingNativeEnd) return
+    const combined = queueManager.getCombinedQueue()
+    let idx = combined.indexOf(trackId)
+    const track = queueManager.findTrack(trackId)
+    if (!track) {
+      console.warn('[native] trackChanged for unknown track:', trackId)
+      return
+    }
+
+    if (idx < 0) {
+      // The playing track left the combined queue (dropped auto prefix, etc.) — re-adopt it.
+      const prevIdx = get(queue).activeIndex
+      if (prevIdx >= 0) {
+        const prevId = combined[prevIdx]
+        if (prevId) pushHistory(prevId)
+      }
+      queue.update((q) => {
+        const userQueue = [...q.userQueue, trackId]
+        const updated = { ...q, userQueue, activeIndex: userQueue.length - 1 }
+        saveQueue(updated)
+        return updated
+      })
+      idx = get(queue).activeIndex
+    } else {
+      const prevIdx = get(queue).activeIndex
+      if (prevIdx >= 0 && prevIdx !== idx) {
+        const prevId = combined[prevIdx]
+        if (prevId) pushHistory(prevId)
+      }
+      setActiveQueueIndex(idx)
+    }
+
+    setCurrentTrack(track)
+    queueManager.promoteActiveTrack()
+    queueManager.replenishAutoQueue()
+    await this._refreshNativeQueue()
+  }
+
+  private async _onNativeEnd(): Promise<void> {
+    if (this._handlingNativeEnd) return
+    this._handlingNativeEnd = true
+    try {
+      queueManager.replenishAutoQueue()
+      const combined = queueManager.getCombinedQueue()
+      const q = get(queue)
+
+      // Combined queue may have grown past the native list since the last refresh.
+      const nextIdx = q.activeIndex + 1
+      if (nextIdx >= 0 && nextIdx < combined.length) {
+        setActiveQueueIndex(nextIdx)
+        const track = queueManager.findTrack(combined[nextIdx])
+        if (track) {
+          await this._nativeLoadPlay(track)
+          return
+        }
+      }
+
+      if (get(loopMode) === 'all' && q.userQueue.length > 0) {
+        setActiveQueueIndex(0)
+        const track = queueManager.findTrack(q.userQueue[0])
+        if (track) {
+          await this._nativeLoadPlay(track)
+          return
+        }
+      }
+
+      setPlaybackState('stopped')
+      setCurrentTrack(null)
+      currentTime.set(0)
+      this._hasNativeEngaged = false
+    } finally {
+      this._handlingNativeEnd = false
+    }
+  }
+
+  private _onNativeError(message: string): void {
+    console.error('[native] engine error:', message)
+    const track = get(currentTrack)
+    if (!track || this._handlingNativeEnd) return
+
+    if (this._nativeRetryTrackId !== track.trackId) {
+      this._clearNativeRetry()
+    }
+    if (this._nativeRetryAttempt >= 2) {
+      this._clearNativeRetry()
+      void this._onNativeEnd()
+      return
+    }
+    this._nativeRetryTrackId = track.trackId
+    this._nativeRetryAttempt++
+    const delay = Math.pow(2, this._nativeRetryAttempt - 1) * 1000
+    this._nativeRetryTimer = setTimeout(() => {
+      this._nativeRetryTimer = null
+      const t = get(currentTrack)
+      if (t && t.trackId === this._nativeRetryTrackId) {
+        void this._nativeLoadPlay(t)
+      }
+    }, delay)
+  }
+
+  private _clearNativeRetry(): void {
+    this._nativeRetryTrackId = null
+    this._nativeRetryAttempt = 0
+    if (this._nativeRetryTimer !== null) {
+      clearTimeout(this._nativeRetryTimer)
+      this._nativeRetryTimer = null
+    }
+  }
+
+  // MARK: - Web engine path
+
   private async _loadAndPlay(track: Track): Promise<void> {
+    if (this.isNative()) {
+      await this._nativeLoadPlay(track)
+      return
+    }
+
     this._crossfadeTrackId = null
     audioManager.cancelNextTrack()
 
@@ -532,6 +787,16 @@ class PlaybackManager {
   }
 
   async play(): Promise<void> {
+    if (this.isNative()) {
+      if (get(currentTrack) && this._hasNativeEngaged) {
+        await BackgroundAudio.play().catch(() => {})
+        setPlaybackState('playing')
+      } else {
+        await this._playFirstInQueue()
+      }
+      return
+    }
+
     await audioManager.ensureWebAudioReady()
 
     const el = audioManager.activeElement
@@ -548,6 +813,11 @@ class PlaybackManager {
   }
 
   pause(): void {
+    if (this.isNative()) {
+      BackgroundAudio.pause().catch(() => {})
+      setPlaybackState('paused')
+      return
+    }
     audioManager.activeElement.pause()
     setPlaybackState('paused')
   }
@@ -597,18 +867,26 @@ class PlaybackManager {
     }
   }
 
-seek(time: number): void {
-     const el = audioManager.playbackElement
-     if (!el.src) {
-       this.play()
-       return
-     }
-     const track = get(currentTrack)
-     const metaDur = (track?.duration) || time
-     const clamped = Math.min(time, metaDur)
-     el.currentTime = clamped
-     currentTime.set(clamped)
-   }
+  seek(time: number): void {
+    if (this.isNative()) {
+      const track = get(currentTrack)
+      const metaDur = track?.duration || time
+      const clamped = Math.min(time, metaDur)
+      BackgroundAudio.seek({ position: clamped }).catch(() => {})
+      currentTime.set(clamped)
+      return
+    }
+    const el = audioManager.playbackElement
+    if (!el.src) {
+      this.play()
+      return
+    }
+    const track = get(currentTrack)
+    const metaDur = (track?.duration) || time
+    const clamped = Math.min(time, metaDur)
+    el.currentTime = clamped
+    currentTime.set(clamped)
+  }
 
   private async _playFirstInQueue(): Promise<void> {
     if (get(queue).activeIndex >= 0) {
@@ -623,6 +901,10 @@ seek(time: number): void {
   }
 
   destroy(): void {
+    if (this.isNative()) {
+      void nativeEngine.destroy()
+      return
+    }
     this._crossfadeTrackId = null
     this._clearRetry()
     teardownPreloader()

@@ -1,13 +1,13 @@
 <script lang="ts">
-  import { audioManager } from '../lib/audioManager'
+  import { engine } from '../lib/engineFacade'
   import { updateSetting } from '../stores/appState'
 
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
-  let volume = $state(audioManager.preamp?.gain.value ?? 1)
+  let volume = $state(engine.volume)
 
   function updateVolume() {
-    audioManager.setMasterVolume(volume)
+    engine.setMasterVolume(volume)
     updateSetting('masterGain', volume)
   }
 </script>

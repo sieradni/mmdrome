@@ -175,7 +175,7 @@ final class TrackFileLoader {
 /// handling, and reports track changes via `onTrackChanged`.
 public final class NativeAudioEngine: NSObject {
 
-    public var onTrackChanged: ((Int) -> Void)?
+    public var onTrackChanged: ((String) -> Void)?
     public var onPlaybackStateChanged: ((Bool) -> Void)?
     public var onQueueEnded: (() -> Void)?
     public var onError: ((String) -> Void)?
@@ -223,6 +223,11 @@ public final class NativeAudioEngine: NSObject {
 
     /// Incremented on every schedule reset so stale completion handlers are ignored.
     private var scheduleGeneration = 0
+    /// Incremented when the standby player's pending segment is cancelled so its
+    /// (stop-triggered) completion handler cannot fake a natural track advance.
+    private var standbyScheduleGeneration = 0
+    /// Standby generation captured when the standby segment was scheduled.
+    private var standbyGeneration = 0
 
     private var crossfadeMonitor: Timer?
     private var volumeRampTimer: Timer?
@@ -297,8 +302,64 @@ public final class NativeAudioEngine: NSObject {
 
     public func playTrack(at index: Int, autoPlay: Bool) {
         guard !tracks.isEmpty else { return }
-        activeIndex = max(0, min(index, tracks.count - 1))
-        loadAndStart(currentIndex: activeIndex, autoPlay: autoPlay)
+        let clamped = max(0, min(index, tracks.count - 1))
+        let changed = clamped != activeIndex
+        activeIndex = clamped
+        loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
+        if autoPlay && changed {
+            onTrackChanged?(tracks[clamped].trackId)
+        }
+    }
+
+    /// Replaces the queue tail without disturbing the actively playing track.
+    /// `tracks[activeIndex].trackId` must match the currently playing track; the
+    /// JS side re-sends the full current combined queue after its own promotions.
+    public func refreshQueue(tracks: [NativeTrack], activeIndex: Int) {
+        guard !tracks.isEmpty else { return }
+        guard tracks.indices.contains(activeIndex), tracks[activeIndex].trackId == currentTrackId else {
+            // Divergent queue — fall back to a full reset.
+            stopPlayback()
+            self.tracks = tracks
+            self.activeIndex = max(0, min(activeIndex, tracks.count - 1))
+            return
+        }
+        self.tracks = tracks
+        // Tear down any armed crossfade targeting the OLD tail; the monitor re-arms
+        // from the new list on its next tick. Only invalidate the standby completion
+        // while a crossfade is armed/in-flight — after finalizeCrossfadeSwitch the
+        // (former standby) node's completion is the active track's natural-end trigger.
+        let hadCrossfade = crossfadeArmed || crossfadeActive
+        stopCrossfadeMonitor()
+        stopVolumeRamp()
+        if hadCrossfade {
+            standbyScheduleGeneration += 1
+            standbyNode.stop()
+        }
+        standbyGain.gain = 0
+        crossfadeActive = false
+        crossfadeArmed = false
+        crossfadeTargetIndex = -1
+        if isPlaying {
+            setupCrossfadeMonitor()
+        }
+    }
+
+    public func setLoopMode(_ mode: NativeLoopMode) {
+        loopMode = mode
+        let hadCrossfade = crossfadeArmed || crossfadeActive
+        stopCrossfadeMonitor()
+        stopVolumeRamp()
+        if hadCrossfade {
+            standbyScheduleGeneration += 1
+            standbyNode.stop()
+        }
+        standbyGain.gain = 0
+        crossfadeActive = false
+        crossfadeArmed = false
+        crossfadeTargetIndex = -1
+        if isPlaying {
+            setupCrossfadeMonitor()
+        }
     }
 
     public func play() {
@@ -443,6 +504,7 @@ public final class NativeAudioEngine: NSObject {
     public var currentIndex: Int { activeIndex }
     public var isCurrentlyPlaying: Bool { isPlaying }
     public var queueCount: Int { tracks.count }
+    public var currentTrackId: String { currentTrack()?.trackId ?? "" }
 
     public func currentTrack() -> NativeTrack? {
         tracks.indices.contains(activeIndex) ? tracks[activeIndex] : nil
@@ -577,10 +639,13 @@ public final class NativeAudioEngine: NSObject {
         onQueueEnded?()
     }
 
-    private func handleSegmentCompletion(index completedIndex: Int, generation: Int) {
+    private func handleSegmentCompletion(index completedIndex: Int, generation: Int, isStandby: Bool = false) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             guard generation == self.scheduleGeneration else { return }
+            if isStandby {
+                guard self.standbyGeneration == self.standbyScheduleGeneration else { return }
+            }
 
             // The active player finishing while a crossfade is in progress is the switch point.
             if self.crossfadeActive {
@@ -700,8 +765,9 @@ public final class NativeAudioEngine: NSObject {
 
         standbyNode.stop()
         standbyGain.gain = 0
+        standbyGeneration = standbyScheduleGeneration
         standbyNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(file.length), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
-            self?.handleSegmentCompletion(index: nextIdx, generation: generation)
+            self?.handleSegmentCompletion(index: nextIdx, generation: generation, isStandby: true)
         }
         standbyNode.play()
 
@@ -768,7 +834,7 @@ public final class NativeAudioEngine: NSObject {
         cachedPosition = 0
         activeGain.gain = Float(tracks[activeIndex].replayGainLinear(mode: replayGainMode))
 
-        onTrackChanged?(activeIndex)
+        onTrackChanged?(tracks[activeIndex].trackId)
         setupCrossfadeMonitor()
     }
 

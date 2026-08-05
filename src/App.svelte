@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
+  import { Capacitor } from '@capacitor/core'
   import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, effectiveDuration, toggleShuffle, metadataScanState, loopMode } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
   import { connectNavidrome } from './lib/syncEngine'
@@ -138,6 +139,7 @@ function seek(e: Event) {
    }
 
   $effect(() => {
+    if (Capacitor.isNativePlatform()) return
     const handler = () => currentTime.set(audioManager.playbackElement.currentTime)
     audioManager.a.addEventListener('timeupdate', handler)
     audioManager.b.addEventListener('timeupdate', handler)

@@ -1,11 +1,11 @@
 <script lang="ts">
-  import { audioManager } from '../lib/audioManager'
+  import { engine } from '../lib/engineFacade'
 
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
-  let sliderVal = $state(speedToSlider(audioManager.speed))
-  let pitch = $state(audioManager.pitchOctaves)
-  let tapeMode = $state(audioManager.tapeMode)
+  let sliderVal = $state(speedToSlider(engine.speed))
+  let pitch = $state(engine.pitchOctaves)
+  let tapeMode = $state(engine.tapeMode)
 
   let speed = $derived(sliderToSpeed(sliderVal))
 
@@ -20,25 +20,25 @@
   }
 
   function updateSpeed() {
-    audioManager.setSpeed(speed)
+    engine.setSpeed(speed)
   }
 
   function updatePitch() {
-    audioManager.setPitchOctaves(pitch)
+    engine.setPitchOctaves(pitch)
   }
 
   function toggleTape() {
     tapeMode = !tapeMode
-    audioManager.setTapeMode(tapeMode)
+    engine.setTapeMode(tapeMode)
   }
 
   function resetAll() {
     sliderVal = 50
     pitch = 0
     tapeMode = false
-    audioManager.setSpeed(1)
-    audioManager.setPitchOctaves(0)
-    audioManager.setTapeMode(false)
+    engine.setSpeed(1)
+    engine.setPitchOctaves(0)
+    engine.setTapeMode(false)
   }
 </script>
 

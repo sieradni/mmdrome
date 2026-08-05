@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
+    "sync:ios": "cap sync ios && node scripts/fix-spm-path.mjs",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist"
   },
