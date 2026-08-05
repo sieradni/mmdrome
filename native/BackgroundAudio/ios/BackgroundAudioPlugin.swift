@@ -86,43 +86,37 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func setQueue(_ call: CAPPluginCall) {
-        guard let array = call.getArray("tracks", JSObject.self) else {
-            call.reject("Missing tracks")
-            return
-        }
-        let tracks: [NativeTrack] = array.enumerated().compactMap { idx, object in
+        let raw = call.getArray("tracks", [])
+        let tracks: [NativeTrack] = raw.enumerated().compactMap { idx, object in
             guard let dict = object as? JSObject else { return nil }
             return NativeTrack(from: dict, index: idx)
         }
-        let activeIndex = call.getInt("activeIndex") ?? 0
-        let loopMode = NativeLoopMode(rawValue: call.getString("loopMode") ?? "none") ?? .none
+        let activeIndex = call.getInt("activeIndex", 0)
+        let loopMode = NativeLoopMode(rawValue: call.getString("loopMode", "none")) ?? .none
         engine.setQueue(tracks: tracks, activeIndex: activeIndex, loopMode: loopMode)
         call.resolve()
     }
 
     @objc func refreshQueue(_ call: CAPPluginCall) {
-        guard let array = call.getArray("tracks", JSObject.self) else {
-            call.reject("Missing tracks")
-            return
-        }
-        let tracks: [NativeTrack] = array.enumerated().compactMap { idx, object in
+        let raw = call.getArray("tracks", [])
+        let tracks: [NativeTrack] = raw.enumerated().compactMap { idx, object in
             guard let dict = object as? JSObject else { return nil }
             return NativeTrack(from: dict, index: idx)
         }
-        let activeIndex = call.getInt("activeIndex") ?? 0
+        let activeIndex = call.getInt("activeIndex", 0)
         engine.refreshQueue(tracks: tracks, activeIndex: activeIndex)
         call.resolve()
     }
 
     @objc func setLoopMode(_ call: CAPPluginCall) {
-        let mode = NativeLoopMode(rawValue: call.getString("loopMode") ?? "none") ?? .none
+        let mode = NativeLoopMode(rawValue: call.getString("loopMode", "none")) ?? .none
         engine.setLoopMode(mode)
         call.resolve()
     }
 
     @objc func playTrackAt(_ call: CAPPluginCall) {
-        let index = call.getInt("index") ?? 0
-        let autoPlay = call.getBool("autoPlay") ?? true
+        let index = call.getInt("index", 0)
+        let autoPlay = call.getBool("autoPlay", true)
         engine.playTrack(at: index, autoPlay: autoPlay)
         call.resolve()
     }
@@ -143,7 +137,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func seek(_ call: CAPPluginCall) {
-        engine.seek(to: call.getDouble("position") ?? 0)
+        engine.seek(to: call.getDouble("position", 0))
         call.resolve()
     }
 
@@ -158,49 +152,48 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     @objc func setSpeed(_ call: CAPPluginCall) {
-        engine.setSpeed(call.getDouble("speed") ?? 1)
+        engine.setSpeed(call.getDouble("speed", 1))
         call.resolve()
     }
 
     @objc func setPitchOctaves(_ call: CAPPluginCall) {
-        engine.setPitchOctaves(call.getDouble("octaves") ?? 0)
+        engine.setPitchOctaves(call.getDouble("octaves", 0))
         call.resolve()
     }
 
     @objc func setTapeMode(_ call: CAPPluginCall) {
-        engine.setTapeMode(call.getBool("enabled") ?? false)
+        engine.setTapeMode(call.getBool("enabled", false))
         call.resolve()
     }
 
     @objc func setReplayGainMode(_ call: CAPPluginCall) {
-        engine.setReplayGainMode(call.getString("mode") ?? "off")
+        engine.setReplayGainMode(call.getString("mode", "off"))
         call.resolve()
     }
 
     @objc func setPreampDb(_ call: CAPPluginCall) {
-        engine.setPreampDb(call.getDouble("db") ?? 0)
+        engine.setPreampDb(call.getDouble("db", 0))
         call.resolve()
     }
 
     @objc func setMasterVolume(_ call: CAPPluginCall) {
-        engine.setMasterVolume(call.getDouble("volume") ?? 1)
+        engine.setMasterVolume(call.getDouble("volume", 1))
         call.resolve()
     }
 
     @objc func setCrossfade(_ call: CAPPluginCall) {
         engine.setCrossfade(
-            duration: call.getDouble("duration") ?? 0,
-            curve: call.getString("curve") ?? "sigmoid",
-            sigmoidSteepness: call.getDouble("sigmoidSteepness") ?? 6
+            duration: call.getDouble("duration", 0),
+            curve: call.getString("curve", "sigmoid"),
+            sigmoidSteepness: call.getDouble("sigmoidSteepness", 6)
         )
         call.resolve()
     }
 
     @objc func setEq(_ call: CAPPluginCall) {
-        let filters = (call.getArray("filters", JSObject.self) ?? []).map { object -> NativeFilterConfig in
-            NativeFilterConfig(from: object as? JSObject ?? [:])
-        }
-        engine.applyFilters(filters, bypassed: call.getBool("bypassed") ?? false)
+        let raw = call.getArray("filters", [])
+        let filters = raw.compactMap { $0 as? JSObject }.map { NativeFilterConfig(from: $0) }
+        engine.applyFilters(filters, bypassed: call.getBool("bypassed", false))
         call.resolve()
     }
 

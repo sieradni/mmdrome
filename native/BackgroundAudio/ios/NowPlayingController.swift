@@ -50,10 +50,10 @@ final class NowPlayingController {
             return .success
         }
 
-        center.skipForwardCommand.enabled = false
-        center.skipBackwardCommand.enabled = false
-        center.seekForwardCommand.enabled = false
-        center.seekBackwardCommand.enabled = false
+        center.skipForwardCommand.isEnabled = false
+        center.skipBackwardCommand.isEnabled = false
+        center.seekForwardCommand.isEnabled = false
+        center.seekBackwardCommand.isEnabled = false
     }
 
     func update(track: NativeTrack?, queueCount: Int, position: Double, playing: Bool, speed: Double) {
@@ -67,11 +67,11 @@ final class NowPlayingController {
         info[MPMediaItemPropertyArtist] = track.artist
         info[MPMediaItemPropertyAlbumTitle] = track.album
         info[MPMediaItemPropertyPlaybackDuration] = track.duration
-        info[MPMediaItemPropertyElapsedPlaybackTime] = position
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
         info[MPNowPlayingInfoPropertyPlaybackRate] = playing ? speed : 0
         info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = speed
-        info[MPMediaItemPropertyPlaybackQueueIndex] = track.index
-        info[MPMediaItemPropertyPlaybackQueueCount] = queueCount
+        info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = track.index
+        info[MPNowPlayingInfoPropertyPlaybackQueueCount] = queueCount
 
         if let artwork = cachedArtwork, artworkTrackId == track.trackId {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: artwork.size) { _ in artwork }

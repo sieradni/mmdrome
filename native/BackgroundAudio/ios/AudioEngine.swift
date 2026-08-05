@@ -185,13 +185,13 @@ public final class NativeAudioEngine: NSObject {
     private let engine = AVAudioEngine()
     private let playerA = AVAudioPlayerNode()
     private let playerB = AVAudioPlayerNode()
-    private let gainA = AVAudioUnitGain()
-    private let gainB = AVAudioUnitGain()
+    private let gainA = AVAudioMixerNode()
+    private let gainB = AVAudioMixerNode()
     private let mixer = AVAudioMixerNode()
     private let timePitch = AVAudioUnitTimePitch()
     private let varispeed = AVAudioUnitVarispeed()
     private let eq = AVAudioUnitEQ(numberOfBands: 24)
-    private let preamp = AVAudioUnitGain()
+    private let preamp = AVAudioMixerNode()
 
     // MARK: - State
 
@@ -203,8 +203,8 @@ public final class NativeAudioEngine: NSObject {
     private var isActiveB = false
     private var activeNode: AVAudioPlayerNode { isActiveB ? playerB : playerA }
     private var standbyNode: AVAudioPlayerNode { isActiveB ? playerA : playerB }
-    private var activeGain: AVAudioUnitGain { isActiveB ? gainB : gainA }
-    private var standbyGain: AVAudioUnitGain { isActiveB ? gainA : gainB }
+    private var activeGain: AVAudioMixerNode { isActiveB ? gainB : gainA }
+    private var standbyGain: AVAudioMixerNode { isActiveB ? gainA : gainB }
 
     /// Seconds offset added to raw player time to account for seek position.
     private var positionBias: Double = 0
@@ -272,9 +272,9 @@ public final class NativeAudioEngine: NSObject {
         engine.connect(preamp, to: engine.mainMixerNode, format: nil)
 
         mixer.outputVolume = 1.0
-        gainA.gain = 1.0
-        gainB.gain = 1.0
-        preamp.gain = 1.0
+        gainA.outputVolume = 1.0
+        gainB.outputVolume = 1.0
+        preamp.outputVolume = 1.0
         timePitch.pitch = 0.0
         timePitch.rate = 1.0
         varispeed.rate = 1.0
@@ -335,7 +335,7 @@ public final class NativeAudioEngine: NSObject {
             standbyScheduleGeneration += 1
             standbyNode.stop()
         }
-        standbyGain.gain = 0
+        standbyGain.outputVolume = 0
         crossfadeActive = false
         crossfadeArmed = false
         crossfadeTargetIndex = -1
@@ -353,7 +353,7 @@ public final class NativeAudioEngine: NSObject {
             standbyScheduleGeneration += 1
             standbyNode.stop()
         }
-        standbyGain.gain = 0
+        standbyGain.outputVolume = 0
         crossfadeActive = false
         crossfadeArmed = false
         crossfadeTargetIndex = -1
@@ -599,14 +599,15 @@ public final class NativeAudioEngine: NSObject {
         scheduleGeneration += 1
         let generation = scheduleGeneration
 
-        activeGain.gain = Float(track.replayGainLinear(mode: replayGainMode))
-        standbyGain.gain = 0
+        activeGain.outputVolume = Float(track.replayGainLinear(mode: replayGainMode))
+        standbyGain.outputVolume = 0
         standbyNode.stop()
 
         let player = activeNode
+        let scheduledIndex = activeIndex
         player.stop()
         player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(frames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
-            self?.handleSegmentCompletion(index: activeIndex, generation: generation)
+            self?.handleSegmentCompletion(index: scheduledIndex, generation: generation)
         }
 
         hasLiveSchedule = true
@@ -674,12 +675,12 @@ public final class NativeAudioEngine: NSObject {
 
     private func refreshActiveGain() {
         guard tracks.indices.contains(activeIndex) else { return }
-        activeGain.gain = Float(tracks[activeIndex].replayGainLinear(mode: replayGainMode))
+        activeGain.outputVolume = Float(tracks[activeIndex].replayGainLinear(mode: replayGainMode))
     }
 
     private func refreshPreamp() {
         let linear = pow(10.0, preampDb / 20.0)
-        preamp.gain = Float(linear * masterVolume)
+        preamp.outputVolume = Float(linear * masterVolume)
     }
 
     private func stopPlayback() {
@@ -756,7 +757,7 @@ public final class NativeAudioEngine: NSObject {
         crossfadeActive = true
         crossfadeTargetIndex = nextIdx
         let targetGain = Float(nextTrack.replayGainLinear(mode: replayGainMode))
-        let startGain = activeGain.gain
+        let startGain = activeGain.outputVolume
         let duration = Float(crossfadeDuration)
 
         // Keep the current generation: we must NOT invalidate the active player's
@@ -764,7 +765,7 @@ public final class NativeAudioEngine: NSObject {
         let generation = scheduleGeneration
 
         standbyNode.stop()
-        standbyGain.gain = 0
+        standbyGain.outputVolume = 0
         standbyGeneration = standbyScheduleGeneration
         standbyNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(file.length), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
             self?.handleSegmentCompletion(index: nextIdx, generation: generation, isStandby: true)
@@ -775,10 +776,10 @@ public final class NativeAudioEngine: NSObject {
         rampVolume(from: 0, to: targetGain, on: standbyGain, duration: duration)
     }
 
-    private func rampVolume(from start: Float, to end: Float, on gainNode: AVAudioUnitGain, duration: Float) {
+    private func rampVolume(from start: Float, to end: Float, on gainNode: AVAudioMixerNode, duration: Float) {
         let steps = 40
         guard duration > 0, steps > 0 else {
-            gainNode.gain = end
+            gainNode.outputVolume = end
             return
         }
         let stepTime = duration / Float(steps)
@@ -804,7 +805,7 @@ public final class NativeAudioEngine: NSObject {
                 let sig = 1.0 / (1.0 + exp(-k * (t - 0.5)))
                 value = start + (end - start) * sig
             }
-            gainNode.gain = value
+            gainNode.outputVolume = value
             if t >= 1 {
                 timer.invalidate()
                 self.volumeRampTimer = nil
@@ -829,10 +830,10 @@ public final class NativeAudioEngine: NSObject {
         activeIndex = crossfadeTargetIndex
         isActiveB.toggle()
         standbyNode.stop()
-        standbyGain.gain = 0
+        standbyGain.outputVolume = 0
         positionBias = 0
         cachedPosition = 0
-        activeGain.gain = Float(tracks[activeIndex].replayGainLinear(mode: replayGainMode))
+        activeGain.outputVolume = Float(tracks[activeIndex].replayGainLinear(mode: replayGainMode))
 
         onTrackChanged?(tracks[activeIndex].trackId)
         setupCrossfadeMonitor()
