@@ -1,18 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, setLibrary, initMetadataForTracks, metadataScanState } from '../stores/appState'
-  import { saveViewState, restoreViewState } from '../lib/viewState'
+  import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, connectNavidrome } from '../lib/syncEngine'
   import { navidromeSongToTrack } from '../lib/navidromeApi'
-  import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, scanAllForceRescan, resetScan, getWebdavConfigured } from '../lib/metadataScanner'
+  import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, scanAllForceRescan } from '../lib/metadataScanner'
   import { tick } from 'svelte'
   import type { Track } from '../stores/appState'
 
   type SettingsTab = 'sources' | 'playback' | 'library' | 'about'
 
-  let tab = $state<SettingsTab>('sources')
-  let scrollTops = $state<Record<string, number>>({ sources: 0, playback: 0, library: 0, about: 0 })
+  const savedSettingsState = restoreViewStateSession<{ tab?: SettingsTab; scrollTops?: Record<string, number> }>('settings')
+
+  let tab = $state<SettingsTab>(savedSettingsState?.tab ?? 'sources')
+  let scrollTops = $state<Record<string, number>>({ sources: 0, playback: 0, library: 0, about: 0, ...(savedSettingsState?.scrollTops ?? {}) })
 
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'sources', label: 'Sources' },
@@ -40,7 +42,7 @@
   $effect(() => {
     const st = scrollContainer?.scrollTop ?? 0
     if (scrollTops[tab] !== st) scrollTops[tab] = st
-    saveViewState('settings', {
+    saveViewStateSession('settings', {
       tab,
       scrollTops,
       webdavUrl, webdavUser, webdavToken,
@@ -50,13 +52,8 @@
   })
 
   onMount(async () => {
-    const saved = restoreViewState<{ tab?: SettingsTab; scrollTops?: Record<string, number> }>('settings')
-    if (saved) {
-      if (saved.tab) tab = saved.tab
-      if (saved.scrollTops) scrollTops = { sources: 0, playback: 0, library: 0, about: 0, ...saved.scrollTops }
-      await tick()
-      if (scrollContainer) scrollContainer.scrollTop = scrollTops[tab]
-    }
+    await tick()
+    if (scrollContainer) scrollContainer.scrollTop = scrollTops[tab]
   })
 
   function switchTab(t: SettingsTab) {
@@ -194,14 +191,14 @@
     }
   }
 
-  async function syncNow() {
+  async function pushChanges() {
     syncing = true
     syncResult = ''
     try {
       const result = await runManualWebDAVSync()
-      syncResult = `Synced ${result.synced} track(s), ${result.failed} failed`
+      syncResult = `Pushed ${result.synced} track(s), ${result.failed} failed`
     } catch (err) {
-      syncResult = `Sync failed: ${err instanceof Error ? err.message : String(err)}`
+      syncResult = `Push failed: ${err instanceof Error ? err.message : String(err)}`
     } finally {
       syncing = false
     }
@@ -276,23 +273,25 @@
               {/if}
             </div>
             <button
-              onclick={syncNow}
-              disabled={syncing}
+              onclick={startMetadataScan}
+              disabled={$metadataScanState.status === 'scanning'}
               class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
             >
-              {#if syncing}
+              {#if $metadataScanState.status === 'scanning'}
                 <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                Syncing…
+                Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
               {:else}
-                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-                Sync Now
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
+                Check Modified Ratings
               {/if}
             </button>
-            {#if syncResult}
-              <p class="text-sm text-muted">{syncResult}</p>
+            {#if $metadataScanState.status === 'complete'}
+              <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed</p>
+            {:else if $metadataScanState.status === 'scanning'}
+              <p class="text-sm text-muted">Progress: {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
             {/if}
           </div>
         </section>
@@ -437,6 +436,33 @@
       {/if}
 
       {#if tab === 'library'}
+        <!-- Push Changes -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Push Changes</h3>
+          <p class="mb-2 text-sm text-muted">Upload locally modified ratings and loved flags to your WebDAV files.</p>
+          <div class="space-y-3">
+            <button
+              onclick={pushChanges}
+              disabled={syncing}
+              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
+            >
+              {#if syncing}
+                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Pushing…
+              {:else}
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
+                Push Changes
+              {/if}
+            </button>
+            {#if syncResult}
+              <p class="text-sm text-muted">{syncResult}</p>
+            {/if}
+          </div>
+        </section>
+
         <!-- Metadata Scan -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Metadata Scan</h3>
