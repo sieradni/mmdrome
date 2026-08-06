@@ -6,7 +6,6 @@ import {
   loadNavidromeSongs as navidromeLoadSongs,
   triggerNavidromeScan as navidromeTriggerScan,
   testWebdavConnection as webdavTestConnection,
-  connectNavidrome as navidromeConnect,
   getScanStatus as navidromeGetScanStatus,
   setCachedConfig as navidromeSetCachedConfig,
   type NavidromeConfig,

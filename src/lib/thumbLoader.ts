@@ -2,9 +2,11 @@ interface PendingThumb {
   el: HTMLElement
   load: () => void
   distance: number
+  retries: number
 }
 
 const MAX_PER_TICK = 3
+const MAX_ZERO_SIZE_RETRIES = 10
 
 let pending: PendingThumb[] = []
 let running = false
@@ -20,7 +22,17 @@ function tick(): void {
   const keep: PendingThumb[] = []
   for (const p of pending) {
     const rect = p.el.getBoundingClientRect()
-    if (rect.width === 0 && rect.height === 0) continue
+    if (rect.width === 0 && rect.height === 0) {
+      // Not laid out yet — hold it (unbounded batching would load invisible
+      // thumbs early; dropping it strands it forever since the IntersectionObserver
+      // only re-fires on intersection *changes*). Give up after a few frames.
+      if (p.retries > 0) {
+        p.retries--
+        p.distance = Number.MAX_SAFE_INTEGER
+        keep.push(p)
+      }
+      continue
+    }
     const dist = Math.abs(rect.top + rect.height / 2 - midViewport)
     if (dist > dropDistance) continue
     p.distance = dist
@@ -51,7 +63,7 @@ function start(): void {
  */
 export function requestThumb(el: HTMLElement, load: () => void): void {
   if (pending.some((p) => p.el === el)) return
-  pending.push({ el, load, distance: 0 })
+  pending.push({ el, load, distance: 0, retries: MAX_ZERO_SIZE_RETRIES })
   start()
 }
 

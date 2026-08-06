@@ -331,7 +331,10 @@ export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ son
   let failed = 0
 
   try {
-    _cachedConfig = config
+    // Sets both _cachedConfig and coverConfig (the store LazyThumb gates on).
+    // Without the store update, thumbnails stay blank after a first-ever connect
+    // (empty library → fresh-load path never called setCachedConfig before).
+    setCachedConfig(config)
 
     // Fetch all songs via search3 pagination (standard Subsonic endpoint)
     const PAGE_SIZE = 500

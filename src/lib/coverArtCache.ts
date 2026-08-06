@@ -4,7 +4,10 @@ import type { Track } from '../stores/appState'
 const urlCache = new Map<string, string>()
 
 export function getCoverUrl(track: Track, config: NavidromeConfig, size?: number): string {
-  const key = track.trackId + '-' + (size ?? 'original')
+  // Key on the full config too: auth token/salt and baseUrl are baked into the
+  // URL, so switching servers or credentials must not reuse stale cached URLs.
+  const cfgKey = `${config.baseUrl}|${config.username}|${config.password}`
+  const key = `${cfgKey}|${track.trackId}-${size ?? 'original'}`
   let url = urlCache.get(key)
   if (!url) {
     const artId = resolveCoverArtId(track) || track.albumId
