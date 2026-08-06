@@ -2,6 +2,7 @@ import { get } from 'svelte/store'
 import { Capacitor } from '@capacitor/core'
 import { audioManager } from './audioManager'
 import { engine } from './engineFacade'
+import { libraryFilters } from './libraryFilters'
 import { nativeEngine, BackgroundAudio, type NativeTrackSnapshot } from './nativePlugin'
 import { queueManager } from './queueManager'
 import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc } from './preloader'
@@ -41,6 +42,7 @@ class PlaybackManager {
   private _nativeRetryAttempt = 0
   private _nativeRetryTimer: ReturnType<typeof setTimeout> | null = null
   private _hasNativeEngaged = false
+  private _lastSortKey = ''
 
   private isNative(): boolean {
     return Capacitor.isNativePlatform()
@@ -175,6 +177,20 @@ class PlaybackManager {
       if (this._initialized) {
         queueManager.replenishAutoQueue()
       }
+    })
+
+    // Rebuild the auto queue when the shared sort changes so it follows the
+    // Songs-view ordering while shuffle is off. Only sortBy/sortAsc matter here
+    // (the rank map in queueManager ignores the filter ranges), so skip no-op
+    // subscription fires and opening/closing the filter panel.
+    this._lastSortKey = `${get(libraryFilters).sortBy}|${get(libraryFilters).sortAsc}`
+    libraryFilters.subscribe((f) => {
+      if (!this._initialized) return
+      if (get(shuffleEnabled)) return
+      const key = `${f.sortBy}|${String(f.sortAsc)}`
+      if (key === this._lastSortKey) return
+      this._lastSortKey = key
+      queueManager.rebuildAutoQueue()
     })
   }
 
