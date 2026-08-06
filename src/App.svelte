@@ -176,8 +176,7 @@ function seek(e: Event) {
 
   let sliderMax = $derived($effectiveDuration > 0 ? $effectiveDuration : 1)
 
-  let combinedQueue = $derived([...$queue.userQueue, ...$queue.autoQueue])
-  let queueSize = $derived(combinedQueue.length)
+  let queueSize = $derived($queue.userQueue.length)
   let queuePosition = $derived($queue.activeIndex >= 0 ? $queue.activeIndex + 1 : 0)
 
   const tabs: { id: typeof view; label: string; icon: string }[] = [
