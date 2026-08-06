@@ -126,16 +126,22 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func play(_ call: CAPPluginCall) {
         engine.play()
+        refreshNowPlaying()
         call.resolve()
     }
 
     @objc func pause(_ call: CAPPluginCall) {
         engine.pause()
+        // The engine's onPlaybackStateChanged only fires when isPlaying actually
+        // flips; refreshing unconditionally guarantees the lock screen / control
+        // center reflects the paused state even when the guard short-circuits.
+        refreshNowPlaying()
         call.resolve()
     }
 
     @objc func toggle(_ call: CAPPluginCall) {
         engine.togglePlayPause()
+        refreshNowPlaying()
         call.resolve()
     }
 

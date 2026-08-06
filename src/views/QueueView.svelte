@@ -681,8 +681,8 @@ function seek(e: Event) {
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-primary"
                 aria-label="View details"
               >
-                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M7 3h7l4 4v14H7V3zm2 2v14h7V8h-3V5H9zm2 5v2h6v-2h-6zm0 4v2h6v-2h-6z"/>
                 </svg>
               </button>
               <button
@@ -700,7 +700,8 @@ function seek(e: Event) {
                 aria-label="Move to end"
               >
                 <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M5 18h14v-2H5v2zm0-5h14v-2H5v2zm0-7v2h14V6H5z"/>
+                  <path d="M11 3h2v12.17l3.59-3.58L18 13.2l-6 6-6-6 1.41-1.41L11 15.17V3z"/>
+                  <path d="M4 20h16v2H4z"/>
                 </svg>
               </button>
               <button
@@ -831,8 +832,8 @@ function seek(e: Event) {
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-primary"
                 aria-label="View details"
               >
-                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M7 3h7l4 4v14H7V3zm2 2v14h7V8h-3V5H9zm2 5v2h6v-2h-6zm0 4v2h6v-2h-6z"/>
                 </svg>
               </button>
               <button

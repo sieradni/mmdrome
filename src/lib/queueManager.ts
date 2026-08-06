@@ -1,5 +1,6 @@
 import { get } from 'svelte/store'
 import { saveQueue } from './db'
+import { libraryFilters } from './libraryFilters'
 import {
   queue,
   library,
@@ -127,9 +128,9 @@ class QueueManager {
           [eligible[i], eligible[j]] = [eligible[j], eligible[i]]
         }
       } else {
-        const libPos = new Map(lib.map((t, i) => [t.trackId, i]))
-        eligible.sort((a, b) => (libPos.get(a.trackId) ?? 0) - (libPos.get(b.trackId) ?? 0))
-        eligible = this._rotateAfterAnchor(eligible, libPos, q.userQueue[q.userQueue.length - 1])
+        const orderRank = this._buildOrderRank(meta)
+        eligible.sort((a, b) => (orderRank.get(a.trackId) ?? 0) - (orderRank.get(b.trackId) ?? 0))
+        eligible = this._rotateAfterAnchor(eligible, orderRank, q.userQueue[q.userQueue.length - 1])
       }
     }
 
@@ -163,9 +164,9 @@ class QueueManager {
           [candidates[i], candidates[j]] = [candidates[j], candidates[i]]
         }
       } else {
-        const libPos = new Map(lib.map((t, i) => [t.trackId, i]))
-        candidates.sort((a, b) => (libPos.get(a.trackId) ?? 0) - (libPos.get(b.trackId) ?? 0))
-        candidates = this._rotateAfterAnchor(candidates, libPos, q.userQueue[q.userQueue.length - 1])
+        const orderRank = this._buildOrderRank(meta)
+        candidates.sort((a, b) => (orderRank.get(a.trackId) ?? 0) - (orderRank.get(b.trackId) ?? 0))
+        candidates = this._rotateAfterAnchor(candidates, orderRank, q.userQueue[q.userQueue.length - 1])
       }
     }
 
@@ -177,6 +178,41 @@ class QueueManager {
       saveQueue(updated)
       return updated
     })
+  }
+
+  /**
+   * Builds a rank map for every library track using the shared library-filter
+   * sort ordering (the same order shown in the Songs view). When no sort is
+   * active, ranks equal the library index (library-order fallback, matching the
+   * pre-existing behavior). Tie values are broken by library index so the order
+   * is always total and the anchor rotation below is deterministic.
+   */
+  private _buildOrderRank(meta: Map<string, LocalMetadataStore>): Map<string, number> {
+    const lib = get(library)
+    const f = get(libraryFilters)
+    const base = lib.map((t, i) => [t, i] as const)
+    if (f.sortBy) {
+      base.sort((a, b) => {
+        let cmp = 0
+        switch (f.sortBy) {
+          case 'rating':
+            cmp = (meta.get(a[0].trackId)?.rating ?? 0) - (meta.get(b[0].trackId)?.rating ?? 0)
+            break
+          case 'loved':
+            cmp = Number(meta.get(a[0].trackId)?.loved ?? false) - Number(meta.get(b[0].trackId)?.loved ?? false)
+            break
+          case 'year':
+            cmp = (a[0].year ?? 0) - (b[0].year ?? 0)
+            break
+          case 'length':
+            cmp = a[0].duration - b[0].duration
+            break
+        }
+        if (cmp !== 0) return cmp * (f.sortAsc ? 1 : -1)
+        return a[1] - b[1]
+      })
+    }
+    return new Map(base.map(([t, i]) => [t.trackId, i]))
   }
 
   /**
