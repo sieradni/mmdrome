@@ -13,6 +13,7 @@
     autoQueueFilters,
     removeFromAutoQueue,
     removeFromUserQueue,
+    queueWrapNotice,
     type Track,
     type QueueState,
   } from '../stores/appState'
@@ -735,6 +736,10 @@ function seek(e: Event) {
       >Filter</button>
       <div class={"h-0.5 flex-1 rounded-full transition-colors duration-200 " + (isConvertingUserToAuto ? 'bg-yellow-500 shadow-sm shadow-yellow-500/50' : 'bg-white/30')}></div>
     </div>
+
+    {#if $queueWrapNotice && previewAutoItems.length > 0}
+      <p class="mx-4 mb-1 text-center text-[11px] text-muted/60">Continuing from the top of the sort order</p>
+    {/if}
 
     {#if filterOpen}
       <div class="mx-4 mb-2 rounded-lg border border-white/10 bg-surface/50 px-3 py-3">

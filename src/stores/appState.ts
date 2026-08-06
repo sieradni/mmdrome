@@ -112,6 +112,9 @@ export const autoQueueFilters = writable<AutoQueueFilters>({
 
 export const loopMode = writable<LoopMode>('none')
 
+/** Set when the non-shuffle auto queue wrapped back to the top of the sort order. */
+export const queueWrapNotice = writable<boolean>(false)
+
 export function setLibrary(tracks: Track[]): void {
   library.set(tracks)
 }

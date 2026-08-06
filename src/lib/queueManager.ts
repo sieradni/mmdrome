@@ -9,6 +9,7 @@ import {
   metadataCache,
   setActiveQueueIndex,
   pushHistory,
+  queueWrapNotice,
 } from '../stores/appState'
 import type { Track, AutoQueueFilters } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
@@ -123,6 +124,7 @@ class QueueManager {
 
     if (eligible.length > 0) {
       if (shuffle) {
+        queueWrapNotice.set(false)
         for (let i = eligible.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
           [eligible[i], eligible[j]] = [eligible[j], eligible[i]]
@@ -159,6 +161,7 @@ class QueueManager {
 
     if (candidates.length > 0) {
       if (shuffle) {
+        queueWrapNotice.set(false)
         for (let i = candidates.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
           [candidates[i], candidates[j]] = [candidates[j], candidates[i]]
@@ -219,15 +222,26 @@ class QueueManager {
    * Rotates a library-position-sorted pool so the first track positioned AFTER the
    * anchor (the last user-queue track) leads, with earlier tracks wrapping to the
    * tail. If the anchor is missing from the library, the pool is left unchanged.
+   * When the anchor sits at the very end of the sorted order (nothing follows it),
+   * the pool regenerates from the top — the queueWrapNotice store is set so the UI
+   * can surface that wrap-around as intentional.
    */
   private _rotateAfterAnchor<T extends { trackId: string }>(pool: T[], libPos: Map<string, number>, anchorId?: string): T[] {
-    if (!anchorId) return pool
+    if (!anchorId) {
+      queueWrapNotice.set(false)
+      return pool
+    }
     const anchorPos = libPos.get(anchorId)
-    if (anchorPos === undefined) return pool
+    if (anchorPos === undefined) {
+      queueWrapNotice.set(false)
+      return pool
+    }
     const splitAt = pool.findIndex((t) => (libPos.get(t.trackId) ?? 0) > anchorPos)
     if (splitAt > 0) {
+      queueWrapNotice.set(false)
       return [...pool.slice(splitAt), ...pool.slice(0, splitAt)]
     }
+    queueWrapNotice.set(pool.length > 0)
     return pool
   }
 

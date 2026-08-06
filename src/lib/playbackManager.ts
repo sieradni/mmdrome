@@ -163,13 +163,23 @@ class PlaybackManager {
 
     library.subscribe(() => {
       if (this._initialized) {
-        queueManager.replenishAutoQueue()
+        const f = get(libraryFilters)
+        if (!get(shuffleEnabled) && (f.sortBy === 'rating' || f.sortBy === 'loved')) {
+          // Rebuild so a refreshed library (ratings/loved read from disk) reorders
+          // the queue to match the view; a plain replenish would keep the stale
+          // order. Metadata-independent sorts just append new tracks like before.
+          queueManager.rebuildAutoQueue()
+          this._refreshNativeQueue()
+        } else {
+          queueManager.replenishAutoQueue()
+        }
       }
     })
 
     shuffleEnabled.subscribe(() => {
       if (this._initialized) {
         queueManager.rebuildAutoQueue()
+        this._refreshNativeQueue()
       }
     })
 
@@ -191,6 +201,7 @@ class PlaybackManager {
       if (key === this._lastSortKey) return
       this._lastSortKey = key
       queueManager.rebuildAutoQueue()
+      this._refreshNativeQueue()
     })
   }
 
@@ -302,6 +313,7 @@ class PlaybackManager {
    * mutations (promotions, auto-queue replenishment).
    */
   private async _refreshNativeQueue(): Promise<void> {
+    if (!this.isNative()) return
     const combined = queueManager.getCombinedQueue()
     const activeIndex = get(queue).activeIndex
     if (activeIndex < 0 || activeIndex >= combined.length) return
