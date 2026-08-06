@@ -232,6 +232,12 @@ public final class NativeAudioEngine: NSObject {
     private var crossfadeMonitor: Timer?
     private var volumeRampTimer: Timer?
     private var rampStepCount = 0
+    /// Set when speed/pitch/tape-mode changed since the last schedule; consumed
+    /// at the next schedule or resume.
+    private var paramsDirty = false
+    /// Debounced restart timer: applies param changes by re-scheduling the
+    /// current track (units are only ever written while the node is stopped).
+    private var paramRestartTimer: Timer?
 
     // MARK: - Settings
 
@@ -370,6 +376,12 @@ public final class NativeAudioEngine: NSObject {
             loadAndStart(currentIndex: activeIndex, autoPlay: true)
             return
         }
+        // A param change happened while paused — resume via a fresh schedule so
+        // the new speed/pitch actually take effect on the (re)started plan.
+        if paramsDirty {
+            restartForParams()
+            return
+        }
         activeNode.play()
         standbyNode.play()
         setPlaying(true)
@@ -431,31 +443,67 @@ public final class NativeAudioEngine: NSObject {
 
     // MARK: - Settings
 
+    /// Speed / pitch / tape-mode are stored as fields and applied to the audio
+    /// units ONLY inside `scheduleCurrentTrack`, while the player node is
+    /// stopped. Live mutation of `AVAudioUnitTimePitch`/`AVAudioUnitVarispeed`
+    /// on a running engine can corrupt the unit (frozen/wrong-pitch output) and
+    /// a subsequent `player.play()` then aborts in `AVAudioPlayerNodeImpl::
+    /// StartImpl`. While playing, a change triggers a debounced re-schedule at
+    /// the current position instead.
+
     public func setSpeed(_ value: Double) {
-        speed = max(0.2, min(4.0, value))
-        if tapeMode {
-            varispeed.rate = Float(speed)
-            timePitch.rate = 1.0
-        } else {
-            timePitch.rate = Float(speed)
-            varispeed.rate = 1.0
-        }
+        let clamped = max(0.2, min(4.0, value))
+        guard clamped != speed else { return }
+        speed = clamped
+        scheduleParamRestart()
     }
 
     public func setPitchOctaves(_ octaves: Double) {
-        pitchOctaves = max(-2, min(2, octaves))
-        if tapeMode {
-            timePitch.pitch = 0.0
-        } else {
-            // AVAudioUnitTimePitch.pitch is expressed in cents (1200 per octave).
-            timePitch.pitch = Float(pitchOctaves * 1200.0)
-        }
+        let clamped = max(-2, min(2, octaves))
+        guard clamped != pitchOctaves else { return }
+        pitchOctaves = clamped
+        scheduleParamRestart()
     }
 
     public func setTapeMode(_ enabled: Bool) {
+        guard enabled != tapeMode else { return }
         tapeMode = enabled
-        setSpeed(speed)
-        setPitchOctaves(pitchOctaves)
+        scheduleParamRestart()
+    }
+
+    /// Marks the params as needing application and, while playing, debounces a
+    /// restart that re-schedules the current track at its current position.
+    private func scheduleParamRestart() {
+        paramsDirty = true
+        guard isPlaying, tracks.indices.contains(activeIndex) else { return }
+        paramRestartTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.06, repeats: false) { [weak self] _ in
+            self?.restartForParams()
+        }
+        paramRestartTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// Applies the pending param change by re-scheduling the current track from
+    /// its current position with a fresh render plan.
+    private func restartForParams() {
+        paramRestartTimer = nil
+        guard isPlaying, tracks.indices.contains(activeIndex) else { return }
+        let position = currentPosition
+        cancelScheduled()
+        hasLiveSchedule = false
+        scheduleCurrentTrack(from: position, autoPlay: true)
+    }
+
+    /// Writes the current speed/pitch/tape fields onto the audio units. Call
+    /// ONLY from `scheduleCurrentTrack` while both player nodes are stopped.
+    private func refreshPlaybackParams() {
+        timePitch.pitch = tapeMode ? 0 : Float(pitchOctaves * 1200.0)
+        timePitch.rate = tapeMode ? 1.0 : Float(speed)
+        varispeed.rate = tapeMode ? Float(speed) : 1.0
+        paramsDirty = false
+        paramRestartTimer?.invalidate()
+        paramRestartTimer = nil
     }
 
     public func setReplayGainMode(_ mode: String) {
@@ -606,6 +654,9 @@ public final class NativeAudioEngine: NSObject {
         let player = activeNode
         let scheduledIndex = activeIndex
         player.stop()
+        // Both nodes are stopped now: apply speed/pitch/tape fields to the
+        // units, which are only ever touched while nothing is rendering.
+        refreshPlaybackParams()
         player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(frames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
             self?.handleSegmentCompletion(index: scheduledIndex, generation: generation)
         }
@@ -684,6 +735,8 @@ public final class NativeAudioEngine: NSObject {
     }
 
     private func stopPlayback() {
+        paramRestartTimer?.invalidate()
+        paramRestartTimer = nil
         cancelScheduled()
         hasLiveSchedule = false
         if engine.isRunning {

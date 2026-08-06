@@ -35,10 +35,8 @@
   function resetAll() {
     sliderVal = 50
     pitch = 0
-    tapeMode = false
     engine.setSpeed(1)
     engine.setPitchOctaves(0)
-    engine.setTapeMode(false)
   }
 </script>
 
