@@ -71,6 +71,16 @@
     return () => observer.disconnect()
   })
 
+  $effect(() => {
+    if (!listContainer || !sentinelEl) return
+    if (!hasMore) return
+    const sRect = sentinelEl.getBoundingClientRect()
+    const cRect = listContainer.getBoundingClientRect()
+    if (sRect.top <= cRect.bottom + 200) {
+      limit += CHUNK
+    }
+  })
+
   function getMeta(trackId: string) {
     return $metadataCache.get(trackId)
   }
