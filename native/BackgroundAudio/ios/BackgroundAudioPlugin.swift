@@ -39,9 +39,11 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc override public func load() {
         super.load()
 
-        session.configure { [weak self] in
-            self?.engine.pause()
-        }
+        session.configure(
+            onPause: { [weak self] in self?.engine.pause() },
+            onResume: { [weak self] in self?.engine.play() },
+            isPlaying: { [weak self] in self?.engine.isCurrentlyPlaying ?? false }
+        )
 
         engine.onTrackChanged = { [weak self] trackId in
             guard let self = self else { return }
@@ -68,7 +70,8 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         nowPlaying.setupRemoteCommands()
-        nowPlaying.onPlayPause = { [weak self] in self?.engine.togglePlayPause() }
+        nowPlaying.onPlay = { [weak self] in self?.engine.play() }
+        nowPlaying.onPause = { [weak self] in self?.engine.pause() }
         nowPlaying.onToggle = { [weak self] in self?.engine.togglePlayPause() }
         nowPlaying.onNext = { [weak self] in self?.engine.next() }
         nowPlaying.onPrevious = { [weak self] in self?.engine.previous() }
@@ -223,7 +226,8 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             queueCount: engine.queueCount,
             position: state.position,
             playing: state.playing,
-            speed: state.speed
+            speed: state.speed,
+            duration: state.duration
         )
     }
 

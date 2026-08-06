@@ -432,7 +432,7 @@ public final class NativeAudioEngine: NSObject {
     // MARK: - Settings
 
     public func setSpeed(_ value: Double) {
-        speed = max(0.25, min(4.0, value))
+        speed = max(0.2, min(4.0, value))
         if tapeMode {
             varispeed.rate = Float(speed)
             timePitch.rate = 1.0

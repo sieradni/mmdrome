@@ -6,9 +6,14 @@ import AVFoundation
 /// (headphones unplugged) by pausing playback.
 final class SessionController {
     private var onPause: (() -> Void)?
+    private var onResume: (() -> Void)?
+    private var isPlaying: () -> Bool = { false }
+    private var wasPlayingBeforeInterruption = false
 
-    func configure(onPause: @escaping () -> Void) {
+    func configure(onPause: @escaping () -> Void, onResume: @escaping () -> Void, isPlaying: @escaping () -> Bool) {
         self.onPause = onPause
+        self.onResume = onResume
+        self.isPlaying = isPlaying
 
         let session = AVAudioSession.sharedInstance()
         do {
@@ -41,10 +46,15 @@ final class SessionController {
               let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
         switch type {
         case .began:
+            wasPlayingBeforeInterruption = isPlaying()
             onPause?()
         case .ended:
-            // Resumption after interruption is handled via the JS layer re-issuing play().
-            break
+            guard wasPlayingBeforeInterruption else { break }
+            let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
+                .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? false
+            if shouldResume {
+                onResume?()
+            }
         @unknown default:
             break
         }

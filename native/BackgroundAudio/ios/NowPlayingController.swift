@@ -9,10 +9,11 @@ import UIKit
 ///   to the audio engine.
 final class NowPlayingController {
 
-    var onPlayPause: (() -> Void)?
+    var onPlay: (() -> Void)?
+    var onPause: (() -> Void)?
+    var onToggle: (() -> Void)?
     var onNext: (() -> Void)?
     var onPrevious: (() -> Void)?
-    var onToggle: (() -> Void)?
     var onSeek: ((Double) -> Void)?
 
     private var cachedArtwork: UIImage?
@@ -23,11 +24,11 @@ final class NowPlayingController {
         let center = MPRemoteCommandCenter.shared()
 
         center.playCommand.addTarget { [weak self] _ in
-            self?.onPlayPause?()
+            self?.onPlay?()
             return .success
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            self?.onPlayPause?()
+            self?.onPause?()
             return .success
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
@@ -56,7 +57,7 @@ final class NowPlayingController {
         center.seekBackwardCommand.isEnabled = false
     }
 
-    func update(track: NativeTrack?, queueCount: Int, position: Double, playing: Bool, speed: Double) {
+    func update(track: NativeTrack?, queueCount: Int, position: Double, playing: Bool, speed: Double, duration: Double) {
         guard let track = track else {
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             return
@@ -66,7 +67,7 @@ final class NowPlayingController {
         info[MPMediaItemPropertyTitle] = track.title
         info[MPMediaItemPropertyArtist] = track.artist
         info[MPMediaItemPropertyAlbumTitle] = track.album
-        info[MPMediaItemPropertyPlaybackDuration] = track.duration
+        info[MPMediaItemPropertyPlaybackDuration] = duration > 0 ? duration : track.duration
         info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
         info[MPNowPlayingInfoPropertyPlaybackRate] = playing ? speed : 0
         info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = speed

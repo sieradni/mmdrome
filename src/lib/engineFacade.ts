@@ -3,6 +3,7 @@ import { get } from 'svelte/store'
 import { audioManager } from './audioManager'
 import { BackgroundAudio, type NativeFilterSnapshot } from './nativePlugin'
 import { eqBypassed, currentEqState } from './eq/eqStore'
+import { playbackSpeed, pitchOctaves } from '../stores/appState'
 import type { EqFilterConfig, EqPoint } from './eq/eqTypes'
 
 /**
@@ -45,6 +46,9 @@ class EngineFacade {
   setSpeed(speed: number): void {
     if (this.isNative) {
       this._speed = speed
+      // Persist through the shared store: _subscribeShared writes the setting
+      // and echoes the value back (same-value store writes are no-ops).
+      playbackSpeed.set(speed)
       BackgroundAudio.setSpeed({ speed }).catch(() => {})
     } else {
       audioManager.setSpeed(speed)
@@ -54,6 +58,7 @@ class EngineFacade {
   setPitchOctaves(octaves: number): void {
     if (this.isNative) {
       this._pitchOctaves = octaves
+      pitchOctaves.set(octaves)
       BackgroundAudio.setPitchOctaves({ octaves }).catch(() => {})
     } else {
       audioManager.setPitchOctaves(octaves)
