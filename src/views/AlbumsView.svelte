@@ -65,7 +65,7 @@
     return result
   })
 
-  let visibleGroups = $derived(applyFilterSort(albumGroups, $libraryFilters))
+  let visibleGroups = $derived(applyFilterSort(albumGroups, $libraryFilters, getRating))
 
   let selectedTracks = $derived(
     selectedAlbum ? albumGroups.find(g => g.album === selectedAlbum)?.tracks ?? [] : []

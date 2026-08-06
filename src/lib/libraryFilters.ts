@@ -81,11 +81,16 @@ export function makeGroupAggregates(
   lovedOf: (trackId: string) => boolean
 ): TrackGroupAggregates {
   let sum = 0
+  let ratedCount = 0
   let lovedCount = 0
   let minYear: number | null = null
   let length = 0
   for (const t of tracks) {
-    sum += ratingOf(t.trackId)
+    const r = ratingOf(t.trackId)
+    if (r > 0) {
+      sum += r
+      ratedCount++
+    }
     if (lovedOf(t.trackId)) lovedCount++
     if (t.year !== undefined && t.year !== null) {
       minYear = minYear === null ? t.year : Math.min(minYear, t.year)
@@ -93,7 +98,7 @@ export function makeGroupAggregates(
     length += t.duration
   }
   return {
-    avgRating: tracks.length > 0 ? sum / tracks.length : 0,
+    avgRating: ratedCount > 0 ? sum / ratedCount : 0,
     lovedCount,
     year: minYear,
     length,
@@ -106,16 +111,33 @@ function toNum(v: number | ''): number | null {
 
 /**
  * Applies the shared filter/sort to album/artist groups (each group must carry
- * TrackGroupAggregates fields). Returns a new array; input groups are untouched.
+ * TrackGroupAggregates fields plus its `tracks` array). Returns a new array;
+ * input groups are untouched.
+ *
+ * Rating filtering is any-track based: a group passes when at least one of its
+ * tracks falls inside the configured rating range (an unrated track never
+ * blocks a group). `avgRating` (computed over rated tracks only) is still used
+ * for sorting.
  */
-export function applyFilterSort<T extends TrackGroupAggregates>(groups: T[], f: LibraryFilterState): T[] {
+export function applyFilterSort<T extends TrackGroupAggregates & { tracks: readonly Track[] }>(
+  groups: T[],
+  f: LibraryFilterState,
+  ratingOf: (trackId: string) => number,
+): T[] {
   const fromY = toNum(f.fromYear)
   const toY = toNum(f.toYear)
   const minL = toNum(f.minLength)
   const maxL = toNum(f.maxLength)
+  const ratingActive = f.minRating > 0 || f.maxRating < 100
 
   let result = groups.filter((g) => {
-    if (g.avgRating < f.minRating || g.avgRating > f.maxRating) return false
+    if (ratingActive) {
+      const anyMatch = g.tracks.some((t) => {
+        const r = ratingOf(t.trackId)
+        return r >= f.minRating && r <= f.maxRating
+      })
+      if (!anyMatch) return false
+    }
     if (f.lovedOnly && g.lovedCount <= 0) return false
     if (fromY !== null && (g.year ?? 0) < fromY) return false
     if (toY !== null && (g.year ?? 9999) > toY) return false

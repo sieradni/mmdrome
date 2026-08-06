@@ -1,5 +1,6 @@
 import { webdavFetch, authHeaders, buildWebdavUrl, normalizeUrl } from "./webdavUtils"
 import { getTagLib } from "./taglibSingleton"
+import { popmToLocalRating } from "./tagWriter"
 import type { Track } from "../stores/appState"
 import type { WebdavFileEntry, LocalMetadataStore } from "./db"
 
@@ -237,12 +238,17 @@ export async function extractMetadataFromBuffer(
     taglibOpened = true
 
     const r = file.getRating()
-    if (r !== undefined && r !== null) {
-      rating = Math.round(r * 100)
+    if (r !== undefined && r !== null && r > 0) {
+      rating = popmToLocalRating(Math.round(r * 255))
     }
 
     const props = file.properties()
-    const loveRating = props['LOVE RATING']
+    // MusicBee writes the loved flag as either "LOVERATING" (M4A/iTunes-style
+    // atom) or "LOVE RATING" (ID3/TXXX). Check both, normalizing whitespace.
+    const loveKey = Object.keys(props).find(
+      (k) => k.replace(/\s+/g, '').toUpperCase() === 'LOVERATING'
+    )
+    const loveRating = loveKey ? props[loveKey] : undefined
     if (Array.isArray(loveRating) && loveRating[0] === 'L') {
       loved = true
     }
