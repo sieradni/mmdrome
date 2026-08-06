@@ -682,8 +682,8 @@ function seek(e: Event) {
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-primary"
                 aria-label="View details"
               >
-                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M7 3h7l4 4v14H7V3zm2 2v14h7V8h-3V5H9zm2 5v2h6v-2h-6zm0 4v2h6v-2h-6z"/>
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
                 </svg>
               </button>
               <button
@@ -700,9 +700,9 @@ function seek(e: Event) {
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Move to end"
               >
-                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M11 3h2v12.17l3.59-3.58L18 13.2l-6 6-6-6 1.41-1.41L11 15.17V3z"/>
-                  <path d="M4 20h16v2H4z"/>
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M7 13l5 5 5-5"/>
+                  <path d="M7 6l5 5 5-5"/>
                 </svg>
               </button>
               <button
@@ -837,8 +837,8 @@ function seek(e: Event) {
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-primary"
                 aria-label="View details"
               >
-                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
-                  <path d="M7 3h7l4 4v14H7V3zm2 2v14h7V8h-3V5H9zm2 5v2h6v-2h-6zm0 4v2h6v-2h-6z"/>
+                <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/>
                 </svg>
               </button>
               <button
