@@ -8,7 +8,10 @@
   let { track, wrapperClass = '', size }: { track: Track; wrapperClass?: string; size?: number } = $props()
 
   let visible = $state(false)
+  let failed = $state(false)
   let container: HTMLDivElement
+
+  const fallbackIcon = `${import.meta.env.BASE_URL}icon-192.png`
 
   onMount(() => {
     const obs = new IntersectionObserver(
@@ -28,7 +31,17 @@
 </script>
 
 <div bind:this={container} class="{wrapperClass} overflow-hidden bg-surface-hover">
-  {#if visible && $coverConfig}
-    <img src={getCoverUrl(track, $coverConfig, size)} alt="" class="h-full w-full object-cover" loading="lazy" decoding="async" crossorigin="anonymous" />
+  {#if visible && $coverConfig && !failed}
+    <img
+      src={getCoverUrl(track, $coverConfig, size)}
+      alt=""
+      class="h-full w-full object-cover"
+      loading="lazy"
+      decoding="async"
+      crossorigin="anonymous"
+      onerror={() => (failed = true)}
+    />
+  {:else if visible && (failed || $coverConfig === null)}
+    <img src={fallbackIcon} alt="" class="h-full w-full object-cover opacity-60" loading="lazy" decoding="async" />
   {/if}
 </div>

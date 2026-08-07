@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { currentTrack, metadataCache, updateMetadata } from '../stores/appState'
+  import { currentTrack, metadataCache } from '../stores/appState'
   import type { Track } from '../stores/appState'
-  import type { LocalMetadataStore } from '../lib/db'
+  import { commitFeedback } from '../lib/feedbackService'
   import LazyThumb from '../components/LazyThumb.svelte'
 
   let { onclose, oncloseall, onnavigate }: { onclose: () => void; oncloseall: () => void; onnavigate: (page: 'pitchSpeed' | 'eq' | 'volume' | 'detail' | 'settings') => void } = $props()
@@ -20,19 +20,7 @@
   function commit() {
     const track = $currentTrack
     if (!track) return
-    const existing = $metadataCache.get(track.trackId)
-    const meta: LocalMetadataStore = {
-      trackId: track.trackId,
-      rating,
-      loved,
-      fileType: existing?.fileType ?? track.fileType,
-      syncStatus: 'pending_sync',
-      lastModifiedLocally: Date.now(),
-      comments: existing?.comments ?? track.comments,
-      webdavPath: existing?.webdavPath,
-      webdavLastModified: existing?.webdavLastModified,
-    }
-    updateMetadata(meta)
+    commitFeedback(track, rating, loved)
   }
 
   function starSegments(r: number): ('full' | 'half' | 'empty')[] {

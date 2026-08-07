@@ -179,6 +179,8 @@ public final class NativeAudioEngine: NSObject {
     public var onPlaybackStateChanged: ((Bool) -> Void)?
     public var onQueueEnded: (() -> Void)?
     public var onError: ((String) -> Void)?
+    /// Fired when the native sleep timer expires (playback has been paused).
+    public var onSleepTimerFired: (() -> Void)?
 
     // MARK: - Nodes
 
@@ -238,6 +240,12 @@ public final class NativeAudioEngine: NSObject {
     /// Debounced restart timer: applies param changes by re-scheduling the
     /// current track (units are only ever written while the node is stopped).
     private var paramRestartTimer: Timer?
+
+    // MARK: - Sleep timer
+
+    private var sleepTimer: Timer?
+    /// When true, pauses at the natural end of the current track.
+    private var sleepAtTrackEnd = false
 
     // MARK: - Settings
 
@@ -532,6 +540,45 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
+    /// Sets the native sleep timer. `active=false` cancels any pending timer;
+    /// `mode == "endOfTrack"` pauses at the current track's natural end; minutes
+    /// mode pauses after `minutes` from now. Works in the background because it
+    /// runs on the main run loop like every other timer in this engine.
+    public func setSleepTimer(active: Bool, mode: String, minutes: Double) {
+        sleepTimer?.invalidate()
+        sleepTimer = nil
+        sleepAtTrackEnd = false
+        guard active else { return }
+
+        if mode == "endOfTrack" {
+            sleepAtTrackEnd = true
+            // A natural end must be reached cleanly — tear down any armed/in-flight
+            // crossfade so the active player's own completion triggers the pause.
+            let hadCrossfade = crossfadeArmed || crossfadeActive
+            stopCrossfadeMonitor()
+            stopVolumeRamp()
+            if hadCrossfade {
+                standbyScheduleGeneration += 1
+                standbyNode.stop()
+            }
+            standbyGain.outputVolume = 0
+            crossfadeActive = false
+            crossfadeArmed = false
+            crossfadeTargetIndex = -1
+            return
+        }
+
+        let interval = max(1, minutes * 60)
+        let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            self.sleepAtTrackEnd = false
+            self.pause()
+            self.onSleepTimerFired?()
+        }
+        sleepTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
     public func applyFilters(_ filters: [NativeFilterConfig], bypassed: Bool) {
         let bands = eq.bands
         for band in bands { band.bypass = true }
@@ -705,6 +752,15 @@ public final class NativeAudioEngine: NSObject {
                 return
             }
 
+            // Natural end with an end-of-track sleep timer pending: pause here rather
+            // than advancing (loop-one also defers — "end of track" wins).
+            if self.sleepAtTrackEnd {
+                self.sleepAtTrackEnd = false
+                self.pause()
+                self.onSleepTimerFired?()
+                return
+            }
+
             if self.loopMode == .one {
                 self.playTrack(at: self.activeIndex, autoPlay: true)
                 return
@@ -737,6 +793,9 @@ public final class NativeAudioEngine: NSObject {
     private func stopPlayback() {
         paramRestartTimer?.invalidate()
         paramRestartTimer = nil
+        sleepTimer?.invalidate()
+        sleepTimer = nil
+        sleepAtTrackEnd = false
         cancelScheduled()
         hasLiveSchedule = false
         if engine.isRunning {
@@ -763,7 +822,7 @@ public final class NativeAudioEngine: NSObject {
 
     private func setupCrossfadeMonitor() {
         stopCrossfadeMonitor()
-        guard crossfadeDuration > 0, isPlaying, loopMode != .one, tracks.indices.contains(activeIndex) else { return }
+        guard crossfadeDuration > 0, isPlaying, loopMode != .one, !sleepAtTrackEnd, tracks.indices.contains(activeIndex) else { return }
 
         let current = tracks[activeIndex]
         guard current.duration >= crossfadeDuration + 1 else { return }

@@ -3,7 +3,7 @@
   import { library, metadataCache, addToUserQueue, playNext, currentTrack } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
   import { saveViewState, restoreViewState } from '../lib/viewState'
-  import { libraryFilters } from '../lib/libraryFilters'
+  import { libraryFilters, trackMatchesGenre } from '../lib/libraryFilters'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import LazyThumb from '../components/LazyThumb.svelte'
@@ -111,6 +111,7 @@
       return r >= f.minRating && r <= f.maxRating
     })
     if (f.lovedOnly) list = list.filter((t) => getLoved(t.trackId))
+    if (f.genre) list = list.filter((t) => trackMatchesGenre(t, f.genre))
     const fromY = f.fromYear !== null && f.fromYear !== undefined && f.fromYear !== '' ? Number(f.fromYear) : null
     const toY = f.toYear !== null && f.toYear !== undefined && f.toYear !== '' ? Number(f.toYear) : null
     const minL = f.minLength !== null && f.minLength !== undefined && f.minLength !== '' ? Number(f.minLength) : null

@@ -21,6 +21,7 @@
   import { flip } from 'svelte/animate'
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
+  import { distinctGenres } from '../lib/libraryFilters'
   import { audioManager } from '../lib/audioManager'
   import { saveQueue, getSetting, setSetting } from '../lib/db'
   import { saveViewState, restoreViewState } from '../lib/viewState'
@@ -32,11 +33,13 @@
 
   let filterOpen = $state(false)
   let detailsTrack: Track | null = $state(null)
+  let genres = $derived(distinctGenres($library))
 
   // Filter settings state
   let minRating = $state(0)
   let maxRating = $state(100)
   let lovedOnly = $state(false)
+  let genre = $state('')
   let fromYear = $state<number | ''>('')
   let toYear = $state<number | ''>('')
   let minLength = $state<number | ''>('')
@@ -57,6 +60,7 @@
         if (p.minRating !== undefined) minRating = p.minRating
         if (p.maxRating !== undefined) maxRating = p.maxRating
         if (p.lovedOnly !== undefined) lovedOnly = p.lovedOnly
+        if (p.genre !== undefined) genre = p.genre || ''
         if (p.fromYear !== undefined) fromYear = norm(p.fromYear)
         if (p.toYear !== undefined) toYear = norm(p.toYear)
         if (p.minLength !== undefined) minLength = norm(p.minLength)
@@ -74,8 +78,8 @@
   let debounceTimer: ReturnType<typeof setTimeout> | null = null
 
   $effect(() => {
-    autoQueueFilters.update((f) => ({ ...f, minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery }))
-    setSetting('autoQueueFilters', JSON.stringify({ minRating, maxRating, lovedOnly, fromYear, toYear, minLength, maxLength, searchQuery }))
+    autoQueueFilters.update((f) => ({ ...f, minRating, maxRating, lovedOnly, genre, fromYear, toYear, minLength, maxLength, searchQuery }))
+    setSetting('autoQueueFilters', JSON.stringify({ minRating, maxRating, lovedOnly, genre, fromYear, toYear, minLength, maxLength, searchQuery }))
     if (debounceTimer) clearTimeout(debounceTimer)
     debounceTimer = setTimeout(() => queueManager.replenishAutoQueue(), 300)
   })
@@ -770,6 +774,17 @@ function seek(e: Event) {
             <input type="checkbox" bind:checked={lovedOnly} class="accent-yellow-500" />
             Loved tracks only
           </label>
+          {#if genres.length > 0}
+            <div>
+              <span class="text-sm font-medium text-muted">Genre</span>
+              <select bind:value={genre} class="mt-1 block w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 outline-none">
+                <option value="">All genres</option>
+                {#each genres as g}
+                  <option value={g}>{g}</option>
+                {/each}
+              </select>
+            </div>
+          {/if}
           <div>
             <span class="text-sm font-medium text-muted">Year</span>
             <div class="mt-1 flex items-center gap-2">

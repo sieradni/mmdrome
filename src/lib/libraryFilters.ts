@@ -9,6 +9,7 @@ export interface LibraryFilterState {
   minRating: number
   maxRating: number
   lovedOnly: boolean
+  genre: string
   fromYear: number | ''
   toYear: number | ''
   minLength: number | ''
@@ -25,6 +26,7 @@ const defaults: LibraryFilterState = {
   minRating: 0,
   maxRating: 100,
   lovedOnly: false,
+  genre: '',
   fromYear: '',
   toYear: '',
   minLength: '',
@@ -110,6 +112,33 @@ function toNum(v: number | ''): number | null {
 }
 
 /**
+ * Genre matching is case-insensitive and token-aware: a track matches when its
+ * genre string contains the sought value as a whole token (merged genres like
+ * "Alt Rock / Indie" still match "Alt Rock"). Empty filter matches everything.
+ */
+export function trackMatchesGenre(track: Track, genre: string): boolean {
+  const g = (genre || '').trim().toLowerCase()
+  const t = (track.genre ?? '').toLowerCase()
+  if (!g) return true
+  if (!t) return false
+  return t.split(/[/;,]/).some((token) => token.trim() === g)
+}
+
+/** Distinct genres in the library, sorted, with legacy casing trimmed. */
+export function distinctGenres(tracks: readonly Track[]): string[] {
+  const seen = new Set<string>()
+  for (const t of tracks) {
+    const g = t.genre
+    if (!g) continue
+    for (const token of g.split(/[/;,]/)) {
+      const trimmed = token.trim()
+      if (trimmed) seen.add(trimmed)
+    }
+  }
+  return [...seen].sort((a, b) => a.localeCompare(b))
+}
+
+/**
  * Applies the shared filter/sort to album/artist groups (each group must carry
  * TrackGroupAggregates fields plus its `tracks` array). Returns a new array;
  * input groups are untouched.
@@ -139,6 +168,7 @@ export function applyFilterSort<T extends TrackGroupAggregates & { tracks: reado
       if (!anyMatch) return false
     }
     if (f.lovedOnly && g.lovedCount <= 0) return false
+    if (f.genre && !g.tracks.some((t) => trackMatchesGenre(t, f.genre))) return false
     if (fromY !== null && (g.year ?? 0) < fromY) return false
     if (toY !== null && (g.year ?? 9999) > toY) return false
     if (minL !== null && g.length < minL) return false

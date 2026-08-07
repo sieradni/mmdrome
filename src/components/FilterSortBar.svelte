@@ -1,8 +1,11 @@
 <script lang="ts">
-  import { libraryFilters, sortLabels } from '../lib/libraryFilters'
+  import { libraryFilters, sortLabels, distinctGenres } from '../lib/libraryFilters'
   import type { LibrarySortKey } from '../lib/libraryFilters'
+  import { library } from '../stores/appState'
 
   let { onopen }: { onopen?: () => void } = $props()
+
+  let genres = $derived(distinctGenres($library))
 
   function toggleFilter() {
     libraryFilters.update((f) => ({ ...f, filterOpen: !f.filterOpen, sortOpen: false }))
@@ -76,6 +79,22 @@
         />
         Loved tracks only
       </label>
+
+      {#if genres.length > 0}
+        <div>
+          <span class="text-sm font-medium text-muted">Genre</span>
+          <select
+            value={$libraryFilters.genre}
+            onchange={(e) => libraryFilters.update((f) => ({ ...f, genre: (e.target as HTMLSelectElement).value }))}
+            class="mt-1 block w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 outline-none"
+          >
+            <option value="">All genres</option>
+            {#each genres as g}
+              <option value={g}>{g}</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
 
       <div>
         <span class="text-sm font-medium text-muted">Year</span>

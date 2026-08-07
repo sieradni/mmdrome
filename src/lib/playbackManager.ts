@@ -9,6 +9,8 @@ import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc } fr
 import { setupMediaSession } from './mediaSession'
 import { getCoverUrl } from './coverArtCache'
 import { getCachedConfig, buildStreamUrl, buildCoverArtUrl, resolveCoverArtId } from './navidromeApi'
+import { scrobbleManager } from './scrobbleManager'
+import { sleepTimerManager } from './sleepTimer'
 import {
   currentTrack,
   playbackState,
@@ -57,6 +59,9 @@ class PlaybackManager {
       await this._initWeb()
     }
 
+    scrobbleManager.init()
+    scrobbleManager.enable()
+    await sleepTimerManager.init()
     this._subscribeShared()
     this._initialized = true
   }

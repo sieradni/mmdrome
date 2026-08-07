@@ -26,6 +26,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setPreampDb", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setMasterVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setCrossfade", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setSleepTimer", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setEq", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "updateNowPlaying", returnType: CAPPluginReturnPromise)
@@ -67,6 +68,10 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         engine.onError = { [weak self] message in
             self?.notifyListeners("error", data: ["message": message])
+        }
+        engine.onSleepTimerFired = { [weak self] in
+            self?.notifyListeners("sleepTimerFired", data: [:])
+            self?.refreshNowPlaying()
         }
 
         nowPlaying.setupRemoteCommands()
@@ -195,6 +200,15 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             duration: call.getDouble("duration", 0),
             curve: call.getString("curve", "sigmoid"),
             sigmoidSteepness: call.getDouble("sigmoidSteepness", 6)
+        )
+        call.resolve()
+    }
+
+    @objc func setSleepTimer(_ call: CAPPluginCall) {
+        engine.setSleepTimer(
+            active: call.getBool("active", false),
+            mode: call.getString("mode", "minutes"),
+            minutes: call.getDouble("minutes", 30)
         )
         call.resolve()
     }

@@ -1,6 +1,6 @@
 import { get } from 'svelte/store'
 import { saveQueue } from './db'
-import { libraryFilters } from './libraryFilters'
+import { libraryFilters, trackMatchesGenre } from './libraryFilters'
 import {
   queue,
   library,
@@ -263,6 +263,8 @@ class QueueManager {
 
     if (filters.albumScope && track.album !== filters.albumScope) return false
     if (filters.artistScope && track.artist !== filters.artistScope) return false
+
+    if (filters.genre && !trackMatchesGenre(track, filters.genre)) return false
 
     if (filters.searchQuery) {
       const sq = filters.searchQuery.trim().toLowerCase()

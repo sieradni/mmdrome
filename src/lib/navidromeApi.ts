@@ -59,6 +59,8 @@ export interface NavidromeSong {
   streamId?: string
   path?: string
   replayGain?: ReplayGainValues
+  starred?: boolean | string
+  userRating?: number
 }
 
 export interface NavidromeArtist {
@@ -220,6 +222,19 @@ function buildUrl(baseUrl: string, endpoint: string, params: Record<string, stri
   return url.toString()
 }
 
+/**
+ * Builds a /rest URL that appends `pairs` after the single-valued `params`, so
+ * repeated query keys (e.g. `id=` for Subsonic `star`/`unstar`) survive.
+ */
+function buildRepeatedUrl(baseUrl: string, endpoint: string, params: Record<string, string | number>, pairs: [string, string][]): string {
+  const url = new URL(`${normalizeUrl(baseUrl)}/rest/${endpoint}`)
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, String(value))
+  })
+  pairs.forEach(([key, value]) => url.searchParams.append(key, value))
+  return url.toString()
+}
+
 const FETCH_TIMEOUT = 30000
 
 function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
@@ -233,8 +248,20 @@ async function callSubsonic(
   endpoint: string,
   extraParams: Record<string, string | number> = {},
 ): Promise<SubsonicResponseData> {
+  return callSubsonicWithPairs(config, endpoint, extraParams, [])
+}
+
+/** Like {@link callSubsonic} but accepts repeated query keys for batch endpoints. */
+async function callSubsonicWithPairs(
+  config: NavidromeConfig,
+  endpoint: string,
+  extraParams: Record<string, string | number> = {},
+  pairs: [string, string][] = [],
+): Promise<SubsonicResponseData> {
   const params = { ...buildAuthParams(config.username, config.password), ...extraParams }
-  const url = buildUrl(config.baseUrl, endpoint, params)
+  const url = pairs.length > 0
+    ? buildRepeatedUrl(config.baseUrl, endpoint, params, pairs)
+    : buildUrl(config.baseUrl, endpoint, params)
 
   const res = await fetchWithTimeout(url, { method: 'GET' }, FETCH_TIMEOUT)
 
@@ -428,12 +455,94 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     albumReplayGain: song.replayGain?.albumGain,
     albumArtist: song.albumArtist,
     trackNumber: song.track,
+    genre: song.genre,
+    starred: song.starred,
+    userRating: song.userRating,
   }
 }
 
 export async function getNavidromeSong(config: NavidromeConfig, songId: string): Promise<NavidromeSong> {
   const resp = await callSubsonic(config, 'getSong.view', { id: songId })
   return resp.song
+}
+
+// ── Scrobbling & now-playing ───────────────────────────────────────────
+
+/**
+ * Submits a track as "now playing". Navidrome feeds this into its own listen
+ * tracking and forwards it to any configured external scrobblers (Last.fm,
+ * ListenBrainz), so no client-side API key is required.
+ */
+export async function submitNowPlaying(
+  config: NavidromeConfig,
+  songId: string,
+  meta?: { artist?: string; title?: string; album?: string; duration?: number },
+): Promise<void> {
+  const params: Record<string, string | number> = { id: songId }
+  if (meta?.artist) params.artist = meta.artist
+  if (meta?.title) params.title = meta.title
+  if (meta?.album) params.album = meta.album
+  if (meta?.duration) params.duration = meta.duration
+  await callSubsonic(config, 'nowPlaying.view', params)
+}
+
+/**
+ * Submits a completed listen (scrobble) at the given unix `time` (seconds).
+ * `submission=true` is an actual scrobble (counts as a play).
+ */
+export async function submitScrobble(
+  config: NavidromeConfig,
+  songId: string,
+  time: number,
+): Promise<void> {
+  await callSubsonicWithPairs(config, 'scrobble.view', { id: songId, time }, [['submission', 'true']])
+}
+
+/**
+ * Sets the starred (loved/heart) state for one or more songs. Subsonic accepts
+ * repeated `id` parameters, so a whole batch is one request per endpoint.
+ */
+export async function setNavidromeStarred(config: NavidromeConfig, songIds: string[], starred: boolean): Promise<void> {
+  const batchSize = 100
+  const endpoint = starred ? 'star.view' : 'unstar.view'
+  for (let i = 0; i < songIds.length; i += batchSize) {
+    const batch = songIds.slice(i, i + batchSize)
+    await callSubsonicWithPairs(config, endpoint, {}, batch.map((id) => ['id', id] as [string, string]))
+  }
+}
+
+/** Sets a single song's Navidrome rating. `rating` is 1–5 (Subsonic scale). */
+export async function setNavidromeRating(config: NavidromeConfig, songId: string, rating: number): Promise<void> {
+  await callSubsonic(config, 'setRating.view', { id: songId, rating })
+}
+
+// ── Lyrics ────────────────────────────────────────────────────────────
+
+export interface NavidromeLyrics {
+  artist?: string
+  title?: string
+  value: string
+  synced?: boolean
+}
+
+export async function getNavidromeLyrics(
+  config: NavidromeConfig,
+  artist: string,
+  title: string,
+): Promise<NavidromeLyrics | null> {
+  try {
+    const resp = await callSubsonic(config, 'getLyrics.view', { artist, title })
+    const lyricsList = resp.lyricsList?.lyrics
+    const found = Array.isArray(lyricsList) ? lyricsList.find((l: Record<string, unknown>) => l && typeof l['value'] === 'string' && (l['value'] as string).length > 0) : undefined
+    if (!found) return null
+    return {
+      artist: found['artist'] as string | undefined,
+      title: found['title'] as string | undefined,
+      value: found['value'] as string,
+    }
+  } catch {
+    return null
+  }
 }
 
 export async function testWebdavConnection(

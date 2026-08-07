@@ -24,6 +24,9 @@ export interface Track {
   albumArtist?: string
   trackNumber?: number
   comments?: string
+  genre?: string
+  starred?: boolean | string
+  userRating?: number
 }
 
 export interface TrackWithMeta extends Track {
@@ -61,6 +64,9 @@ export interface SettingsMap {
   replayGainMode?: 'off' | 'track' | 'album'
   playbackSpeed?: number
   pitchOctaves?: number
+  scrobbling?: boolean
+  ratingSource?: 'webdav' | 'navidrome'
+  syncToNavidrome?: boolean
 }
 
 export const currentTrack = writable<Track | null>(null)
@@ -95,9 +101,28 @@ export interface AutoQueueFilters {
   searchQuery?: string
   albumScope?: string
   artistScope?: string
+  genre?: string
 }
 
 export type LoopMode = 'none' | 'one' | 'all'
+
+export interface SleepTimerState {
+  active: boolean
+  mode: 'minutes' | 'endOfTrack'
+  minutes: number
+  /** Wall-clock timestamp at which the timer fires (minutes mode only). */
+  endsAt: number
+  /** Current-seconds label used by the now-playing overlay progress ring. */
+  remainingSeconds: number
+}
+
+export const sleepTimer = writable<SleepTimerState>({
+  active: false,
+  mode: 'minutes',
+  minutes: 30,
+  endsAt: 0,
+  remainingSeconds: 0,
+})
 
 export const autoQueueFilters = writable<AutoQueueFilters>({
   minRating: 0,
@@ -151,7 +176,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance', 'replayGainMode', 'playbackSpeed', 'pitchOctaves']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance', 'replayGainMode', 'playbackSpeed', 'pitchOctaves', 'scrobbling', 'ratingSource', 'syncToNavidrome']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]
@@ -280,6 +305,42 @@ export function initMetadataForTracks(tracks: Track[]): void {
   metadataCache.update((map) => {
     const next = new Map(map)
     for (const m of toInit) next.set(m.trackId, m)
+    return next
+  })
+}
+
+/**
+ * Seeds rating/loved values carried by Navidrome songs (starred/userRating) into
+ * the metadata cache so the UI shows server state without a full re-merge. Only
+ * overwrites entries that were not locally modified (`syncStatus: 'synced'`).
+ */
+export function seedNavidromeFeedback(tracks: Track[]): void {
+  const cache = get(metadataCache)
+  const updates: LocalMetadataStore[] = []
+  for (const t of tracks) {
+    if (!t.trackId.startsWith('navidrome-')) continue
+    const { starred, userRating } = t
+    if (starred === undefined && userRating === undefined) continue
+    const existing = cache.get(t.trackId)
+    if (existing && existing.syncStatus === 'pending_sync') continue
+    const next: LocalMetadataStore = {
+      trackId: t.trackId,
+      rating: userRating !== undefined ? Math.min(100, Math.round(userRating * 20)) : existing?.rating ?? 0,
+      loved: starred ? true : existing?.loved ?? false,
+      fileType: existing?.fileType ?? t.fileType,
+      syncStatus: 'synced',
+      lastModifiedLocally: existing?.lastModifiedLocally ?? Date.now(),
+      comments: existing?.comments ?? t.comments,
+      webdavPath: existing?.webdavPath,
+      webdavLastModified: existing?.webdavLastModified,
+    }
+    updates.push(next)
+  }
+  if (updates.length === 0) return
+  bulkUpsertMetadata(updates)
+  metadataCache.update((map) => {
+    const next = new Map(map)
+    for (const u of updates) next.set(u.trackId, u)
     return next
   })
 }

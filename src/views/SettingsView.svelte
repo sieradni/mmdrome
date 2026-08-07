@@ -1,11 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, setLibrary, initMetadataForTracks, metadataScanState } from '../stores/appState'
+  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, setLibrary, initMetadataForTracks, seedNavidromeFeedback, metadataScanState } from '../stores/appState'
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, connectNavidrome } from '../lib/syncEngine'
   import { navidromeSongToTrack } from '../lib/navidromeApi'
   import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, scanAllForceRescan } from '../lib/metadataScanner'
+  import { reconcileToNavidrome } from '../lib/feedbackService'
   import { tick } from 'svelte'
   import type { Track } from '../stores/appState'
 
@@ -34,8 +35,12 @@
   let tapeMode = $state(false)
   let snapTolerance = $state(0.15)
   let replayGainMode = $state<'off' | 'track' | 'album'>('off')
+  let scrobbling = $state(false)
   let syncing = $state(false)
   let syncResult = $state('')
+  let ratingSource = $state<'webdav' | 'navidrome'>('webdav')
+  let syncToNavidrome = $state(false)
+  let reconcileResult = $state('')
   let indexing = $state(false)
   let scrollContainer: HTMLDivElement | null = null
 
@@ -47,7 +52,7 @@
       scrollTops,
       webdavUrl, webdavUser, webdavToken,
       navidromeUrl, navidromeUser, navidromePassword,
-      preloadTracks, crossfadeDuration, tapeMode, snapTolerance, replayGainMode
+      preloadTracks, crossfadeDuration, tapeMode, snapTolerance, replayGainMode, scrobbling
     })
   })
 
@@ -78,6 +83,9 @@
     tapeMode = s.tapeMode ?? false
     snapTolerance = s.snapTolerance ?? 0.15
     replayGainMode = (s.replayGainMode ?? 'off') as 'off' | 'track' | 'album'
+    scrobbling = s.scrobbling ?? false
+    ratingSource = (s.ratingSource ?? 'webdav') as 'webdav' | 'navidrome'
+    syncToNavidrome = s.syncToNavidrome ?? false
   })
 
   function setPreload(val: number) {
@@ -100,6 +108,42 @@
   function setReplayGainMode(val: 'off' | 'track' | 'album') {
     replayGainMode = val
     updateSetting('replayGainMode', val)
+  }
+
+  function setRatingSource(val: 'webdav' | 'navidrome') {
+    ratingSource = val
+    updateSetting('ratingSource', val)
+    if (val === 'navidrome') {
+      // Navidrome-only writing: local file tags are never the target.
+      syncToNavidrome = true
+      updateSetting('syncToNavidrome', true)
+    }
+  }
+
+  async function setSyncToNavidrome() {
+    const val = !syncToNavidrome
+    syncToNavidrome = val
+    updateSetting('syncToNavidrome', val)
+    reconcileResult = ''
+    if (val && ratingSource === 'webdav') {
+      // Turning on server mirroring in WebDAV mode pushes the current local diff.
+      reconcileResult = await reconcileRatings()
+    }
+  }
+
+  async function reconcileRatings(): Promise<string> {
+    try {
+      const res = await reconcileToNavidrome()
+      return `Synced ${res.pushed} track(s) to Navidrome`
+    } catch (err) {
+      return `Sync failed: ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+
+  function setScrobbling() {
+    const val = !scrobbling
+    scrobbling = val
+    updateSetting('scrobbling', val)
   }
 
   function setSnapTolerance(e: Event) {
@@ -174,6 +218,7 @@
         const tracks: Track[] = result.songs.map(navidromeSongToTrack)
         setLibrary(tracks)
         initMetadataForTracks(tracks)
+        seedNavidromeFeedback(tracks)
 
         navidromeLoadStatus.set({
           loading: false,
@@ -352,6 +397,40 @@
             {/if}
           </div>
         </section>
+
+        <!-- Ratings source -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Ratings Source</h3>
+          <p class="mb-3 text-sm text-muted">Where rating and loved changes are written. Loaded values always come from both sources and are merged for display.</p>
+          <div class="space-y-3">
+            <div class="flex gap-2">
+              {#each [{ id: 'webdav', label: 'Your Files' }, { id: 'navidrome', label: 'Navidrome' }] as opt}
+                <button
+                  onclick={() => setRatingSource(opt.id as 'webdav' | 'navidrome')}
+                  class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors"
+                  class:bg-primary={ratingSource === opt.id}
+                  class:text-background={ratingSource === opt.id}
+                  class:bg-surface-hover={ratingSource !== opt.id}
+                  class:text-muted={ratingSource !== opt.id}
+                >{opt.label}</button>
+              {/each}
+            </div>
+            {#if ratingSource === 'navidrome'}
+              <p class="text-sm text-muted">Navidrome is the authoritative store. Local file tags are left untouched; ratings are pushed straight to the server.</p>
+            {:else}
+              <label class="flex cursor-pointer items-center gap-3">
+                <input type="checkbox" checked={syncToNavidrome} onchange={setSyncToNavidrome} class="accent-yellow-500" />
+                <div>
+                  <p class="text-base text-primary">Also mirror ratings to Navidrome</p>
+                  <p class="text-sm text-muted">Mirror every rating/loved change to the server while keeping your files as the source of truth.</p>
+                </div>
+              </label>
+              {#if reconcileResult}
+                <p class="text-sm text-muted">{reconcileResult}</p>
+              {/if}
+            {/if}
+          </div>
+        </section>
       {/if}
 
       {#if tab === 'playback'}
@@ -432,6 +511,17 @@
               >{mode === 'off' ? 'Off' : mode === 'track' ? 'Track Gain' : 'Album Gain'}</button>
             {/each}
           </div>
+        </section>
+
+        <!-- Scrobbling -->
+        <section class="px-4 py-4">
+          <label class="flex cursor-pointer items-center gap-3">
+            <input type="checkbox" checked={scrobbling} onchange={setScrobbling} class="accent-yellow-500" />
+            <div>
+              <p class="text-base text-primary">Scrobble to Navidrome</p>
+              <p class="text-sm text-muted">Report plays and now-playing status. Navidrome forwards to Last.fm / ListenBrainz if configured there.</p>
+            </div>
+          </label>
         </section>
       {/if}
 

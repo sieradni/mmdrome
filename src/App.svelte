@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { Capacitor, SystemBars, SystemBarType, SystemBarsStyle } from '@capacitor/core'
-  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, effectiveDuration, toggleShuffle, metadataScanState, loopMode, updateSetting } from './stores/appState'
+  import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, seedNavidromeFeedback, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, effectiveDuration, toggleShuffle, metadataScanState, loopMode, sleepTimer, updateSetting } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
+  import { sleepTimerManager } from './lib/sleepTimer'
   import { connectNavidrome } from './lib/syncEngine'
   import { navidromeSongToTrack, setCachedConfig } from './lib/navidromeApi'
   import { playbackManager } from './lib/playbackManager'
@@ -63,6 +64,7 @@
           const tracks: Track[] = result.songs.map(navidromeSongToTrack)
           setLibrary(tracks)
           initMetadataForTracks(tracks)
+          seedNavidromeFeedback(tracks)
           navidromeLoadStatus.set({
             loading: false,
             loaded: result.loadResult.loaded,
@@ -154,6 +156,48 @@
     }
     document.addEventListener('click', handler)
     return () => document.removeEventListener('click', handler)
+  })
+
+  let sleepOpen = $state(false)
+  let sleepMinutes = $state(30)
+
+  function toggleSleepPopover(e: MouseEvent) {
+    e.stopPropagation()
+    sleepMinutes = $sleepTimer.minutes || 30
+    sleepOpen = !sleepOpen
+    volOpen = false
+  }
+
+  function askSleepTimer() {
+    sleepTimerManager.set('minutes', sleepMinutes, true)
+    sleepOpen = false
+  }
+
+  function sleepEndOfTrack() {
+    sleepTimerManager.set('endOfTrack', 0, true)
+    sleepOpen = false
+  }
+
+  function cancelSleepTimer() {
+    sleepTimerManager.set('minutes', sleepMinutes, false)
+    sleepOpen = false
+  }
+
+  $effect(() => {
+    if (!sleepOpen) return
+    function handler(e: MouseEvent) {
+      if (!(e.target as HTMLElement).closest('[data-sleep-popover]')) sleepOpen = false
+    }
+    document.addEventListener('click', handler)
+    return () => document.removeEventListener('click', handler)
+  })
+
+  let sleepDisplay = $derived.by(() => {
+    const t = $sleepTimer
+    if (!t.active) return ''
+    if (t.mode === 'endOfTrack') return 'End of track'
+    const m = Math.ceil(t.remainingSeconds / 60)
+    return `${m} min`
   })
 
 function seek(e: Event) {
@@ -341,6 +385,40 @@ function seek(e: Event) {
                   oninput={updateVolumePopover}
                   class="h-1 w-32 -rotate-90 cursor-pointer accent-white/80"
                 />
+              </div>
+            </div>
+          {/if}
+        </div>
+        <div class="relative" data-sleep-popover>
+          <button onclick={toggleSleepPopover} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$sleepTimer.active} class:text-muted={!$sleepTimer.active} aria-label="Sleep timer">
+            <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm.5 6a.5.5 0 011 0v4.25l3 1.8a.5.5 0 01-.25.93.5.5 0 01-.25-.07l-3.25-1.95a.5.5 0 01-.25-.43V8a.5.5 0 01.5-.5z"/>
+            </svg>
+          </button>
+          {#if sleepOpen}
+            <div class="absolute bottom-full right-0 z-50 mb-2 w-56 rounded-lg bg-surface p-3 shadow-xl ring-1 ring-white/10">
+              <p class="mb-2 text-sm font-medium text-primary">Sleep Timer</p>
+              {#if $sleepTimer.active}
+                <p class="mb-2 text-sm text-muted">Active — {$sleepTimer.mode === 'endOfTrack' ? 'end of track' : sleepDisplay}</p>
+              {/if}
+              <div class="space-y-2">
+                <div class="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    max="120"
+                    bind:value={sleepMinutes}
+                    class="w-20 rounded bg-surface-hover px-2 py-1.5 text-sm text-primary ring-1 ring-white/10 outline-none"
+                  />
+                  <span class="text-sm text-muted">minutes</span>
+                  <button onclick={askSleepTimer} class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-background hover:opacity-80">Start</button>
+                </div>
+                <div class="flex items-center gap-2">
+                  <button onclick={sleepEndOfTrack} class="flex-1 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary hover:opacity-80">End of Track</button>
+                  {#if $sleepTimer.active}
+                    <button onclick={cancelSleepTimer} class="rounded-lg px-3 py-1.5 text-sm font-medium text-red-400 hover:bg-surface-hover">Cancel</button>
+                  {/if}
+                </div>
               </div>
             </div>
           {/if}

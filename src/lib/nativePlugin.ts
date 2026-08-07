@@ -58,6 +58,7 @@ interface BackgroundAudioPlugin {
     curve: NativeCrossfadeCurve
     sigmoidSteepness: number
   }): Promise<void>
+  setSleepTimer(options: { active: boolean; mode: 'minutes' | 'endOfTrack'; minutes: number }): Promise<void>
   setEq(options: { filters: NativeFilterSnapshot[]; bypassed: boolean }): Promise<void>
   getState(): Promise<NativeEngineState>
   updateNowPlaying(): Promise<void>
@@ -71,6 +72,7 @@ interface BackgroundAudioPlugin {
   ): Promise<PluginListenerHandle>
   addListener(eventName: 'ended', listenerFunc: () => void): Promise<PluginListenerHandle>
   addListener(eventName: 'error', listenerFunc: (data: { message: string }) => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'sleepTimerFired', listenerFunc: () => void): Promise<PluginListenerHandle>
   addListener(eventName: string, listenerFunc: (data: unknown) => void): Promise<PluginListenerHandle>
 }
 
