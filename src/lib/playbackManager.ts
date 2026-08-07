@@ -45,6 +45,25 @@ class PlaybackManager {
   private _nativeRetryTimer: ReturnType<typeof setTimeout> | null = null
   private _hasNativeEngaged = false
   private _lastSortKey = ''
+  private _queueSyncScheduled = false
+
+  /**
+   * Coalesces queue-driven native refreshes. User queue mutations (add/remove/
+   * reorder/clear via QueueView, "Add next", play history, etc.) go through the
+   * `queue` store but don't run through the native-bound call sites; refreshing
+   * on every store write would re-arm the native crossfade several times per
+   * transition. Queueing a microtask collapses same-task mutations into one
+   * `refreshQueue` call for the final snapshot.
+   */
+  private _scheduleNativeQueueSync(): void {
+    if (!this.isNative() || !this._hasNativeEngaged || !this._initialized) return
+    if (this._queueSyncScheduled) return
+    this._queueSyncScheduled = true
+    queueMicrotask(() => {
+      this._queueSyncScheduled = false
+      void this._refreshNativeQueue()
+    })
+  }
 
   private isNative(): boolean {
     return Capacitor.isNativePlatform()
@@ -208,6 +227,15 @@ class PlaybackManager {
       queueManager.rebuildAutoQueue()
       this._refreshNativeQueue()
     })
+
+    // Keep the native engine's queue snapshot in step with ANY queue mutation
+    // (user edits add/remove/reorder/clear, plus promotions/replenishments done
+    // outside `_refreshNativeQueue`'s explicit call sites). The microtask
+    // coalescing turns same-task bursts into a single refresh.
+    this._queueSyncScheduled = false
+    queue.subscribe(() => {
+      this._scheduleNativeQueueSync()
+    })
   }
 
   private _attachPlaybackListeners(): void {
@@ -318,7 +346,7 @@ class PlaybackManager {
    * mutations (promotions, auto-queue replenishment).
    */
   private async _refreshNativeQueue(): Promise<void> {
-    if (!this.isNative()) return
+    if (!this.isNative() || !this._hasNativeEngaged) return
     const combined = queueManager.getCombinedQueue()
     const activeIndex = get(queue).activeIndex
     if (activeIndex < 0 || activeIndex >= combined.length) return
@@ -910,6 +938,13 @@ class PlaybackManager {
   async prev(): Promise<void> {
     sleepTimerManager.clearPendingStop()
     const q = get(queue)
+
+    // Native parity: restart the current track if more than a few seconds in.
+    if (get(currentTime) > 3) {
+      this.seek(0)
+      return
+    }
+
     const prevIndex = q.activeIndex - 1
     if (prevIndex >= 0) {
       setActiveQueueIndex(prevIndex)
@@ -922,7 +957,28 @@ class PlaybackManager {
           await this._loadAndPlay(track)
         }
       }
+      return
     }
+
+    if (get(loopMode) === 'all') {
+      const combined = queueManager.getCombinedQueue()
+      const lastIndex = combined.length - 1
+      if (lastIndex >= 0) {
+        setActiveQueueIndex(lastIndex)
+        const track = queueManager.findTrack(combined[lastIndex])
+        if (track) {
+          if (audioManager.isInBgMode) {
+            await this._loadAndPlayInBg(track)
+          } else {
+            await this._loadAndPlay(track)
+          }
+        }
+      }
+      return
+    }
+
+    // First track, loop-mode off — restart from the beginning.
+    this.seek(0)
   }
 
   seek(time: number): void {

@@ -6,9 +6,10 @@
   import { runManualWebDAVSync, testWebdavConn, connectNavidrome } from '../lib/syncEngine'
   import { navidromeSongToTrack } from '../lib/navidromeApi'
   import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, scanAllForceRescan } from '../lib/metadataScanner'
+  import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
   import { tick } from 'svelte'
-  import type { Track } from '../stores/appState'
+  import type { Track, SettingsMap } from '../stores/appState'
 
   type SettingsTab = 'sources' | 'playback' | 'library' | 'about'
 
@@ -47,13 +48,7 @@
   $effect(() => {
     const st = scrollContainer?.scrollTop ?? 0
     if (scrollTops[tab] !== st) scrollTops[tab] = st
-    saveViewStateSession('settings', {
-      tab,
-      scrollTops,
-      webdavUrl, webdavUser, webdavToken,
-      navidromeUrl, navidromeUser, navidromePassword,
-      preloadTracks, crossfadeDuration, tapeMode, snapTolerance, replayGainMode, scrobbling
-    })
+    saveViewStateSession('settings', { tab, scrollTops })
   })
 
   onMount(async () => {
@@ -168,7 +163,29 @@
     }
   }
 
+  /**
+   * Synchronously pushes the edited credential fields into the settings store
+   * AND Dexie. Action buttons must call this before reading `$settings` /
+   * `getSetting`, otherwise a button press within the 300ms debounce window
+   * acts on stale credentials.
+   */
+  async function commitCredentials(): Promise<void> {
+    const entries: [keyof SettingsMap, string][] = [
+      ['webdavUrl', webdavUrl],
+      ['webdavUser', webdavUser],
+      ['webdavToken', webdavToken],
+      ['navidromeUrl', navidromeUrl],
+      ['navidromeUser', navidromeUser],
+      ['navidromePassword', navidromePassword],
+    ]
+    for (const [key, value] of entries) {
+      updateSetting(key, value)
+    }
+    await Promise.all(entries.map(([key, value]) => setSetting(key, value)))
+  }
+
   async function testWebdav() {
+    await commitCredentials()
     webdavConnection.set({ connected: false, checking: true })
     try {
       const result = await testWebdavConn()
@@ -181,6 +198,7 @@
   async function buildIndex() {
     indexing = true
     try {
+      await commitCredentials()
       const s = $settings
       if (s.webdavUrl && s.webdavUser && s.webdavToken) {
         setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
@@ -192,15 +210,17 @@
   }
 
   async function startMetadataScan() {
+    await commitCredentials()
     const s = $settings
     if (s.webdavUrl && s.webdavUser && s.webdavToken) {
       setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
     }
     await ensureIndex()
-    scanAllNow(true)
+    scanAllNow(false)
   }
 
   async function rescanAllMetadata() {
+    await commitCredentials()
     const s = $settings
     if (s.webdavUrl && s.webdavUser && s.webdavToken) {
       setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
@@ -209,6 +229,7 @@
   }
 
   async function connectNavidromeHandler() {
+    await commitCredentials()
     navidromeConnection.set({ connected: false, checking: true })
     navidromeLoadStatus.set({ loading: true, loaded: 0, failed: 0 })
     try {
@@ -237,6 +258,7 @@
   }
 
   async function pushChanges() {
+    await commitCredentials()
     syncing = true
     syncResult = ''
     try {

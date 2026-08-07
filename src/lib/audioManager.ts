@@ -800,8 +800,8 @@ class AudioManager {
     const standbyRgGain = this._activeElement === 'a' ? this._rgGainB : this._rgGainA
     if (!fadeOutGain || !fadeInGain) return
 
-    if (standbyRgGain && this._nextTrackReplayGainLinear !== null) {
-      standbyRgGain.gain.value = this._nextTrackReplayGainLinear
+    if (standbyRgGain) {
+      standbyRgGain.gain.value = this._nextTrackReplayGainLinear ?? 1
     }
 
     const standbyEl = this.standbyElement

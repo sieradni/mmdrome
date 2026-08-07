@@ -563,7 +563,7 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func setMasterVolume(_ volume: Double) {
-        masterVolume = max(0, min(1, volume))
+        masterVolume = max(0, min(2, volume))
         refreshPreamp()
     }
 
