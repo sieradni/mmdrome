@@ -8,6 +8,7 @@ const STATIC_ASSETS = [
   BASE + '/index.html',
   BASE + '/icon-192.png',
   BASE + '/icon-512.png',
+  BASE + '/icon-1024.png',
   BASE + '/manifest.webmanifest',
   BASE + '/soundtouch-processor.js',
 ]
