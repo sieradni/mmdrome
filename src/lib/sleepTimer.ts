@@ -18,9 +18,29 @@ const TICK_MS = 1000
 class SleepTimerController {
   private timer: ReturnType<typeof setInterval> | null = null
   private listener: { remove: () => void } | null = null
+  /** Set when the end-of-track sleep pauses during a track transition. The
+   *  `_loadAndPlay` that follows could otherwise resume the newly loaded track
+   *  with its own `play()` right after our pause; the manager uses this flag to
+   *  keep the transition parked. Cleared by explicit playback control or when a
+   *  load honors it. */
+  private pendingStop = false
 
   private isNative(): boolean {
     return Capacitor.isNativePlatform()
+  }
+
+  /** True if an end-of-track sleep fired while a transition was in flight;
+   *  consumes the flag so only the immediately-following load is blocked. */
+  consumePendingStop(): boolean {
+    const v = this.pendingStop
+    this.pendingStop = false
+    return v
+  }
+
+  /** Cleared by any explicit user playback control (play/next/prev/seek/track
+   *  select) so a stale stop never blocks a manual start. */
+  clearPendingStop(): void {
+    this.pendingStop = false
   }
 
   async init(): Promise<void> {
@@ -39,6 +59,7 @@ class SleepTimerController {
 
   private clearLocal(pause = false): void {
     this.stopInterval()
+    this.pendingStop = pause
     sleepTimer.set({ active: false, mode: 'minutes', minutes: 30, endsAt: 0, remainingSeconds: 0 })
     if (pause) void playbackManager.pause()
   }

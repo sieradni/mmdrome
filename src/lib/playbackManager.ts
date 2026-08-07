@@ -482,6 +482,15 @@ class PlaybackManager {
     audioManager.syncBgSource(url)
     el.src = url
 
+    // The end-of-track sleep timer fired during this transition: keep the
+    // loaded track parked instead of letting the play() below resume it.
+    if (sleepTimerManager.consumePendingStop()) {
+      setPlaybackState('paused')
+      queueManager.promoteActiveTrack()
+      queueManager.replenishAutoQueue()
+      return
+    }
+
     let playAttempt = 0
     let played = false
     while (playAttempt < 3 && !played) {
@@ -597,6 +606,14 @@ class PlaybackManager {
       audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
     } else {
       audioManager.applyReplayGain()
+    }
+
+    // Same guard as _loadAndPlay: an end-of-track sleep that fired mid-transition
+    // must not be undone by playBg's autoplay.
+    if (sleepTimerManager.consumePendingStop()) {
+      setPlaybackState('paused')
+      queueManager.promoteActiveTrack()
+      return
     }
 
     const started = await audioManager.playBg(url)
@@ -780,6 +797,7 @@ class PlaybackManager {
   }
 
   async playTrackById(trackId: string): Promise<void> {
+    sleepTimerManager.clearPendingStop()
     const track = queueManager.findTrack(trackId)
     if (!track) return
 
@@ -805,6 +823,7 @@ class PlaybackManager {
   }
 
   async playTrackAt(index: number): Promise<void> {
+    sleepTimerManager.clearPendingStop()
     const combined = queueManager.getCombinedQueue()
     if (index < 0 || index >= combined.length) return
 
@@ -820,6 +839,7 @@ class PlaybackManager {
   }
 
   async play(): Promise<void> {
+    sleepTimerManager.clearPendingStop()
     if (this.isNative()) {
       if (get(currentTrack) && this._hasNativeEngaged) {
         await BackgroundAudio.play().catch(() => {})
@@ -851,7 +871,10 @@ class PlaybackManager {
       setPlaybackState('paused')
       return
     }
-    audioManager.activeElement.pause()
+    // playbackElement respects iOS background mode (the audible element is
+    // _bgEl there, not the foreground a/b element) — pausing activeElement
+    // would silently fail to stop background audio.
+    audioManager.playbackElement.pause()
     setPlaybackState('paused')
   }
 
@@ -864,6 +887,7 @@ class PlaybackManager {
   }
 
   async next(): Promise<void> {
+    sleepTimerManager.clearPendingStop()
     const combined = queueManager.getCombinedQueue()
     const q = get(queue)
     const nextIndex = q.activeIndex + 1
@@ -884,6 +908,7 @@ class PlaybackManager {
   }
 
   async prev(): Promise<void> {
+    sleepTimerManager.clearPendingStop()
     const q = get(queue)
     const prevIndex = q.activeIndex - 1
     if (prevIndex >= 0) {
@@ -901,6 +926,7 @@ class PlaybackManager {
   }
 
   seek(time: number): void {
+    sleepTimerManager.clearPendingStop()
     if (this.isNative()) {
       const track = get(currentTrack)
       const metaDur = track?.duration || time

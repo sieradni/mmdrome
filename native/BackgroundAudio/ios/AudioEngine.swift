@@ -97,6 +97,8 @@ final class TrackFileLoader {
 
     private var cache: [String: LoadedFile] = [:]
     private var activeTasks: [String: URLSessionDownloadTask] = [:]
+    /// Completions waiting on a download already in flight (see `prefetch`).
+    private var pendingCompletions: [String: [(URL?, Error?) -> Void]] = [:]
     private let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.requestCachePolicy = .returnCacheDataElseLoad
@@ -120,27 +122,49 @@ final class TrackFileLoader {
             completion(cache[track.trackId]?.url, nil)
             return
         }
-        if activeTasks[track.trackId] != nil { return }
+        if activeTasks[track.trackId] != nil {
+            // A download for this track is already in flight (started by
+            // `prefetchNeighbors`). Chain onto it instead of dropping the
+            // completion: `loadAndStart` only schedules its track once this
+            // fires, so a dropped callback leaves the engine silently stalled.
+            pendingCompletions[track.trackId, default: []].append(completion)
+            return
+        }
 
         let destination = Self.destinationURL(for: track)
         let task = session.downloadTask(with: track.url) { [weak self] tempURL, _, error in
             guard let self = self else { return }
             self.activeTasks[track.trackId] = nil
+            let pendings = self.pendingCompletions.removeValue(forKey: track.trackId) ?? []
             if let tempURL = tempURL, error == nil {
                 do {
                     try? FileManager.default.removeItem(at: destination)
                     try FileManager.default.moveItem(at: tempURL, to: destination)
                     self.cache[track.trackId] = LoadedFile(url: destination)
-                    completion(destination, nil)
                 } catch {
-                    completion(nil, error)
+                    pendings.forEach { $0(nil, error) }
+                    return
                 }
+                completion(destination, nil)
+                pendings.forEach { $0(destination, nil) }
             } else {
                 completion(nil, error)
+                pendings.forEach { $0(nil, error) }
             }
         }
         activeTasks[track.trackId] = task
         task.resume()
+    }
+
+    /// Drops a cached file (e.g. a corrupt or partial download) and cancels any
+    /// in-flight fetch for it so the next prefetch re-fetches from the server.
+    func evict(_ trackId: String) {
+        if let entry = cache.removeValue(forKey: trackId) {
+            try? FileManager.default.removeItem(at: entry.url)
+        }
+        activeTasks[trackId]?.cancel()
+        activeTasks[trackId] = nil
+        pendingCompletions.removeValue(forKey: trackId)
     }
 
     /// Deletes cached files for tracks that are no longer within `keepRadius` of `currentIndex`.
@@ -246,6 +270,11 @@ public final class NativeAudioEngine: NSObject {
     private var sleepTimer: Timer?
     /// When true, pauses at the natural end of the current track.
     private var sleepAtTrackEnd = false
+    /// Set when an end-of-track sleep paused exactly as the current track's
+    /// segment completed. The schedule is fully consumed, so the next `play()`
+    /// advances like a natural track end instead of resuming a dead node
+    /// (which would leave the JS state frozen on the finished track).
+    private var waitingAtTrackEnd = false
 
     // MARK: - Settings
 
@@ -379,6 +408,15 @@ public final class NativeAudioEngine: NSObject {
     public func play() {
         ensureEngineRunning()
         guard !tracks.isEmpty else { return }
+        // An end-of-track sleep paused us right as the previous track finished;
+        // its segment is gone, so resume by advancing like a natural next track.
+        // This keeps the engine and the JS play state in lockstep (onTrackChanged
+        // fires and the wrapper advances currentTrack/activeIndex).
+        if waitingAtTrackEnd {
+            waitingAtTrackEnd = false
+            advanceFromSleepPause()
+            return
+        }
         // Nothing scheduled (fresh queue or finished queue): (re)start the current track.
         if !hasLiveSchedule {
             loadAndStart(currentIndex: activeIndex, autoPlay: true)
@@ -651,8 +689,12 @@ public final class NativeAudioEngine: NSObject {
         positionBias = 0
         cachedPosition = 0
 
+        let generation = scheduleGeneration
         loader.prefetch(track) { [weak self] url, error in
             guard let self = self else { return }
+            // The user moved on (next-skip, another load) while this file was
+            // downloading — leave the newer schedule alone.
+            guard generation == self.scheduleGeneration else { return }
             guard let url = url else {
                 self.onError?(error?.localizedDescription ?? "Failed to load track")
                 return
@@ -678,6 +720,9 @@ public final class NativeAudioEngine: NSObject {
             return
         }
         guard let file = try? AVAudioFile(forReading: localURL) else {
+            // Corrupt or partial download. Evict it so the JS retry loop
+            // re-fetches instead of replaying a poisoned file forever.
+            loader.evict(track.trackId)
             onError?("Unsupported audio file: \(track.title)")
             return
         }
@@ -738,6 +783,20 @@ public final class NativeAudioEngine: NSObject {
         onQueueEnded?()
     }
 
+    /// Continues playback after an end-of-track sleep paused us at the natural
+    /// end of a track. Mirrors the natural-end logic in `handleSegmentCompletion`.
+    private func advanceFromSleepPause() {
+        if loopMode == .one {
+            playTrack(at: activeIndex, autoPlay: true)
+            return
+        }
+        if let next = nextIndex(after: activeIndex) {
+            playTrack(at: next, autoPlay: true)
+        } else {
+            handleTrackEnd()
+        }
+    }
+
     private func handleSegmentCompletion(index completedIndex: Int, generation: Int, isStandby: Bool = false) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -757,6 +816,7 @@ public final class NativeAudioEngine: NSObject {
             if self.sleepAtTrackEnd {
                 self.sleepAtTrackEnd = false
                 self.pause()
+                self.waitingAtTrackEnd = true
                 self.onSleepTimerFired?()
                 return
             }
@@ -809,6 +869,7 @@ public final class NativeAudioEngine: NSObject {
     /// Stops both players and invalidates all pending schedules/completions.
     private func cancelScheduled() {
         scheduleGeneration += 1
+        waitingAtTrackEnd = false
         crossfadeActive = false
         crossfadeArmed = false
         crossfadeTargetIndex = -1
