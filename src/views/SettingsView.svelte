@@ -6,7 +6,7 @@
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
   import { getPendingSyncMetadata } from '../lib/db'
-  import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP } from '../lib/metadataScanner'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
@@ -1003,8 +1003,13 @@
                 {/if}
               </div>
             {/each}
-            {#if unresolvedRows.length < countTotal()}
-              <p class="mt-1 text-xs text-muted">+ {countTotal() - unresolvedRows.length} more (list capped)</p>
+            {@const shownCount = unresolvedRows.filter((r) => (showIgnored || r.kind !== 'ignored') && (showMatched || r.kind !== 'matched')).length}
+            {#if shownCount < countTotal() && unresolvedRows.length === DISPLAY_CAP}
+              <p class="mt-1 text-xs text-muted">
+                Showing {shownCount} of {countTotal()} (list capped — toggle filters or raise the cap to see more)
+              </p>
+            {:else if shownCount < countTotal()}
+              <p class="mt-1 text-xs text-muted">+{countTotal() - shownCount} hidden by filters</p>
             {/if}
             {#if unresolvedCounts.ignored > 0}
               <button

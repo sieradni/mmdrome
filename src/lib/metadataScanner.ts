@@ -431,7 +431,7 @@ export interface UnresolvedMatch {
   pendingBlocked: number
 }
 
-const DISPLAY_CAP = 100
+export const DISPLAY_CAP = 100
 
 /**
  * All library tracks the scanner cannot confidently target (and rows whose
