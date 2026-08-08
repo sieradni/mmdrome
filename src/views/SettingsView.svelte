@@ -316,11 +316,11 @@
   let searchResults = $state<WebdavFileEntry[]>([])
   let searching = $state(false)
   let conflict = $state<{ trackId: string; path: string; conflictTitle: string } | null>(null)
-let showIgnored = $state(false)
+  let showIgnored = $state(false)
   let showMatched = $state(false)
   let unresolvedCounts = $state<Record<UnresolvedTrack['kind'], number>>({ 'no-match': 0, ambiguous: 0, 'vanished': 0, 'stale-base': 0, 'matched': 0, ignored: 0 })
   let blockedCount = $state(0)
-  let bindError = $state('')
+  let bindError = $state<{ trackId: string; message: string } | null>(null)
 
   function countTotal(): number {
     const c = unresolvedCounts
@@ -342,7 +342,7 @@ let showIgnored = $state(false)
   async function refreshUnresolved() {
     unresolvedLoading = true
     unresolvedError = ''
-    bindError = ''
+    bindError = null
     try {
       await commitCredentials()
       const s = $settings
@@ -374,7 +374,7 @@ let showIgnored = $state(false)
     pickerTrackId = pickerTrackId === trackId ? null : trackId
     searchQuery = ''
     searchResults = []
-    bindError = ''
+    bindError = null
   }
 
   async function runSearch() {
@@ -390,7 +390,7 @@ let showIgnored = $state(false)
   }
 
   async function doBind(trackId: string, path: string, force = false) {
-    bindError = ''
+    bindError = null
     const res = await bindTrackToFile(trackId, path, force)
     if (res.ok) {
       conflict = null
@@ -403,17 +403,23 @@ let showIgnored = $state(false)
       return
     }
     if (res.reason === 'conflict-pending') {
-      bindError = `Can't re-bind — the other track (${res.conflictTitle ?? 'unknown'}) has a pending change; unbound edits would be lost.`;
+      bindError = {
+        trackId,
+        message: `Can't re-bind — the other track (${res.conflictTitle ?? 'unknown'}) has a pending change; unbound edits would be lost.`,
+      }
       conflict = null
       return
     }
-    bindError = res.reason === 'not-in-index'
-      ? 'That file is not in the current index — refresh the index first.'
-      : res.reason === 'no-row'
-        ? 'No metadata row for this track.'
-        : res.reason === 'no-creds'
-          ? 'WebDAV credentials not configured.'
-          : 'Could not bind.'
+    bindError = {
+      trackId,
+      message: res.reason === 'not-in-index'
+        ? 'That file is not in the current index — refresh the index first.'
+        : res.reason === 'no-row'
+          ? 'No metadata row for this track.'
+          : res.reason === 'no-creds'
+            ? 'WebDAV credentials not configured.'
+            : 'Could not bind.',
+    }
   }
 
   async function doUnbind(trackId: string) {
@@ -855,7 +861,9 @@ let showIgnored = $state(false)
                       ? 'Has a pending rating/loved change — push is skipped while ignored.'
                       : row.kind === 'stale-base'
                         ? 'Has a pending rating/loved change — re-stamp it (or re-bind) to push.'
-                        : 'Has a pending rating/loved change — blocked until a file is bound.'}
+                        : row.kind === 'vanished'
+                          ? 'Has a pending rating/loved change — the bound file is gone; re-bind to push.'
+                          : 'Has a pending rating/loved change — blocked until a file is bound.'}
                   </p>
                 {/if}
                 {#if row.webdavPath}
@@ -894,8 +902,8 @@ let showIgnored = $state(false)
                     >Not on this server</button>
                   </div>
                   {/if}
-                {#if bindError}
-                  <p class="mt-2 text-xs text-red-400">{bindError}</p>
+                {#if bindError && bindError.trackId === row.trackId}
+                  <p class="mt-2 text-xs text-red-400">{bindError.message}</p>
                 {/if}
                 {#if pickerTrackId === row.trackId}
                   <div class="mt-2 space-y-2 border-t border-white/10 pt-2">
