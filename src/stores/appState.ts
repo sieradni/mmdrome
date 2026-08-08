@@ -49,6 +49,8 @@ export interface MetadataScanProgress {
   missing: number
   /** Rows with multiple equally-scored candidates — left untouched. */
   duplicateMatches: number
+  /** Human label of the active scan ("Scanning all files..."/"Scanning changed files..."). */
+  annotation?: string
 }
 
 export interface MetadataScanState {

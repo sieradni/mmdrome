@@ -15,6 +15,10 @@ import type { WebdavFileEntry } from "./db"
 
 const CONCURRENCY = 6
 
+/** Which rows a scan run processes — 'modified' diffs on mtime/fingerprint,
+ *  'force' re-reads every library track against a fresh index. */
+export type ScanShape = "modified" | "force"
+
 interface QueueItem {
   trackId: string
 }
@@ -31,6 +35,13 @@ let webdavUrl = ""
 let webdavUser = ""
 let webdavToken = ""
 let indexBaseKey = ""
+
+let scannedCount = 0
+let failedCount = 0
+let missingCount = 0
+let ambiguousCount = 0
+let totalTracks = 0
+let shape: ScanShape = "modified"
 
 function currentIndexKey(): string {
   return `${webdavUrl}|${webdavUser}`
@@ -82,13 +93,21 @@ export async function rebuildIndex(): Promise<void> {
   await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey, fingerprint: computeIndexFingerprint(index) })
 }
 
-let scannedCount = 0
-let failedCount = 0
-let missingCount = 0
-let ambiguousCount = 0
-let totalTracks = 0
-
-export async function scanAllNow(forceRescan = false): Promise<void> {
+/**
+ * Runs a WebDAV metadata scan against the currently-configured credentials.
+ *
+ * 'modified' — the incremental path ("Check Modified Ratings" / post-connect
+ * auto-scan): always probes the server (a stale snapshot can never detect
+ * remote edits), diffs rows by mtime, and only re-fetches changed files; rows
+ * that never matched are only retried when the server file set changed
+ * (fingerprint). 'force' — "Rescan All Metadata": rebuilds the index and
+ * re-reads every library track regardless of mtime.
+ *
+ * Both abort into status 'error' when the probe fails and share the same
+ * drain/process pipeline; the progress record carries `annotation` describing
+ * which shape is running for the status line.
+ */
+export async function scanAll(shape_: ScanShape = "modified"): Promise<void> {
   cancelled = true
   const myGen = ++scanGen
   queue = []
@@ -97,29 +116,31 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
   missingCount = 0
   ambiguousCount = 0
   totalTracks = 0
+  shape = shape_
 
   if (!webdavUrl || !webdavUser || !webdavToken) return
   if (scanGen !== myGen) return
 
-  // Fingerprint of the index stored by the LAST probe. Read before the probe
-  // below — refreshIndex overwrites the stored snapshot with the fresh one.
-  const priorSnapshot = !forceRescan ? await getWebdavFileIndex() : undefined
+  const annotation = shape === "force" ? "Scanning all files..." : "Scanning changed files..."
+  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation } })
 
-  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
-
-  if (forceRescan) {
+  if (shape === "force") {
     try {
       await rebuildIndex()
     } catch {
       if (scanGen !== myGen) return
       metadataScanState.set({
         status: "error",
-        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
+        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation },
         error: "Index refresh failed — is the WebDAV server reachable?",
       })
       return
     }
   } else {
+    // Fingerprint of the index stored by the LAST probe. Read before the probe
+    // below — refreshIndex overwrites the stored snapshot with the fresh one.
+    const priorSnapshot = await getWebdavFileIndex()
+
     // Always probe the server: the whole point of "Check Modified Ratings" is
     // freshness. A stale snapshot can never detect remote edits; abort loudly
     // on probe failure instead of scanning against one.
@@ -128,41 +149,40 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
       if (scanGen !== myGen) return
       metadataScanState.set({
         status: "error",
-        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
+        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation },
         error: "Index refresh failed — is the WebDAV server reachable?",
       })
       return
     }
     if (index.length === 0) {
-      metadataScanState.set({ status: "complete", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
+      metadataScanState.set({ status: "complete", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation } })
       return
+    }
+
+    const tracks = get(library)
+    const cache = get(metadataCache)
+
+    const timestamps = buildPathTimestamps(index)
+    const { changed, unmatched } = findChangedTracks(tracks, cache, index, timestamps)
+
+    for (const t of changed) queue.push({ trackId: t.trackId })
+
+    // The server file set is identical to the last probe (fingerprint match):
+    // rows that were never matched cannot have become matchable (no added/
+    // renamed/resized file to match against), so retrying them would only burn
+    // CPU. Matched rows still re-diff on their mtime above. A missing stored
+    // fingerprint (first scan after the upgrade) treats the set as changed.
+    const setUnchanged = priorSnapshot?.fingerprint !== undefined
+      && computeIndexFingerprint(index) === priorSnapshot.fingerprint
+    if (!setUnchanged) {
+      for (const t of unmatched) queue.push({ trackId: t.trackId })
     }
   }
 
   const tracks = get(library)
-  const cache = get(metadataCache)
-
-  const timestamps = buildPathTimestamps(index)
-  const { changed, unmatched } = findChangedTracks(tracks, cache, index, timestamps)
-  const alreadySeen = new Set(cache.keys())
-
-  for (const t of changed) queue.push({ trackId: t.trackId })
-
-  // The server file set is identical to the last probe (fingerprint match):
-  // rows that were never matched cannot have become matchable (no added/
-  // renamed/resized file to match against), so retrying them would only burn
-  // CPU. Matched rows still re-diff on their mtime above. A missing stored
-  // fingerprint (first scan after the upgrade) treats the set as changed.
-  const setUnchanged = priorSnapshot?.fingerprint !== undefined
-    && computeIndexFingerprint(index) === priorSnapshot.fingerprint
-  if (!setUnchanged) {
-    for (const t of unmatched) queue.push({ trackId: t.trackId })
+  if (shape === "force") {
+    for (const t of tracks) queue.push({ trackId: t.trackId })
   }
-
-  const skipCount = Array.from(alreadySeen).filter((id) => {
-    const meta = cache.get(id)
-    return meta?.webdavPath && !changed.some((c) => c.trackId === id) && !unmatched.some((u) => u.trackId === id)
-  }).length
 
   totalTracks = queue.length
   if (scanGen !== myGen) return
@@ -173,7 +193,7 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
     // updateScanProgress, leaving the UI stuck at 0/0 "scanning" forever.
     metadataScanState.set({
       status: "complete",
-      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
+      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation },
       error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
     })
     return
@@ -181,7 +201,7 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
 
   metadataScanState.set({
     status: "scanning",
-    progress: { scanned: 0, total: totalTracks, failed: 0, missing: 0, duplicateMatches: 0 },
+    progress: { scanned: 0, total: totalTracks, failed: 0, missing: 0, duplicateMatches: 0, annotation },
   })
 
   drain()
@@ -278,66 +298,17 @@ async function processItem(item: QueueItem): Promise<void> {
 
 function updateScanProgress(): void {
   const done = scannedCount + failedCount + missingCount + ambiguousCount
+  const progress = {
+    scanned: scannedCount,
+    total: totalTracks,
+    failed: failedCount,
+    missing: missingCount,
+    duplicateMatches: ambiguousCount,
+    annotation: shape === "force" ? "Scanning all files..." : "Scanning changed files...",
+  }
   if (done >= totalTracks) {
-    metadataScanState.set({
-      status: "complete",
-      progress: { scanned: scannedCount, total: totalTracks, failed: failedCount, missing: missingCount, duplicateMatches: ambiguousCount },
-    })
+    metadataScanState.set({ status: "complete", progress })
   } else {
-    metadataScanState.set({
-      status: "scanning",
-      progress: { scanned: done, total: totalTracks, failed: failedCount, missing: missingCount, duplicateMatches: ambiguousCount },
-    })
+    metadataScanState.set({ status: "scanning", progress })
   }
-}
-
-export async function scanAllForceRescan(): Promise<void> {
-  cancelled = true
-  const myGen = ++scanGen
-  queue = []
-  scannedCount = 0
-  failedCount = 0
-  missingCount = 0
-  ambiguousCount = 0
-  totalTracks = 0
-
-  if (!webdavUrl || !webdavUser || !webdavToken) return
-  if (scanGen !== myGen) return
-
-  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
-
-  try {
-    await rebuildIndex()
-  } catch {
-    if (scanGen !== myGen) return
-    metadataScanState.set({
-      status: "error",
-      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
-      error: "Index refresh failed — is the WebDAV server reachable?",
-    })
-    return
-  }
-
-  const tracks = get(library)
-  for (const t of tracks) queue.push({ trackId: t.trackId })
-
-  totalTracks = queue.length
-  if (scanGen !== myGen) return
-  cancelled = false
-
-  if (totalTracks === 0) {
-    metadataScanState.set({
-      status: "complete",
-      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
-      error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
-    })
-    return
-  }
-
-  metadataScanState.set({
-    status: "scanning",
-    progress: { scanned: 0, total: totalTracks, failed: 0, missing: 0, duplicateMatches: 0 },
-  })
-
-  drain()
 }

@@ -3,7 +3,7 @@ import { webdavFetch, authHeaders, buildWebdavUrl } from "./webdavUtils"
 import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache, saveSongLibraryCache } from "$lib/db"
 import { modifyMetadataBuffer } from "$lib/tagWriter"
 import { metadataCache, settings, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
-import { setWebdavCredentials, scanAllNow, setServerLastScan } from "./metadataScanner"
+import { setWebdavCredentials, scanAll, setServerLastScan } from "./metadataScanner"
 import {
   testNavidromeConnection as navidromeTestConnection,
   loadNavidromeSongs as navidromeLoadSongs,
@@ -252,9 +252,9 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   const s = get(settings)
   if (s.webdavUrl && s.webdavUser && s.webdavToken) {
     setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
-    // scanAllNow probes the server itself (refreshIndex) — no ensureIndex
+    // scanAll probes the server itself (refreshIndex) — no ensureIndex
     // pre-call, or the connect would issue two PROPFINDs.
-    void scanAllNow(false).catch(() => {})
+    void scanAll('modified').catch(() => {})
   }
 
   return result

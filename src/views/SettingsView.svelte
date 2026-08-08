@@ -5,7 +5,7 @@
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
-  import { setWebdavCredentials, rebuildIndex, scanAllNow, scanAllForceRescan } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, scanAll } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
   import { tick } from 'svelte'
@@ -198,7 +198,7 @@
       if (result.connected && $settings.webdavUrl && $settings.webdavUser && $settings.webdavToken) {
         if (get(library).length > 0 && get(metadataScanState).status === 'idle') {
           setWebdavCredentials($settings.webdavUrl, $settings.webdavUser, $settings.webdavToken)
-          scanAllNow(false)
+          scanAll('modified')
         }
       }
     } catch (err) {
@@ -232,8 +232,8 @@
     if (s.webdavUrl && s.webdavUser && s.webdavToken) {
       setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
     }
-    // scanAllNow probes the server itself — no ensureIndex pre-call.
-    scanAllNow(false)
+    // scanAll probes the server itself — no ensureIndex pre-call.
+    scanAll('modified')
   }
 
   async function rescanAllMetadata() {
@@ -242,7 +242,7 @@
     if (s.webdavUrl && s.webdavUser && s.webdavToken) {
       setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
     }
-    scanAllForceRescan()
+    scanAll('force')
   }
 
   async function connectNavidromeHandler() {
@@ -375,7 +375,7 @@
                 <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
-              <p class="text-sm text-muted">Progress: {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
+              <p class="text-sm text-muted">{$metadataScanState.progress.annotation ?? 'Scanning files'} — {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
             {:else if $metadataScanState.status === 'error'}
               <p class="text-sm text-red-400">{$metadataScanState.error}</p>
             {/if}
@@ -649,7 +649,7 @@
                 <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
-              <p class="text-sm text-muted">Progress: {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
+              <p class="text-sm text-muted">{$metadataScanState.progress.annotation ?? 'Scanning files'} — {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
             {:else if $metadataScanState.status === 'error'}
               <p class="text-sm text-red-400">{$metadataScanState.error}</p>
             {/if}
