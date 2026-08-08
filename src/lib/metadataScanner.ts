@@ -660,6 +660,20 @@ export async function unbindTrack(trackId: string): Promise<void> {
   })
 }
 
+/** Discards a pending local rating/loved edit — resets the row to 'synced'
+ *  *without* pushing (the pending change is abandoned), keeping any existing
+ *  file/provenance fields. The local app values in memory stay until the next
+ *  scan or reload — this only clears the queued server/file write. */
+export async function discardLocalEdit(trackId: string): Promise<void> {
+  const existing = get(metadataCache).get(trackId)
+  if (!existing) return
+  updateMetadata({
+    ...existing,
+    syncStatus: 'synced',
+    lastModifiedLocally: Date.now(),
+  })
+}
+
 export async function ignoreTrack(trackId: string): Promise<void> {
   const existing = get(metadataCache).get(trackId)
   if (!existing) return

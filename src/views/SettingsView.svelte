@@ -5,7 +5,7 @@
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
-  import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit } from '../lib/metadataScanner'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
@@ -299,10 +299,10 @@
   // ── File Matching ──────────────────────────────────────────────────────
 
   const kindBadges: Record<UnresolvedTrack['kind'], { label: string; cls: string }> = {
-    'ambiguous': { label: 'Ambiguous', cls: 'bg-yellow-500/20 text-yellow-300 ring-yellow-500/30' },
-    'no-match': { label: 'No match', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
-    'vanished': { label: 'File vanished', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
-    'stale-base': { label: 'Server changed', cls: 'bg-orange-500/20 text-orange-300 ring-orange-500/30' },
+    'ambiguous': { label: 'Multiple matches', cls: 'bg-yellow-500/20 text-yellow-300 ring-yellow-500/30' },
+    'no-match': { label: 'File not found', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
+    'vanished': { label: 'Removed from server', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
+    'stale-base': { label: 'Server URL updated', cls: 'bg-orange-500/20 text-orange-300 ring-orange-500/30' },
     'ignored': { label: 'Ignored', cls: 'bg-white/10 text-muted ring-white/20' },
     'matched': { label: 'Matched', cls: 'bg-green-500/20 text-green-300 ring-green-500/30' },
   }
@@ -330,10 +330,11 @@
   function countLine(): string {
     const c = unresolvedCounts
     const bits: string[] = []
-    if (c['no-match']) bits.push(`${c['no-match']} no match`)
-    if (c.ambiguous) bits.push(`${c.ambiguous} ambiguous`)
-    if (c.vanished) bits.push(`${c.vanished} vanished`)
+    if (c['no-match']) bits.push(`${c['no-match']} file not found`)
+    if (c.ambiguous) bits.push(`${c.ambiguous} multiple matches`)
+    if (c.vanished) bits.push(`${c.vanished} removed from server`)
     if (c['stale-base']) bits.push(`${c['stale-base']} server changed`)
+    if (c.ignored) bits.push(`${c.ignored} ignored`)
     if (bits.length === 0) return ''
     const line = `Unresolved — ${bits.join(', ')}`
     return blockedCount > 0 ? `${line}; ${blockedCount} blocked by pending edits` : line
@@ -440,6 +441,11 @@
   async function doRestamp(row: UnresolvedTrack) {
     if (!row.webdavPath) return
     await doBind(row.trackId, row.webdavPath)
+  }
+
+  async function doDiscard(trackId: string) {
+    await discardLocalEdit(trackId)
+    await refreshUnresolved()
   }
 </script>
 
@@ -832,7 +838,7 @@
             >Refresh</button>
           </div>
           <p class="mb-2 text-sm text-muted">
-            Tracks without a safe WebDAV file match. Bind one manually to make them pushable, or mark them as not on this server.
+            Shows songs the scanner could not safely link to a file on your WebDAV server. Link them manually so Push Changes can write their ratings, or mark them as not on this server.
           </p>
           {#if countTotal() > 0}
             <p class="mb-2 text-sm text-muted">{countLine()}</p>
@@ -857,13 +863,13 @@
                 </div>
                 {#if row.pendingPush && row.kind !== 'matched'}
                   <p class="mt-1 text-xs text-yellow-300">
-                    {row.kind === 'ignored'
-                      ? 'Has a pending rating/loved change — push is skipped while ignored.'
-                      : row.kind === 'stale-base'
-                        ? 'Has a pending rating/loved change — re-stamp it (or re-bind) to push.'
-                        : row.kind === 'vanished'
-                          ? 'Has a pending rating/loved change — the bound file is gone; re-bind to push.'
-                          : 'Has a pending rating/loved change — blocked until a file is bound.'}
+                 {row.kind === 'ignored'
+                       ? 'A local rating is waiting to upload, but push is skipped while this track is ignored.'
+                       : row.kind === 'stale-base'
+                         ? 'A local rating is waiting to upload — update the link to push it.'
+                         : row.kind === 'vanished'
+                           ? 'A local rating is waiting to upload, but its file is gone from the server. Select a file to push.'
+                           : 'A local rating is waiting to upload — link it to a file to push.'}
                   </p>
                 {/if}
                 {#if row.webdavPath}
@@ -874,11 +880,11 @@
                     <button
                       onclick={() => doRestamp(row)}
                       class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
-                    >Re-stamp to current server</button>
+                    >Update file link</button>
                     <button
                       onclick={() => openPicker(row.trackId)}
                       class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
-                    >Find file…</button>
+                  >Search for file…</button>
                   </div>
                 {:else if row.kind === 'matched'}
                   <button
@@ -895,12 +901,18 @@
                     <button
                       onclick={() => openPicker(row.trackId)}
                       class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-80"
-                    >{row.kind === 'ambiguous' ? 'Choose file…' : 'Find file…'}</button>
+                    >Select correct file…</button>
                     <button
                       onclick={() => doIgnore(row.trackId)}
                       class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-muted transition-opacity hover:opacity-80"
                     >Not on this server</button>
                   </div>
+                  {#if row.pendingPush}
+                    <button
+                      onclick={() => doDiscard(row.trackId)}
+                      class="mt-2 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                    >Discard local change</button>
+                  {/if}
                   {/if}
                 {#if bindError && bindError.trackId === row.trackId}
                   <p class="mt-2 text-xs text-red-400">{bindError.message}</p>
@@ -909,7 +921,7 @@
                   <div class="mt-2 space-y-2 border-t border-white/10 pt-2">
                     {#if row.candidates.length > 0}
                       <p class="text-xs text-muted">
-                        {row.kind === 'ambiguous' ? 'Several files match equally — pick the right one:' : 'Best candidates:'}
+                        {row.kind === 'ambiguous' ? 'Multiple files match equally — choose the correct one:' : 'Suggested files:'}
                       </p>
                       {#each row.candidates as cand (cand.path)}
                         <button
