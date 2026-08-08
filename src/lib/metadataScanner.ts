@@ -398,9 +398,11 @@ const DISPLAY_CAP = 100
  * push would be skipped): no match found, ambiguous tie, previously-matched
  * file vanished from a fresh index, or a stale `webdavBase` (server switched)
  * plus the audit buckets: manual/auto `matched` rows and user-dismissed
- * `ignored` rows (their pending-ness is reported truthfully). Unresolved
- * counts are exact over the whole library; candidate computation is only
- * done for the rows actually displayed.
+ * `ignored` rows (their pending-ness is reported truthfully). Counts are
+ * exact over the whole library (unbound rows are scored once for the
+ * no-match/ambiguous split); the row LIST is capped at DISPLAY_CAP by rank —
+ * unresolved-with-pending-edit first, then unresolved, then matched/ignored —
+ * and prompt candidates are retained only for the displayed rows.
  *
  * Pending-push rows sort first: those block Push Changes, which is the point.
  * Uses the in-memory index when built this session (no extra PROPFIND);
@@ -449,6 +451,8 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
     } else if (meta?.webdavPath) {
       if (!indexPaths.has(meta.webdavPath)) {
         counts.vanished++
+        // Vanished + pending is equally un-pushable (GET 404s -> skipped).
+        if (base.pendingPush) pendingBlocked++
         row = { ...base, kind: 'vanished', webdavPath: meta.webdavPath, candidates: [] }
       } else if (meta.webdavBase !== baseKey) {
         counts['stale-base']++
@@ -467,6 +471,9 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
         }
       }
     } else {
+      // Scoring is required for the exact no-match/ambiguous split, so every
+      // unbound track is scored once here; the prompt arrays are released
+      // again by the cap below (only displayed rows keep their candidates).
       const match = matchTrackToWebdavCandidates(t, index)
       counts[match.status === 'ambiguous' ? 'ambiguous' : 'no-match']++
       if (base.pendingPush) pendingBlocked++
@@ -476,14 +483,19 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
         candidates: match.promptCandidates,
       }
     }
-    if (rows.length < DISPLAY_CAP) rows.push(row)
+    rows.push(row)
   }
 
+  // Rank first so the CAP picks the rows that matter: unresolved with a
+  // pending edit (blocked), then unresolved, then resolved audit buckets.
   rows.sort((a, b) => {
-    if (a.pendingPush !== b.pendingPush) return a.pendingPush ? -1 : 1
+    const rankOf = (r: UnresolvedTrack): number =>
+      r.kind === 'matched' || r.kind === 'ignored' ? 2 : (r.pendingPush ? 0 : 1)
+    const d = rankOf(a) - rankOf(b)
+    if (d !== 0) return d
     return a.title.localeCompare(b.title)
   })
-  return { rows, counts, pendingBlocked }
+  return { rows: rows.slice(0, DISPLAY_CAP), counts, pendingBlocked }
 }
 
 /** Path/filename substring search over the in-memory index (extension-filtered). */
