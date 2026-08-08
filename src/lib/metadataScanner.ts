@@ -511,9 +511,11 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
         }
       }
     } else {
-      // Scoring is required for the exact no-match/ambiguous split, so every
-      // unbound track is scored once here; the prompt arrays are released
-      // again by the cap below (only displayed rows keep their candidates).
+      // Exact no-match/ambiguous split requires scoring every unbound track —
+      // there is no cheap classification for "would this tie". The scoring
+      // pass is the same work an incremental scan does, and only runs when
+      // this view is open/refreshed. prompt arrays are kept only for the
+      // capped, displayed rows (the slice below drops the rest).
       const match = matchTrackToWebdavCandidates(t, index)
       counts[match.status === 'ambiguous' ? 'ambiguous' : 'no-match']++
       if (base.pendingPush) pendingBlocked++
@@ -662,7 +664,7 @@ export async function unbindTrack(trackId: string): Promise<void> {
 
 /** Discards a pending local rating/loved edit — resets the row to 'synced'
  *  *without* pushing (the pending change is abandoned), keeping any existing
- *  file/provenance fields. The local app values in memory stay until the next
+ *  file/provenance fields. The local app cache values stay until the next
  *  scan or reload — this only clears the queued server/file write. */
 export async function discardLocalEdit(trackId: string): Promise<void> {
   const existing = get(metadataCache).get(trackId)

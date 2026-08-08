@@ -5,6 +5,7 @@
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
+  import { getPendingSyncMetadata } from '../lib/db'
   import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit } from '../lib/metadataScanner'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
@@ -41,6 +42,8 @@
   let scrobbling = $state(false)
   let syncing = $state(false)
   let syncResult = $state('')
+  let pendingPushCount = $state(0)
+  let confirmPush = $state(false)
   let ratingSource = $state<'webdav' | 'navidrome'>('webdav')
   let syncToNavidrome = $state(false)
   let writeTagsInNavidromeMode = $state(false)
@@ -281,6 +284,22 @@
 
   async function pushChanges() {
     await commitCredentials()
+    const pending = await getPendingSyncMetadata()
+    const safeCount = pending.filter((r) => r.webdavPath && r.webdavBase === `${$settings.webdavUrl}|${$settings.webdavUser}`).length
+    const unsafeCount = pending.length - safeCount
+    if (safeCount > 0) {
+      pendingPushCount = safeCount
+      confirmPush = true
+    }
+    // if nothing is safely pushable (all skipped/no-path/wrong-server), just run
+    // and report the result so the user sees the "N skipped" state.
+    if (safeCount === 0) {
+      performPush()
+    }
+  }
+
+  async function performPush() {
+    confirmPush = false
     syncing = true
     syncResult = ''
     try {
@@ -764,6 +783,27 @@
             {/if}
           </div>
         </section>
+
+        {#if confirmPush}
+          <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+            <div class="w-full max-w-sm rounded-xl bg-surface-raised p-4">
+              <h4 class="mb-2 text-base font-medium text-primary">Write ratings to WebDAV files?</h4>
+              <p class="mb-4 text-sm text-muted">
+                This will download and rewrite tags (rating and loved heart) on {pendingPushCount} file(s) on your WebDAV server. Songs with a wrong file link will get the wrong rating written, so double-check File Matching first.
+              </p>
+              <div class="flex justify-end gap-2">
+                <button
+                  onclick={() => { confirmPush = false }}
+                  class="rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+                >Cancel</button>
+                <button
+                  onclick={performPush}
+                  class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-80"
+                >Write to files</button>
+              </div>
+            </div>
+          </div>
+        {/if}
 
         <!-- Metadata Scan -->
         <section class="px-4 py-4">
