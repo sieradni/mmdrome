@@ -890,7 +890,7 @@
           {:else if unresolvedRows.length === 0}
             <p class="text-sm text-green-400">All tracks matched.</p>
           {:else}
-            {#each (showIgnored || showMatched ? unresolvedRows : unresolvedRows.filter((r) => r.kind !== 'ignored' && r.kind !== 'matched')) as row (row.trackId)}
+            {#each unresolvedRows.filter((r) => (showIgnored || r.kind !== 'ignored') && (showMatched || r.kind !== 'matched')) as row (row.trackId)}
               <div class="mb-2 rounded-lg bg-surface px-3 py-2">
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
