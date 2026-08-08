@@ -432,6 +432,20 @@ export async function getScanStatus(config: NavidromeConfig): Promise<ScanStatus
   return { lastScan: resp.scanStatus?.lastScan ?? '' }
 }
 
+/**
+ * Normalizes Subsonic's `starred` field to a boolean. The REST API sends an
+ * ISO-8601 timestamp string when a song is starred (absent otherwise), but some
+ * servers/clients serialize a literal boolean — accept both, plus explicit
+ * string booleans.
+ */
+export function isStarred(starred: boolean | string | undefined): boolean {
+  if (typeof starred === 'boolean') return starred
+  if (starred === undefined) return false
+  const s = starred.trim().toLowerCase()
+  if (s === '' || s === 'false' || s === '0') return false
+  return true
+}
+
 export function navidromeSongToTrack(song: NavidromeSong): Track {
   const fileType = (song.suffix || song.contentType || 'mp3').toLowerCase().replace('.', '') as Track['fileType']
   const validTypes: Track['fileType'][] = ['mp3', 'flac', 'm4a', 'ogg', 'opus']
@@ -456,7 +470,7 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     albumArtist: song.albumArtist,
     trackNumber: song.track,
     genre: song.genre,
-    starred: song.starred,
+    starred: isStarred(song.starred),
     userRating: song.userRating,
   }
 }

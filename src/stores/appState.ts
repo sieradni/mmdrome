@@ -25,7 +25,7 @@ export interface Track {
   trackNumber?: number
   comments?: string
   genre?: string
-  starred?: boolean | string
+  starred?: boolean
   userRating?: number
 }
 
@@ -391,7 +391,7 @@ export function seedNavidromeFeedback(tracks: Track[]): void {
     let loved = existing?.loved ?? false
     if (source === 'navidrome' || !existing || (!existing.webdavPath && !loved)) {
       if (starred !== undefined) {
-        loved = Boolean(starred)
+        loved = starred === true
       }
     }
 
