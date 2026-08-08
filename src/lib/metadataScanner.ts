@@ -1,5 +1,5 @@
 import { get } from "svelte/store"
-import { library, metadataCache, metadataScanState, updateMetadata } from "../stores/appState"
+import { library, metadataCache, metadataScanState, settings, updateMetadata } from "../stores/appState"
 import type { Track } from "../stores/appState"
 import { saveWebdavFileIndex, getWebdavFileIndex } from "./db"
 import type { LocalMetadataStore } from "./db"
@@ -294,17 +294,22 @@ async function processItem(item: QueueItem): Promise<void> {
       return
     }
 
+    // Navidrome mode: the server is authoritative for rating/loved, and the
+    // file tag may be stale (or edited server-side since it was last read) —
+    // never clobber the cached values with tag values. Keep refreshing the
+    // path/stamps so Push targeting stays accurate.
+    const navidromeAuthoritative = existing && get(settings).ratingSource === 'navidrome'
     updateMetadata({
       trackId: track.trackId,
-      rating: meta.rating,
-      loved: meta.loved,
+      rating: navidromeAuthoritative ? existing.rating : meta.rating,
+      loved: navidromeAuthoritative ? existing.loved : meta.loved,
       fileType: track.fileType,
       syncStatus: "synced",
       lastModifiedLocally: Date.now(),
       webdavPath: match.entry.path,
       webdavLastModified: match.entry.lastModified,
       webdavBase: currentIndexKey(),
-      comments: meta.comments,
+      comments: navidromeAuthoritative ? existing.comments : meta.comments,
     })
     scannedCount++
   } catch {
