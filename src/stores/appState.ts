@@ -313,9 +313,12 @@ export function initMetadataForTracks(tracks: Track[]): void {
  * Seeds rating/loved values carried by Navidrome songs (starred/userRating) into
  * the metadata cache so the UI shows server state without a full re-merge. Only
  * overwrites entries that were not locally modified (`syncStatus: 'synced'`).
+ * In 'webdav' mode, existing WebDAV ratings take precedence over Navidrome's
+ * integer-rounded star ratings.
  */
 export function seedNavidromeFeedback(tracks: Track[]): void {
   const cache = get(metadataCache)
+  const source = get(settings).ratingSource ?? 'webdav'
   const updates: LocalMetadataStore[] = []
   for (const t of tracks) {
     if (!t.trackId.startsWith('navidrome-')) continue
@@ -323,12 +326,27 @@ export function seedNavidromeFeedback(tracks: Track[]): void {
     if (starred === undefined && userRating === undefined) continue
     const existing = cache.get(t.trackId)
     if (existing && existing.syncStatus === 'pending_sync') continue
+
+    let rating = existing?.rating ?? 0
+    if (source === 'navidrome' || !existing || (!existing.webdavPath && rating === 0)) {
+      if (userRating !== undefined) {
+        rating = Math.min(100, Math.round(userRating * 20))
+      }
+    }
+
+    let loved = existing?.loved ?? false
+    if (source === 'navidrome' || !existing || (!existing.webdavPath && !loved)) {
+      if (starred !== undefined) {
+        loved = Boolean(starred)
+      }
+    }
+
     const next: LocalMetadataStore = {
       trackId: t.trackId,
-      rating: userRating !== undefined ? Math.min(100, Math.round(userRating * 20)) : existing?.rating ?? 0,
-      loved: starred ? true : existing?.loved ?? false,
+      rating,
+      loved,
       fileType: existing?.fileType ?? t.fileType,
-      syncStatus: 'synced',
+      syncStatus: existing?.syncStatus ?? 'synced',
       lastModifiedLocally: existing?.lastModifiedLocally ?? Date.now(),
       comments: existing?.comments ?? t.comments,
       webdavPath: existing?.webdavPath,

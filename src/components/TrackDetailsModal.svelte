@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { metadataCache, updateMetadata } from '../stores/appState'
+  import { metadataCache } from '../stores/appState'
   import type { Track } from '../stores/appState'
-  import type { LocalMetadataStore } from '../lib/db'
+  import { commitFeedback } from '../lib/feedbackService'
   import TrackDetailPanel from './TrackDetailPanel.svelte'
 
   let { track, onclose }: { track: Track; onclose: () => void } = $props()
@@ -19,19 +19,7 @@
   })
 
   function commit() {
-    const existing = $metadataCache.get(track.trackId)
-    const meta: LocalMetadataStore = {
-      trackId: track.trackId,
-      rating,
-      loved,
-      fileType: existing?.fileType ?? track.fileType,
-      syncStatus: 'pending_sync',
-      lastModifiedLocally: Date.now(),
-      comments: existing?.comments ?? track.comments,
-      webdavPath: existing?.webdavPath,
-      webdavLastModified: existing?.webdavLastModified,
-    }
-    updateMetadata(meta)
+    commitFeedback(track, rating, loved)
   }
 
   function setStar(i: number) {

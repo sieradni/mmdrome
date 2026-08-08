@@ -16,14 +16,14 @@ export function ratingToMp3Popm(rating: number): number {
 
 export function popmToLocalRating(popm: number): number {
   if (popm <= 0) return 0
-  if (popm <= 8) return 10
-  if (popm <= 20) return 20
-  if (popm <= 59) return 30
-  if (popm <= 100) return 40
-  if (popm <= 121) return 50
-  if (popm <= 157) return 60
-  if (popm <= 190) return 70
-  if (popm <= 219) return 80
+  if (popm <= 19) return 10
+  if (popm <= 39) return 20
+  if (popm <= 63) return 30
+  if (popm <= 90) return 40
+  if (popm <= 116) return 50
+  if (popm <= 140) return 60
+  if (popm <= 166) return 70
+  if (popm <= 195) return 80
   if (popm <= 248) return 90
   return 100
 }
