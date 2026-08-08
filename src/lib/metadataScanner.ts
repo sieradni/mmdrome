@@ -145,6 +145,13 @@ async function processItem(item: QueueItem): Promise<void> {
   const track = tracks.find((t) => t.trackId === item.trackId)
   if (!track || scanGen !== startedGen) return
 
+  const existing = get(metadataCache).get(track.trackId)
+  if (existing && existing.syncStatus === 'pending_sync') {
+    if (scanGen === startedGen) scannedCount++
+    updateScanProgress()
+    return
+  }
+
   const match = matchTrackToWebdav(track, index)
   if (!match || scanGen !== startedGen) {
     scannedCount++
