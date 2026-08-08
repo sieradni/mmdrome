@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { get } from 'svelte/store'
-  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, library, metadataCache } from '../stores/appState'
+  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, library } from '../stores/appState'
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
@@ -328,6 +328,10 @@
       const s = $settings
       if (s.webdavUrl && s.webdavUser && s.webdavToken) {
         setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
+      } else {
+        unresolvedError = 'WebDAV credentials not configured'
+        unresolvedRows = []
+        return
       }
       const rows = await listUnresolvedMatches()
       unresolvedRows = rows
