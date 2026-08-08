@@ -419,14 +419,17 @@ export interface UnresolvedTrack {
 }
 
 /**
- * Result of listing unresolved matches. Rows are capped at DISPLAY_CAP
- * (pending-push first); `counts`/`pendingBlocked` cover the whole library.
+ * Result of listing unresolved matches. `rows` carries the full classified
+ * list (uncommitted here — the UI applies any display cap it wants); the
+ * `counts`/`pendingBlocked` are exact over the whole library.
  */
 export interface UnresolvedMatch {
-  /** At most DISPLAY_CAP rows (pending-push first) — counts are exact. */
+  /** Every classified track (uncommitted — capped client-side). */
   rows: UnresolvedTrack[]
   /** Exact per-kind counts over the whole library (cheap — no scoring). */
   counts: Record<UnresolvedKind, number>
+
+
   /** Exact count of unresolved rows carrying a pending edit (blocks Push). */
   pendingBlocked: number
 }
@@ -438,10 +441,11 @@ export const DISPLAY_CAP = 100
  * push would be skipped): no match found, ambiguous tie, previously-matched
  * file vanished from a fresh index, or a stale `webdavBase` (server switched)
  * plus the audit buckets: manual/auto `matched` rows and user-dismissed
- * `ignored` rows (their pending-ness is reported truthfully). Counts are
- * exact over the whole library (unbound rows are scored once for the
- * no-match/ambiguous split); the row LIST is capped at DISPLAY_CAP by rank —
- * unresolved-with-pending-edit first, then unresolved, then matched/ignored —
+  * `ignored` rows (their pending-ness is reported truthfully). Counts are
+  * exact over the whole library (unbound rows are scored once for the
+  * no-match/ambiguous split); the row list is returned in full ranked order —
+  * unresolved-with-pending-edit first, then unresolved, then matched/ignored —
+  * and is truncated client-side only (DISPLAY_CAP is the UI default).
  * and prompt candidates are retained only for the displayed rows.
  *
  * Pending-push rows sort first: those block Push Changes, which is the point.
@@ -537,7 +541,7 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
     if (d !== 0) return d
     return a.title.localeCompare(b.title)
   })
-  return { rows: rows.slice(0, DISPLAY_CAP), counts, pendingBlocked }
+  return { rows, counts, pendingBlocked }
 }
 
 /** Path/filename substring search over the in-memory index (extension-filtered). */
