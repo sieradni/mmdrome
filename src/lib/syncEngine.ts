@@ -281,14 +281,20 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   for (const track of pending) {
     // Never fabricate a WebDAV path from the Navidrome id: without a matched
     // file there is nothing to write to — report it as skipped instead of
-    // failing loudly. Rows matched against a different server are likewise
-    // never pushed there, counted separately so the UI can say which.
+    // failing loudly. Rows without a webdavBase were matched before base
+    // stamping existed — their path's provenance is unknown, so they are
+    // skipped (unverified), while a base that differs from the current server
+    // is counted separately so the UI can say which case happened.
     if (!track.webdavPath) {
       skipped++
       continue
     }
-    if (track.webdavBase && track.webdavBase !== currentBaseKey) {
-      wrongServer++
+    if (track.webdavBase !== currentBaseKey) {
+      if (!track.webdavBase) {
+        skipped++
+      } else {
+        wrongServer++
+      }
       continue
     }
 
@@ -316,15 +322,34 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
         }
       }
 
-      const syncedRow = { ...track, syncStatus: "synced" as const }
-      await upsertMetadata(syncedRow)
-      // Keep the in-memory cache in step, or the row stays pending_sync until
-      // the next scan/reload.
-      metadataCache.update((map) => {
-        const next = new Map(map)
-        next.set(track.trackId, syncedRow)
-        return next
-      })
+      // The user may have re-edited rating/loved while the GET→PUT was in
+      // flight: the pushed snapshot is stale by now. Keep the newer pending
+      // edit pending (it surfaces in the next Push) instead of flattening it
+      // to 'synced' — the file already carries the pushed values, so nothing
+      // is lost on either side.
+      const latest = get(metadataCache).get(track.trackId)
+      if (
+        latest &&
+        latest.syncStatus === 'pending_sync' &&
+        (latest.rating !== track.rating || latest.loved !== track.loved)
+      ) {
+        await upsertMetadata(latest)
+        metadataCache.update((map) => {
+          const next = new Map(map)
+          next.set(track.trackId, latest)
+          return next
+        })
+      } else {
+        const syncedRow = { ...track, syncStatus: "synced" as const }
+        await upsertMetadata(syncedRow)
+        // Keep the in-memory cache in step, or the row stays pending_sync until
+        // the next scan/reload.
+        metadataCache.update((map) => {
+          const next = new Map(map)
+          next.set(track.trackId, syncedRow)
+          return next
+        })
+      }
       synced++
     } catch (err) {
       // The file vanished between scan and push — not a failure of the push

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState } from '../stores/appState'
+  import { get } from 'svelte/store'
+  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, library } from '../stores/appState'
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
@@ -189,6 +190,17 @@
     try {
       const result = await testWebdavConn()
       webdavConnection.set({ ...result, checking: false })
+      // Fresh setup flow: a working WebDAV server plus an already-loaded
+      // library can populate ratings immediately. Gated on the library being
+      // loaded and the scan being idle (first setup / fresh session) — repeated
+      // credential re-tests and completed scan states stay inert; the "Check
+      // Modified Ratings" button is the explicit re-scan control.
+      if (result.connected && $settings.webdavUrl && $settings.webdavUser && $settings.webdavToken) {
+        if (get(library).length > 0 && get(metadataScanState).status === 'idle') {
+          setWebdavCredentials($settings.webdavUrl, $settings.webdavUser, $settings.webdavToken)
+          scanAllNow(false)
+        }
+      }
     } catch (err) {
       webdavConnection.set({ connected: false, error: err instanceof Error ? err.message : String(err), checking: false })
     }

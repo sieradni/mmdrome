@@ -28,6 +28,8 @@ export interface WebdavFileIndex {
   lastScan?: string
   /** `baseUrl|user` this index was built against — mismatches force a rebuild. */
   baseKey?: string
+  /** Change-detector over the file set (path+size); lets scans skip unmatched retries when the server is unchanged. */
+  fingerprint?: string
 }
 
 export interface SongLibraryCache {

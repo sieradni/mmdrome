@@ -1,7 +1,7 @@
 import { get } from "svelte/store"
 import { library, metadataCache, metadataScanState, updateMetadata } from "../stores/appState"
 import type { Track } from "../stores/appState"
-import { saveWebdavFileIndex } from "./db"
+import { saveWebdavFileIndex, getWebdavFileIndex } from "./db"
 import type { LocalMetadataStore } from "./db"
 import {
   buildWebdavFileIndex,
@@ -9,6 +9,7 @@ import {
   readFileMetadata,
   buildPathTimestamps,
   findChangedTracks,
+  computeIndexFingerprint,
 } from "./metadataReader"
 import type { WebdavFileEntry } from "./db"
 
@@ -65,7 +66,7 @@ export async function refreshIndex(): Promise<boolean> {
     index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
     indexBaseKey = currentIndexKey()
     indexBuilt = true
-    await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey })
+    await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey, fingerprint: computeIndexFingerprint(index) })
     return true
   } catch {
     return false
@@ -78,7 +79,7 @@ export async function rebuildIndex(): Promise<void> {
   index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
   indexBaseKey = currentIndexKey()
   indexBuilt = true
-  await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey })
+  await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey, fingerprint: computeIndexFingerprint(index) })
 }
 
 let scannedCount = 0
@@ -99,6 +100,10 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
 
   if (!webdavUrl || !webdavUser || !webdavToken) return
   if (scanGen !== myGen) return
+
+  // Fingerprint of the index stored by the LAST probe. Read before the probe
+  // below — refreshIndex overwrites the stored snapshot with the fresh one.
+  const priorSnapshot = !forceRescan ? await getWebdavFileIndex() : undefined
 
   metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
 
@@ -142,7 +147,17 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
   const alreadySeen = new Set(cache.keys())
 
   for (const t of changed) queue.push({ trackId: t.trackId })
-  for (const t of unmatched) queue.push({ trackId: t.trackId })
+
+  // The server file set is identical to the last probe (fingerprint match):
+  // rows that were never matched cannot have become matchable (no added/
+  // renamed/resized file to match against), so retrying them would only burn
+  // CPU. Matched rows still re-diff on their mtime above. A missing stored
+  // fingerprint (first scan after the upgrade) treats the set as changed.
+  const setUnchanged = priorSnapshot?.fingerprint !== undefined
+    && computeIndexFingerprint(index) === priorSnapshot.fingerprint
+  if (!setUnchanged) {
+    for (const t of unmatched) queue.push({ trackId: t.trackId })
+  }
 
   const skipCount = Array.from(alreadySeen).filter((id) => {
     const meta = cache.get(id)

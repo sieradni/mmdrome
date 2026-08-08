@@ -85,6 +85,28 @@ export function buildPathTimestamps(index: WebdavFileEntry[]): Map<string, strin
 }
 
 /**
+ * Change-detector over the server file set (sorted `path|size` pairs, FNV-1a).
+ * The scanner gates its unmatched-track retry on this: a previously unmatched
+ * row can only become matchable when a file is added, renamed, or its size
+ * changes (a tag rewrite changes size too) — none of which can happen while
+ * the set is unchanged. mtimes are deliberately excluded: a pure tag edit
+ * cannot create a new match, and matched rows are already re-read on their own
+ * mtime diff.
+ */
+export function computeIndexFingerprint(index: WebdavFileEntry[]): string {
+  const parts = index.map((e) => `${e.path}\u0000${e.size}`)
+  parts.sort()
+  let hash = 0x811c9dc5
+  for (const p of parts) {
+    for (let i = 0; i < p.length; i++) {
+      hash ^= p.charCodeAt(i)
+      hash = Math.imul(hash, 0x01000193) >>> 0
+    }
+  }
+  return hash.toString(36)
+}
+
+/**
  * Given the current PROPFIND index and cached metadata, return the set of
  * tracks whose file has been modified (or that need matching for the first time).
  */

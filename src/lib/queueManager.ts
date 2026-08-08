@@ -241,7 +241,10 @@ class QueueManager {
       queueWrapNotice.set(false)
       return [...pool.slice(splitAt), ...pool.slice(0, splitAt)]
     }
-    queueWrapNotice.set(pool.length > 0)
+    // splitAt === 0: the first candidate already follows the anchor — the pool
+    // is in natural order, nothing wrapped. splitAt < 0: no candidate ranks
+    // after the anchor — the queue regenerates from the top of the sort order.
+    queueWrapNotice.set(splitAt < 0 && pool.length > 0)
     return pool
   }
 
