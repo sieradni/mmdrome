@@ -374,17 +374,39 @@ export interface UnresolvedTrack {
 }
 
 /**
+ * Result of listing unresolved matches. Rows are capped at DISPLAY_CAP
+ * (pending-push first); `counts`/`pendingBlocked` cover the whole library.
+ */
+export interface UnresolvedMatch {
+  /** At most DISPLAY_CAP rows (pending-push first) — counts are exact. */
+  rows: UnresolvedTrack[]
+  /** Exact per-kind counts over the whole library (cheap — no scoring). */
+  counts: Record<UnresolvedKind, number>
+  /** Exact count of unresolved rows carrying a pending edit (blocks Push). */
+  pendingBlocked: number
+}
+
+const DISPLAY_CAP = 100
+
+/**
  * All library tracks the scanner cannot confidently target (and rows whose
  * push would be skipped): no match found, ambiguous tie, previously-matched
- * file vanished from the fresh index, or a stale/absent `webdavBase` (server
- * switched — the path can be re-stamped). Ignored rows are excluded.
- * Pending-push rows sort first: those block Push Changes, which is the point.
+ * file vanished from a fresh index, or a stale `webdavBase` (server switched)
+ * plus the audit buckets: manual/auto `matched` rows and user-dismissed
+ * `ignored` rows (their pending-ness is reported truthfully). Unresolved
+ * counts are exact over the whole library; candidate computation is only
+ * done for the rows actually displayed.
  *
- * Uses the in-memory index when it was built this session (fresh from the
- * last scan — no extra PROPFIND); otherwise probes the server once.
+ * Pending-push rows sort first: those block Push Changes, which is the point.
+ * Uses the in-memory index when built this session (no extra PROPFIND);
+ * otherwise probes the server once.
  */
-export async function listUnresolvedMatches(): Promise<UnresolvedTrack[]> {
-  if (!webdavUrl || !webdavUser || !webdavToken) return []
+export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
+  if (!webdavUrl || !webdavUser || !webdavToken) return {
+    rows: [],
+    counts: { 'no-match': 0, ambiguous: 0, vanished: 0, 'stale-base': 0, ignored: 0, matched: 0 },
+    pendingBlocked: 0,
+  }
   if (!indexBuilt) {
     const ok = await refreshIndex()
     if (!ok) throw new Error("Index refresh failed — is the WebDAV server reachable?")
@@ -395,24 +417,13 @@ export async function listUnresolvedMatches(): Promise<UnresolvedTrack[]> {
   const tracks = get(library)
   const cache = get(metadataCache)
   const rows: UnresolvedTrack[] = []
+  const counts: Record<UnresolvedKind, number> = {
+    'no-match': 0, ambiguous: 0, 'vanished': 0, 'stale-base': 0, ignored: 0, matched: 0,
+  }
+  let pendingBlocked = 0
 
   for (const t of tracks) {
     const meta = cache.get(t.trackId)
-    if (meta?.ignored) {
-      rows.push({
-        trackId: t.trackId,
-        title: t.title,
-        artist: t.artist,
-        album: t.album,
-        fileType: t.fileType,
-        size: t.size,
-        kind: 'ignored',
-        pendingPush: false,
-        candidates: [],
-      })
-      continue
-    }
-
     const base = {
       trackId: t.trackId,
       title: t.title,
@@ -423,38 +434,51 @@ export async function listUnresolvedMatches(): Promise<UnresolvedTrack[]> {
       pendingPush: meta?.syncStatus === 'pending_sync',
     }
 
-    if (meta?.webdavPath) {
+    let row: UnresolvedTrack
+    if (meta?.ignored) {
+      // Deliberately dismissed — no re-matching, but pending-ness must be
+      // truthful so the UI can say "edit exists, can't be pushed".
+      counts.ignored++
+      if (base.pendingPush) pendingBlocked++
+      row = { ...base, kind: 'ignored', candidates: [] }
+    } else if (meta?.webdavPath) {
       if (!indexPaths.has(meta.webdavPath)) {
-        rows.push({ ...base, kind: 'vanished', webdavPath: meta.webdavPath, candidates: [] })
+        counts.vanished++
+        row = { ...base, kind: 'vanished', webdavPath: meta.webdavPath, candidates: [] }
       } else if (meta.webdavBase !== baseKey) {
-        rows.push({ ...base, kind: 'stale-base', webdavPath: meta.webdavPath, candidates: [] })
+        counts['stale-base']++
+        if (base.pendingPush) pendingBlocked++
+        row = { ...base, kind: 'stale-base', webdavPath: meta.webdavPath, candidates: [] }
       } else {
         // Correctly bound (auto or manual) — the "resolved" bucket. Listed
         // so the user can audit a match and Clear it when it picked wrong.
-        rows.push({
+        counts.matched++
+        row = {
           ...base,
           kind: 'matched',
           webdavPath: meta.webdavPath,
           matchSource: meta.matchSource ?? 'auto',
           candidates: [],
-        })
+        }
       }
-      continue
+    } else {
+      const match = matchTrackToWebdavCandidates(t, index)
+      counts[match.status === 'ambiguous' ? 'ambiguous' : 'no-match']++
+      if (base.pendingPush) pendingBlocked++
+      row = {
+        ...base,
+        kind: match.status === 'ambiguous' ? 'ambiguous' : 'no-match',
+        candidates: match.promptCandidates,
+      }
     }
-
-    const match = matchTrackToWebdavCandidates(t, index)
-    rows.push({
-      ...base,
-      kind: match.status === 'ambiguous' ? 'ambiguous' : 'no-match',
-      candidates: match.promptCandidates,
-    })
+    if (rows.length < DISPLAY_CAP) rows.push(row)
   }
 
   rows.sort((a, b) => {
     if (a.pendingPush !== b.pendingPush) return a.pendingPush ? -1 : 1
     return a.title.localeCompare(b.title)
   })
-  return rows
+  return { rows, counts, pendingBlocked }
 }
 
 /** Path/filename substring search over the in-memory index (extension-filtered). */

@@ -318,9 +318,26 @@
   let conflict = $state<{ trackId: string; path: string; conflictTitle: string } | null>(null)
 let showIgnored = $state(false)
   let showMatched = $state(false)
-  let ignoredCount = $state(0)
-  let matchedCount = $state(0)
+  let unresolvedCounts = $state<Record<UnresolvedTrack['kind'], number>>({ 'no-match': 0, ambiguous: 0, 'vanished': 0, 'stale-base': 0, 'matched': 0, ignored: 0 })
+  let blockedCount = $state(0)
   let bindError = $state('')
+
+  function countTotal(): number {
+    const c = unresolvedCounts
+    return c['no-match'] + c.ambiguous + c.vanished + c['stale-base'] + c.ignored + c.matched
+  }
+
+  function countLine(): string {
+    const c = unresolvedCounts
+    const bits: string[] = []
+    if (c['no-match']) bits.push(`${c['no-match']} no match`)
+    if (c.ambiguous) bits.push(`${c.ambiguous} ambiguous`)
+    if (c.vanished) bits.push(`${c.vanished} vanished`)
+    if (c['stale-base']) bits.push(`${c['stale-base']} server changed`)
+    if (bits.length === 0) return ''
+    const line = `Unresolved — ${bits.join(', ')}`
+    return blockedCount > 0 ? `${line}; ${blockedCount} blocked by pending edits` : line
+  }
 
   async function refreshUnresolved() {
     unresolvedLoading = true
@@ -337,9 +354,9 @@ let showIgnored = $state(false)
         return
       }
       const rows = await listUnresolvedMatches()
-      unresolvedRows = rows
-      ignoredCount = rows.filter((r) => r.kind === 'ignored').length
-      matchedCount = rows.filter((r) => r.kind === 'matched').length
+      unresolvedRows = rows.rows
+      unresolvedCounts = rows.counts
+      blockedCount = rows.pendingBlocked
       unresolvedLoaded = true
     } catch (err) {
       unresolvedError = err instanceof Error ? err.message : String(err)
@@ -804,6 +821,9 @@ let showIgnored = $state(false)
           <p class="mb-2 text-sm text-muted">
             Tracks without a safe WebDAV file match. Bind one manually to make them pushable, or mark them as not on this server.
           </p>
+          {#if countTotal() > 0}
+            <p class="mb-2 text-sm text-muted">{countLine()}</p>
+          {/if}
           {#if unresolvedLoading}
             <p class="text-sm text-muted">Loading…</p>
           {:else if unresolvedError}
@@ -829,10 +849,16 @@ let showIgnored = $state(false)
                   <p class="mt-1 truncate text-xs text-muted">{row.webdavPath}</p>
                 {/if}
                 {#if row.kind === 'stale-base'}
-                  <button
-                    onclick={() => doRestamp(row)}
-                    class="mt-2 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
-                  >Re-stamp to current server</button>
+                  <div class="mt-2 flex gap-2">
+                    <button
+                      onclick={() => doRestamp(row)}
+                      class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                    >Re-stamp to current server</button>
+                    <button
+                      onclick={() => openPicker(row.trackId)}
+                      class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                    >Find file…</button>
+                  </div>
                 {:else if row.kind === 'matched'}
                   <button
                     onclick={() => doUnbind(row.trackId)}
@@ -854,6 +880,9 @@ let showIgnored = $state(false)
                       class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-muted transition-opacity hover:opacity-80"
                     >Not on this server</button>
                   </div>
+                  {/if}
+                {#if bindError}
+                  <p class="mt-2 text-xs text-red-400">{bindError}</p>
                 {/if}
                 {#if pickerTrackId === row.trackId}
                   <div class="mt-2 space-y-2 border-t border-white/10 pt-2">
@@ -894,25 +923,27 @@ let showIgnored = $state(false)
                       </div>
                     {:else if searching}
                       <p class="text-xs text-muted">Searching…</p>
-                    {/if}
-                    {#if bindError}
-                      <p class="text-xs text-red-400">{bindError}</p>
+                    {:else if searchQuery.trim()}
+                      <p class="text-xs text-muted">No matches for “{searchQuery.trim()}”.</p>
                     {/if}
                   </div>
                 {/if}
               </div>
             {/each}
-            {#if ignoredCount > 0}
+            {#if unresolvedRows.length < countTotal()}
+              <p class="mt-1 text-xs text-muted">+ {countTotal() - unresolvedRows.length} more (list capped)</p>
+            {/if}
+            {#if unresolvedCounts.ignored > 0}
               <button
                 onclick={() => showIgnored = !showIgnored}
                 class="mt-1 text-sm font-medium text-muted transition-colors hover:text-primary"
-              >{showIgnored ? 'Hide' : 'Show'} ignored ({ignoredCount})</button>
+              >{showIgnored ? 'Hide' : 'Show'} ignored ({unresolvedCounts.ignored})</button>
             {/if}
-            {#if matchedCount > 0}
+            {#if unresolvedCounts.matched > 0}
               <button
                 onclick={() => showMatched = !showMatched}
                 class="mt-1 text-sm font-medium text-muted transition-colors hover:text-primary"
-              >{showMatched ? 'Hide' : 'Show'} matched ({matchedCount})</button>
+              >{showMatched ? 'Hide' : 'Show'} matched ({unresolvedCounts.matched})</button>
             {/if}
           {/if}
         </section>
