@@ -255,13 +255,53 @@ async function processItem(item: QueueItem): Promise<void> {
   // Issue-1 guard, checked BEFORE the matcher: a valid manual binding is the
   // user's verdict — never re-match it, and never count it as ambiguous again
   // (a later scan used to re-enter this state machine and bump
-  // ambiguousCount forever even though the track was already resolved).
+  // ambiguousCount forever even though the track was already resolved). But
+  // the verdict is about WHICH file backs the track, not about its contents:
+  // re-read THE BOUND FILE so MusicBee edits keep flowing into webdav mode
+  // and the stamps stay fresh for mtime diffing.
   const manualBind = existing?.matchSource === 'manual'
     && existing?.webdavPath != null
     && index.some((i) => i.path === existing?.webdavPath)
-  if (manualBind) {
-    scannedCount++
-    updateScanProgress()
+  if (manualBind && existing.webdavPath) {
+    const boundPath = existing.webdavPath
+    const myGen = scanGen
+    try {
+      const boundEntry = index.find((i) => i.path === boundPath)
+      const meta = await readFileMetadata(
+        webdavUrl, boundPath, webdavUser, webdavToken, track.fileType,
+      )
+      if (scanGen !== myGen) return
+
+      // The user may have edited rating/loved while the fetch was in flight —
+      // don't clobber the newer pending edit with stale file tags.
+      const current = get(metadataCache).get(track.trackId)
+      if (current && current.syncStatus === 'pending_sync') {
+        scannedCount++
+        updateScanProgress()
+        return
+      }
+
+      // Navidrome mode: the server is authoritative — keep cached values,
+      // only refresh the path stamps. Webdav mode: propagate the file's tags.
+      const navidrome = current != null && get(settings).ratingSource === 'navidrome'
+      updateMetadata({
+        trackId: track.trackId,
+        rating: navidrome ? current.rating : meta.rating,
+        loved: navidrome ? current.loved : meta.loved,
+        fileType: track.fileType,
+        syncStatus: 'synced',
+        lastModifiedLocally: Date.now(),
+        webdavPath: boundPath,
+        webdavLastModified: boundEntry?.lastModified ?? existing.webdavLastModified,
+        webdavBase: currentIndexKey(),
+        comments: navidrome ? current?.comments : meta.comments,
+        matchSource: 'manual',
+      })
+      scannedCount++
+    } catch {
+      if (scanGen === myGen) failedCount++
+    }
+    if (scanGen === myGen) updateScanProgress()
     return
   }
 
