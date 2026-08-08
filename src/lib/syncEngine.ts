@@ -289,6 +289,12 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
       skipped++
       continue
     }
+    if (track.ignored) {
+      // User dismissed this track via File Matching ("not on this server") —
+      // never push it, even if a path is still stamped.
+      skipped++
+      continue
+    }
     if (track.webdavBase !== currentBaseKey) {
       if (!track.webdavBase) {
         skipped++

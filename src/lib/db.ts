@@ -12,6 +12,11 @@ export interface LocalMetadataStore {
   /** `baseUrl|user` the webdavPath was matched against (guards cross-server pushes). */
   webdavBase?: string
   comments?: string
+  /** 'manual' = the user bound this row via the File Matching UI. The scanner
+   *  must never overwrite a manual binding with its own match. */
+  matchSource?: 'auto' | 'manual'
+  /** User dismissed this track ("not on this server") — scans and push skip it. */
+  ignored?: boolean
 }
 
 export interface WebdavFileEntry {

@@ -6,6 +6,7 @@ import type { LocalMetadataStore } from "./db"
 import {
   buildWebdavFileIndex,
   matchTrackToWebdav,
+  matchTrackToWebdavCandidates,
   readFileMetadata,
   buildPathTimestamps,
   findChangedTracks,
@@ -245,7 +246,7 @@ async function processItem(item: QueueItem): Promise<void> {
   if (!track || scanGen !== startedGen) return
 
   const existing = get(metadataCache).get(track.trackId)
-  if (existing && existing.syncStatus === 'pending_sync') {
+  if (existing && (existing.syncStatus === 'pending_sync' || existing.ignored)) {
     scannedCount++
     updateScanProgress()
     return
@@ -273,6 +274,10 @@ async function processItem(item: QueueItem): Promise<void> {
         syncStatus: existing.syncStatus,
         lastModifiedLocally: existing.lastModifiedLocally,
         comments: existing.comments,
+        webdavPath: undefined,
+        webdavLastModified: undefined,
+        webdavBase: undefined,
+        matchSource: undefined,
       })
     } else {
       scannedCount++
@@ -288,28 +293,43 @@ async function processItem(item: QueueItem): Promise<void> {
     // The user may have edited rating/loved while the fetch was in flight —
     // don't clobber the pending edit with stale file tags.
     const current = get(metadataCache).get(track.trackId)
-    if (current && current.syncStatus === 'pending_sync') {
+    if (current && (current.syncStatus === 'pending_sync' || current.ignored)) {
       scannedCount++
       updateScanProgress()
       return
     }
 
+    // Issue-1 guard: a manual binding (File Matching UI) is authoritative —
+    // the user may have picked a file the auto-matcher would NOT have chosen
+    // (WebDAV layout can differ entirely from Navidrome's). Never overwrite
+    // that path with the auto-match; refresh the stamps of the BOUND file so
+    // mtime detection keeps working.
+    const manualBind = current?.matchSource === 'manual'
+      && current?.webdavPath != null
+      && index.some((i) => i.path === current?.webdavPath)
+    const boundEntry = manualBind ? index.find((i) => i.path === current?.webdavPath) : undefined
+
     // Navidrome mode: the server is authoritative for rating/loved, and the
     // file tag may be stale (or edited server-side since it was last read) —
     // never clobber the cached values with tag values. Keep refreshing the
     // path/stamps so Push targeting stays accurate.
-    const navidromeAuthoritative = existing && get(settings).ratingSource === 'navidrome'
+    const navidromeAuthoritative = current != null
+      && get(settings).ratingSource === 'navidrome'
+      && !manualBind
     updateMetadata({
       trackId: track.trackId,
-      rating: navidromeAuthoritative ? existing.rating : meta.rating,
-      loved: navidromeAuthoritative ? existing.loved : meta.loved,
+      rating: navidromeAuthoritative ? current.rating : meta.rating,
+      loved: navidromeAuthoritative ? current.loved : meta.loved,
       fileType: track.fileType,
       syncStatus: "synced",
       lastModifiedLocally: Date.now(),
-      webdavPath: match.entry.path,
-      webdavLastModified: match.entry.lastModified,
+      webdavPath: manualBind ? current.webdavPath : match.entry.path,
+      webdavLastModified: manualBind
+        ? (boundEntry?.lastModified ?? current?.webdavLastModified)
+        : match.entry.lastModified,
       webdavBase: currentIndexKey(),
-      comments: navidromeAuthoritative ? existing.comments : meta.comments,
+      comments: navidromeAuthoritative ? current?.comments : meta.comments,
+      matchSource: manualBind ? current?.matchSource : undefined,
     })
     scannedCount++
   } catch {
@@ -333,4 +353,172 @@ function updateScanProgress(): void {
   } else {
     metadataScanState.set({ status: "scanning", progress })
   }
+}
+
+// ── File Matching (manual binding UI) ────────────────────────────────────
+
+export type UnresolvedKind = 'no-match' | 'ambiguous' | 'vanished' | 'stale-base'
+
+export interface UnresolvedTrack {
+  trackId: string
+  kind: UnresolvedKind
+  title: string
+  artist: string
+  album: string
+  fileType: Track['fileType']
+  size?: number
+  webdavPath?: string
+  pendingPush: boolean
+  candidates: WebdavFileEntry[]
+}
+
+/**
+ * All library tracks the scanner cannot confidently target (and rows whose
+ * push would be skipped): no match found, ambiguous tie, previously-matched
+ * file vanished from the fresh index, or a stale/absent `webdavBase` (server
+ * switched — the path can be re-stamped). Ignored rows are excluded.
+ * Pending-push rows sort first: those block Push Changes, which is the point.
+ *
+ * Uses the in-memory index when it was built this session (fresh from the
+ * last scan — no extra PROPFIND); otherwise probes the server once.
+ */
+export async function listUnresolvedMatches(): Promise<UnresolvedTrack[]> {
+  if (!webdavUrl || !webdavUser || !webdavToken) return []
+  if (!indexBuilt) {
+    const ok = await refreshIndex()
+    if (!ok) throw new Error("Index refresh failed — is the WebDAV server reachable?")
+  }
+
+  const baseKey = currentIndexKey()
+  const indexPaths = new Set(index.map((i) => i.path))
+  const tracks = get(library)
+  const cache = get(metadataCache)
+  const rows: UnresolvedTrack[] = []
+
+  for (const t of tracks) {
+    const meta = cache.get(t.trackId)
+    if (meta?.ignored) continue
+
+    const base = {
+      trackId: t.trackId,
+      title: t.title,
+      artist: t.artist,
+      album: t.album,
+      fileType: t.fileType,
+      size: t.size,
+      pendingPush: meta?.syncStatus === 'pending_sync',
+    }
+
+    if (meta?.webdavPath) {
+      if (!indexPaths.has(meta.webdavPath)) {
+        rows.push({ ...base, kind: 'vanished', webdavPath: meta.webdavPath, candidates: [] })
+      } else if (meta.webdavBase !== baseKey) {
+        rows.push({ ...base, kind: 'stale-base', webdavPath: meta.webdavPath, candidates: [] })
+      }
+      continue
+    }
+
+    const match = matchTrackToWebdavCandidates(t, index)
+    rows.push({
+      ...base,
+      kind: match.status === 'ambiguous' ? 'ambiguous' : 'no-match',
+      candidates: match.promptCandidates,
+    })
+  }
+
+  rows.sort((a, b) => {
+    if (a.pendingPush !== b.pendingPush) return a.pendingPush ? -1 : 1
+    return a.title.localeCompare(b.title)
+  })
+  return rows
+}
+
+/** Path/filename substring search over the in-memory index (extension-filtered). */
+export function searchWebdavFiles(query: string, fileType: string): WebdavFileEntry[] {
+  const q = query.trim().toLowerCase()
+  if (!q) return []
+  const matches = index.filter(
+    (e) => e.filename.toLowerCase().endsWith(`.${fileType}`)
+      && (e.path.toLowerCase().includes(q) || e.filename.toLowerCase().includes(q)),
+  )
+  matches.sort((a, b) => a.path.localeCompare(b.path))
+  return matches.slice(0, 50)
+}
+
+export type BindResult =
+  | { ok: true }
+  | { ok: false; reason: 'not-in-index' | 'no-row' | 'conflict'; conflictTrackId?: string; conflictTitle?: string }
+
+/**
+ * Binds a track to a WebDAV file (manual resolution). Validates the path
+ * against the current in-memory index (stale picks rejected), guards against
+ * double-bindings (another row already targets the same file — `force` skips
+ * the guard), and stamps `webdavBase` so Push can target the row. The row's
+ * `syncStatus` is preserved: a pending edit becomes pushable immediately.
+ */
+export async function bindTrackToFile(
+  trackId: string,
+  path: string,
+  force = false,
+): Promise<BindResult> {
+  if (!webdavUrl || !webdavUser || !webdavToken) return { ok: false, reason: 'no-row' }
+  if (!indexBuilt) {
+    const ok = await refreshIndex()
+    if (!ok) return { ok: false, reason: 'not-in-index' }
+  }
+
+  const entry = index.find((e) => e.path === path)
+  if (!entry) return { ok: false, reason: 'not-in-index' }
+
+  const cache = get(metadataCache)
+  const existing = cache.get(trackId)
+  if (!existing) return { ok: false, reason: 'no-row' }
+
+  if (!force) {
+    for (const [id, row] of cache) {
+      if (id !== trackId && row.webdavPath === path) {
+        const other = get(library).find((t) => t.trackId === id)
+        return {
+          ok: false,
+          reason: 'conflict',
+          conflictTrackId: id,
+          conflictTitle: other ? `${other.title} — ${other.artist}` : id,
+        }
+      }
+    }
+  }
+
+  updateMetadata({
+    ...existing,
+    webdavPath: entry.path,
+    webdavLastModified: entry.lastModified,
+    webdavBase: currentIndexKey(),
+    matchSource: 'manual',
+  })
+  return { ok: true }
+}
+
+/** Reverts a manual binding (or any path) to an unmatched row. */
+export async function unbindTrack(trackId: string): Promise<void> {
+  const existing = get(metadataCache).get(trackId)
+  if (!existing) return
+  updateMetadata({
+    ...existing,
+    webdavPath: undefined,
+    webdavLastModified: undefined,
+    webdavBase: undefined,
+    matchSource: undefined,
+  })
+}
+
+export async function ignoreTrack(trackId: string): Promise<void> {
+  const existing = get(metadataCache).get(trackId)
+  if (!existing) return
+  updateMetadata({ ...existing, ignored: true })
+}
+
+export async function unignoreTrack(trackId: string): Promise<void> {
+  const existing = get(metadataCache).get(trackId)
+  if (!existing) return
+  updateMetadata({ ...existing, ignored: false })
 }

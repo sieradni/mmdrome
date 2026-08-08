@@ -86,7 +86,9 @@ export async function debugFetchTrackData(trackId: string): Promise<DebugTrackDa
           webdavMetadataError = (err as Error).message
         }
       } else {
-        webdavMatchError = 'No matching WebDAV file found'
+        webdavMatchError = match.ambiguous
+          ? 'Multiple candidate files — cannot safely pick'
+          : 'No matching WebDAV file found'
       }
     } catch (err) {
       webdavMatchError = (err as Error).message
