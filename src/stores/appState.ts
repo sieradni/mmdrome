@@ -17,7 +17,6 @@ export interface Track {
   bitrate?: number
   size?: number
   createdAt?: number
-  modifiedAt?: number
   navidromePath?: string
   replayGain?: number
   albumReplayGain?: number

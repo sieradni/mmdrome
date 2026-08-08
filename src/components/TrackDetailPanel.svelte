@@ -139,10 +139,6 @@
       <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Created</p>
       <p class="text-sm text-primary">{formatDate(track.createdAt)}</p>
     </div>
-    <div>
-      <p class="text-[10px] font-medium text-muted uppercase tracking-wider">Modified</p>
-      <p class="text-sm text-primary">{formatDate(track.modifiedAt)}</p>
-    </div>
   </div>
 
   {#if track.comments}

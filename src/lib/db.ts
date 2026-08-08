@@ -84,10 +84,6 @@ db.version(3).stores({
 
 export { db }
 
-export async function getMetadata(trackId: string): Promise<LocalMetadataStore | undefined> {
-  return db.localMetadata.get(trackId)
-}
-
 export async function getAllMetadata(): Promise<LocalMetadataStore[]> {
   return db.localMetadata.toArray()
 }
@@ -98,10 +94,6 @@ export async function upsertMetadata(meta: LocalMetadataStore): Promise<void> {
 
 export async function bulkUpsertMetadata(items: LocalMetadataStore[]): Promise<void> {
   await db.localMetadata.bulkPut(items)
-}
-
-export async function deleteMetadata(trackId: string): Promise<void> {
-  await db.localMetadata.delete(trackId)
 }
 
 export async function bulkDeleteMetadata(ids: string[]): Promise<void> {
