@@ -1,7 +1,7 @@
 import { get } from "svelte/store"
 import { library, metadataCache, metadataScanState, updateMetadata } from "../stores/appState"
 import type { Track } from "../stores/appState"
-import { getWebdavFileIndex, saveWebdavFileIndex } from "./db"
+import { saveWebdavFileIndex } from "./db"
 import type { LocalMetadataStore } from "./db"
 import {
   buildWebdavFileIndex,
@@ -52,19 +52,24 @@ export function setServerLastScan(scan: string): void {
   serverLastScan = scan
 }
 
-export async function ensureIndex(): Promise<void> {
-  const key = currentIndexKey()
-  if (indexBuilt && index.length > 0 && indexBaseKey === key) return
-
-  const cached = await getWebdavFileIndex()
-  if (cached && cached.entries.length > 0 && cached.baseKey === key) {
-    index = cached.entries
-    indexBaseKey = key
+/**
+ * Fresh PROPFIND against the server — the ONLY freshness source for scans.
+ * The Dexie-persisted index is a startup fallback path handled by callers who
+ * need a snapshot without probing (debug tooling), it is never a valid basis
+ * for a scan diff. Returns false when the probe fails (server unreachable,
+ * auth error) so the caller can abort instead of scanning a stale snapshot.
+ */
+export async function refreshIndex(): Promise<boolean> {
+  if (!webdavUrl || !webdavUser || !webdavToken) return false
+  try {
+    index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
+    indexBaseKey = currentIndexKey()
     indexBuilt = true
-    return
+    await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey })
+    return true
+  } catch {
+    return false
   }
-
-  await rebuildIndex()
 }
 
 export async function rebuildIndex(): Promise<void> {
@@ -78,6 +83,8 @@ export async function rebuildIndex(): Promise<void> {
 
 let scannedCount = 0
 let failedCount = 0
+let missingCount = 0
+let ambiguousCount = 0
 let totalTracks = 0
 
 export async function scanAllNow(forceRescan = false): Promise<void> {
@@ -86,19 +93,43 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
   queue = []
   scannedCount = 0
   failedCount = 0
+  missingCount = 0
+  ambiguousCount = 0
   totalTracks = 0
 
   if (!webdavUrl || !webdavUser || !webdavToken) return
   if (scanGen !== myGen) return
 
-  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0 } })
+  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
 
   if (forceRescan) {
-    await rebuildIndex()
+    try {
+      await rebuildIndex()
+    } catch {
+      if (scanGen !== myGen) return
+      metadataScanState.set({
+        status: "error",
+        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
+        error: "Index refresh failed — is the WebDAV server reachable?",
+      })
+      return
+    }
   } else {
-    await ensureIndex()
+    // Always probe the server: the whole point of "Check Modified Ratings" is
+    // freshness. A stale snapshot can never detect remote edits; abort loudly
+    // on probe failure instead of scanning against one.
+    const ok = await refreshIndex()
+    if (!ok) {
+      if (scanGen !== myGen) return
+      metadataScanState.set({
+        status: "error",
+        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
+        error: "Index refresh failed — is the WebDAV server reachable?",
+      })
+      return
+    }
     if (index.length === 0) {
-      metadataScanState.set({ status: "complete", progress: { scanned: 0, total: 0, failed: 0 } })
+      metadataScanState.set({ status: "complete", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
       return
     }
   }
@@ -127,7 +158,7 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
     // updateScanProgress, leaving the UI stuck at 0/0 "scanning" forever.
     metadataScanState.set({
       status: "complete",
-      progress: { scanned: 0, total: 0, failed: 0 },
+      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
       error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
     })
     return
@@ -135,7 +166,7 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
 
   metadataScanState.set({
     status: "scanning",
-    progress: { scanned: 0, total: totalTracks, failed: 0 },
+    progress: { scanned: 0, total: totalTracks, failed: 0, missing: 0, duplicateMatches: 0 },
   })
 
   drain()
@@ -170,14 +201,36 @@ async function processItem(item: QueueItem): Promise<void> {
 
   const match = matchTrackToWebdav(track, index)
   if (scanGen !== startedGen) return
-  if (!match) {
-    scannedCount++
+  if (!match.entry) {
+    if (match.ambiguous) {
+      // Two files tied for the top score — never guess. The row keeps its
+      // previous mapping (if any) and is not re-fetched; Push skips rows it
+      // cannot confidently target.
+      ambiguousCount++
+    } else if (existing && existing.webdavPath && !index.some((i) => i.path === existing.webdavPath)) {
+      // The file it was previously matched to no longer exists in a FRESH
+      // index (deleted/renamed). Clear the stale path so the row re-matches
+      // on a later PROPFIND (renames) and Push skips it cleanly instead of
+      // 404 failing forever. Rating/loved are preserved — data loss-free.
+      missingCount++
+      updateMetadata({
+        trackId: track.trackId,
+        rating: existing.rating,
+        loved: existing.loved,
+        fileType: existing.fileType || track.fileType,
+        syncStatus: existing.syncStatus,
+        lastModifiedLocally: existing.lastModifiedLocally,
+        comments: existing.comments,
+      })
+    } else {
+      scannedCount++
+    }
     updateScanProgress()
     return
   }
 
   try {
-    const meta = await readFileMetadata(webdavUrl, match.path, webdavUser, webdavToken, track.fileType)
+    const meta = await readFileMetadata(webdavUrl, match.entry.path, webdavUser, webdavToken, track.fileType)
     if (scanGen !== startedGen) return
 
     // The user may have edited rating/loved while the fetch was in flight —
@@ -196,8 +249,8 @@ async function processItem(item: QueueItem): Promise<void> {
       fileType: track.fileType,
       syncStatus: "synced",
       lastModifiedLocally: Date.now(),
-      webdavPath: match.path,
-      webdavLastModified: match.lastModified,
+      webdavPath: match.entry.path,
+      webdavLastModified: match.entry.lastModified,
       webdavBase: currentIndexKey(),
       comments: meta.comments,
     })
@@ -209,16 +262,16 @@ async function processItem(item: QueueItem): Promise<void> {
 }
 
 function updateScanProgress(): void {
-  const done = scannedCount + failedCount
+  const done = scannedCount + failedCount + missingCount + ambiguousCount
   if (done >= totalTracks) {
     metadataScanState.set({
       status: "complete",
-      progress: { scanned: scannedCount, total: totalTracks, failed: failedCount },
+      progress: { scanned: scannedCount, total: totalTracks, failed: failedCount, missing: missingCount, duplicateMatches: ambiguousCount },
     })
   } else {
     metadataScanState.set({
       status: "scanning",
-      progress: { scanned: done, total: totalTracks, failed: failedCount },
+      progress: { scanned: done, total: totalTracks, failed: failedCount, missing: missingCount, duplicateMatches: ambiguousCount },
     })
   }
 }
@@ -229,14 +282,26 @@ export async function scanAllForceRescan(): Promise<void> {
   queue = []
   scannedCount = 0
   failedCount = 0
+  missingCount = 0
+  ambiguousCount = 0
   totalTracks = 0
 
   if (!webdavUrl || !webdavUser || !webdavToken) return
   if (scanGen !== myGen) return
 
-  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0 } })
+  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
 
-  await rebuildIndex()
+  try {
+    await rebuildIndex()
+  } catch {
+    if (scanGen !== myGen) return
+    metadataScanState.set({
+      status: "error",
+      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
+      error: "Index refresh failed — is the WebDAV server reachable?",
+    })
+    return
+  }
 
   const tracks = get(library)
   for (const t of tracks) queue.push({ trackId: t.trackId })
@@ -248,7 +313,7 @@ export async function scanAllForceRescan(): Promise<void> {
   if (totalTracks === 0) {
     metadataScanState.set({
       status: "complete",
-      progress: { scanned: 0, total: 0, failed: 0 },
+      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
       error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
     })
     return
@@ -256,7 +321,7 @@ export async function scanAllForceRescan(): Promise<void> {
 
   metadataScanState.set({
     status: "scanning",
-    progress: { scanned: 0, total: totalTracks, failed: 0 },
+    progress: { scanned: 0, total: totalTracks, failed: 0, missing: 0, duplicateMatches: 0 },
   })
 
   drain()

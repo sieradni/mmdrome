@@ -41,9 +41,19 @@ export interface QueueState {
   activeIndex: number
 }
 
+export interface MetadataScanProgress {
+  scanned: number
+  total: number
+  failed: number
+  /** Rows whose previously-matched WebDAV file vanished (path cleared, re-matchable). */
+  missing: number
+  /** Rows with multiple equally-scored candidates — left untouched. */
+  duplicateMatches: number
+}
+
 export interface MetadataScanState {
   status: 'idle' | 'scanning' | 'complete' | 'error'
-  progress: { scanned: number; total: number; failed: number }
+  progress: MetadataScanProgress
   error?: string
 }
 
@@ -88,7 +98,7 @@ export const effectiveDuration = derived(
   }
 )
 export const pitchOctaves = writable<number>(0)
-export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0 } })
+export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
 
 export interface AutoQueueFilters {
   minRating: number

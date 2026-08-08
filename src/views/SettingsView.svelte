@@ -4,7 +4,7 @@
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
-  import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, scanAllForceRescan } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, scanAllNow, scanAllForceRescan } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
   import { tick } from 'svelte'
@@ -203,6 +203,12 @@
         setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
       }
       await rebuildIndex()
+    } catch {
+      metadataScanState.set({
+        status: 'error',
+        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
+        error: 'Index refresh failed — is the WebDAV server reachable?',
+      })
     } finally {
       indexing = false
     }
@@ -214,7 +220,7 @@
     if (s.webdavUrl && s.webdavUser && s.webdavToken) {
       setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
     }
-    await ensureIndex()
+    // scanAllNow probes the server itself — no ensureIndex pre-call.
     scanAllNow(false)
   }
 
@@ -255,9 +261,10 @@
     syncResult = ''
     try {
       const result = await runManualWebDAVSync()
-      syncResult = result.skipped > 0
-        ? `Pushed ${result.synced} track(s), ${result.failed} failed, ${result.skipped} skipped (no matching WebDAV file)`
-        : `Pushed ${result.synced} track(s), ${result.failed} failed`
+      const parts = [`Pushed ${result.synced} track(s)`, result.failed ? `${result.failed} failed` : '']
+      if (result.skipped) parts.push(`${result.skipped} skipped (no matching WebDAV file)`)
+      if (result.wrongServer) parts.push(`${result.wrongServer} on a different server`)
+      syncResult = parts.filter(Boolean).join(', ')
     } catch (err) {
       syncResult = `Push failed: ${err instanceof Error ? err.message : String(err)}`
     } finally {
@@ -350,9 +357,15 @@
               {/if}
             </button>
             {#if $metadataScanState.status === 'complete'}
-              <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed</p>
+              {#if $metadataScanState.error}
+                <p class="text-sm text-red-400">{$metadataScanState.error}</p>
+              {:else}
+                <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
+              {/if}
             {:else if $metadataScanState.status === 'scanning'}
               <p class="text-sm text-muted">Progress: {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
+            {:else if $metadataScanState.status === 'error'}
+              <p class="text-sm text-red-400">{$metadataScanState.error}</p>
             {/if}
           </div>
         </section>
@@ -618,9 +631,15 @@
               {/if}
             </button>
             {#if $metadataScanState.status === 'complete'}
-              <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed</p>
+              {#if $metadataScanState.error}
+                <p class="text-sm text-red-400">{$metadataScanState.error}</p>
+              {:else}
+                <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
+              {/if}
             {:else if $metadataScanState.status === 'scanning'}
               <p class="text-sm text-muted">Progress: {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
+            {:else if $metadataScanState.status === 'error'}
+              <p class="text-sm text-red-400">{$metadataScanState.error}</p>
             {/if}
           </div>
         </section>

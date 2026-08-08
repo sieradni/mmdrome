@@ -5,6 +5,7 @@ import type { Track } from "../stores/appState"
 import type { WebdavFileEntry, LocalMetadataStore } from "./db"
 
 const METADATA_FETCH_TIMEOUT = 30000
+const INDEX_PROPFIND_TIMEOUT = 90000
 
 function parseXml(text: string): Document {
   return new DOMParser().parseFromString(text, "text/xml")
@@ -42,7 +43,7 @@ export async function buildWebdavFileIndex(
       ...authHeaders(user, token),
       Depth: "infinity",
     },
-  }, METADATA_FETCH_TIMEOUT)
+  }, INDEX_PROPFIND_TIMEOUT)
   if (!res.ok) throw new Error(`PROPFIND / failed: ${res.status}`)
   const xml = await res.text()
   const doc = parseXml(xml)
@@ -127,10 +128,16 @@ function extractTitleFromFilename(filename: string): string {
   return stripLeading || base
 }
 
+export interface TrackMatchResult {
+  entry: WebdavFileEntry | null
+  /** True when several candidates tied for the best score — never guess. */
+  ambiguous: boolean
+}
+
 export function matchTrackToWebdav(
   track: Track,
   index: WebdavFileEntry[],
-): WebdavFileEntry | null {
+): TrackMatchResult {
   const navTitle = normalizeForMatch(track.title)
   const navSize = track.size
 
@@ -163,17 +170,24 @@ export function matchTrackToWebdav(
   scored.sort((a, b) => b.score - a.score)
 
   if (scored.length > 0 && scored[0].score >= 40) {
-    return scored[0].entry
+    // Two files with the same score (e.g. duplicate "01 - Intro.flac" in
+    // different albums, same size) are indistinguishable — picking the first
+    // index entry could rewrite the WRONG file's tags on Push.
+    if (scored.length > 1 && scored[0].score === scored[1].score) {
+      return { entry: null, ambiguous: true }
+    }
+    return { entry: scored[0].entry, ambiguous: false }
   }
 
   if (navSize) {
-    const sizeMatch = index.find(
+    const sizeMatches = index.filter(
       (e) => e.size === navSize && e.filename.toLowerCase().endsWith(`.${track.fileType}`),
     )
-    if (sizeMatch) return sizeMatch
+    if (sizeMatches.length === 1) return { entry: sizeMatches[0], ambiguous: false }
+    if (sizeMatches.length > 1) return { entry: null, ambiguous: true }
   }
 
-  return null
+  return { entry: null, ambiguous: false }
 }
 
 function getMetadataChunkSize(fileType: string): number {
@@ -307,10 +321,10 @@ export async function readFileMetadataWithIndex(
   index: WebdavFileEntry[],
 ): Promise<FileMetadata & { webdavPath?: string }> {
   const match = matchTrackToWebdav(track, index)
-  if (!match) return { rating: 0, loved: false }
+  if (!match.entry || match.ambiguous) return { rating: 0, loved: false }
 
-  const meta = await readFileMetadata(baseUrl, match.path, user, token, track.fileType)
-  return { ...meta, webdavPath: match.path }
+  const meta = await readFileMetadata(baseUrl, match.entry.path, user, token, track.fileType)
+  return { ...meta, webdavPath: match.entry.path }
 }
 
 export async function extractRawTagProperties(buffer: ArrayBuffer): Promise<Record<string, unknown>> {

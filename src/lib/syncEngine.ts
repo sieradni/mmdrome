@@ -3,7 +3,7 @@ import { webdavFetch, authHeaders, buildWebdavUrl } from "./webdavUtils"
 import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache, saveSongLibraryCache } from "$lib/db"
 import { modifyMetadataBuffer } from "$lib/tagWriter"
 import { metadataCache, settings, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
-import { setWebdavCredentials, ensureIndex, scanAllNow, setServerLastScan } from "./metadataScanner"
+import { setWebdavCredentials, scanAllNow, setServerLastScan } from "./metadataScanner"
 import {
   testNavidromeConnection as navidromeTestConnection,
   loadNavidromeSongs as navidromeLoadSongs,
@@ -28,6 +28,13 @@ class ConflictError extends Error {
   }
 }
 
+class NotFoundError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "NotFoundError"
+  }
+}
+
 async function webdavGet(
   baseUrl: string,
   filePath: string,
@@ -39,7 +46,10 @@ async function webdavGet(
     method: "GET",
     headers: authHeaders(user, token),
   }, WEBDAV_TIMEOUT)
-  if (!res.ok) throw new Error(`WebDAV GET failed (${res.status}) for ${filePath}`)
+  if (!res.ok) {
+    if (res.status === 404 || res.status === 410) throw new NotFoundError(`File gone (${res.status}) for ${filePath}`)
+    throw new Error(`WebDAV GET failed (${res.status}) for ${filePath}`)
+  }
   return {
     data: await res.arrayBuffer(),
     etag: res.headers.get("ETag") ?? undefined,
@@ -192,6 +202,23 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
 
   const { songs, result } = await navidromeLoadSongs(config)
 
+  // The load failed (mid-pagination, auth, transient) and returned nothing
+  // usable — fall back to a valid cached snapshot for this server so startup
+  // and re-connects keep a working library + queue instead of going empty.
+  // The error stays on loadResult so the UI can report it.
+  if (result.error && songs.length === 0) {
+    const cached = await getSongLibraryCache()
+    if (cached && cached.baseKey === baseKey && cached.tracks.length > 0) {
+      navidromeSetCachedConfig(config)
+      return {
+        connection,
+        songs: cached.tracks,
+        loadResult: { loaded: cached.tracks.length, failed: 0, cached: true, error: result.error },
+        lastScan,
+      }
+    }
+  }
+
   if (songs.length > 0 && lastScan) {
     await saveSongLibraryCache({ tracks: songs, lastScan, baseKey })
   }
@@ -209,6 +236,13 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   const result = await connectNavidrome(forceRefresh)
   if (!result.connection.connected) return result
 
+  // A failed load with nothing usable must NOT replace the in-memory library:
+  // setLibrary would reconcile the queue against the empty/partial set and
+  // wipe it. (A failed load that fell back to the cached snapshot carries
+  // songs and IS applied — they're valid.) A genuinely empty server (success,
+  // zero songs) still replaces — that's the truth.
+  if (result.loadResult.error && result.songs.length === 0) return result
+
   const tracks = result.songs.map(navidromeSongToTrack)
   setLibrary(tracks)
   initMetadataForTracks(tracks)
@@ -218,13 +252,15 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   const s = get(settings)
   if (s.webdavUrl && s.webdavUser && s.webdavToken) {
     setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
-    void ensureIndex().then(() => scanAllNow(false)).catch(() => {})
+    // scanAllNow probes the server itself (refreshIndex) — no ensureIndex
+    // pre-call, or the connect would issue two PROPFINDs.
+    void scanAllNow(false).catch(() => {})
   }
 
   return result
 }
 
-export async function runManualWebDAVSync(): Promise<{ synced: number; failed: number; skipped: number }> {
+export async function runManualWebDAVSync(): Promise<{ synced: number; failed: number; skipped: number; wrongServer: number }> {
   const webdavUrl = await getSetting<string>("webdavUrl")
   const webdavUser = await getSetting<string>("webdavUser")
   const webdavToken = await getSetting<string>("webdavToken")
@@ -234,19 +270,25 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   }
 
   const pending = await getPendingSyncMetadata()
-  if (pending.length === 0) return { synced: 0, failed: 0, skipped: 0 }
+  if (pending.length === 0) return { synced: 0, failed: 0, skipped: 0, wrongServer: 0 }
 
   const currentBaseKey = `${webdavUrl}|${webdavUser}`
   let synced = 0
   let failed = 0
   let skipped = 0
+  let wrongServer = 0
 
   for (const track of pending) {
     // Never fabricate a WebDAV path from the Navidrome id: without a matched
-    // file (or when the row was matched against a different server) there is
-    // nothing to write to — report it as skipped instead of failing loudly.
-    if (!track.webdavPath || (track.webdavBase && track.webdavBase !== currentBaseKey)) {
+    // file there is nothing to write to — report it as skipped instead of
+    // failing loudly. Rows matched against a different server are likewise
+    // never pushed there, counted separately so the UI can say which.
+    if (!track.webdavPath) {
       skipped++
+      continue
+    }
+    if (track.webdavBase && track.webdavBase !== currentBaseKey) {
+      wrongServer++
       continue
     }
 
@@ -284,8 +326,11 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
         return next
       })
       synced++
-    } catch {
-      failed++
+    } catch (err) {
+      // The file vanished between scan and push — not a failure of the push
+      // itself; the next scan will clear the stale path (missing count).
+      if (err instanceof NotFoundError) skipped++
+      else failed++
     }
   }
 
@@ -296,5 +341,5 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
     }
   }
 
-  return { synced, failed, skipped }
+  return { synced, failed, skipped, wrongServer }
 }

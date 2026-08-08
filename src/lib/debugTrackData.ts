@@ -3,7 +3,7 @@ import { library, metadataCache, settings } from '../stores/appState'
 import type { Track } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
 import { getNavidromeSong, type NavidromeConfig, type NavidromeSong } from './navidromeApi'
-import { ensureIndex } from './metadataScanner'
+import { refreshIndex } from './metadataScanner'
 import { matchTrackToWebdav, readMetadataChunk, extractRawTagProperties } from './metadataReader'
 import { getWebdavFileIndex } from './db'
 
@@ -60,19 +60,19 @@ export async function debugFetchTrackData(trackId: string): Promise<DebugTrackDa
 
   if (webdavUrl && webdavUser && webdavToken) {
     try {
-      await ensureIndex()
-      const cachedIndex = await getWebdavFileIndex()
-      const index = cachedIndex?.entries ?? []
+      const refreshed = await refreshIndex()
+      const index = refreshed ? await getWebdavFileIndex() : undefined
+      const entries = index?.entries ?? []
 
-      const match = matchTrackToWebdav(track, index)
-      if (match) {
-        webdavMatch = { path: match.path, filename: match.filename, size: match.size }
+      const match = matchTrackToWebdav(track, entries)
+      if (match.entry && !match.ambiguous) {
+        webdavMatch = { path: match.entry.path, filename: match.entry.filename, size: match.entry.size }
 
         try {
           const maxChunkSize = 8388608
           let chunkSize = 262144
           while (true) {
-            const buffer = await readMetadataChunk(webdavUrl, match.path, webdavUser, webdavToken, track.fileType, chunkSize)
+            const buffer = await readMetadataChunk(webdavUrl, match.entry.path, webdavUser, webdavToken, track.fileType, chunkSize)
             const gotFullFile = buffer.byteLength < chunkSize
             try {
               webdavRawMetadata = await extractRawTagProperties(buffer)
