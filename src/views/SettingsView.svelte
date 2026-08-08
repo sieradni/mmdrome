@@ -402,6 +402,11 @@ let showIgnored = $state(false)
       conflict = { trackId, path, conflictTitle: res.conflictTitle ?? '' }
       return
     }
+    if (res.reason === 'conflict-pending') {
+      bindError = `Can't re-bind — the other track (${res.conflictTitle ?? 'unknown'}) has a pending change; unbound edits would be lost.`;
+      conflict = null
+      return
+    }
     bindError = res.reason === 'not-in-index'
       ? 'That file is not in the current index — refresh the index first.'
       : res.reason === 'no-row'
@@ -845,7 +850,13 @@ let showIgnored = $state(false)
                   </span>
                 </div>
                 {#if row.pendingPush && row.kind !== 'matched'}
-                  <p class="mt-1 text-xs text-yellow-300">Has a pending rating/loved change — blocked until a file is bound.</p>
+                  <p class="mt-1 text-xs text-yellow-300">
+                    {row.kind === 'ignored'
+                      ? 'Has a pending rating/loved change — push is skipped while ignored.'
+                      : row.kind === 'stale-base'
+                        ? 'Has a pending rating/loved change — re-stamp it (or re-bind) to push.'
+                        : 'Has a pending rating/loved change — blocked until a file is bound.'}
+                  </p>
                 {/if}
                 {#if row.webdavPath}
                   <p class="mt-1 truncate text-xs text-muted">{row.webdavPath}</p>
