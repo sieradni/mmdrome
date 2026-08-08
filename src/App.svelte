@@ -4,12 +4,11 @@
   import { currentTrack, queue, playbackState, initStores, settings, setLibrary, initMetadataForTracks, seedNavidromeFeedback, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, playbackSpeed, effectiveDuration, toggleShuffle, metadataScanState, loopMode, sleepTimer, updateSetting } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
   import { sleepTimerManager } from './lib/sleepTimer'
-  import { connectNavidrome } from './lib/syncEngine'
-  import { navidromeSongToTrack, setCachedConfig } from './lib/navidromeApi'
+  import { loadLibraryFromNavidrome } from './lib/syncEngine'
+  import { setCachedConfig } from './lib/navidromeApi'
   import { playbackManager } from './lib/playbackManager'
   import { audioManager } from './lib/audioManager'
   import { engine } from './lib/engineFacade'
-  import { setWebdavCredentials, ensureIndex, scanAllNow, setServerLastScan, getWebdavConfigured } from './lib/metadataScanner'
   import { getTagLib } from './lib/taglibSingleton'
   import type { Track } from './stores/appState'
   import SongsView from './views/SongsView.svelte'
@@ -52,35 +51,19 @@
     const s = $settings
     if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {
       setCachedConfig({ baseUrl: s.navidromeUrl, username: s.navidromeUser, password: s.navidromePassword })
-    }
-
-    if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {
       navidromeConnection.set({ connected: false, checking: true })
       navidromeLoadStatus.set({ loading: true, loaded: 0, failed: 0 })
       try {
-        const result = await connectNavidrome()
+        // Shared pipeline: connect → library + metadata seeding → server
+        // lastScan → automatic incremental WebDAV scan when configured.
+        const result = await loadLibraryFromNavidrome()
         navidromeConnection.set({ ...result.connection, checking: false })
-        if (result.connection.connected) {
-          const tracks: Track[] = result.songs.map(navidromeSongToTrack)
-          setLibrary(tracks)
-          initMetadataForTracks(tracks)
-          seedNavidromeFeedback(tracks)
-          navidromeLoadStatus.set({
-            loading: false,
-            loaded: result.loadResult.loaded,
-            failed: result.loadResult.failed,
-          })
-
-          if (result.lastScan) setServerLastScan(result.lastScan)
-
-          const s2 = $settings
-          if (s2.webdavUrl && s2.webdavUser && s2.webdavToken) {
-            setWebdavCredentials(s2.webdavUrl, s2.webdavUser, s2.webdavToken)
-            ensureIndex().then(() => scanAllNow(false))
-          }
-        } else {
-          navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: result.connection.error })
-        }
+        navidromeLoadStatus.set({
+          loading: false,
+          loaded: result.loadResult.loaded,
+          failed: result.loadResult.failed,
+          error: result.loadResult.error,
+        })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         navidromeConnection.set({ connected: false, error: msg, checking: false })

@@ -34,6 +34,7 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
       comments: existing?.comments ?? track.comments,
       webdavPath: existing?.webdavPath,
       webdavLastModified: existing?.webdavLastModified,
+      webdavBase: existing?.webdavBase,
     }
     updateMetadata(meta)
     // prevRating lets the mirror clear a prior rating when it's actually being
@@ -55,6 +56,7 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
     comments: existing?.comments ?? track.comments,
     webdavPath: existing?.webdavPath,
     webdavLastModified: existing?.webdavLastModified,
+    webdavBase: existing?.webdavBase,
   }
   updateMetadata(meta)
 

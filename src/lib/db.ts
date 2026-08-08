@@ -9,6 +9,8 @@ export interface LocalMetadataStore {
   lastModifiedLocally: number
   webdavPath?: string
   webdavLastModified?: string
+  /** `baseUrl|user` the webdavPath was matched against (guards cross-server pushes). */
+  webdavBase?: string
   comments?: string
 }
 
@@ -24,12 +26,16 @@ export interface WebdavFileIndex {
   entries: WebdavFileEntry[]
   buildTimestamp: number
   lastScan?: string
+  /** `baseUrl|user` this index was built against — mismatches force a rebuild. */
+  baseKey?: string
 }
 
 export interface SongLibraryCache {
   id: string
   tracks: import('./navidromeApi').NavidromeSong[]
   lastScan: string
+  /** `baseUrl|username` this cache belongs to — prevents cross-server reuse. */
+  baseKey?: string
 }
 
 export interface UserSettings {
@@ -96,6 +102,10 @@ export async function deleteMetadata(trackId: string): Promise<void> {
   await db.localMetadata.delete(trackId)
 }
 
+export async function bulkDeleteMetadata(ids: string[]): Promise<void> {
+  await db.localMetadata.bulkDelete(ids)
+}
+
 export async function getPendingSyncMetadata(): Promise<LocalMetadataStore[]> {
   return db.localMetadata.where('syncStatus').equals('pending_sync').toArray()
 }
@@ -125,18 +135,10 @@ export async function saveWebdavFileIndex(index: Omit<WebdavFileIndex, 'id'>): P
   await db.webdavFileIndex.put({ id: 'main', ...index })
 }
 
-export async function clearWebdavFileIndex(): Promise<void> {
-  await db.webdavFileIndex.delete('main')
-}
-
 export async function getSongLibraryCache(): Promise<SongLibraryCache | undefined> {
   return db.songLibraryCache.get('main')
 }
 
 export async function saveSongLibraryCache(cache: Omit<SongLibraryCache, 'id'>): Promise<void> {
   await db.songLibraryCache.put({ id: 'main', ...cache })
-}
-
-export async function clearSongLibraryCache(): Promise<void> {
-  await db.songLibraryCache.delete('main')
 }

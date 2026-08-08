@@ -22,6 +22,7 @@ import {
   pitchOctaves,
   currentTime,
   loopMode,
+  metadataScanState,
   setCurrentTrack,
   setPlaybackState,
   setActiveQueueIndex,
@@ -187,17 +188,27 @@ class PlaybackManager {
 
     library.subscribe(() => {
       if (this._initialized) {
-        const f = get(libraryFilters)
-        if (!get(shuffleEnabled) && (f.sortBy === 'rating' || f.sortBy === 'loved')) {
-          // Rebuild so a refreshed library (ratings/loved read from disk) reorders
-          // the queue to match the view; a plain replenish would keep the stale
-          // order. Metadata-independent sorts just append new tracks like before.
-          queueManager.rebuildAutoQueue()
-          this._refreshNativeQueue()
-        } else {
-          queueManager.replenishAutoQueue()
-        }
+        // Replenish (never rebuild) on library changes: the queued auto head —
+        // including any armed crossfade target — stays in place while the fill
+        // re-ranks by current metadata. A rebuild could drop an armed track,
+        // and the crossfade-end handler would then rescue it back into the
+        // user queue mid-play. The queue→native microtask sync covers the
+        // native tail, so no explicit refresh here.
+        queueManager.replenishAutoQueue()
       }
+    })
+
+    // A completed metadata scan refreshed rating/loved — re-rank the auto
+    // queue fill so it follows the Songs-view sort. Replenish (not rebuild)
+    // keeps the currently queued head untouched, so nothing armed is dropped
+    // and the user queue is never mutated by the crossfade rescue path.
+    metadataScanState.subscribe((st) => {
+      if (!this._initialized) return
+      if (st.status !== 'complete') return
+      const f = get(libraryFilters)
+      if (get(shuffleEnabled)) return
+      if (f.sortBy !== 'rating' && f.sortBy !== 'loved') return
+      queueManager.replenishAutoQueue()
     })
 
     shuffleEnabled.subscribe(() => {

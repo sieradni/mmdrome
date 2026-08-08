@@ -1,15 +1,14 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, setLibrary, initMetadataForTracks, seedNavidromeFeedback, metadataScanState } from '../stores/appState'
+  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState } from '../stores/appState'
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
-  import { runManualWebDAVSync, testWebdavConn, connectNavidrome } from '../lib/syncEngine'
-  import { navidromeSongToTrack } from '../lib/navidromeApi'
+  import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
   import { setWebdavCredentials, ensureIndex, rebuildIndex, scanAllNow, scanAllForceRescan } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
   import { tick } from 'svelte'
-  import type { Track, SettingsMap } from '../stores/appState'
+  import type { SettingsMap } from '../stores/appState'
 
   type SettingsTab = 'sources' | 'playback' | 'library' | 'about'
 
@@ -233,23 +232,16 @@
     navidromeConnection.set({ connected: false, checking: true })
     navidromeLoadStatus.set({ loading: true, loaded: 0, failed: 0 })
     try {
-      const result = await connectNavidrome(true)
+      // Shared pipeline (same as app startup): connect → library + metadata
+      // seeding → server lastScan → automatic incremental WebDAV scan.
+      const result = await loadLibraryFromNavidrome(true)
       navidromeConnection.set({ ...result.connection, checking: false })
-      if (result.connection.connected) {
-        const tracks: Track[] = result.songs.map(navidromeSongToTrack)
-        setLibrary(tracks)
-        initMetadataForTracks(tracks)
-        seedNavidromeFeedback(tracks)
-
-        navidromeLoadStatus.set({
-          loading: false,
-          loaded: result.loadResult.loaded,
-          failed: result.loadResult.failed,
-          error: result.loadResult.error,
-        })
-      } else {
-        navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: result.connection.error })
-      }
+      navidromeLoadStatus.set({
+        loading: false,
+        loaded: result.loadResult.loaded,
+        failed: result.loadResult.failed,
+        error: result.loadResult.error,
+      })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       navidromeConnection.set({ connected: false, error: msg, checking: false })
@@ -263,7 +255,9 @@
     syncResult = ''
     try {
       const result = await runManualWebDAVSync()
-      syncResult = `Pushed ${result.synced} track(s), ${result.failed} failed`
+      syncResult = result.skipped > 0
+        ? `Pushed ${result.synced} track(s), ${result.failed} failed, ${result.skipped} skipped (no matching WebDAV file)`
+        : `Pushed ${result.synced} track(s), ${result.failed} failed`
     } catch (err) {
       syncResult = `Push failed: ${err instanceof Error ? err.message : String(err)}`
     } finally {

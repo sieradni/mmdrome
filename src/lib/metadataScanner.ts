@@ -29,15 +29,23 @@ let serverLastScan = ""
 let webdavUrl = ""
 let webdavUser = ""
 let webdavToken = ""
+let indexBaseKey = ""
+
+function currentIndexKey(): string {
+  return `${webdavUrl}|${webdavUser}`
+}
 
 export function setWebdavCredentials(url: string, user: string, token: string): void {
+  if (`${url}|${user}` !== indexBaseKey) {
+    // The index (in-memory or cached) belongs to a different server/user —
+    // never reuse it against the new credentials.
+    index = []
+    indexBuilt = false
+    indexBaseKey = ""
+  }
   webdavUrl = url
   webdavUser = user
   webdavToken = token
-}
-
-export function getWebdavConfigured(): boolean {
-  return !!(webdavUrl && webdavUser && webdavToken)
 }
 
 export function setServerLastScan(scan: string): void {
@@ -45,11 +53,13 @@ export function setServerLastScan(scan: string): void {
 }
 
 export async function ensureIndex(): Promise<void> {
-  if (indexBuilt && index.length > 0) return
+  const key = currentIndexKey()
+  if (indexBuilt && index.length > 0 && indexBaseKey === key) return
 
   const cached = await getWebdavFileIndex()
-  if (cached && cached.entries.length > 0) {
+  if (cached && cached.entries.length > 0 && cached.baseKey === key) {
     index = cached.entries
+    indexBaseKey = key
     indexBuilt = true
     return
   }
@@ -61,15 +71,9 @@ export async function rebuildIndex(): Promise<void> {
   if (!webdavUrl || !webdavUser || !webdavToken) return
 
   index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
+  indexBaseKey = currentIndexKey()
   indexBuilt = true
-  await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan })
-}
-
-export function prioritizeTrack(trackId: string): void {
-  if (!queue.some((qi) => qi.trackId === trackId)) {
-    queue.unshift({ trackId })
-    drain()
-  }
+  await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey })
 }
 
 let scannedCount = 0
@@ -117,6 +121,18 @@ export async function scanAllNow(forceRescan = false): Promise<void> {
   totalTracks = queue.length
   if (scanGen !== myGen) return
   cancelled = false
+
+  if (totalTracks === 0) {
+    // Nothing to read. Without this short-circuit the drain loop never runs
+    // updateScanProgress, leaving the UI stuck at 0/0 "scanning" forever.
+    metadataScanState.set({
+      status: "complete",
+      progress: { scanned: 0, total: 0, failed: 0 },
+      error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
+    })
+    return
+  }
+
   metadataScanState.set({
     status: "scanning",
     progress: { scanned: 0, total: totalTracks, failed: 0 },
@@ -147,13 +163,14 @@ async function processItem(item: QueueItem): Promise<void> {
 
   const existing = get(metadataCache).get(track.trackId)
   if (existing && existing.syncStatus === 'pending_sync') {
-    if (scanGen === startedGen) scannedCount++
+    scannedCount++
     updateScanProgress()
     return
   }
 
   const match = matchTrackToWebdav(track, index)
-  if (!match || scanGen !== startedGen) {
+  if (scanGen !== startedGen) return
+  if (!match) {
     scannedCount++
     updateScanProgress()
     return
@@ -161,6 +178,17 @@ async function processItem(item: QueueItem): Promise<void> {
 
   try {
     const meta = await readFileMetadata(webdavUrl, match.path, webdavUser, webdavToken, track.fileType)
+    if (scanGen !== startedGen) return
+
+    // The user may have edited rating/loved while the fetch was in flight —
+    // don't clobber the pending edit with stale file tags.
+    const current = get(metadataCache).get(track.trackId)
+    if (current && current.syncStatus === 'pending_sync') {
+      scannedCount++
+      updateScanProgress()
+      return
+    }
+
     updateMetadata({
       trackId: track.trackId,
       rating: meta.rating,
@@ -170,9 +198,10 @@ async function processItem(item: QueueItem): Promise<void> {
       lastModifiedLocally: Date.now(),
       webdavPath: match.path,
       webdavLastModified: match.lastModified,
+      webdavBase: currentIndexKey(),
       comments: meta.comments,
     })
-    if (scanGen === startedGen) scannedCount++
+    scannedCount++
   } catch {
     if (scanGen === startedGen) failedCount++
   }
@@ -215,22 +244,20 @@ export async function scanAllForceRescan(): Promise<void> {
   totalTracks = queue.length
   if (scanGen !== myGen) return
   cancelled = false
+
+  if (totalTracks === 0) {
+    metadataScanState.set({
+      status: "complete",
+      progress: { scanned: 0, total: 0, failed: 0 },
+      error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
+    })
+    return
+  }
+
   metadataScanState.set({
     status: "scanning",
     progress: { scanned: 0, total: totalTracks, failed: 0 },
   })
 
   drain()
-}
-
-export function resetScan(): void {
-  cancelled = true
-  queue = []
-  activeCount = 0
-  scannedCount = 0
-  failedCount = 0
-  totalTracks = 0
-  indexBuilt = false
-  index = []
-  metadataScanState.set({ status: "idle", progress: { scanned: 0, total: 0, failed: 0 } })
 }

@@ -1,6 +1,6 @@
 import { writable, get, derived } from 'svelte/store'
 import type { LocalMetadataStore, PlayQueueState } from '$lib/db'
-import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata } from '$lib/db'
+import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
 
@@ -140,8 +140,57 @@ export const loopMode = writable<LoopMode>('none')
 /** Set when the non-shuffle auto queue wrapped back to the top of the sort order. */
 export const queueWrapNotice = writable<boolean>(false)
 
-export function setLibrary(tracks: Track[]): void {
+export function setLibrary(tracks: Track[], complete = true): void {
+  // A full (error-free) library load replaces the source of truth — reconcile
+  // the queue and metadata cache against it so stale ids can't stall playback
+  // or linger (pending rows are kept: they surface in Push Changes instead of
+  // being silently lost).
+  if (complete) {
+    reconcileQueueWithLibrary(tracks)
+    pruneStaleMetadata(tracks)
+  }
   library.set(tracks)
+}
+
+function reconcileQueueWithLibrary(tracks: Track[]): void {
+  const ids = new Set(tracks.map((t) => t.trackId))
+  queue.update((q) => {
+    const oldCombined = [...q.userQueue, ...q.autoQueue]
+    const oldActiveId = q.activeIndex >= 0 && q.activeIndex < oldCombined.length ? oldCombined[q.activeIndex] : undefined
+
+    const userQueue = q.userQueue.filter((id) => ids.has(id))
+    const autoQueue = q.autoQueue.filter((id) => ids.has(id))
+    const historyQueue = q.historyQueue.filter((id) => ids.has(id))
+    const newCombined = [...userQueue, ...autoQueue]
+
+    let activeIndex = q.activeIndex
+    if (oldActiveId === undefined || !ids.has(oldActiveId)) {
+      activeIndex = -1
+    } else {
+      const idx = newCombined.indexOf(oldActiveId)
+      activeIndex = idx >= 0 ? idx : -1
+    }
+
+    const updated = { userQueue, autoQueue, historyQueue, activeIndex }
+    saveQueue(updated)
+    return updated
+  })
+}
+
+function pruneStaleMetadata(tracks: Track[]): void {
+  const ids = new Set(tracks.map((t) => t.trackId))
+  const cache = get(metadataCache)
+  const toDelete: string[] = []
+  const remaining = new Map(cache)
+  for (const [id, meta] of cache) {
+    if (ids.has(id)) continue
+    if (meta.syncStatus === 'pending_sync') continue
+    remaining.delete(id)
+    toDelete.push(id)
+  }
+  if (toDelete.length === 0) return
+  metadataCache.set(remaining)
+  void bulkDeleteMetadata(toDelete)
 }
 
 let initialized = false
@@ -260,14 +309,6 @@ export function updateMetadata(meta: LocalMetadataStore): void {
   upsertMetadata(meta)
 }
 
-export function removeMetadata(trackId: string): void {
-  metadataCache.update((map) => {
-    const next = new Map(map)
-    next.delete(trackId)
-    return next
-  })
-}
-
 export function toggleShuffle(): void {
   shuffleEnabled.update((v) => !v)
   autoQueueFilters.update((f) => ({ ...f, albumScope: undefined, artistScope: undefined }))
@@ -351,6 +392,7 @@ export function seedNavidromeFeedback(tracks: Track[]): void {
       comments: existing?.comments ?? t.comments,
       webdavPath: existing?.webdavPath,
       webdavLastModified: existing?.webdavLastModified,
+      webdavBase: existing?.webdavBase,
     }
     updates.push(next)
   }

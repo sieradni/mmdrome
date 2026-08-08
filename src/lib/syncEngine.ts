@@ -1,6 +1,9 @@
+import { get } from "svelte/store"
 import { webdavFetch, authHeaders, buildWebdavUrl } from "./webdavUtils"
 import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache, saveSongLibraryCache } from "$lib/db"
 import { modifyMetadataBuffer } from "$lib/tagWriter"
+import { metadataCache, settings, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
+import { setWebdavCredentials, ensureIndex, scanAllNow, setServerLastScan } from "./metadataScanner"
 import {
   testNavidromeConnection as navidromeTestConnection,
   loadNavidromeSongs as navidromeLoadSongs,
@@ -8,6 +11,7 @@ import {
   testWebdavConnection as webdavTestConnection,
   getScanStatus as navidromeGetScanStatus,
   setCachedConfig as navidromeSetCachedConfig,
+  navidromeSongToTrack,
   type NavidromeConfig,
   type NavidromeConnectionStatus,
   type NavidromeLoadResult,
@@ -171,9 +175,11 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
     // if scan status fails, proceed without caching
   }
 
+  const baseKey = `${config.baseUrl}|${config.username}`
+
   if (!forceRefresh && lastScan) {
     const cached = await getSongLibraryCache()
-    if (cached && cached.lastScan === lastScan && cached.tracks.length > 0) {
+    if (cached && cached.baseKey === baseKey && cached.lastScan === lastScan && cached.tracks.length > 0) {
       navidromeSetCachedConfig(config)
       return {
         connection,
@@ -187,13 +193,38 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
   const { songs, result } = await navidromeLoadSongs(config)
 
   if (songs.length > 0 && lastScan) {
-    await saveSongLibraryCache({ tracks: songs, lastScan })
+    await saveSongLibraryCache({ tracks: songs, lastScan, baseKey })
   }
 
   return { connection, songs, loadResult: result, lastScan }
 }
 
-export async function runManualWebDAVSync(): Promise<{ synced: number; failed: number }> {
+/**
+ * Single pipeline for applying a Navidrome connect to the app state, used by
+ * both App startup and the Settings "Connect & Load" button so the two paths
+ * can never diverge: library + metadata seeding + server lastScan, then an
+ * automatic incremental WebDAV metadata scan when WebDAV is configured.
+ */
+export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<NavidromeConnectResult> {
+  const result = await connectNavidrome(forceRefresh)
+  if (!result.connection.connected) return result
+
+  const tracks = result.songs.map(navidromeSongToTrack)
+  setLibrary(tracks)
+  initMetadataForTracks(tracks)
+  seedNavidromeFeedback(tracks)
+  if (result.lastScan) setServerLastScan(result.lastScan)
+
+  const s = get(settings)
+  if (s.webdavUrl && s.webdavUser && s.webdavToken) {
+    setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
+    void ensureIndex().then(() => scanAllNow(false)).catch(() => {})
+  }
+
+  return result
+}
+
+export async function runManualWebDAVSync(): Promise<{ synced: number; failed: number; skipped: number }> {
   const webdavUrl = await getSetting<string>("webdavUrl")
   const webdavUser = await getSetting<string>("webdavUser")
   const webdavToken = await getSetting<string>("webdavToken")
@@ -203,14 +234,24 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   }
 
   const pending = await getPendingSyncMetadata()
-  if (pending.length === 0) return { synced: 0, failed: 0 }
+  if (pending.length === 0) return { synced: 0, failed: 0, skipped: 0 }
 
+  const currentBaseKey = `${webdavUrl}|${webdavUser}`
   let synced = 0
   let failed = 0
+  let skipped = 0
 
   for (const track of pending) {
+    // Never fabricate a WebDAV path from the Navidrome id: without a matched
+    // file (or when the row was matched against a different server) there is
+    // nothing to write to — report it as skipped instead of failing loudly.
+    if (!track.webdavPath || (track.webdavBase && track.webdavBase !== currentBaseKey)) {
+      skipped++
+      continue
+    }
+
     try {
-      const davPath = track.webdavPath || track.trackId.replace(/^navidrome-/, '')
+      const davPath = track.webdavPath
 
       // GET with ETag for concurrency detection
       const { data: raw, etag } = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)
@@ -233,7 +274,15 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
         }
       }
 
-      await upsertMetadata({ ...track, syncStatus: "synced" })
+      const syncedRow = { ...track, syncStatus: "synced" as const }
+      await upsertMetadata(syncedRow)
+      // Keep the in-memory cache in step, or the row stays pending_sync until
+      // the next scan/reload.
+      metadataCache.update((map) => {
+        const next = new Map(map)
+        next.set(track.trackId, syncedRow)
+        return next
+      })
       synced++
     } catch {
       failed++
@@ -247,5 +296,5 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
     }
   }
 
-  return { synced, failed }
+  return { synced, failed, skipped }
 }
