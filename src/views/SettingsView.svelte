@@ -1,15 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { get } from 'svelte/store'
-  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, library } from '../stores/appState'
+  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, library, metadataCache } from '../stores/appState'
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
-  import { setWebdavCredentials, rebuildIndex, scanAll } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack } from '../lib/metadataScanner'
+  import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
   import { tick } from 'svelte'
   import type { SettingsMap } from '../stores/appState'
+  import type { WebdavFileEntry } from '../lib/db'
 
   type SettingsTab = 'sources' | 'playback' | 'library' | 'about'
 
@@ -292,6 +294,114 @@
     } finally {
       syncing = false
     }
+  }
+
+  // ── File Matching ──────────────────────────────────────────────────────
+
+  const kindBadges: Record<UnresolvedTrack['kind'], { label: string; cls: string }> = {
+    'ambiguous': { label: 'Ambiguous', cls: 'bg-yellow-500/20 text-yellow-300 ring-yellow-500/30' },
+    'no-match': { label: 'No match', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
+    'vanished': { label: 'File vanished', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
+    'stale-base': { label: 'Server changed', cls: 'bg-orange-500/20 text-orange-300 ring-orange-500/30' },
+    'ignored': { label: 'Ignored', cls: 'bg-white/10 text-muted ring-white/20' },
+  }
+
+  let unresolvedRows = $state<UnresolvedTrack[]>([])
+  let unresolvedLoading = $state(false)
+  let unresolvedError = $state('')
+  let unresolvedLoaded = $state(false)
+  let pickerTrackId = $state<string | null>(null)
+  let searchQuery = $state('')
+  let searchResults = $state<WebdavFileEntry[]>([])
+  let searching = $state(false)
+  let conflict = $state<{ trackId: string; path: string; conflictTitle: string } | null>(null)
+  let showIgnored = $state(false)
+  let ignoredCount = $state(0)
+  let bindError = $state('')
+
+  async function refreshUnresolved() {
+    unresolvedLoading = true
+    unresolvedError = ''
+    bindError = ''
+    try {
+      await commitCredentials()
+      const s = $settings
+      if (s.webdavUrl && s.webdavUser && s.webdavToken) {
+        setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
+      }
+      const rows = await listUnresolvedMatches()
+      unresolvedRows = rows
+      ignoredCount = rows.filter((r) => r.kind === 'ignored').length
+      unresolvedLoaded = true
+    } catch (err) {
+      unresolvedError = err instanceof Error ? err.message : String(err)
+    } finally {
+      unresolvedLoading = false
+    }
+  }
+
+  $effect(() => {
+    if (tab !== 'library' || unresolvedLoaded) return
+    refreshUnresolved()
+  })
+
+  function openPicker(trackId: string) {
+    pickerTrackId = pickerTrackId === trackId ? null : trackId
+    searchQuery = ''
+    searchResults = []
+    bindError = ''
+  }
+
+  async function runSearch() {
+    if (!pickerTrackId) return
+    const row = unresolvedRows.find((r) => r.trackId === pickerTrackId)
+    if (!row) return
+    searching = true
+    try {
+      searchResults = searchWebdavFiles(searchQuery, row.fileType)
+    } finally {
+      searching = false
+    }
+  }
+
+  async function doBind(trackId: string, path: string, force = false) {
+    bindError = ''
+    const res = await bindTrackToFile(trackId, path, force)
+    if (res.ok) {
+      conflict = null
+      pickerTrackId = null
+      await refreshUnresolved()
+      return
+    }
+    if (res.reason === 'conflict' && !force) {
+      conflict = { trackId, path, conflictTitle: res.conflictTitle ?? '' }
+      return
+    }
+    bindError = res.reason === 'not-in-index'
+      ? 'That file is not in the current index — refresh the index first.'
+      : res.reason === 'no-row'
+        ? 'No metadata row for this track.'
+        : 'Could not bind.'
+  }
+
+  async function doUnbind(trackId: string) {
+    await unbindTrack(trackId)
+    await refreshUnresolved()
+  }
+
+  async function doIgnore(trackId: string) {
+    await ignoreTrack(trackId)
+    await refreshUnresolved()
+  }
+
+  async function doUnignore(trackId: string) {
+    await unignoreTrack(trackId)
+    await refreshUnresolved()
+  }
+
+  async function doRestamp(row: UnresolvedTrack) {
+    if (!row.webdavPath) return
+    await doBind(row.trackId, row.webdavPath)
   }
 </script>
 
@@ -672,6 +782,142 @@
             {/if}
           </div>
         </section>
+
+        <!-- File Matching -->
+        <section class="px-4 py-4">
+          <div class="mb-1 flex items-center justify-between">
+            <h3 class="text-base font-medium text-primary">File Matching</h3>
+            <button
+              onclick={refreshUnresolved}
+              disabled={unresolvedLoading || $metadataScanState.status === 'scanning'}
+              class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+            >Refresh</button>
+          </div>
+          <p class="mb-2 text-sm text-muted">
+            Tracks without a safe WebDAV file match. Bind one manually to make them pushable, or mark them as not on this server.
+          </p>
+          {#if unresolvedLoading}
+            <p class="text-sm text-muted">Loading…</p>
+          {:else if unresolvedError}
+            <p class="text-sm text-red-400">{unresolvedError}</p>
+          {:else if unresolvedRows.length === 0}
+            <p class="text-sm text-green-400">All tracks matched.</p>
+          {:else}
+            {#each (showIgnored ? unresolvedRows : unresolvedRows.filter((r) => r.kind !== 'ignored')) as row (row.trackId)}
+              <div class="mb-2 rounded-lg bg-surface px-3 py-2">
+                <div class="flex items-start justify-between gap-2">
+                  <div class="min-w-0">
+                    <p class="truncate text-sm text-primary">{row.title}</p>
+                    <p class="truncate text-xs text-muted">{row.artist}{row.album ? ` · ${row.album}` : ''}</p>
+                  </div>
+                  <span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 {kindBadges[row.kind].cls}">
+                    {kindBadges[row.kind].label}
+                  </span>
+                </div>
+                {#if row.pendingPush}
+                  <p class="mt-1 text-xs text-yellow-300">Has a pending rating/loved change — blocked until a file is bound.</p>
+                {/if}
+                {#if row.webdavPath}
+                  <p class="mt-1 truncate text-xs text-muted">{row.webdavPath}</p>
+                {/if}
+                {#if row.kind === 'stale-base'}
+                  <button
+                    onclick={() => doRestamp(row)}
+                    class="mt-2 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                  >Re-stamp to current server</button>
+                {:else if row.kind === 'ignored'}
+                  <button
+                    onclick={() => doUnignore(row.trackId)}
+                    class="mt-2 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                  >Un-ignore</button>
+                {:else}
+                  <div class="mt-2 flex gap-2">
+                    <button
+                      onclick={() => openPicker(row.trackId)}
+                      class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-80"
+                    >{row.kind === 'ambiguous' ? 'Choose file…' : 'Find file…'}</button>
+                    <button
+                      onclick={() => doIgnore(row.trackId)}
+                      class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+                    >Not on this server</button>
+                  </div>
+                {/if}
+                {#if pickerTrackId === row.trackId}
+                  <div class="mt-2 space-y-2 border-t border-white/10 pt-2">
+                    {#if row.candidates.length > 0}
+                      <p class="text-xs text-muted">
+                        {row.kind === 'ambiguous' ? 'Several files match equally — pick the right one:' : 'Best candidates:'}
+                      </p>
+                      {#each row.candidates as cand (cand.path)}
+                        <button
+                          onclick={() => doBind(row.trackId, cand.path)}
+                          class="block w-full truncate rounded-lg bg-surface-hover px-3 py-1.5 text-left text-xs text-primary transition-opacity hover:opacity-80"
+                        >{cand.path}</button>
+                      {/each}
+                    {/if}
+                    <div class="flex gap-2">
+                      <input
+                        type="text"
+                        placeholder="Search all files…"
+                        value={searchQuery}
+                        oninput={(e) => { searchQuery = (e.target as HTMLInputElement).value }}
+                        onkeydown={(e) => { if (e.key === 'Enter') runSearch() }}
+                        class="min-w-0 flex-1 rounded-lg bg-surface-hover px-3 py-1.5 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                      />
+                      <button
+                        onclick={runSearch}
+                        disabled={searching || !searchQuery.trim()}
+                        class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                      >Search</button>
+                    </div>
+                    {#if searchResults.length > 0}
+                      <div class="max-h-40 space-y-1 overflow-y-auto">
+                        {#each searchResults as cand (cand.path)}
+                          <button
+                            onclick={() => doBind(row.trackId, cand.path)}
+                            class="block w-full truncate rounded-lg bg-surface-hover px-3 py-1.5 text-left text-xs text-primary transition-opacity hover:opacity-80"
+                          >{cand.path}</button>
+                        {/each}
+                      </div>
+                    {:else if searching}
+                      <p class="text-xs text-muted">Searching…</p>
+                    {/if}
+                    {#if bindError}
+                      <p class="text-xs text-red-400">{bindError}</p>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+            {/each}
+            {#if ignoredCount > 0}
+              <button
+                onclick={() => showIgnored = !showIgnored}
+                class="mt-1 text-sm font-medium text-muted transition-colors hover:text-primary"
+              >{showIgnored ? 'Hide' : 'Show'} ignored ({ignoredCount})</button>
+            {/if}
+          {/if}
+        </section>
+
+        {#if conflict}
+          <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+            <div class="w-full max-w-sm rounded-xl bg-surface-raised p-4">
+              <h4 class="mb-2 text-base font-medium text-primary">File already bound</h4>
+              <p class="mb-3 text-sm text-muted">
+                That file is already matched to <span class="text-primary">{conflict.conflictTitle}</span>. Binding it here will leave the other track unmatched.
+              </p>
+              <div class="flex justify-end gap-2">
+                <button
+                  onclick={() => conflict = null}
+                  class="rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+                >Cancel</button>
+                <button
+                  onclick={() => { if (conflict) doBind(conflict.trackId, conflict.path, true) }}
+                  class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-80"
+                >Bind anyway</button>
+              </div>
+            </div>
+          </div>
+        {/if}
       {/if}
 
       {#if tab === 'about'}
