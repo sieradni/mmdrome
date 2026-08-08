@@ -192,11 +192,11 @@
       webdavConnection.set({ ...result, checking: false })
       // Fresh setup flow: a working WebDAV server plus an already-loaded
       // library can populate ratings immediately. Gated on the library being
-      // loaded and the scan being idle (first setup / fresh session) — repeated
-      // credential re-tests and completed scan states stay inert; the "Check
-      // Modified Ratings" button is the explicit re-scan control.
+      // loaded and no scan being in flight — repeated credential re-tests and
+      // completed scan states stay inert; "error" recovers a creds-less
+      // attempt once the fields are filled and tested again.
       if (result.connected && $settings.webdavUrl && $settings.webdavUser && $settings.webdavToken) {
-        if (get(library).length > 0 && get(metadataScanState).status === 'idle') {
+        if (get(library).length > 0 && (get(metadataScanState).status === 'idle' || get(metadataScanState).status === 'error')) {
           setWebdavCredentials($settings.webdavUrl, $settings.webdavUser, $settings.webdavToken)
           scanAll('modified')
         }
@@ -215,11 +215,13 @@
         setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
       }
       await rebuildIndex()
-    } catch {
+    } catch (err) {
       metadataScanState.set({
         status: 'error',
         progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
-        error: 'Index refresh failed — is the WebDAV server reachable?',
+        error: err instanceof Error && err.message === 'WebDAV credentials not configured'
+          ? err.message
+          : 'Index refresh failed — is the WebDAV server reachable?',
       })
     } finally {
       indexing = false

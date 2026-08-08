@@ -42,6 +42,11 @@ let missingCount = 0
 let ambiguousCount = 0
 let totalTracks = 0
 let shape: ScanShape = "modified"
+let activeAnnotation = ""
+
+function annotationFor(s: ScanShape): string {
+  return s === "force" ? "Scanning all files..." : "Scanning changed files..."
+}
 
 function currentIndexKey(): string {
   return `${webdavUrl}|${webdavUser}`
@@ -85,7 +90,9 @@ export async function refreshIndex(): Promise<boolean> {
 }
 
 export async function rebuildIndex(): Promise<void> {
-  if (!webdavUrl || !webdavUser || !webdavToken) return
+  if (!webdavUrl || !webdavUser || !webdavToken) {
+    throw new Error("WebDAV credentials not configured")
+  }
 
   index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
   indexBaseKey = currentIndexKey()
@@ -117,12 +124,22 @@ export async function scanAll(shape_: ScanShape = "modified"): Promise<void> {
   ambiguousCount = 0
   totalTracks = 0
   shape = shape_
+  activeAnnotation = annotationFor(shape)
 
-  if (!webdavUrl || !webdavUser || !webdavToken) return
+  // Creds check AFTER the gen guard: a creds-less second call must not stomp
+  // the scanning state of a newer in-flight scan. With no await between the
+  // guard and the state set below, this error write is gen-safe by ordering.
   if (scanGen !== myGen) return
+  if (!webdavUrl || !webdavUser || !webdavToken) {
+    metadataScanState.set({
+      status: "error",
+      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+      error: "WebDAV credentials not configured",
+    })
+    return
+  }
 
-  const annotation = shape === "force" ? "Scanning all files..." : "Scanning changed files..."
-  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation } })
+  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation } })
 
   if (shape === "force") {
     try {
@@ -131,7 +148,7 @@ export async function scanAll(shape_: ScanShape = "modified"): Promise<void> {
       if (scanGen !== myGen) return
       metadataScanState.set({
         status: "error",
-        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation },
+        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
         error: "Index refresh failed — is the WebDAV server reachable?",
       })
       return
@@ -149,13 +166,13 @@ export async function scanAll(shape_: ScanShape = "modified"): Promise<void> {
       if (scanGen !== myGen) return
       metadataScanState.set({
         status: "error",
-        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation },
+        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
         error: "Index refresh failed — is the WebDAV server reachable?",
       })
       return
     }
     if (index.length === 0) {
-      metadataScanState.set({ status: "complete", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation } })
+      metadataScanState.set({ status: "complete", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation } })
       return
     }
 
@@ -193,7 +210,7 @@ export async function scanAll(shape_: ScanShape = "modified"): Promise<void> {
     // updateScanProgress, leaving the UI stuck at 0/0 "scanning" forever.
     metadataScanState.set({
       status: "complete",
-      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation },
+      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
       error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
     })
     return
@@ -201,7 +218,7 @@ export async function scanAll(shape_: ScanShape = "modified"): Promise<void> {
 
   metadataScanState.set({
     status: "scanning",
-    progress: { scanned: 0, total: totalTracks, failed: 0, missing: 0, duplicateMatches: 0, annotation },
+    progress: { scanned: 0, total: totalTracks, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
   })
 
   drain()
@@ -304,7 +321,7 @@ function updateScanProgress(): void {
     failed: failedCount,
     missing: missingCount,
     duplicateMatches: ambiguousCount,
-    annotation: shape === "force" ? "Scanning all files..." : "Scanning changed files...",
+    annotation: activeAnnotation,
   }
   if (done >= totalTracks) {
     metadataScanState.set({ status: "complete", progress })
