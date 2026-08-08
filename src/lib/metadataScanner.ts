@@ -357,7 +357,7 @@ function updateScanProgress(): void {
 
 // ── File Matching (manual binding UI) ────────────────────────────────────
 
-export type UnresolvedKind = 'no-match' | 'ambiguous' | 'vanished' | 'stale-base'
+export type UnresolvedKind = 'no-match' | 'ambiguous' | 'vanished' | 'stale-base' | 'ignored'
 
 export interface UnresolvedTrack {
   trackId: string
@@ -397,7 +397,20 @@ export async function listUnresolvedMatches(): Promise<UnresolvedTrack[]> {
 
   for (const t of tracks) {
     const meta = cache.get(t.trackId)
-    if (meta?.ignored) continue
+    if (meta?.ignored) {
+      rows.push({
+        trackId: t.trackId,
+        title: t.title,
+        artist: t.artist,
+        album: t.album,
+        fileType: t.fileType,
+        size: t.size,
+        kind: 'ignored',
+        pendingPush: false,
+        candidates: [],
+      })
+      continue
+    }
 
     const base = {
       trackId: t.trackId,
@@ -472,7 +485,24 @@ export async function bindTrackToFile(
 
   const cache = get(metadataCache)
   const existing = cache.get(trackId)
-  if (!existing) return { ok: false, reason: 'no-row' }
+  if (!existing) {
+    // Never scanned yet — create the row so the binding is durable.
+    const t = get(library).find((x) => x.trackId === trackId)
+    if (!t) return { ok: false, reason: 'no-row' }
+    updateMetadata({
+      trackId,
+      rating: 0,
+      loved: false,
+      fileType: t.fileType,
+      syncStatus: 'synced',
+      lastModifiedLocally: Date.now(),
+      webdavPath: entry.path,
+      webdavLastModified: entry.lastModified,
+      webdavBase: currentIndexKey(),
+      matchSource: 'manual',
+    })
+    return { ok: true }
+  }
 
   if (!force) {
     for (const [id, row] of cache) {
