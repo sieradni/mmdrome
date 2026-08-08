@@ -79,6 +79,7 @@ export interface SettingsMap {
   scrobbling?: boolean
   ratingSource?: 'webdav' | 'navidrome'
   syncToNavidrome?: boolean
+  writeTagsInNavidromeMode?: boolean
 }
 
 export const currentTrack = writable<Track | null>(null)
@@ -237,7 +238,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance', 'replayGainMode', 'playbackSpeed', 'pitchOctaves', 'scrobbling', 'ratingSource', 'syncToNavidrome']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance', 'replayGainMode', 'playbackSpeed', 'pitchOctaves', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]

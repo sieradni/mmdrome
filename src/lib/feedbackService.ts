@@ -11,7 +11,10 @@ import { getCachedConfig, setNavidromeRating, setNavidromeStarred } from './navi
  *
  *  - `ratingSource: 'navidrome'` — Navidrome is authoritative. Writes go straight to
  *    the server (setRating/star/unstar). The local metadata cache is updated only for
- *    in-memory display and is NOT marked `pending_sync` (tags on disk are never touched).
+ *    in-memory display and is normally NOT marked `pending_sync` (tags on disk are
+ *    never touched) — unless `writeTagsInNavidromeMode` is enabled, in which case the
+ *    row is ALSO kept `pending_sync` so Push Changes writes the tag to the WebDAV file
+ *    (MusicBee sees phone edits). Rows without a `webdavPath` just count as skipped.
  *  - `ratingSource: 'webdav'` — local files are authoritative. The change is cached in
  *    Dexie marked `pending_sync` (pushed to file tags by the Push Changes / scan path).
  *    When `syncToNavidrome` is additionally enabled, the same change is ALSO mirrored
@@ -21,6 +24,7 @@ import { getCachedConfig, setNavidromeRating, setNavidromeStarred } from './navi
 export function commitFeedback(track: Track, rating: number, loved: boolean): void {
   const source = get(settings).ratingSource ?? 'webdav'
   const syncToNavidrome = get(settings).syncToNavidrome ?? false
+  const writeTags = get(settings).writeTagsInNavidromeMode ?? false
 
   if (source === 'navidrome') {
     const existing = get(metadataCache).get(track.trackId)
@@ -29,7 +33,7 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
       rating,
       loved,
       fileType: existing?.fileType ?? track.fileType,
-      syncStatus: 'synced',
+      syncStatus: writeTags ? 'pending_sync' : 'synced',
       lastModifiedLocally: Date.now(),
       comments: existing?.comments ?? track.comments,
       webdavPath: existing?.webdavPath,

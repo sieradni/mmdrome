@@ -41,6 +41,7 @@
   let syncResult = $state('')
   let ratingSource = $state<'webdav' | 'navidrome'>('webdav')
   let syncToNavidrome = $state(false)
+  let writeTagsInNavidromeMode = $state(false)
   let reconcileResult = $state('')
   let indexing = $state(false)
   let scrollContainer: HTMLDivElement | null = null
@@ -81,6 +82,7 @@
     scrobbling = s.scrobbling ?? false
     ratingSource = (s.ratingSource ?? 'webdav') as 'webdav' | 'navidrome'
     syncToNavidrome = s.syncToNavidrome ?? false
+    writeTagsInNavidromeMode = s.writeTagsInNavidromeMode ?? false
   })
 
   function setPreload(val: number) {
@@ -124,6 +126,12 @@
       // Turning on server mirroring in WebDAV mode pushes the current local diff.
       reconcileResult = await reconcileRatings()
     }
+  }
+
+  function setWriteTagsInNavidromeMode() {
+    const val = !writeTagsInNavidromeMode
+    writeTagsInNavidromeMode = val
+    updateSetting('writeTagsInNavidromeMode', val)
   }
 
   async function reconcileRatings(): Promise<string> {
@@ -459,7 +467,14 @@
               {/each}
             </div>
             {#if ratingSource === 'navidrome'}
-              <p class="text-sm text-muted">Navidrome is the authoritative store. Local file tags are left untouched; ratings are pushed straight to the server.</p>
+              <p class="text-sm text-muted">Navidrome is the authoritative store. Ratings are pushed straight to the server.</p>
+              <label class="flex cursor-pointer items-center gap-3">
+                <input type="checkbox" checked={writeTagsInNavidromeMode} onchange={setWriteTagsInNavidromeMode} class="accent-yellow-500" />
+                <div>
+                  <p class="text-base text-primary">Also write tags to your files</p>
+                  <p class="text-sm text-muted">Keep file tags in sync with the server so MusicBee sees phone edits (pushed with Push Changes).</p>
+                </div>
+              </label>
             {:else}
               <label class="flex cursor-pointer items-center gap-3">
                 <input type="checkbox" checked={syncToNavidrome} onchange={setSyncToNavidrome} class="accent-yellow-500" />
