@@ -156,14 +156,17 @@ export interface TrackMatchResult {
   ambiguous: boolean
 }
 
-export function matchTrackToWebdav(
-  track: Track,
-  index: WebdavFileEntry[],
-): TrackMatchResult {
+interface ScoredEntry {
+  entry: WebdavFileEntry
+  score: number
+}
+
+/** Score every entry of the index against the track (filename-vs-title + size). */
+function scoreTrackMatches(track: Track, index: WebdavFileEntry[]): ScoredEntry[] {
   const navTitle = normalizeForMatch(track.title)
   const navSize = track.size
 
-  const scored: { entry: WebdavFileEntry; score: number }[] = []
+  const scored: ScoredEntry[] = []
 
   for (const entry of index) {
     if (entry.filename.toLowerCase().endsWith(`.${track.fileType}`)) {
@@ -190,6 +193,14 @@ export function matchTrackToWebdav(
   }
 
   scored.sort((a, b) => b.score - a.score)
+  return scored
+}
+
+export function matchTrackToWebdav(
+  track: Track,
+  index: WebdavFileEntry[],
+): TrackMatchResult {
+  const scored = scoreTrackMatches(track, index)
 
   if (scored.length > 0 && scored[0].score >= 40) {
     // Two files with the same score (e.g. duplicate "01 - Intro.flac" in
@@ -201,15 +212,65 @@ export function matchTrackToWebdav(
     return { entry: scored[0].entry, ambiguous: false }
   }
 
-  if (navSize) {
+  if (track.size) {
     const sizeMatches = index.filter(
-      (e) => e.size === navSize && e.filename.toLowerCase().endsWith(`.${track.fileType}`),
+      (e) => e.size === track.size && e.filename.toLowerCase().endsWith(`.${track.fileType}`),
     )
     if (sizeMatches.length === 1) return { entry: sizeMatches[0], ambiguous: false }
     if (sizeMatches.length > 1) return { entry: null, ambiguous: true }
   }
 
   return { entry: null, ambiguous: false }
+}
+
+export interface MatchCandidates {
+  status: 'matched' | 'ambiguous' | 'none'
+  /** The top-score group — the tied entries when ambiguous, else the best near-miss. */
+  promptCandidates: WebdavFileEntry[]
+  /** Every matching-extension file, for the manual search picker. */
+  allCandidates: WebdavFileEntry[]
+}
+
+/**
+ * Candidate view for the File Matching UI: the same scoring as
+ * `matchTrackToWebdav`, but exposes the tied/near-miss entries instead of
+ * collapsing them to an unambiguous boolean.
+ */
+export function matchTrackToWebdavCandidates(
+  track: Track,
+  index: WebdavFileEntry[],
+): MatchCandidates {
+  const scored = scoreTrackMatches(track, index)
+  const allCandidates = index.filter(
+    (e) => e.filename.toLowerCase().endsWith(`.${track.fileType}`),
+  )
+
+  if (scored.length > 0 && scored[0].score >= 40) {
+    const top = scored[0].score
+    const group = scored.filter((s) => s.score === top).map((s) => s.entry)
+    return {
+      status: group.length > 1 ? 'ambiguous' : 'matched',
+      promptCandidates: group,
+      allCandidates,
+    }
+  }
+
+  // No confident match: surface the best near-misses (or a unique size hit)
+  // so the user sees why nothing scored and has a starting point.
+  if (scored.length > 0) {
+    return {
+      status: 'none',
+      promptCandidates: scored.slice(0, 5).map((s) => s.entry),
+      allCandidates,
+    }
+  }
+  if (track.size) {
+    const sizeOnly = allCandidates.filter((e) => e.size === track.size)
+    if (sizeOnly.length > 0) {
+      return { status: 'none', promptCandidates: sizeOnly.slice(0, 5), allCandidates }
+    }
+  }
+  return { status: 'none', promptCandidates: [], allCandidates }
 }
 
 function getMetadataChunkSize(fileType: string): number {
