@@ -406,7 +406,9 @@ let showIgnored = $state(false)
       ? 'That file is not in the current index — refresh the index first.'
       : res.reason === 'no-row'
         ? 'No metadata row for this track.'
-        : 'Could not bind.'
+        : res.reason === 'no-creds'
+          ? 'WebDAV credentials not configured.'
+          : 'Could not bind.'
   }
 
   async function doUnbind(trackId: string) {

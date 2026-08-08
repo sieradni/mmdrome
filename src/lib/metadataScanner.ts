@@ -252,6 +252,19 @@ async function processItem(item: QueueItem): Promise<void> {
     return
   }
 
+  // Issue-1 guard, checked BEFORE the matcher: a valid manual binding is the
+  // user's verdict — never re-match it, and never count it as ambiguous again
+  // (a later scan used to re-enter this state machine and bump
+  // ambiguousCount forever even though the track was already resolved).
+  const manualBind = existing?.matchSource === 'manual'
+    && existing?.webdavPath != null
+    && index.some((i) => i.path === existing?.webdavPath)
+  if (manualBind) {
+    scannedCount++
+    updateScanProgress()
+    return
+  }
+
   const match = matchTrackToWebdav(track, index)
   if (scanGen !== startedGen) return
   if (!match.entry) {
@@ -299,23 +312,17 @@ async function processItem(item: QueueItem): Promise<void> {
       return
     }
 
-    // Issue-1 guard: a manual binding (File Matching UI) is authoritative —
-    // the user may have picked a file the auto-matcher would NOT have chosen
-    // (WebDAV layout can differ entirely from Navidrome's). Never overwrite
-    // that path with the auto-match; refresh the stamps of the BOUND file so
-    // mtime detection keeps working.
-    const manualBind = current?.matchSource === 'manual'
-      && current?.webdavPath != null
-      && index.some((i) => i.path === current?.webdavPath)
-    const boundEntry = manualBind ? index.find((i) => i.path === current?.webdavPath) : undefined
-
+    // Issue-1 guard: valid manual bindings never reach this point — they are
+    // counted as scanned at the top of processItem. Rows here are either
+    // unbound or their manual path ISN'T in the index (vanished manual bind),
+    // so the auto-match result is authoritative.
+    //
     // Navidrome mode: the server is authoritative for rating/loved, and the
     // file tag may be stale (or edited server-side since it was last read) —
     // never clobber the cached values with tag values. Keep refreshing the
     // path/stamps so Push targeting stays accurate.
     const navidromeAuthoritative = current != null
       && get(settings).ratingSource === 'navidrome'
-      && !manualBind
     updateMetadata({
       trackId: track.trackId,
       rating: navidromeAuthoritative ? current.rating : meta.rating,
@@ -323,13 +330,11 @@ async function processItem(item: QueueItem): Promise<void> {
       fileType: track.fileType,
       syncStatus: "synced",
       lastModifiedLocally: Date.now(),
-      webdavPath: manualBind ? current.webdavPath : match.entry.path,
-      webdavLastModified: manualBind
-        ? (boundEntry?.lastModified ?? current?.webdavLastModified)
-        : match.entry.lastModified,
+      webdavPath: match.entry.path,
+      webdavLastModified: match.entry.lastModified,
       webdavBase: currentIndexKey(),
       comments: navidromeAuthoritative ? current?.comments : meta.comments,
-      matchSource: manualBind ? current?.matchSource : undefined,
+      matchSource: undefined,
     })
     scannedCount++
   } catch {
@@ -495,7 +500,7 @@ export function searchWebdavFiles(query: string, fileType: string): WebdavFileEn
 
 export type BindResult =
   | { ok: true }
-  | { ok: false; reason: 'not-in-index' | 'no-row' | 'conflict' | 'conflict-pending'; conflictTrackId?: string; conflictTitle?: string }
+  | { ok: false; reason: 'not-in-index' | 'no-row' | 'no-creds' | 'conflict' | 'conflict-pending'; conflictTrackId?: string; conflictTitle?: string }
 
 /**
  * Binds a track to a WebDAV file (manual resolution). Validates the path
@@ -513,7 +518,7 @@ export async function bindTrackToFile(
   path: string,
   force = false,
 ): Promise<BindResult> {
-  if (!webdavUrl || !webdavUser || !webdavToken) return { ok: false, reason: 'no-row' }
+  if (!webdavUrl || !webdavUser || !webdavToken) return { ok: false, reason: 'no-creds' }
   if (!indexBuilt) {
     const ok = await refreshIndex()
     if (!ok) return { ok: false, reason: 'not-in-index' }
