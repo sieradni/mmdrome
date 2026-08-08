@@ -337,9 +337,10 @@
   let conflict = $state<{ trackId: string; path: string; conflictTitle: string } | null>(null)
   let showIgnored = $state(false)
   let showMatched = $state(false)
-  let unresolvedCounts = $state<Record<UnresolvedTrack['kind'], number>>({ 'no-match': 0, ambiguous: 0, 'vanished': 0, 'stale-base': 0, 'matched': 0, ignored: 0 })
+  let unresolvedCounts = $state<Record<UnresolvedTrack['kind'], number>>({ 'no-match': 0, ambiguous: 0, 'vanished': 0, 'stale-base': 0, matched: 0, ignored: 0 })
   let blockedCount = $state(0)
   let bindError = $state<{ trackId: string; message: string } | null>(null)
+  let matchCap = $state(DISPLAY_CAP)
 
   function countTotal(): number {
     const c = unresolvedCounts
@@ -358,6 +359,14 @@
     const line = `Unresolved — ${bits.join(', ')}`
     return blockedCount > 0 ? `${line}; ${blockedCount} blocked by pending edits` : line
   }
+
+  // Full set (returned uncapped) is held in unresolvedRows; toggles + matchCap
+  // filter and slice it client-side so ignored/matched rows are never starved
+  // out of visibility by an arbitrary hard cap.
+  const filterVisible = $derived(
+    unresolvedRows.filter((r) => (showIgnored || r.kind !== 'ignored') && (showMatched || r.kind !== 'matched')),
+  )
+  const visibleRows = $derived(filterVisible.slice(0, matchCap))
 
   async function refreshUnresolved() {
     unresolvedLoading = true
@@ -789,7 +798,7 @@
             <div class="w-full max-w-sm rounded-xl bg-surface-raised p-4">
               <h4 class="mb-2 text-base font-medium text-primary">Write ratings to WebDAV files?</h4>
               <p class="mb-4 text-sm text-muted">
-                This will download and rewrite tags (rating and loved heart) on {pendingPushCount} file(s) on your WebDAV server. Songs with a wrong file link will get the wrong rating written, so double-check File Matching first.
+                This will download and rewrite tags (rating and loved heart) on {pendingPushCount} file(s) on your WebDAV server. A wrong file link gives the rating to a different file. Open File Matching to verify the file paths first.
               </p>
               <div class="flex justify-end gap-2">
                 <button
@@ -890,7 +899,7 @@
           {:else if unresolvedRows.length === 0}
             <p class="text-sm text-green-400">All tracks matched.</p>
           {:else}
-            {#each unresolvedRows.filter((r) => (showIgnored || r.kind !== 'ignored') && (showMatched || r.kind !== 'matched')) as row (row.trackId)}
+            {#each visibleRows as row (row.trackId)}
               <div class="mb-2 rounded-lg bg-surface px-3 py-2">
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
@@ -911,6 +920,10 @@
                            ? 'A local rating is waiting to upload, but its file is gone from the server. Select a file to push.'
                            : 'A local rating is waiting to upload — link it to a file to push.'}
                   </p>
+                  <button
+                    onclick={() => doDiscard(row.trackId)}
+                    class="mt-1 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                  >Discard local change</button>
                 {/if}
                 {#if row.webdavPath}
                   <p class="mt-1 truncate text-xs text-muted">{row.webdavPath}</p>
@@ -947,12 +960,6 @@
                       class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-muted transition-opacity hover:opacity-80"
                     >Not on this server</button>
                   </div>
-                  {#if row.pendingPush}
-                    <button
-                      onclick={() => doDiscard(row.trackId)}
-                      class="mt-2 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
-                    >Discard local change</button>
-                  {/if}
                   {/if}
                 {#if bindError && bindError.trackId === row.trackId}
                   <p class="mt-2 text-xs text-red-400">{bindError.message}</p>
@@ -1003,14 +1010,27 @@
                 {/if}
               </div>
             {/each}
-            {@const shownCount = unresolvedRows.filter((r) => (showIgnored || r.kind !== 'ignored') && (showMatched || r.kind !== 'matched')).length}
-            {#if shownCount < countTotal() && unresolvedRows.length === DISPLAY_CAP}
-              <p class="mt-1 text-xs text-muted">
-                Showing {shownCount} of {countTotal()} (list capped — toggle filters or raise the cap to see more)
-              </p>
-            {:else if shownCount < countTotal()}
-              <p class="mt-1 text-xs text-muted">+{countTotal() - shownCount} hidden by filters</p>
+            {#if visibleRows.length < filterVisible.length}
+              <p class="mt-1 text-xs text-muted">Showing {visibleRows.length} of {filterVisible.length} visible rows. Increase "Rows shown" above to list more.</p>
+            {:else}
+              <p class="mt-1 text-xs text-muted">Showing all {filterVisible.length} visible row{filterVisible.length === 1 ? '' : 's'}.</p>
             {/if}
+            <div class="mt-2 flex items-center gap-2 text-sm">
+              <label for="matchCap" class="text-muted">Rows shown:</label>
+              <input
+                id="matchCap"
+                type="number"
+                min="1"
+                placeholder="100"
+                value={matchCap}
+                oninput={(e) => { const v = +(e.target as HTMLInputElement).value || 0; matchCap = v < 1 ? DISPLAY_CAP : v }}
+                class="w-20 rounded-lg bg-surface-hover px-2 py-1 text-sm text-primary outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+              />
+              <button
+                onclick={() => matchCap = Infinity}
+                class="rounded-lg bg-surface-hover px-2 py-1 text-xs font-medium text-primary transition-opacity hover:opacity-80"
+              >All</button>
+            </div>
             {#if unresolvedCounts.ignored > 0}
               <button
                 onclick={() => showIgnored = !showIgnored}
