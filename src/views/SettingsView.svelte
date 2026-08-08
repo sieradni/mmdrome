@@ -304,6 +304,7 @@
     'vanished': { label: 'File vanished', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
     'stale-base': { label: 'Server changed', cls: 'bg-orange-500/20 text-orange-300 ring-orange-500/30' },
     'ignored': { label: 'Ignored', cls: 'bg-white/10 text-muted ring-white/20' },
+    'matched': { label: 'Matched', cls: 'bg-green-500/20 text-green-300 ring-green-500/30' },
   }
 
   let unresolvedRows = $state<UnresolvedTrack[]>([])
@@ -315,8 +316,10 @@
   let searchResults = $state<WebdavFileEntry[]>([])
   let searching = $state(false)
   let conflict = $state<{ trackId: string; path: string; conflictTitle: string } | null>(null)
-  let showIgnored = $state(false)
+let showIgnored = $state(false)
+  let showMatched = $state(false)
   let ignoredCount = $state(0)
+  let matchedCount = $state(0)
   let bindError = $state('')
 
   async function refreshUnresolved() {
@@ -336,6 +339,7 @@
       const rows = await listUnresolvedMatches()
       unresolvedRows = rows
       ignoredCount = rows.filter((r) => r.kind === 'ignored').length
+      matchedCount = rows.filter((r) => r.kind === 'matched').length
       unresolvedLoaded = true
     } catch (err) {
       unresolvedError = err instanceof Error ? err.message : String(err)
@@ -807,7 +811,7 @@
           {:else if unresolvedRows.length === 0}
             <p class="text-sm text-green-400">All tracks matched.</p>
           {:else}
-            {#each (showIgnored ? unresolvedRows : unresolvedRows.filter((r) => r.kind !== 'ignored')) as row (row.trackId)}
+            {#each (showIgnored || showMatched ? unresolvedRows : unresolvedRows.filter((r) => r.kind !== 'ignored' && r.kind !== 'matched')) as row (row.trackId)}
               <div class="mb-2 rounded-lg bg-surface px-3 py-2">
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
@@ -815,10 +819,10 @@
                     <p class="truncate text-xs text-muted">{row.artist}{row.album ? ` · ${row.album}` : ''}</p>
                   </div>
                   <span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 {kindBadges[row.kind].cls}">
-                    {kindBadges[row.kind].label}
+                    {row.kind === 'matched' && row.matchSource === 'manual' ? 'Manually bound' : kindBadges[row.kind].label}
                   </span>
                 </div>
-                {#if row.pendingPush}
+                {#if row.pendingPush && row.kind !== 'matched'}
                   <p class="mt-1 text-xs text-yellow-300">Has a pending rating/loved change — blocked until a file is bound.</p>
                 {/if}
                 {#if row.webdavPath}
@@ -829,6 +833,11 @@
                     onclick={() => doRestamp(row)}
                     class="mt-2 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
                   >Re-stamp to current server</button>
+                {:else if row.kind === 'matched'}
+                  <button
+                    onclick={() => doUnbind(row.trackId)}
+                    class="mt-2 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                  >Clear match</button>
                 {:else if row.kind === 'ignored'}
                   <button
                     onclick={() => doUnignore(row.trackId)}
@@ -898,6 +907,12 @@
                 onclick={() => showIgnored = !showIgnored}
                 class="mt-1 text-sm font-medium text-muted transition-colors hover:text-primary"
               >{showIgnored ? 'Hide' : 'Show'} ignored ({ignoredCount})</button>
+            {/if}
+            {#if matchedCount > 0}
+              <button
+                onclick={() => showMatched = !showMatched}
+                class="mt-1 text-sm font-medium text-muted transition-colors hover:text-primary"
+              >{showMatched ? 'Hide' : 'Show'} matched ({matchedCount})</button>
             {/if}
           {/if}
         </section>

@@ -357,7 +357,7 @@ function updateScanProgress(): void {
 
 // ── File Matching (manual binding UI) ────────────────────────────────────
 
-export type UnresolvedKind = 'no-match' | 'ambiguous' | 'vanished' | 'stale-base' | 'ignored'
+export type UnresolvedKind = 'no-match' | 'ambiguous' | 'vanished' | 'stale-base' | 'ignored' | 'matched'
 
 export interface UnresolvedTrack {
   trackId: string
@@ -368,6 +368,7 @@ export interface UnresolvedTrack {
   fileType: Track['fileType']
   size?: number
   webdavPath?: string
+  matchSource?: 'auto' | 'manual'
   pendingPush: boolean
   candidates: WebdavFileEntry[]
 }
@@ -427,6 +428,16 @@ export async function listUnresolvedMatches(): Promise<UnresolvedTrack[]> {
         rows.push({ ...base, kind: 'vanished', webdavPath: meta.webdavPath, candidates: [] })
       } else if (meta.webdavBase !== baseKey) {
         rows.push({ ...base, kind: 'stale-base', webdavPath: meta.webdavPath, candidates: [] })
+      } else {
+        // Correctly bound (auto or manual) — the "resolved" bucket. Listed
+        // so the user can audit a match and Clear it when it picked wrong.
+        rows.push({
+          ...base,
+          kind: 'matched',
+          webdavPath: meta.webdavPath,
+          matchSource: meta.matchSource ?? 'auto',
+          candidates: [],
+        })
       }
       continue
     }
