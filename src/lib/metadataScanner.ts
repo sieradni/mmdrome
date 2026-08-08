@@ -460,14 +460,18 @@ export function searchWebdavFiles(query: string, fileType: string): WebdavFileEn
 
 export type BindResult =
   | { ok: true }
-  | { ok: false; reason: 'not-in-index' | 'no-row' | 'conflict'; conflictTrackId?: string; conflictTitle?: string }
+  | { ok: false; reason: 'not-in-index' | 'no-row' | 'conflict' | 'conflict-pending'; conflictTrackId?: string; conflictTitle?: string }
 
 /**
  * Binds a track to a WebDAV file (manual resolution). Validates the path
  * against the current in-memory index (stale picks rejected), guards against
- * double-bindings (another row already targets the same file — `force` skips
- * the guard), and stamps `webdavBase` so Push can target the row. The row's
- * `syncStatus` is preserved: a pending edit becomes pushable immediately.
+ * double-bindings, and stamps `webdavBase` so Push can target the row. The
+ * row's `syncStatus` is preserved: a pending edit becomes pushable.
+ *
+ * `force` (the "Bind anyway" path) is not a blind override: it only succeeds
+ * when it can LEAVE that promise true — "the other track becomes unmatched".
+ * Rows already targeted the same file are unbound (`conflict` when any of
+ * them has a pending edit — unbinding would strand that edit in limbo).
  */
 export async function bindTrackToFile(
   trackId: string,
@@ -504,17 +508,40 @@ export async function bindTrackToFile(
     return { ok: true }
   }
 
-  if (!force) {
-    for (const [id, row] of cache) {
-      if (id !== trackId && row.webdavPath === path) {
-        const other = get(library).find((t) => t.trackId === id)
-        return {
-          ok: false,
-          reason: 'conflict',
-          conflictTrackId: id,
-          conflictTitle: other ? `${other.title} — ${other.artist}` : id,
-        }
+  const hostile = Array.from(cache.entries()).filter(
+    ([id, row]) => id !== trackId && row.webdavPath === path,
+  )
+  if (hostile.length > 0) {
+    const [firstId] = hostile[0]
+    const other = get(library).find((t) => t.trackId === firstId)
+    const conflictTitle = other ? `${other.title} — ${other.artist}` : firstId
+
+    if (!force) {
+      return { ok: false, reason: 'conflict', conflictTrackId: firstId, conflictTitle }
+    }
+
+    // Force only promises to un-bind the OTHER row if that's safe: a pending
+    // edit on it would sit orphaned (no path, Push skips it, scans skip it)
+    // — refuse instead of lying in the modal.
+    const pendingH = hostile.find(([, row]) => row.syncStatus === 'pending_sync')
+    if (pendingH) {
+      const [pid] = pendingH
+      const pOther = get(library).find((t) => t.trackId === pid)
+      return {
+        ok: false,
+        reason: 'conflict-pending',
+        conflictTrackId: pid,
+        conflictTitle: pOther ? `${pOther.title} — ${pOther.artist}` : pid,
       }
+    }
+    for (const [id, row] of hostile) {
+      updateMetadata({
+        ...row,
+        webdavPath: undefined,
+        webdavLastModified: undefined,
+        webdavBase: undefined,
+        matchSource: undefined,
+      })
     }
   }
 

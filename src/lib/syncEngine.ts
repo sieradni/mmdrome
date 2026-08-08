@@ -277,6 +277,7 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   let failed = 0
   let skipped = 0
   let wrongServer = 0
+  const pushedPaths = new Set<string>()
 
   for (const track of pending) {
     // Never fabricate a WebDAV path from the Navidrome id: without a matched
@@ -304,9 +305,19 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
       continue
     }
 
-    try {
-      const davPath = track.webdavPath
+    const davPath = track.webdavPath
+    // Two rows can still legally target one file (legacy force-binds, or two
+    // auto rows resolving to the same path). Once a path was written this
+    // run, later rows for it are skipped — otherwise the second PUT would
+    // clobber the first's tags and both would end "synced". First writer
+    // wins; the row stays pending and surfaces again on the next Push.
+    if (pushedPaths.has(davPath)) {
+      skipped++
+      continue
+    }
+    pushedPaths.add(davPath)
 
+    try {
       // GET with ETag for concurrency detection
       const { data: raw, etag } = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)
       const modified = await modifyMetadataBuffer(raw, track.rating, track.loved, track.fileType)
