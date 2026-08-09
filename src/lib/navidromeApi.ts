@@ -542,7 +542,10 @@ export async function submitScrobble(
  * repeated `id` parameters, so a whole batch is one request per endpoint.
  */
 export async function setNavidromeStarred(config: NavidromeConfig, songIds: string[], starred: boolean): Promise<void> {
-  const batchSize = 100
+  // Repeated `id` query params ride in a GET URL — 30×37-char UUIDs plus auth
+  // params stays under 2 KB, inside every proxy/CDN URL limit. (100 ids once
+  // exceeded some 4 KB limits and 414'd.)
+  const batchSize = 30
   const endpoint = starred ? 'star.view' : 'unstar.view'
   for (let i = 0; i < songIds.length; i += batchSize) {
     const batch = songIds.slice(i, i + batchSize)
