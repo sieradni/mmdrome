@@ -13,7 +13,9 @@ import {
   findChangedTracks,
   computeIndexFingerprint,
   isAudioFilePath,
+  verifyEntryAgainstTrack,
 } from "./metadataReader"
+import type { FileMetadata } from "./metadataReader"
 import type { WebdavFileEntry } from "./db"
 
 const CONCURRENCY = 6
@@ -485,6 +487,22 @@ async function processItem(item: QueueItem): Promise<void> {
     return
   }
 
+  // Unverified-binding guard: a row whose `webdavBase` doesn't match the
+  // current server (never stamped legacy, or stamped under an older server
+  // URL) carries a path that was never proven HERE. Scans must not read the
+  // file (the file at that path may be a different file — wrong-file tag
+  // propagation), re-stamp it, or re-match it; File Matching flags the row
+  // and the user re-verifies (bulk or per-row) or re-links manually. Rows
+  // whose path VANISHED are exempt: the vanish-clear below only drops stale
+  // stamps while preserving values — legit cleanup, not a write.
+  if ((!existing?.webdavBase || existing.webdavBase !== currentIndexKey())
+      && existing?.webdavPath != null
+      && index.some((i) => i.path === existing.webdavPath)) {
+    scannedCount++
+    updateScanProgress()
+    return
+  }
+
   // Issue-1 guard, checked BEFORE the matcher: a valid manual binding is the
   // user's verdict — never re-match it, and never count it as ambiguous again
   // (a later scan used to re-enter this state machine and bump
@@ -735,6 +753,12 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
 
   const baseKey = currentIndexKey()
   const indexPaths = new Set(index.map((i) => i.path))
+  // Every bound path across the library — candidates must never include a
+  // file another row already targets (an unclaimed file scores once).
+  const allBoundPaths = new Set<string>()
+  for (const row of get(metadataCache).values()) {
+    if (row.webdavPath) allBoundPaths.add(row.webdavPath)
+  }
   const tracks = get(library)
   const cache = get(metadataCache)
   const rows: UnresolvedTrack[] = []
@@ -771,7 +795,17 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
       } else if (meta.webdavBase !== baseKey) {
         counts['stale-base']++
         if (base.pendingPush) pendingBlocked++
-        row = { ...base, kind: 'stale-base', webdavPath: meta.webdavPath, candidates: [] }
+        // Suggest candidates for the row's own prompts: the current stamp is
+        // unverified (it may target a wrong file), so the user should be able
+        // to immediately re-pick. ALL bound paths are excluded — including the
+        // row's own — so a sibling-shared wrong file is never suggested.
+        const match = matchTrackToWebdavCandidates(t, index, allBoundPaths)
+        row = {
+          ...base,
+          kind: 'stale-base',
+          webdavPath: meta.webdavPath,
+          candidates: match.promptCandidates.slice(0, 3),
+        }
       } else {
         // Correctly bound (auto or manual) — the "resolved" bucket. Listed
         // so the user can audit a match and Clear it when it picked wrong.
@@ -791,11 +825,7 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
       // this view is open/refreshed. prompt arrays are kept only for the
       // capped, displayed rows (the slice below drops the rest). Rows bound
       // to other tracks are excluded so an unclaimed file never scores twice.
-      const excludePaths = new Set<string>()
-      for (const [, row] of get(metadataCache)) {
-        if (row.webdavPath) excludePaths.add(row.webdavPath)
-      }
-      const match = matchTrackToWebdavCandidates(t, index, excludePaths)
+      const match = matchTrackToWebdavCandidates(t, index, allBoundPaths)
       counts[match.status === 'ambiguous' ? 'ambiguous' : 'no-match']++
       if (base.pendingPush) pendingBlocked++
       row = {
@@ -925,6 +955,162 @@ export async function bindTrackToFile(
     webdavBase: currentIndexKey(),
     matchSource: 'manual',
   })
+  return { ok: true }
+}
+
+// ── Re-verify (existing binding audit after a server switch) ─────────────
+
+export type ReverifyVerdict = 'verified' | 'conflict' | 'unknown'
+
+interface ReverifyRowResult {
+  verdict: ReverifyVerdict
+  /** The file's tag title (for the conflict refusal message). */
+  fileTitle: string | undefined
+  /** Everything read from the file — the verified branch re-uses the fetch
+   *  to also pull the file's rating/loved/comments (see the import below). */
+  meta: FileMetadata | undefined
+}
+
+/** One verdict read per bound file: fetch its tags and judge them against
+ *  the track with `verifyEntryAgainstTrack` (the single comparison source).
+ *  Read failures and untagged files both land on 'unknown'. */
+async function reverifyRow(track: Track, entry: WebdavFileEntry): Promise<ReverifyRowResult> {
+  try {
+    const meta = await readFileMetadata(webdavUrl, entry.path, webdavUser, webdavToken, track.fileType)
+    if (!meta.title) return { verdict: 'unknown', fileTitle: undefined, meta }
+    return {
+      verdict: verifyEntryAgainstTrack(track, { ...entry, tags: {
+        title: meta.title,
+        artist: meta.artist,
+        album: meta.album,
+        trackNumber: meta.trackNumber,
+      } }),
+      fileTitle: meta.title,
+      meta,
+    }
+  } catch {
+    return { verdict: 'unknown', fileTitle: undefined, meta: undefined }
+  }
+}
+
+/** The verified branch of both re-verify flows: write the stamps, and — in
+ *  webdav rating mode, when the row is not mid-edit — ALSO import the file's
+ *  rating/loved/comments, exactly like the scanner's re-read path. Without
+ *  this, rows bound (and polluted) under an old server keep the WRONG file's
+ *  rating forever: the stamps become current, the mtime diff then says
+ *  "unchanged", and incremental scans never re-read the now-verified file. */
+function writeReverified(current: LocalMetadataStore, meta: FileMetadata | undefined, entry: WebdavFileEntry, baseKey: string): void {
+  if (meta && current.syncStatus !== 'pending_sync' && get(settings).ratingSource === 'webdav') {
+    updateMetadata({
+      ...current,
+      rating: meta.rating,
+      loved: meta.loved,
+      comments: meta.comments,
+      webdavPath: entry.path,
+      webdavLastModified: entry.lastModified ?? current.webdavLastModified,
+      webdavBase: baseKey,
+    })
+    return
+  }
+  updateMetadata({
+    ...current,
+    webdavPath: entry.path,
+    webdavLastModified: entry.lastModified ?? current.webdavLastModified,
+    webdavBase: baseKey,
+  })
+}
+
+export interface ReverifyResult {
+  verified: number
+  conflict: number
+  unknown: number
+}
+
+/** Bulk, user-triggered audit of every stale-base row ("Re-verify file
+ *  links"): re-judges each existing binding against its bound file on the
+ *  CURRENT server. Verified rows are re-stamped (rating/loved/syncStatus/
+ *  matchSource preserved — pending edits become pushable) and pull the
+ *  file's tags when a row is present; conflict/unknown rows are left
+ *  flagged and counted for the result line. Never clears a binding. This is
+ *  the ONLY path that touches stale rows — scans skip them (see
+ *  processItem) — and it is strictly user-initiated: automatic paths never
+ *  write unverified bindings. */
+export async function reverifyStaleLinks(): Promise<ReverifyResult> {
+  const result: ReverifyResult = { verified: 0, conflict: 0, unknown: 0 }
+  if (!webdavUrl || !webdavUser || !webdavToken) {
+    throw new Error("WebDAV credentials not configured")
+  }
+  if (!indexBuilt) {
+    const ok = await refreshIndex()
+    if (!ok) throw new Error("Index refresh failed — is the WebDAV server reachable?")
+  }
+
+  const baseKey = currentIndexKey()
+  const cache = get(metadataCache)
+  const rows: { track: Track; existing: LocalMetadataStore; entry: WebdavFileEntry }[] = []
+  for (const t of get(library)) {
+    const existing = cache.get(t.trackId)
+    if (!existing?.webdavPath || !existing.webdavBase || existing.webdavBase === baseKey) continue
+    if (existing.ignored) continue
+    const entry = index.find((i) => i.path === existing.webdavPath)
+    if (!entry) continue // vanished — flagged separately, not this tool's job
+    rows.push({ track: t, existing, entry })
+  }
+
+  for (let i = 0; i < rows.length; i += CONCURRENCY) {
+    const batch = rows.slice(i, i + CONCURRENCY)
+    await Promise.all(batch.map(async ({ track, existing, entry }) => {
+      const { verdict, meta } = await reverifyRow(track, entry)
+      if (verdict !== 'verified') {
+        result[verdict]++
+        return
+      }
+      // Re-check the live row: the user may have cleared/re-bound mid-run —
+      // only re-stamp when it is still the same stale binding.
+      const current = get(metadataCache).get(track.trackId)
+      if (current?.webdavBase && current.webdavBase !== baseKey
+          && current.webdavPath === existing.webdavPath) {
+        writeReverified(current, meta, entry, baseKey)
+        result.verified++
+      }
+      // Otherwise the row already moved — it no longer exists as counted work.
+    }))
+  }
+  return result
+}
+
+export type ReverifyTrackResult =
+  | { ok: true }
+  | { ok: false; reason: 'no-creds' | 'index-failure' | 'not-in-index' | 'no-row' | 'not-stale' | 'conflict'; fileTitle?: string }
+
+/** Per-row form of the audit — backs the stale row's "Update file link"
+ *  button. 'conflict' refuses the re-stamp (the file's tags contradict the
+ *  track — re-stamping would canonize a wrong binding); untagged files are
+ *  allowed through: the user clicked deliberately, and that click is the
+ *  verdict for files the machine can't read. */
+export async function reverifyTrack(trackId: string): Promise<ReverifyTrackResult> {
+  if (!webdavUrl || !webdavUser || !webdavToken) return { ok: false, reason: 'no-creds' }
+  if (!indexBuilt) {
+    const ok = await refreshIndex()
+    if (!ok) return { ok: false, reason: 'index-failure' }
+  }
+  const existing = get(metadataCache).get(trackId)
+  if (!existing?.webdavPath) return { ok: false, reason: 'no-row' }
+  const baseKey = currentIndexKey()
+  if (existing.webdavBase === baseKey) return { ok: false, reason: 'not-stale' }
+  const entry = index.find((i) => i.path === existing.webdavPath)
+  if (!entry) return { ok: false, reason: 'not-in-index' }
+  const track = get(library).find((t) => t.trackId === trackId)
+  if (!track) return { ok: false, reason: 'no-row' }
+
+  const { verdict, fileTitle, meta } = await reverifyRow(track, entry)
+  if (verdict === 'conflict') return { ok: false, reason: 'conflict', fileTitle }
+  // The row may have moved during the fetch — re-resolve against the live
+  // state (a stale snapshot write here could clobber a concurrent edit).
+  const current = get(metadataCache).get(trackId)
+  if (!current?.webdavPath || current.webdavPath !== entry.path) return { ok: false, reason: 'no-row' }
+  if (current.webdavBase === baseKey) return { ok: false, reason: 'not-stale' }
+  writeReverified(current, meta, entry, baseKey)
   return { ok: true }
 }
 

@@ -6,7 +6,7 @@
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
   import { getPendingSyncMetadata } from '../lib/db'
-  import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, ensureTagProbe } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, ensureTagProbe, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
@@ -341,6 +341,7 @@
   let blockedCount = $state(0)
   let bindError = $state<{ trackId: string; message: string } | null>(null)
   let matchCap = $state(DISPLAY_CAP)
+  let reverifyState = $state<{ running: boolean; result: string }>({ running: false, result: '' })
 
   function countTotal(): number {
     const c = unresolvedCounts
@@ -477,11 +478,53 @@
 
   async function doRestamp(row: UnresolvedTrack) {
     if (!row.webdavPath) return
-    await doBind(row.trackId, row.webdavPath)
+    bindError = null
+    const res = await reverifyTrack(row.trackId)
+    if (!res.ok) {
+      bindError = res.reason === 'no-creds'
+        ? { trackId: row.trackId, message: 'WebDAV credentials not configured.' }
+        : res.reason === 'index-failure'
+          ? { trackId: row.trackId, message: 'Index refresh failed — is the WebDAV server reachable?' }
+          : res.reason === 'not-in-index'
+          ? { trackId: row.trackId, message: 'That file is not in the current index — refresh the index first.' }
+          : res.reason === 'no-row'
+            ? { trackId: row.trackId, message: 'No metadata row for this track.' }
+            : res.reason === 'not-stale'
+              ? { trackId: row.trackId, message: 'This link is already current.' }
+              : res.reason === 'conflict'
+                ? {
+                    trackId: row.trackId,
+                    message: `The file's tags say "${res.fileTitle}" — not "${row.title}". Clear the link and pick the right file.`,
+                  }
+                : { trackId: row.trackId, message: 'Could not verify the file.' }
+      return
+    }
+    await refreshUnresolved()
   }
 
   async function doDiscard(trackId: string) {
     await discardLocalEdit(trackId)
+    await refreshUnresolved()
+  }
+
+  async function doReverify() {
+    reverifyState = { running: true, result: '' }
+    try {
+      const r = await reverifyStaleLinks()
+      const bits: string[] = []
+      if (r.conflict) bits.push(`${r.conflict} don't match the linked file`)
+      if (r.unknown) bits.push(`${r.unknown} couldn't be read`)
+      reverifyState = {
+        running: false,
+        result: bits.length > 0
+          ? `Re-verified ${r.verified} — ${bits.join(', ')} — check the rows below.`
+          : r.verified > 0
+            ? `Re-verified ${r.verified} row${r.verified === 1 ? '' : 's'}.`
+            : 'Nothing to re-verify.',
+      }
+    } catch (e) {
+      reverifyState = { running: false, result: e instanceof Error ? e.message : 'Re-verify failed.' }
+    }
     await refreshUnresolved()
   }
 </script>
@@ -906,6 +949,18 @@
           {#if countTotal() > 0}
             <p class="mb-2 text-sm text-muted">{countLine()}</p>
           {/if}
+          {#if unresolvedCounts['stale-base'] > 0}
+            <div class="mb-2 flex items-center gap-2">
+              <button
+                onclick={doReverify}
+                disabled={reverifyState.running || unresolvedLoading || $metadataScanState.status === 'scanning'}
+                class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+              >{reverifyState.running ? 'Re-verifying…' : 'Re-verify file links'}</button>
+              {#if reverifyState.result}
+                <p class="text-xs text-muted">{reverifyState.result}</p>
+              {/if}
+            </div>
+          {/if}
           {#if unresolvedError}
             <p class="text-sm text-red-400">{unresolvedError}</p>
           {:else if unresolvedRows.length > 0}
@@ -949,6 +1004,10 @@
                       onclick={() => openPicker(row.trackId)}
                       class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
                   >Search for file…</button>
+                    <button
+                      onclick={() => doUnbind(row.trackId)}
+                      class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+                    >Clear file link</button>
                   </div>
                 {:else if row.kind === 'matched'}
                   <button

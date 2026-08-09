@@ -222,8 +222,14 @@ export function findChangedTracks(
   return { changed, unmatched }
 }
 
+/** Case/punctuation folding for title comparisons. MUST use unicode
+ *  property escapes with the `u` flag: plain `\w` is ASCII-only, so
+ *  Japanese/CJK titles (a large share of this library) normalized to the
+ *  empty string — every CJK track scored as a near-match to ANY filename
+ *  (`.includes("")` is always true) and `verifyEntryAgainstTrack` could
+ *  never reach 'verified'. Letters/numbers of any script survive. */
 function normalizeForMatch(s: string): string {
-  return s.toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim()
+  return s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim()
 }
 
 function extractTitleFromFilename(filename: string): string {
@@ -318,6 +324,27 @@ function tagsContradictSize(track: Track, entry: WebdavFileEntry): boolean {
   return normalizeForMatch(fileTitle) !== normalizeForMatch(track.title)
 }
 
+/** Re-verification verdict for an EXISTING binding judged against the file
+ *  at that path: exact normalized title match = 'verified'; a definitively
+ *  different title = 'conflict'; no/missing/unreadable tags = 'unknown'.
+ *  This is the single comparison source for the Re-verify flows (bulk
+ *  button + per-row "Update file link") — the only places existing bindings
+ *  are re-judged after a server switch. 'conflict' is a strong hint, not
+ *  proof (feat./live/alternate titles normalize differently), so callers
+ *  must never auto-clear on it — only refuse to write. */
+export function verifyEntryAgainstTrack(
+  track: Track,
+  entry: WebdavFileEntry,
+): 'verified' | 'conflict' | 'unknown' {
+  const fileTitle = entry.tags?.title
+  const navTitle = track.title
+  if (!fileTitle || !navTitle) return 'unknown'
+  const f = normalizeForMatch(fileTitle)
+  const n = normalizeForMatch(navTitle)
+  if (!f || !n) return 'unknown'
+  return f === n ? 'verified' : 'conflict'
+}
+
 /** Score every eligible entry of the index against the track (filename, size,
  *  and — when the entry carries probed tags — in-file identity). */
 function scoreTrackMatches(
@@ -383,7 +410,14 @@ export function matchTrackToWebdav(
 ): TrackMatchResult {
   const scored = scoreTrackMatches(track, index, excludePaths)
 
-  if (scored.length > 0 && scored[0].score >= 40) {
+  // Auto-binding requires filename or tag evidence: `nameScore === 40` is
+  // exactly the byte-size heuristic, and a size coincidence is not proof a
+  // file IS the song (same-encode albums historically auto-bound whole
+  // albums to one wrong file). Size-only matches remain visible in the
+  // File Matching picker as suggestions — never an automatic bind. The
+  // `track.size` fallback that duplicated this path is gone.
+  if (scored.length > 0 && scored[0].score >= 40
+      && (scored[0].nameScore > 40 || scored[0].tagScore > 0)) {
     // A tag verdict that is not title+artist-certain must not auto-bind —
     // surface it as ambiguous so the user confirms (the picker shows tags).
     if (scored[0].tagScore > scored[0].nameScore && !scored[0].tagCertain) {
@@ -396,17 +430,6 @@ export function matchTrackToWebdav(
       return { entry: null, ambiguous: true }
     }
     return { entry: scored[0].entry, ambiguous: false }
-  }
-
-  if (track.size) {
-    const sizeMatches = index.filter(
-      (e) => e.size === track.size
-        && e.filename.toLowerCase().endsWith(`.${track.fileType}`)
-        && !excludePaths?.has(e.path)
-        && !tagsContradictSize(track, e),
-    )
-    if (sizeMatches.length === 1) return { entry: sizeMatches[0], ambiguous: false }
-    if (sizeMatches.length > 1) return { entry: null, ambiguous: true }
   }
 
   return { entry: null, ambiguous: false }
@@ -441,7 +464,13 @@ export function matchTrackToWebdavCandidates(
       && !excludePaths?.has(e.path),
   )
 
-  if (scored.length > 0 && scored[0].score >= 40) {
+  // Same evidence gate as `matchTrackToWebdav`: a byte-size-only lead must
+  // not classify as 'matched' (a size-only TIE would otherwise count
+  // 'ambiguous' here while the scanner counts it 'no-match' — the count
+  // line and scan result would disagree). Size-only entries still surface
+  // as near-miss suggestions below.
+  if (scored.length > 0 && scored[0].score >= 40
+      && (scored[0].nameScore > 40 || scored[0].tagScore > 0)) {
     const top = scored[0].score
     const group = scored.filter((s) => s.score === top).map((s) => s.entry)
     // Mirrors `matchTrackToWebdav`: a tag verdict that beats the filename
@@ -455,19 +484,14 @@ export function matchTrackToWebdavCandidates(
     }
   }
 
-  // No confident match: surface the best near-misses (or a unique size hit)
-  // so the user sees why nothing scored and has a starting point.
+  // No confident match: surface the best near-misses so the user sees why
+  // nothing scored and has a starting point (size-only hits included — the
+  // probe-contradicted ones are already excluded from `scored`).
   if (scored.length > 0) {
     return {
       status: 'none',
       promptCandidates: scored.slice(0, 5).map((s) => s.entry),
       allCandidates,
-    }
-  }
-  if (track.size) {
-    const sizeOnly = allCandidates.filter((e) => e.size === track.size)
-    if (sizeOnly.length > 0) {
-      return { status: 'none', promptCandidates: sizeOnly.slice(0, 5), allCandidates }
     }
   }
   return { status: 'none', promptCandidates: [], allCandidates }
