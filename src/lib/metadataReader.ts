@@ -31,25 +31,45 @@ function stripBasePath(baseUrl: string, href: string): string {
   return decoded.replace(new RegExp(`^${escaped}/?`, "i"), "")
 }
 
-export async function buildWebdavFileIndex(
+class PropfindError extends Error {
+  status: number
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = "PropfindError"
+    this.status = status
+  }
+}
+
+/** Servers that refuse `Depth: infinity` (DoS protection) commonly answer
+ *  403/409/412 — the recursive crawl fallback only triggers on these. */
+const DEPTH_FALLBACK_STATUSES = new Set([403, 409, 412])
+
+const CRAWL_CONCURRENCY = 6
+
+/** One PROPFIND at the given depth: returns file entries and child collection
+ *  paths (relative to the base URL). */
+async function propfindDir(
   baseUrl: string,
   user: string,
   token: string,
-): Promise<WebdavFileEntry[]> {
-  const url = buildWebdavUrl(baseUrl, "/")
+  path: string,
+  depth: string,
+): Promise<{ entries: WebdavFileEntry[]; collections: string[] }> {
+  const url = buildWebdavUrl(baseUrl, path)
   const res = await webdavFetch(url, {
     method: "PROPFIND",
     headers: {
       ...authHeaders(user, token),
-      Depth: "infinity",
+      Depth: depth,
     },
   }, INDEX_PROPFIND_TIMEOUT)
-  if (!res.ok) throw new Error(`PROPFIND / failed: ${res.status}`)
+  if (!res.ok) throw new PropfindError(res.status, `PROPFIND ${path} failed: ${res.status}`)
   const xml = await res.text()
   const doc = parseXml(xml)
   const responses = doc.getElementsByTagNameNS(DAV_NS, "response")
 
   const entries: WebdavFileEntry[] = []
+  const collections: string[] = []
   for (const resp of responses) {
     const href = getChildText(resp, "href", DAV_NS)
     const cleaned = stripBasePath(baseUrl, href)
@@ -58,10 +78,13 @@ export async function buildWebdavFileIndex(
     const props = resp.getElementsByTagNameNS(DAV_NS, "prop")[0]
     if (!props) continue
 
-    const isCollection = props.getElementsByTagNameNS(DAV_NS, "collection")[0]
-    if (isCollection) continue
-
     const filename = cleaned.split("/").pop() || cleaned
+    if (props.getElementsByTagNameNS(DAV_NS, "collection")[0]) {
+      // Normalize the trailing slash so dir keys dedupe across servers.
+      collections.push(cleaned.replace(/\/+$/, ""))
+      continue
+    }
+
     const sizeStr = props.getElementsByTagNameNS(DAV_NS, "getcontentlength")[0]?.textContent
     const modStr = props.getElementsByTagNameNS(DAV_NS, "getlastmodified")[0]?.textContent
     entries.push({
@@ -72,7 +95,71 @@ export async function buildWebdavFileIndex(
     })
   }
 
+  return { entries, collections }
+}
+
+/** Fallback for servers that refuse `Depth: infinity`: breadth-first crawl of
+ *  every directory with `Depth: 1` requests. Produces the same relative-path
+ *  entries as the flat probe, so matching/scoring are unaffected. A directory
+ *  that fails mid-crawl is skipped with a warning — a partial index degrades
+ *  to "more no-match rows", never to stale Push targets; only a total failure
+ *  (root probe included) propagates. */
+async function crawlIndex(
+  baseUrl: string,
+  user: string,
+  token: string,
+): Promise<WebdavFileEntry[]> {
+  const entries: WebdavFileEntry[] = []
+  const seen = new Set<string>()
+  const pending: string[] = []
+
+  const root = await propfindDir(baseUrl, user, token, "/", "1")
+  entries.push(...root.entries)
+  for (const dir of root.collections) {
+    if (!seen.has(dir)) {
+      seen.add(dir)
+      pending.push(dir)
+    }
+  }
+
+  while (pending.length > 0) {
+    const batch = pending.splice(0, CRAWL_CONCURRENCY)
+    const results = await Promise.all(batch.map(async (dir) => {
+      try {
+        return { ok: true as const, result: await propfindDir(baseUrl, user, token, dir, "1") }
+      } catch (err) {
+        console.warn(`mmdrome WebDAV crawl: skipping unreadable directory "${dir}"`, err)
+        return { ok: false as const, result: undefined }
+      }
+    }))
+    for (const res of results) {
+      if (!res.ok) continue
+      entries.push(...res.result!.entries)
+      for (const dir of res.result!.collections) {
+        if (!seen.has(dir)) {
+          seen.add(dir)
+          pending.push(dir)
+        }
+      }
+    }
+  }
+
   return entries
+}
+
+export async function buildWebdavFileIndex(
+  baseUrl: string,
+  user: string,
+  token: string,
+): Promise<WebdavFileEntry[]> {
+  try {
+    return (await propfindDir(baseUrl, user, token, "/", "infinity")).entries
+  } catch (err) {
+    if (err instanceof PropfindError && DEPTH_FALLBACK_STATUSES.has(err.status)) {
+      return crawlIndex(baseUrl, user, token)
+    }
+    throw err
+  }
 }
 
 /** Build a Map<webdavPath, lastModified> from the index for fast lookup. */
@@ -457,25 +544,29 @@ function parseTrackNumber(value: unknown): number | undefined {
 
 export async function extractMetadataFromBuffer(
   buffer: ArrayBuffer,
-  _fileType: string,
+  fileType: string,
 ): Promise<FileMetadata> {
   let rating = 0
   let loved = false
   let comments = ''
-  let taglibOpened = false
   let title: string | undefined
   let artist: string | undefined
   let album: string | undefined
   let trackNumber: number | undefined
 
+  const taglib = await getTagLib()
+  const file = await taglib.open(new Uint8Array(buffer))
   try {
-    const taglib = await getTagLib()
-    const file = await taglib.open(new Uint8Array(buffer))
-    taglibOpened = true
-
     const r = file.getRating()
     if (r !== undefined && r !== null && r > 0) {
-      rating = popmToLocalRating(Math.round(r * 255))
+      // getRating() is normalized 0..1 for every format (ID3v2 POPM/255,
+      // Vorbis RATING/100, MP4 freeform atom/100). MP3 re-quantizes through
+      // the MusicBee-calibrated POPM grid; other formats map straight to the
+      // 0..100 local scale — running them through the POPM grid would inflate
+      // e.g. 80 (0.8*255=204 -> grid says 90).
+      rating = fileType === "mp3"
+        ? popmToLocalRating(Math.round(r * 255))
+        : Math.min(100, Math.max(0, Math.round(r * 100)))
     }
 
     const props = file.properties()
@@ -509,12 +600,16 @@ export async function extractMetadataFromBuffer(
     album = firstPropValue(props['ALBUM'])
     trackNumber = parseTrackNumber(props['TRACKNUMBER'])
 
-    file.dispose()
-  } catch (e) {
-    if (!taglibOpened) throw e
+    return { rating, loved, comments: comments || undefined, title, artist, album, trackNumber }
+  } finally {
+    // Never leak the WASM handle: an exception mid-parse must not skip
+    // dispose(), and a dispose failure must never mask the read error.
+    try {
+      file.dispose()
+    } catch {
+      // ignore
+    }
   }
-
-  return { rating, loved, comments: comments || undefined, title, artist, album, trackNumber }
 }
 
 export async function readFileMetadata(
@@ -556,13 +651,17 @@ export async function readFileMetadataWithIndex(
 export async function extractRawTagProperties(buffer: ArrayBuffer): Promise<Record<string, unknown>> {
   const taglib = await getTagLib()
   const file = await taglib.open(new Uint8Array(buffer))
-
-  const props = file.properties()
-  const result: Record<string, unknown> = {
-    getRating: file.getRating(),
-    properties: { ...props },
+  try {
+    const props = file.properties()
+    return {
+      getRating: file.getRating(),
+      properties: { ...props },
+    }
+  } finally {
+    try {
+      file.dispose()
+    } catch {
+      // ignore
+    }
   }
-
-  file.dispose()
-  return result
 }
