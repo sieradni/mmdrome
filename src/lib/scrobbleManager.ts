@@ -15,6 +15,10 @@ import type { Track } from '../stores/appState'
 
 const MIN_LISTEN_SECONDS = 240
 const SCROBBLE_RATIO = 0.5
+/** Position deltas above this are manual seeks, not listening: forward jumps
+ *  must not manufacture play time, backward jumps re-listen the audio. Normal
+ *  playback ticks are ~0.25s–1s, so this never fires on real playback. */
+const MAX_SEEK_DELTA = 5
 
 interface Playhead {
   track: Track
@@ -61,8 +65,25 @@ class ScrobbleManager {
     const ph = this.playhead
     if (!ph) return
     const delta = pos - ph.lastPos
+    if (delta > MAX_SEEK_DELTA) {
+      // Manual forward seek: the skipped span was not listened to — do not
+      // credit it as play time, but anchor the playhead at the new position.
+      ph.lastPos = pos
+      return
+    }
+    if (delta < -MAX_SEEK_DELTA) {
+      // Manual backward seek: the audio from here on is being re-listened —
+      // restart the listening credit at the new position.
+      ph.played = 0
+      ph.lastPos = pos
+      return
+    }
     if (delta > 0) ph.played += delta
     ph.lastPos = pos
+    // A track can never accrue more listening time than its own length
+    // (guard against poll glitches inflating the count).
+    const dur = ph.track.duration
+    if (dur > 0 && ph.played > dur) ph.played = dur
   }
 
   private onTrackChange(track: Track | null): void {
