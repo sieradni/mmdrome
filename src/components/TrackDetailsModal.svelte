@@ -8,11 +8,13 @@
 
   let rating = $state(0)
   let loved = $state(false)
+  let dragging = $state(false)
+  let dragCommitted = false
 
   const meta = $derived($metadataCache.get(track.trackId))
 
   $effect(() => {
-    if (meta) {
+    if (meta && !dragging) {
       rating = meta.rating ?? 0
       loved = meta.loved ?? false
     }
@@ -20,6 +22,30 @@
 
   function commit() {
     commitFeedback(track, rating, loved)
+  }
+
+  // While the thumb is held, the store row is re-synced into `rating` by the
+  // effect above — a concurrent scan writing the stale file value would yank
+  // the thumb mid-drag. Mark the row pending from the FIRST input tick (the
+  // scanner skips pending rows) and suppress the re-sync while dragging.
+  function onRatingInput() {
+    dragging = true
+    if (!dragCommitted) {
+      dragCommitted = true
+      commit()
+    }
+  }
+
+  function onRatingRelease() {
+    dragging = false
+    dragCommitted = false
+    commit()
+  }
+
+  function onRatingBlur() {
+    dragging = false
+    dragCommitted = false
+    commit()
   }
 
   function setStar(i: number) {
@@ -115,7 +141,9 @@
             max="100"
             step="10"
             bind:value={rating}
-            onchange={commit}
+            oninput={onRatingInput}
+            onchange={onRatingRelease}
+            onblur={onRatingBlur}
             class="h-1 flex-1 accent-yellow-500"
           />
           <span class="w-8 text-right text-xs text-muted">{rating}</span>
