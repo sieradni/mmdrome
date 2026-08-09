@@ -369,6 +369,7 @@
   const visibleRows = $derived(filterVisible.slice(0, matchCap))
 
   async function refreshUnresolved() {
+    const prevTop = scrollContainer?.scrollTop ?? 0
     unresolvedLoading = true
     unresolvedError = ''
     bindError = null
@@ -391,6 +392,8 @@
       unresolvedError = err instanceof Error ? err.message : String(err)
     } finally {
       unresolvedLoading = false
+      await tick()
+      if (scrollContainer && prevTop > 0) scrollContainer.scrollTop = prevTop
     }
   }
 
@@ -892,13 +895,10 @@
           {#if countTotal() > 0}
             <p class="mb-2 text-sm text-muted">{countLine()}</p>
           {/if}
-          {#if unresolvedLoading}
-            <p class="text-sm text-muted">Loading…</p>
-          {:else if unresolvedError}
+          {#if unresolvedError}
             <p class="text-sm text-red-400">{unresolvedError}</p>
-          {:else if unresolvedRows.length === 0}
-            <p class="text-sm text-green-400">All tracks matched.</p>
-          {:else}
+          {:else if unresolvedRows.length > 0}
+            <div class:opacity-50={unresolvedLoading}>
             {#each visibleRows as row (row.trackId)}
               <div class="mb-2 rounded-lg bg-surface px-3 py-2">
                 <div class="flex items-start justify-between gap-2">
@@ -1043,6 +1043,11 @@
                 class="mt-1 text-sm font-medium text-muted transition-colors hover:text-primary"
               >{showMatched ? 'Hide' : 'Show'} matched ({unresolvedCounts.matched})</button>
             {/if}
+            </div>
+          {:else if unresolvedLoading}
+            <p class="text-sm text-muted">Loading…</p>
+          {:else}
+            <p class="text-sm text-green-400">All tracks matched.</p>
           {/if}
         </section>
 
