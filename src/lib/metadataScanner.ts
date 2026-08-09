@@ -1,8 +1,9 @@
 import { get } from "svelte/store"
+import { writable } from "svelte/store"
 import { library, metadataCache, metadataScanState, settings, updateMetadata } from "../stores/appState"
 import type { Track } from "../stores/appState"
-import { saveWebdavFileIndex, getWebdavFileIndex } from "./db"
-import type { LocalMetadataStore } from "./db"
+import { saveWebdavFileIndex, getWebdavFileIndex, getFileTagsForBase, putFileTag } from "./db"
+import type { LocalMetadataStore, FileTagCacheEntry, FileTags } from "./db"
 import {
   buildWebdavFileIndex,
   matchTrackToWebdav,
@@ -11,6 +12,7 @@ import {
   buildPathTimestamps,
   findChangedTracks,
   computeIndexFingerprint,
+  isAudioFilePath,
 } from "./metadataReader"
 import type { WebdavFileEntry } from "./db"
 
@@ -61,6 +63,14 @@ export function setWebdavCredentials(url: string, user: string, token: string): 
     indexBuilt = false
     indexBaseKey = ""
   }
+  if (`${url}|${user}` !== tagCacheBaseKey) {
+    tagCache = new Map()
+    tagCacheLoaded = false
+    tagCacheBaseKey = ""
+  }
+  // Credentials changed mid-probe would fetch tag identity under one server
+  // and cache it under another — cancel any running pass up front.
+  tagProbeGen++
   webdavUrl = url
   webdavUser = user
   webdavToken = token
@@ -83,6 +93,7 @@ export async function refreshIndex(): Promise<boolean> {
     index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
     indexBaseKey = currentIndexKey()
     indexBuilt = true
+    await applyCachedTags()
     await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey, fingerprint: computeIndexFingerprint(index) })
     return true
   } catch {
@@ -98,7 +109,214 @@ export async function rebuildIndex(): Promise<void> {
   index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
   indexBaseKey = currentIndexKey()
   indexBuilt = true
+  await applyCachedTags()
   await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey, fingerprint: computeIndexFingerprint(index) })
+}
+
+// ── In-file identity tags (content probing) ─────────────────────────────
+
+export interface TagProbeState {
+  active: boolean
+  done: number
+  /** Files in the current candidate pool not yet probed. */
+  remaining: number
+}
+
+export const tagProbeState = writable<TagProbeState>({ active: false, done: 0, remaining: 0 })
+
+const TAG_PROBE_CONCURRENCY = 4
+const TAG_PROBE_RETRY_MS = 800
+
+/** `baseUrl|user` the in-memory tag cache belongs to. */
+let tagCacheBaseKey = ""
+let tagCache = new Map<string, FileTagCacheEntry>()
+let tagCacheLoaded = false
+let tagProbeActive = false
+let tagProbeGen = 0
+
+function fileTagId(baseKey: string, path: string): string {
+  return `${baseKey}\u0000${path}`
+}
+
+function fileTypeOf(filename: string): string {
+  const dot = filename.lastIndexOf(".")
+  return dot > 0 ? filename.slice(dot + 1).toLowerCase() : "mp3"
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Load cached probe results for the current server into a path-keyed map. */
+async function loadTagCache(): Promise<void> {
+  const key = currentIndexKey()
+  if (tagCacheBaseKey === key && tagCacheLoaded) return
+  const entries = await getFileTagsForBase(key)
+  tagCache = new Map(entries.map((e) => [e.path, e]))
+  tagCacheBaseKey = key
+  tagCacheLoaded = true
+}
+
+/** Stamp `entry.tags` from the cache when size matches (a size change means
+ *  the file was rewritten — the cached identity is stale). Unknown/poisoned
+ *  entries keep their index entry tag-less so scoring falls back to names. */
+async function applyCachedTags(): Promise<void> {
+  await loadTagCache()
+  for (const e of index) {
+    const cached = tagCache.get(e.path)
+    if (cached && cached.size === e.size && cached.status === 'ok' && cached.tags) {
+      e.tags = cached.tags
+    }
+  }
+}
+
+function normalizeForHint(s: string): string {
+  return s.toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim()
+}
+
+/** A filename "hints" at an unclaimed track when its base (minus track
+ *  numbers/separators) matches or contains a normalized unclaimed title. */
+function filenameHintsTitle(filename: string, titles: Set<string>): boolean {
+  const dot = filename.lastIndexOf(".")
+  const base = dot > 0 ? filename.slice(0, dot) : filename
+  const cleaned = normalizeForHint(base).replace(/^[\d\s._-]+/, "")
+  if (!cleaned) return false
+  for (const title of titles) {
+    if (cleaned === title || cleaned.includes(title) || title.includes(cleaned)) return true
+  }
+  return false
+}
+
+/**
+ * Content-probes UNCLAIMED audio files so matching can use real in-file
+ * identity (title/artist/album) instead of only filenames.
+ *
+ * Selection: only files that plausibly resolve some unclaimed track — a size
+ * hint (same byte size as an unclaimed track) or a filename/title hint. This
+ * deliberately never sweeps the entire server: orphan file forests without
+ * any hinted candidate are left alone (they cost probe bytes but match
+ * nothing). Probed results are cached per `baseKey|path` + size in Dexie and
+ * attached to the in-memory index for scoring; failures are cached as
+ * poisoned so they are never retried until the file's size changes.
+ *
+ * Pauses (waits) while a scan is draining so the two never compete for the
+ * connection; a new call (gen bump) cancels a running pass.
+ */
+export async function ensureTagProbe(): Promise<void> {
+  if (!webdavUrl || !webdavUser || !webdavToken) return
+  if (tagProbeActive) return
+  if (!indexBuilt) {
+    const ok = await refreshIndex()
+    if (!ok) return
+  }
+  const mutex = ++tagProbeGen
+  tagProbeActive = true
+  tagProbeState.set({ active: true, done: 0, remaining: 0 })
+  try {
+    await runTagProbe(mutex)
+  } finally {
+    // Unconditional: a credential swap bumps tagProbeGen mid-pass to cancel
+    // the run — the busy flag must still clear or every future probe no-ops.
+    tagProbeActive = false
+    tagProbeState.set({ active: false, done: 0, remaining: 0 })
+  }
+}
+
+async function runTagProbe(gen: number): Promise<void> {
+  await loadTagCache()
+  const cache = get(metadataCache)
+
+  // Unclaimed tracks (no staged auto target) give the hint sets.
+  const unclaimedSizes = new Set<number>()
+  const unclaimedTitles = new Set<string>()
+  const tracks = get(library)
+  for (const t of tracks) {
+    const row = cache.get(t.trackId)
+    if (row?.webdavPath || row?.ignored) continue
+    if (t.size) unclaimedSizes.add(t.size)
+    if (t.title) unclaimedTitles.add(normalizeForHint(t.title))
+  }
+
+  const pool: WebdavFileEntry[] = []
+  const claimedPaths = new Set<string>()
+  for (const row of cache.values()) {
+    if (row.webdavPath) claimedPaths.add(row.webdavPath)
+  }
+  for (const entry of index) {
+    if (claimedPaths.has(entry.path)) continue
+    if (!isAudioFilePath(entry.filename)) continue
+    const cached = tagCache.get(entry.path)
+    if (cached && cached.size === entry.size) continue // fresh: ok/empty/unreadable
+    pool.push(entry)
+  }
+
+  if (pool.length === 0) return
+
+  // Hint ordering: byte-size suggestions first (strong), then filename hints,
+  // then the rest. This is the "never sweep the server" guard — files with no
+  // hint at all are skipped entirely.
+  const rank = new Map<string, number>()
+  for (const e of pool) {
+    let r = 0
+    if (e.size && unclaimedSizes.has(e.size)) r = 2
+    else if (filenameHintsTitle(e.filename, unclaimedTitles)) r = 1
+    if (r === 0) continue
+    rank.set(e.path, r)
+  }
+  const hinted = pool.filter((e) => rank.has(e.path))
+  hinted.sort((a, b) => (rank.get(b.path) ?? 0) - (rank.get(a.path) ?? 0) || a.path.localeCompare(b.path))
+
+  const baseKey = currentIndexKey()
+  let done = 0
+
+  for (let i = 0; i < hinted.length; i += TAG_PROBE_CONCURRENCY) {
+    // Coalesce behind any running scan: probe batches wait for the scan
+    // queue to drain instead of competing for the same connection.
+    if (tagProbeGen !== gen) return
+    while (queue.length > 0 || activeCount > 0) {
+      await sleep(TAG_PROBE_RETRY_MS)
+      if (tagProbeGen !== gen) return
+    }
+    const batch = hinted.slice(i, i + TAG_PROBE_CONCURRENCY)
+    await Promise.all(batch.map(async (entry) => {
+      if (tagProbeGen !== gen) return
+      const id = fileTagId(baseKey, entry.path)
+      try {
+        const meta = await readFileMetadata(
+          webdavUrl, entry.path, webdavUser, webdavToken, fileTypeOf(entry.filename),
+        )
+        if (tagProbeGen !== gen) return
+        const hasIdentity = !!(meta.title || meta.artist || meta.album)
+        const next: FileTagCacheEntry = {
+          id,
+          baseKey,
+          path: entry.path,
+          size: entry.size,
+          tags: hasIdentity ? { title: meta.title, artist: meta.artist, album: meta.album, trackNumber: meta.trackNumber } : undefined,
+          status: hasIdentity ? 'ok' : 'empty',
+          probedAt: Date.now(),
+        }
+        await putFileTag(next)
+        tagCache.set(entry.path, next)
+        if (hasIdentity) entry.tags = next.tags
+      } catch {
+        if (tagProbeGen !== gen) return
+        const next: FileTagCacheEntry = {
+          id, baseKey, path: entry.path, size: entry.size,
+          status: 'unreadable', probedAt: Date.now(),
+        }
+        await putFileTag(next)
+        tagCache.set(entry.path, next)
+      }
+      done++
+      const remaining = Math.max(0, hinted.length - (i + batch.length))
+      tagProbeState.set({ active: true, done, remaining })
+    }))
+  }
+
+  if (tagProbeGen === gen) {
+    tagProbeState.set({ active: false, done, remaining: 0 })
+  }
 }
 
 /**
@@ -115,7 +333,15 @@ export async function rebuildIndex(): Promise<void> {
  * drain/process pipeline; the progress record carries `annotation` describing
  * which shape is running for the status line.
  */
+/** Public entry: runs the scan, then auto-content-probes so that as long as
+ *  tracks remain unclaimed, in-file tag identity is harvested in the
+ *  background (guarded internally — a no-op while a probe is already active). */
 export async function scanAll(shape_: ScanShape = "modified"): Promise<void> {
+  await scanAllInternal(shape_)
+  void ensureTagProbe()
+}
+
+async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
   cancelled = true
   const myGen = ++scanGen
   queue = []
@@ -305,7 +531,17 @@ async function processItem(item: QueueItem): Promise<void> {
     return
   }
 
-  const match = matchTrackToWebdav(track, index)
+  // Claim guard: one file backs one track. Files already bound to a DIFFERENT
+  // row are excluded from this track's scoring so an auto-match can never
+  // steal a file (e.g. the same song tagged in two Navidrome entries).
+  const excludePaths = new Set<string>()
+  for (const [, row] of get(metadataCache)) {
+    if (row.webdavPath && row.webdavPath !== existing?.webdavPath) {
+      excludePaths.add(row.webdavPath)
+    }
+  }
+
+  const match = matchTrackToWebdav(track, index, excludePaths)
   if (scanGen !== startedGen) return
   if (!match.entry) {
     if (match.ambiguous) {
@@ -462,6 +698,10 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
     const ok = await refreshIndex()
     if (!ok) throw new Error("Index refresh failed — is the WebDAV server reachable?")
   }
+  // Re-stamp cached probe results onto the in-memory index so candidate
+  // pickers show file identity (and scoring sees tags) even when this view
+  // opened after the index was built.
+  await applyCachedTags()
 
   const baseKey = currentIndexKey()
   const indexPaths = new Set(index.map((i) => i.path))
@@ -519,8 +759,13 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
       // there is no cheap classification for "would this tie". The scoring
       // pass is the same work an incremental scan does, and only runs when
       // this view is open/refreshed. prompt arrays are kept only for the
-      // capped, displayed rows (the slice below drops the rest).
-      const match = matchTrackToWebdavCandidates(t, index)
+      // capped, displayed rows (the slice below drops the rest). Rows bound
+      // to other tracks are excluded so an unclaimed file never scores twice.
+      const excludePaths = new Set<string>()
+      for (const [, row] of get(metadataCache)) {
+        if (row.webdavPath) excludePaths.add(row.webdavPath)
+      }
+      const match = matchTrackToWebdavCandidates(t, index, excludePaths)
       counts[match.status === 'ambiguous' ? 'ambiguous' : 'no-match']++
       if (base.pendingPush) pendingBlocked++
       row = {

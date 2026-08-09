@@ -24,6 +24,30 @@ export interface WebdavFileEntry {
   filename: string
   size: number
   lastModified?: string
+  /** Identity tags harvested from a content probe (`probeFileTags`). */
+  tags?: FileTags
+}
+
+/** Identity metadata read from a file's tags (not filename-derived). */
+export interface FileTags {
+  title?: string
+  artist?: string
+  album?: string
+  trackNumber?: number
+}
+
+/** Cached tag-probe result, keyed `baseKey|path` scoped by size + status. */
+export interface FileTagCacheEntry {
+  id: string
+  /** `baseUrl|user` this probe ran against — never reused across servers. */
+  baseKey: string
+  path: string
+  /** Size at probe time; a size change invalidates the cached tags. */
+  size: number
+  tags?: FileTags
+  /** 'ok' = tags read; 'empty' = reachable but no identity tags; 'unreadable' = poisoned (don't retry). */
+  status: 'ok' | 'empty' | 'unreadable'
+  probedAt: number
 }
 
 export interface WebdavFileIndex {
@@ -64,6 +88,7 @@ const db = new Dexie('mmdrome') as Dexie & {
   playQueue: EntityTable<PlayQueueState, 'id'>
   webdavFileIndex: EntityTable<WebdavFileIndex, 'id'>
   songLibraryCache: EntityTable<SongLibraryCache, 'id'>
+  webdavFileTags: EntityTable<FileTagCacheEntry, 'id'>
 }
 
 db.version(1).stores({
@@ -85,6 +110,15 @@ db.version(3).stores({
   playQueue: 'id',
   webdavFileIndex: 'id',
   songLibraryCache: 'id',
+})
+
+db.version(4).stores({
+  localMetadata: 'trackId, syncStatus, rating, loved',
+  userSettings: 'key',
+  playQueue: 'id',
+  webdavFileIndex: 'id',
+  songLibraryCache: 'id',
+  webdavFileTags: 'id, baseKey',
 })
 
 export { db }
@@ -140,4 +174,14 @@ export async function getSongLibraryCache(): Promise<SongLibraryCache | undefine
 
 export async function saveSongLibraryCache(cache: Omit<SongLibraryCache, 'id'>): Promise<void> {
   await db.songLibraryCache.put({ id: 'main', ...cache })
+}
+
+export async function getFileTagsForBase(
+  baseKey: string,
+): Promise<FileTagCacheEntry[]> {
+  return db.webdavFileTags.where('baseKey').equals(baseKey).toArray()
+}
+
+export async function putFileTag(entry: FileTagCacheEntry): Promise<void> {
+  await db.webdavFileTags.put(entry)
 }

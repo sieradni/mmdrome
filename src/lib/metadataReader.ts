@@ -158,38 +158,131 @@ export interface TrackMatchResult {
 
 interface ScoredEntry {
   entry: WebdavFileEntry
+  /** Filename-vs-title score (0..110). */
+  nameScore: number
+  /** In-file tag identity score (0..), 0 when the file has no tags. */
+  tagScore: number
+  /** Best of both, plus the equal-size bonus. */
   score: number
+  /** True when a confident tag match: exact title AND exact artist. */
+  tagCertain: boolean
 }
 
-/** Score every entry of the index against the track (filename-vs-title + size). */
-function scoreTrackMatches(track: Track, index: WebdavFileEntry[]): ScoredEntry[] {
+/** Known audio extensions the probe/scorer touches (mirrors Track['fileType']). */
+const AUDIO_EXTENSIONS = ['mp3', 'flac', 'm4a', 'ogg', 'opus', 'wav', 'aac', 'aiff', 'wma']
+
+export function isAudioFilePath(filename: string): boolean {
+  const dot = filename.lastIndexOf('.')
+  if (dot <= 0) return false
+  return AUDIO_EXTENSIONS.includes(filename.slice(dot + 1).toLowerCase())
+}
+
+/** In-file identity scoring: title is the strong signal; artist/album/track
+ *  corroborate; equal byte size adds a small bonus. `certain` = exact title
+ *  AND exact artist (the only verdict the scanner auto-binds on). */
+function scoreAgainstTags(
+  track: Track,
+  entry: WebdavFileEntry,
+  navSize: number | undefined,
+): { score: number; certain: boolean } {
+  if (!entry.tags) return { score: 0, certain: false }
+  const tags = entry.tags
+  const fileTitle = normalizeForMatch(tags.title ?? '')
+  if (!fileTitle) return { score: 0, certain: false }
+
+  const navTitle = normalizeForMatch(track.title)
+  const fileArtist = normalizeForMatch(tags?.artist ?? '')
+  const navArtist = normalizeForMatch(track.artist)
+  const fileAlbum = normalizeForMatch(tags?.album ?? '')
+  const navAlbum = normalizeForMatch(track.album)
+
+  let score = 0
+  const titleExact = fileTitle === navTitle
+  if (titleExact) {
+    score = 100
+  } else if (fileTitle.includes(navTitle) || navTitle.includes(fileTitle)) {
+    score = 78 - Math.abs(fileTitle.length - navTitle.length)
+  } else {
+    return { score: 0, certain: false }
+  }
+
+  const artistExact = fileArtist !== '' && navArtist !== '' && fileArtist === navArtist
+  if (artistExact) score += 25
+  else if (fileArtist && navArtist && (fileArtist.includes(navArtist) || navArtist.includes(fileArtist))) score += 12
+
+  if (fileAlbum && navAlbum && (fileAlbum === navAlbum || fileAlbum.includes(navAlbum) || navAlbum.includes(fileAlbum))) {
+    score += fileAlbum === navAlbum ? 20 : 10
+  }
+  if (tags.trackNumber && track.trackNumber && tags.trackNumber === track.trackNumber) {
+    score += 5
+  }
+  if (navSize && entry.size === navSize) {
+    score += 5
+  }
+
+  return { score, certain: titleExact && artistExact }
+}
+
+/** The size-only fallback is suppressed when the file's PROBED tags
+ *  contradict the track (a coincidental same-size file must not auto-bind). */
+function tagsContradictSize(track: Track, entry: WebdavFileEntry): boolean {
+  const fileTitle = entry.tags?.title
+  if (!fileTitle) return false
+  return normalizeForMatch(fileTitle) !== normalizeForMatch(track.title)
+}
+
+/** Score every eligible entry of the index against the track (filename, size,
+ *  and — when the entry carries probed tags — in-file identity). */
+function scoreTrackMatches(
+  track: Track,
+  index: WebdavFileEntry[],
+  excludePaths?: ReadonlySet<string>,
+): ScoredEntry[] {
   const navTitle = normalizeForMatch(track.title)
   const navSize = track.size
 
   const scored: ScoredEntry[] = []
 
   for (const entry of index) {
-    if (entry.filename.toLowerCase().endsWith(`.${track.fileType}`)) {
-      const cleanedFilename = normalizeForMatch(extractTitleFromFilename(entry.filename))
+    if (excludePaths?.has(entry.path)) continue
+    if (!entry.filename.toLowerCase().endsWith(`.${track.fileType}`)) continue
 
-      let score = 0
-      if (cleanedFilename === navTitle) {
-        score = 100
-      } else if (cleanedFilename.includes(navTitle)) {
-        score = 80 - Math.abs(cleanedFilename.length - navTitle.length)
-      } else if (navTitle.includes(cleanedFilename)) {
-        score = 60 - Math.abs(cleanedFilename.length - navTitle.length)
-      }
+    const cleanedFilename = normalizeForMatch(extractTitleFromFilename(entry.filename))
 
-      if (navSize && entry.size === navSize && score > 0) {
-        score += 10
-      }
-      if (navSize && entry.size === navSize && score === 0) {
-        score = 40
-      }
-
-      if (score > 0) scored.push({ entry, score })
+    let nameScore = 0
+    if (cleanedFilename === navTitle) {
+      nameScore = 100
+    } else if (cleanedFilename.includes(navTitle)) {
+      nameScore = 80 - Math.abs(cleanedFilename.length - navTitle.length)
+    } else if (navTitle.includes(cleanedFilename)) {
+      nameScore = 60 - Math.abs(cleanedFilename.length - navTitle.length)
     }
+
+    // Size-only guess — suppressed when probed tags contradict the track.
+    if (navSize && entry.size === navSize && nameScore === 0 && !tagsContradictSize(track, entry)) {
+      nameScore = 40
+    }
+
+    const tag = scoreAgainstTags(track, entry, navSize)
+
+    let score = Math.max(nameScore, tag.score)
+    // A tag verdict that beats a weak filename/name guess is the trusted one
+    // (the file "is" that song); ties stay ties.
+    if (tag.score > 0 && tag.score > nameScore) {
+      score = tag.score
+    }
+    // Historical size bonus on top of an equal-size filename match.
+    if (nameScore > 0 && navSize && entry.size === navSize && score === nameScore) {
+      score += 10
+    }
+
+    if (score > 0) scored.push({
+      entry,
+      nameScore,
+      tagScore: tag.score,
+      score,
+      tagCertain: tag.certain,
+    })
   }
 
   scored.sort((a, b) => b.score - a.score)
@@ -199,10 +292,16 @@ function scoreTrackMatches(track: Track, index: WebdavFileEntry[]): ScoredEntry[
 export function matchTrackToWebdav(
   track: Track,
   index: WebdavFileEntry[],
+  excludePaths?: ReadonlySet<string>,
 ): TrackMatchResult {
-  const scored = scoreTrackMatches(track, index)
+  const scored = scoreTrackMatches(track, index, excludePaths)
 
   if (scored.length > 0 && scored[0].score >= 40) {
+    // A tag verdict that is not title+artist-certain must not auto-bind —
+    // surface it as ambiguous so the user confirms (the picker shows tags).
+    if (scored[0].tagScore > scored[0].nameScore && !scored[0].tagCertain) {
+      return { entry: null, ambiguous: true }
+    }
     // Two files with the same score (e.g. duplicate "01 - Intro.flac" in
     // different albums, same size) are indistinguishable — picking the first
     // index entry could rewrite the WRONG file's tags on Push.
@@ -214,7 +313,10 @@ export function matchTrackToWebdav(
 
   if (track.size) {
     const sizeMatches = index.filter(
-      (e) => e.size === track.size && e.filename.toLowerCase().endsWith(`.${track.fileType}`),
+      (e) => e.size === track.size
+        && e.filename.toLowerCase().endsWith(`.${track.fileType}`)
+        && !excludePaths?.has(e.path)
+        && !tagsContradictSize(track, e),
     )
     if (sizeMatches.length === 1) return { entry: sizeMatches[0], ambiguous: false }
     if (sizeMatches.length > 1) return { entry: null, ambiguous: true }
@@ -236,13 +338,20 @@ export interface MatchCandidates {
  * `matchTrackToWebdav`, but exposes the tied/near-miss entries instead of
  * collapsing them to an unambiguous boolean.
  */
+/**
+ * Candidate view for the File Matching UI: the same scoring as
+ * `matchTrackToWebdav`, but exposes the tied/near-miss entries instead of
+ * collapsing them to an unambiguous boolean.
+ */
 export function matchTrackToWebdavCandidates(
   track: Track,
   index: WebdavFileEntry[],
+  excludePaths?: ReadonlySet<string>,
 ): MatchCandidates {
-  const scored = scoreTrackMatches(track, index)
+  const scored = scoreTrackMatches(track, index, excludePaths)
   const allCandidates = index.filter(
-    (e) => e.filename.toLowerCase().endsWith(`.${track.fileType}`),
+    (e) => e.filename.toLowerCase().endsWith(`.${track.fileType}`)
+      && !excludePaths?.has(e.path),
   )
 
   if (scored.length > 0 && scored[0].score >= 40) {
@@ -322,6 +431,24 @@ export interface FileMetadata {
   rating: number
   loved: boolean
   comments?: string
+  /** Identity tags, read from the same taglib pass (used for tag matching). */
+  title?: string
+  artist?: string
+  album?: string
+  trackNumber?: number
+}
+
+function firstPropValue(value: unknown): string | undefined {
+  if (Array.isArray(value)) return value[0]?.toString().trim()
+  if (typeof value === 'string') return value.trim()
+  return undefined
+}
+
+function parseTrackNumber(value: unknown): number | undefined {
+  const raw = firstPropValue(value)
+  if (!raw) return undefined
+  const num = parseInt(raw.split('/')[0], 10)
+  return isNaN(num) ? undefined : num
 }
 
 export async function extractMetadataFromBuffer(
@@ -332,6 +459,10 @@ export async function extractMetadataFromBuffer(
   let loved = false
   let comments = ''
   let taglibOpened = false
+  let title: string | undefined
+  let artist: string | undefined
+  let album: string | undefined
+  let trackNumber: number | undefined
 
   try {
     const taglib = await getTagLib()
@@ -369,13 +500,17 @@ export async function extractMetadataFromBuffer(
     if (!comments && Array.isArray(rawComment) && rawComment[0]) {
       comments = rawComment[0]
     }
+    title = firstPropValue(props['TITLE'])
+    artist = firstPropValue(props['ARTIST'])
+    album = firstPropValue(props['ALBUM'])
+    trackNumber = parseTrackNumber(props['TRACKNUMBER'])
 
     file.dispose()
   } catch (e) {
     if (!taglibOpened) throw e
   }
 
-  return { rating, loved, comments: comments || undefined }
+  return { rating, loved, comments: comments || undefined, title, artist, album, trackNumber }
 }
 
 export async function readFileMetadata(

@@ -6,7 +6,7 @@
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
   import { getPendingSyncMetadata } from '../lib/db'
-  import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, ensureTagProbe } from '../lib/metadataScanner'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
@@ -360,6 +360,11 @@
     return blockedCount > 0 ? `${line}; ${blockedCount} blocked by pending edits` : line
   }
 
+  function tagProbeText(): string {
+    const s = $tagProbeState
+    return s.done > 0 ? `${s.done} file${s.done === 1 ? '' : 's'} (${s.remaining} remaining)` : 'unclaimed files'
+  }
+
   // Full set (returned uncapped) is held in unresolvedRows; toggles + matchCap
   // filter and slice it client-side so ignored/matched rows are never starved
   // out of visibility by an arbitrary hard cap.
@@ -388,6 +393,7 @@
       unresolvedCounts = rows.counts
       blockedCount = rows.pendingBlocked
       unresolvedLoaded = true
+      void ensureTagProbe()
     } catch (err) {
       unresolvedError = err instanceof Error ? err.message : String(err)
     } finally {
@@ -892,6 +898,11 @@
           <p class="mb-2 text-sm text-muted">
             Shows songs the scanner could not safely link to a file on your WebDAV server. Link them manually so Push Changes can write their ratings, or mark them as not on this server.
           </p>
+          {#if $tagProbeState.active}
+            <p class="mb-2 text-sm text-muted">
+              Reading tags from {tagProbeText()} to match files by their contents…
+            </p>
+          {/if}
           {#if countTotal() > 0}
             <p class="mb-2 text-sm text-muted">{countLine()}</p>
           {/if}
@@ -973,8 +984,15 @@
                       {#each row.candidates as cand (cand.path)}
                         <button
                           onclick={() => doBind(row.trackId, cand.path)}
-                          class="block w-full truncate rounded-lg bg-surface-hover px-3 py-1.5 text-left text-xs text-primary transition-opacity hover:opacity-80"
-                        >{cand.path}</button>
+                          class="block w-full text-left"
+                        >
+                          <span class="block truncate rounded-lg bg-surface-hover px-3 py-1.5 text-xs text-primary transition-opacity hover:opacity-80">{cand.path}</span>
+                          {#if cand.tags?.title}
+                            <span class="block truncate px-1 text-[11px] text-muted">
+                              ¶ {cand.tags.title}{cand.tags.artist ? ` — ${cand.tags.artist}` : ''}{cand.tags.album ? ` — ${cand.tags.album}` : ''}
+                            </span>
+                          {/if}
+                        </button>
                       {/each}
                     {/if}
                     <div class="flex gap-2">
@@ -995,10 +1013,14 @@
                     {#if searchResults.length > 0}
                       <div class="max-h-40 space-y-1 overflow-y-auto">
                         {#each searchResults as cand (cand.path)}
-                          <button
-                            onclick={() => doBind(row.trackId, cand.path)}
-                            class="block w-full truncate rounded-lg bg-surface-hover px-3 py-1.5 text-left text-xs text-primary transition-opacity hover:opacity-80"
-                          >{cand.path}</button>
+                          <button onclick={() => doBind(row.trackId, cand.path)} class="block w-full text-left">
+                            <span class="block truncate rounded-lg bg-surface-hover px-3 py-1.5 text-xs text-primary transition-opacity hover:opacity-80">{cand.path}</span>
+                            {#if cand.tags?.title}
+                              <span class="block truncate px-1 text-[11px] text-muted">
+                                ¶ {cand.tags.title}{cand.tags.artist ? ` — ${cand.tags.artist}` : ''}{cand.tags.album ? ` — ${cand.tags.album}` : ''}
+                              </span>
+                            {/if}
+                          </button>
                         {/each}
                       </div>
                     {:else if searching}
