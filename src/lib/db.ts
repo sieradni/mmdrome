@@ -4,7 +4,7 @@ export interface LocalMetadataStore {
   trackId: string
   rating: number
   loved: boolean
-  fileType: "mp3" | "flac" | "m4a" | "ogg" | "opus"
+  fileType: "mp3" | "flac" | "m4a" | "ogg" | "opus" | "wav" | "aac" | "aiff" | "wma"
   syncStatus: "synced" | "pending_sync"
   lastModifiedLocally: number
   webdavPath?: string

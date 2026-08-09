@@ -280,6 +280,10 @@ function getMetadataChunkSize(fileType: string): number {
     case "ogg":
     case "opus":
     case "m4a":
+    case "wav":
+    case "aac":
+    case "aiff":
+    case "wma":
       return 262144
     default:
       return 65536

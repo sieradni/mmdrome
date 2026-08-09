@@ -12,7 +12,7 @@ export interface Track {
   albumId?: string
   year?: number
   duration: number
-  fileType: "mp3" | "flac" | "m4a" | "ogg" | "opus"
+  fileType: "mp3" | "flac" | "m4a" | "ogg" | "opus" | "wav" | "aac" | "aiff" | "wma"
   composer?: string
   bitrate?: number
   size?: number
@@ -398,7 +398,7 @@ export function seedNavidromeFeedback(tracks: Track[]): void {
       trackId: t.trackId,
       rating,
       loved,
-      fileType: existing?.fileType ?? t.fileType,
+      fileType: t.fileType,
       syncStatus: existing?.syncStatus ?? 'synced',
       lastModifiedLocally: existing?.lastModifiedLocally ?? Date.now(),
       comments: existing?.comments ?? t.comments,

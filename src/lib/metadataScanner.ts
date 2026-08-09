@@ -323,7 +323,7 @@ async function processItem(item: QueueItem): Promise<void> {
         trackId: track.trackId,
         rating: existing.rating,
         loved: existing.loved,
-        fileType: existing.fileType || track.fileType,
+        fileType: track.fileType,
         syncStatus: existing.syncStatus,
         lastModifiedLocally: existing.lastModifiedLocally,
         comments: existing.comments,

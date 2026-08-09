@@ -2,7 +2,7 @@ import { get } from "svelte/store"
 import { webdavFetch, authHeaders, buildWebdavUrl } from "./webdavUtils"
 import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache, saveSongLibraryCache } from "$lib/db"
 import { modifyMetadataBuffer } from "$lib/tagWriter"
-import { metadataCache, settings, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
+import { metadataCache, settings, library, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
 import { setWebdavCredentials, scanAll, setServerLastScan } from "./metadataScanner"
 import {
   testNavidromeConnection as navidromeTestConnection,
@@ -273,6 +273,11 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   if (pending.length === 0) return { synced: 0, failed: 0, skipped: 0, wrongServer: 0 }
 
   const currentBaseKey = `${webdavUrl}|${webdavUser}`
+  // The cache row's fileType can be stale (coerced to 'mp3' by older mappers);
+  // the library Track is authoritative for the tag-write format branch.
+  const libTracks = new Map(get(library).map((t) => [t.trackId, t]))
+  const fileTypeOf = (trackId: string, fallback: string): string =>
+    libTracks.get(trackId)?.fileType ?? fallback
   let synced = 0
   let failed = 0
   let skipped = 0
@@ -320,7 +325,7 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
     try {
       // GET with ETag for concurrency detection
       const { data: raw, etag } = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)
-      const modified = await modifyMetadataBuffer(raw, track.rating, track.loved, track.fileType)
+      const modified = await modifyMetadataBuffer(raw, track.rating, track.loved, fileTypeOf(track.trackId, track.fileType))
 
       try {
         await webdavPutAtomic(webdavUrl, davPath, modified, webdavUser, webdavToken, etag)
@@ -331,7 +336,7 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
             webdavUrl, davPath, webdavUser, webdavToken,
           )
           const reModified = await modifyMetadataBuffer(
-            refreshed, track.rating, track.loved, track.fileType,
+            refreshed, track.rating, track.loved, fileTypeOf(track.trackId, track.fileType),
           )
           await webdavPutAtomic(webdavUrl, davPath, reModified, webdavUser, webdavToken, newEtag)
         } else {

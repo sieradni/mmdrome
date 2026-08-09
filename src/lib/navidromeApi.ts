@@ -446,10 +446,35 @@ export function isStarred(starred: boolean | string | undefined): boolean {
   return true
 }
 
+/** Coercing unknown-but-real formats (wav, aiff, wma…) to 'mp3' would break
+ *  WebDAV file matching and the search picker: both filter by `.<fileType>`
+ *  extension, so a `.wav` file can never match a track stamped 'mp3'. The
+ *  suffix is the most reliable signal (actual file extension); the content-type
+ *  last segment (audio/x-wav → 'wav') is only a fallback when the suffix is
+ *  missing. Keep real values as-is — fileType is just a matching hint. */
+const CT_SUBTYPE_ALIASES: Record<string, string> = {
+  'x-wav': 'wav',
+  wave: 'wav',
+  mpeg: 'mp3',
+  mp3: 'mp3',
+  'x-m4a': 'm4a',
+  mp4: 'm4a',
+  'x-aiff': 'aiff',
+  'x-ms-wma': 'wma',
+}
+
+function deriveFileType(song: NavidromeSong): Track['fileType'] {
+  const suffix = (song.suffix ?? '').toLowerCase().replace(/^\./, '')
+  if (suffix) return suffix as Track['fileType']
+  const ct = (song.contentType ?? '').toLowerCase()
+  const last = ct.split('/').pop() ?? ''
+  const aliased = CT_SUBTYPE_ALIASES[last] ?? last
+  if (aliased && aliased !== 'octet-stream' && aliased !== 'mpegurl') return aliased as Track['fileType']
+  return 'mp3'
+}
+
 export function navidromeSongToTrack(song: NavidromeSong): Track {
-  const fileType = (song.suffix || song.contentType || 'mp3').toLowerCase().replace('.', '') as Track['fileType']
-  const validTypes: Track['fileType'][] = ['mp3', 'flac', 'm4a', 'ogg', 'opus']
-  const normalizedType = validTypes.includes(fileType as Track['fileType']) ? fileType as Track['fileType'] : 'mp3'
+  const fileType = deriveFileType(song)
 
   return {
     trackId: `navidrome-${song.id}`,
@@ -459,7 +484,7 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     albumId: song.albumId,
     year: song.year,
     duration: song.duration || 0,
-    fileType: normalizedType,
+    fileType,
     composer: song.composer,
     bitrate: song.bitRate,
     size: song.size,
