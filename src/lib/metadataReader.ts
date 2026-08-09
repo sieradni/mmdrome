@@ -357,8 +357,12 @@ export function matchTrackToWebdavCandidates(
   if (scored.length > 0 && scored[0].score >= 40) {
     const top = scored[0].score
     const group = scored.filter((s) => s.score === top).map((s) => s.entry)
+    // Mirrors `matchTrackToWebdav`: a tag verdict that beats the filename
+    // guess without title+artist certainty must not auto-bind — classify it
+    // ambiguous so listUnresolvedMatches' counts agree with the scanner's.
+    const tagLedUncertain = scored[0].tagScore > scored[0].nameScore && !scored[0].tagCertain
     return {
-      status: group.length > 1 ? 'ambiguous' : 'matched',
+      status: group.length > 1 || tagLedUncertain ? 'ambiguous' : 'matched',
       promptCandidates: group,
       allCandidates,
     }

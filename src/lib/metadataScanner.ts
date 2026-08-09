@@ -30,6 +30,12 @@ let queue: QueueItem[] = []
 let activeCount = 0
 let cancelled = false
 let scanGen = 0
+/** Paths claimed by in-flight items of the CURRENT scan run. JS runs to
+ *  completion between awaits, so check-then-add here is atomic w.r.t. other
+ *  concurrent items — the guard a cache snapshot alone can't provide: two
+ *  duplicate tracks processed concurrently both read the cache before either
+ *  bind lands and would double-bind the same file. */
+let claimedInScan = new Set<string>()
 let index: WebdavFileEntry[] = []
 let indexBuilt = false
 let serverLastScan = ""
@@ -344,6 +350,7 @@ export async function scanAll(shape_: ScanShape = "modified"): Promise<void> {
 async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
   cancelled = true
   const myGen = ++scanGen
+  claimedInScan = new Set<string>()
   queue = []
   scannedCount = 0
   failedCount = 0
@@ -490,6 +497,10 @@ async function processItem(item: QueueItem): Promise<void> {
     && index.some((i) => i.path === existing?.webdavPath)
   if (manualBind && existing.webdavPath) {
     const boundPath = existing.webdavPath
+    // Reserve the user's pick before the fetch: a concurrent auto item must
+    // not grab a path this row already owns (the cache guard sees other rows'
+    // paths, but only once the binding exists — during re-reads it does).
+    claimedInScan.add(boundPath)
     const myGen = scanGen
     try {
       const boundEntry = index.find((i) => i.path === boundPath)
@@ -543,6 +554,17 @@ async function processItem(item: QueueItem): Promise<void> {
 
   const match = matchTrackToWebdav(track, index, excludePaths)
   if (scanGen !== startedGen) return
+  if (match.entry) {
+    if (claimedInScan.has(match.entry.path)) {
+      // A concurrent sibling item claimed this file first — never double-bind.
+      // Count the row scanned (it stays unbound and re-queues on a later run
+      // once the claim is gone and the sibling's bind is in the cache).
+      scannedCount++
+      updateScanProgress()
+      return
+    }
+    claimedInScan.add(match.entry.path)
+  }
   if (!match.entry) {
     if (match.ambiguous) {
       // Two files tied for the top score — never guess. The row keeps its
@@ -583,6 +605,9 @@ async function processItem(item: QueueItem): Promise<void> {
     // don't clobber the pending edit with stale file tags.
     const current = get(metadataCache).get(track.trackId)
     if (current && (current.syncStatus === 'pending_sync' || current.ignored)) {
+      // Not binding after all — release the claim so a sibling (or the next
+      // run) can still take the file.
+      claimedInScan.delete(match.entry.path)
       scannedCount++
       updateScanProgress()
       return
@@ -614,7 +639,12 @@ async function processItem(item: QueueItem): Promise<void> {
     })
     scannedCount++
   } catch {
-    if (scanGen === startedGen) failedCount++
+    // The read failed — nothing was bound, so release the claim (a later
+    // item in this run, or the next run, may still bind the file).
+    if (scanGen === startedGen) {
+      claimedInScan.delete(match.entry.path)
+      failedCount++
+    }
   }
   if (scanGen === startedGen) updateScanProgress()
 }

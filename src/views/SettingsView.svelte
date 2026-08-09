@@ -979,7 +979,11 @@
                   <div class="mt-2 space-y-2 border-t border-white/10 pt-2">
                     {#if row.candidates.length > 0}
                       <p class="text-xs text-muted">
-                        {row.kind === 'ambiguous' ? 'Multiple files match equally — choose the correct one:' : 'Suggested files:'}
+                        {row.kind === 'ambiguous'
+                          ? (row.candidates.length > 1
+                              ? 'Multiple files match equally — choose the correct one:'
+                              : 'This file matches by its tags but not certainly — confirm:')
+                          : 'Suggested files:'}
                       </p>
                       {#each row.candidates as cand (cand.path)}
                         <button
