@@ -38,14 +38,19 @@ export async function modifyMetadataBuffer(
 
   const modified = await taglib.edit(arrayBuffer, async (file) => {
     if (fileType === "mp3") {
+      // POPM body layout is matched to taglib-wasm's model (empirically
+      // verified): [owner \0][rating][counter(4)] — the rating byte lands
+      // IMMEDIATELY after the null terminator and the 4 counter bytes trail.
+      // This deviates from ID3v2.3 §4.15 ([owner \0][counter(4)][rating]);
+      // writing the spec order makes taglib-wasm read the rating back as 0.
+      // The owner must be a bare "MusicBee" — a leading 0x03 byte previously
+      // became part of the owner string ("\x03MusicBee") in the parsed frame.
       const encoder = new TextEncoder()
-      const email = "MusicBee"
-      const emailBytes = encoder.encode(email)
-      const popmBody = new Uint8Array(1 + emailBytes.length + 1 + 1 + 4)
-      popmBody[0] = 0x03
-      popmBody.set(emailBytes, 1)
-      popmBody[1 + emailBytes.length] = 0
-      popmBody[1 + emailBytes.length + 1] = ratingToMp3Popm(rating)
+      const emailBytes = encoder.encode("MusicBee")
+      const popmBody = new Uint8Array(emailBytes.length + 1 + 1 + 4)
+      popmBody.set(emailBytes, 0)
+      popmBody[emailBytes.length] = 0
+      popmBody[emailBytes.length + 1] = ratingToMp3Popm(rating)
 
       file.setId3v2Frames("POPM", [popmBody])
 
