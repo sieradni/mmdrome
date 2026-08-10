@@ -326,20 +326,6 @@ export interface NavidromeConnectResult {
   lastScan?: string
 }
 
-export async function connectNavidrome(config: NavidromeConfig): Promise<NavidromeConnectResult> {
-  const connection = await testNavidromeConnection(config)
-  if (!connection.connected) {
-    return {
-      connection,
-      songs: [],
-      loadResult: { loaded: 0, failed: 0, error: connection.error },
-    }
-  }
-
-  const { songs, result } = await loadNavidromeSongs(config)
-  return { connection, songs, loadResult: result }
-}
-
 // ── In-memory config cache ──────────────────────────────────────────
 let _cachedConfig: NavidromeConfig | null = null
 export const coverConfig = writable<NavidromeConfig | null>(null)
@@ -397,10 +383,6 @@ export function buildStreamUrl(config: NavidromeConfig, songId: string): string 
     url.searchParams.set(key, String(value))
   })
   return url.toString()
-}
-
-export async function getNavidromeSongStreamUrl(config: NavidromeConfig, songId: string): Promise<string> {
-  return buildStreamUrl(config, songId)
 }
 
 export function buildCoverArtUrl(config: NavidromeConfig, id: string, size?: number): string {

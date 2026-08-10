@@ -14,8 +14,6 @@ import {
   navidromeSongToTrack,
   type NavidromeConfig,
   type NavidromeConnectionStatus,
-  type NavidromeLoadResult,
-  type NavidromeSong,
   type NavidromeConnectResult,
 } from "$lib/navidromeApi"
 
@@ -144,14 +142,6 @@ export async function testWebdavConn(): Promise<{ connected: boolean; error?: st
   }
 
   return webdavTestConnection(webdavUrl, webdavUser, webdavToken)
-}
-
-export async function loadNavidromeSongs(): Promise<{ songs: NavidromeSong[]; result: NavidromeLoadResult }> {
-  const config = await getNavidromeConfig()
-  if (!config) {
-    return { songs: [], result: { loaded: 0, failed: 0, error: "Navidrome credentials not configured" } }
-  }
-  return navidromeLoadSongs(config)
 }
 
 export async function triggerNavidromeScan(): Promise<void> {
