@@ -4,7 +4,7 @@
   import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, library } from '../stores/appState'
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
-  import { runManualWebDAVSync, testWebdavConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
+  import { runManualWebDAVSync, testWebdavConn, testNavidromeConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
   import { getPendingSyncMetadata } from '../lib/db'
   import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, ensureTagProbe, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
@@ -279,6 +279,17 @@
       const msg = err instanceof Error ? err.message : String(err)
       navidromeConnection.set({ connected: false, error: msg, checking: false })
       navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: msg })
+    }
+  }
+
+  async function testNavidrome() {
+    await commitCredentials()
+    navidromeConnection.set({ connected: false, checking: true })
+    try {
+      const result = await testNavidromeConn()
+      navidromeConnection.set({ ...result, checking: false })
+    } catch (err) {
+      navidromeConnection.set({ connected: false, error: err instanceof Error ? err.message : String(err), checking: false })
     }
   }
 
@@ -651,6 +662,23 @@
               oninput={updateField('navidromePassword')}
               class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
             />
+            <div class="flex items-center gap-3">
+              <button
+                onclick={testNavidrome}
+                disabled={$navidromeConnection.checking || $navidromeLoadStatus.loading}
+                class="flex items-center justify-center gap-2 rounded-lg bg-surface-hover px-5 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+              >
+                {#if $navidromeConnection.checking}
+                  <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Testing…
+                {:else}
+                  Test Connection
+                {/if}
+              </button>
+            </div>
             <button
               onclick={connectNavidromeHandler}
               disabled={$navidromeConnection.checking || $navidromeLoadStatus.loading}

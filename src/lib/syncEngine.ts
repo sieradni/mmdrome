@@ -124,7 +124,7 @@ async function getNavidromeConfig(): Promise<NavidromeConfig | null> {
   }
 }
 
-export async function testNavidromeConnection(): Promise<NavidromeConnectionStatus> {
+export async function testNavidromeConn(): Promise<NavidromeConnectionStatus> {
   const config = await getNavidromeConfig()
   if (!config) {
     return { connected: false, error: "Navidrome credentials not configured" }
