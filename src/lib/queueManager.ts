@@ -135,17 +135,18 @@ class QueueManager {
       return this.findTrack(combined[nextIndex]) ?? null
     }
 
-    // Queue end reached: the heard track leaves the active slot, so it enters
-    // the window even if nothing follows (the caller may wrap or stop).
-    if (currentId) this.markRecent(currentId)
-
+    // Queue end reached: try to refill past the end. The heard track leaves the
+    // active slot either way, so its mark folds into the advance write when a
+    // refill exists; when nothing follows, mark it standalone (the caller may
+    // wrap or stop) — it must enter the window even if playback halts here.
     this.replenishAutoQueue()
     const updatedCombined = this.getCombinedQueue()
     if (nextIndex >= 0 && nextIndex < updatedCombined.length) {
-      this.advanceTo(nextIndex)
+      this.advanceTo(nextIndex, currentId ?? undefined)
       return this.findTrack(updatedCombined[nextIndex]) ?? null
     }
 
+    if (currentId) this.markRecent(currentId)
     return null
   }
 

@@ -20,6 +20,7 @@ export const RECENT_LIMIT = 100
  * cap space, and re-playing a cooled-down track refreshes its recency.
  */
 export function inscribeRecent(arr: string[], trackId: string, limit = RECENT_LIMIT): string[] {
+  if (arr[arr.length - 1] === trackId) return arr
   const next = arr.filter((id) => id !== trackId)
   next.push(trackId)
   return next.length > limit ? next.slice(next.length - limit) : next
