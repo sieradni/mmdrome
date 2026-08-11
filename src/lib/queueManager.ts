@@ -196,6 +196,11 @@ class QueueManager {
         pool.sort((a, b) => (orderRank.get(a.trackId) ?? 0) - (orderRank.get(b.trackId) ?? 0))
         pool = this._rotateAfterAnchor(pool, orderRank, q.userQueue[q.userQueue.length - 1])
       }
+    } else {
+      // Nothing eligible: the wrap hint is meaningless for an empty fill — clear
+      // any `true` left by an earlier top-of-sort rotation (rebuild paths reach
+      // here with no _rotateAfterAnchor/shuffle-branch to reset it).
+      queueWrapNotice.set(false)
     }
     return pool
   }
