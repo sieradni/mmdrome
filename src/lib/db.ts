@@ -78,7 +78,8 @@ export interface PlayQueueState {
   id: string
   userQueue: string[]
   autoQueue: string[]
-  historyQueue: string[]
+  /** Bounded LRU anti-repeat window (played/skipped/removed tracks), newest last. */
+  recentTrackIds: string[]
   activeIndex: number
 }
 

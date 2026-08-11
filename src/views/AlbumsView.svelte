@@ -4,6 +4,7 @@
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import { libraryFilters, applyFilterSort, makeGroupAggregates } from '../lib/libraryFilters'
   import { playbackManager } from '../lib/playbackManager'
+import { queueManager } from '../lib/queueManager'
   import { saveQueue } from '../lib/db'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
@@ -160,10 +161,13 @@
     const trackIds = tracks.map((t) => t.trackId)
     autoQueueFilters.update((f) => ({ ...f, albumScope: selectedAlbum ?? undefined, artistScope: undefined }))
     queue.update((q) => {
-      const updated = { ...q, userQueue: trackIds, autoQueue: [], historyQueue: [], activeIndex: 0 }
+      const updated = { ...q, userQueue: trackIds, autoQueue: [], activeIndex: 0 }
       saveQueue(updated)
       return updated
     })
+    // Explicit bulk replay supersedes recency memory — Play All opts out of
+    // the anti-repeat window.
+    queueManager.resetRecentWindow()
     playbackManager.playTrackAt(0)
   }
 

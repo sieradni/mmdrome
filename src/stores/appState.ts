@@ -1,6 +1,7 @@
 import { writable, get, derived } from 'svelte/store'
 import type { LocalMetadataStore, PlayQueueState } from '$lib/db'
 import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
+import { sanitizeRecent } from '$lib/recentWindow'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
 
@@ -36,7 +37,8 @@ export interface TrackWithMeta extends Track {
 export interface QueueState {
   userQueue: string[]
   autoQueue: string[]
-  historyQueue: string[]
+  /** Bounded LRU anti-repeat window (played/skipped/removed tracks), newest last. Owned by queueManager. */
+  recentTrackIds: string[]
   activeIndex: number
 }
 
@@ -83,7 +85,7 @@ export interface SettingsMap {
 
 export const currentTrack = writable<Track | null>(null)
 export const playbackState = writable<PlaybackState>('stopped')
-export const queue = writable<QueueState>({ userQueue: [], autoQueue: [], historyQueue: [], activeIndex: -1 })
+export const queue = writable<QueueState>({ userQueue: [], autoQueue: [], recentTrackIds: [], activeIndex: -1 })
 export const settings = writable<SettingsMap>({})
 export const metadataCache = writable<Map<string, LocalMetadataStore>>(new Map())
 export const library = writable<Track[]>([])
@@ -172,7 +174,7 @@ function reconcileQueueWithLibrary(tracks: Track[]): void {
 
     const userQueue = q.userQueue.filter((id) => ids.has(id))
     const autoQueue = q.autoQueue.filter((id) => ids.has(id))
-    const historyQueue = q.historyQueue.filter((id) => ids.has(id))
+    const recentTrackIds = q.recentTrackIds.filter((id) => ids.has(id))
     const newCombined = [...userQueue, ...autoQueue]
 
     let activeIndex = q.activeIndex
@@ -183,7 +185,7 @@ function reconcileQueueWithLibrary(tracks: Track[]): void {
       activeIndex = idx >= 0 ? idx : -1
     }
 
-    const updated = { userQueue, autoQueue, historyQueue, activeIndex }
+    const updated = { userQueue, autoQueue, recentTrackIds, activeIndex }
     saveQueue(updated)
     return updated
   })
@@ -217,7 +219,14 @@ export async function initStores(): Promise<void> {
   await loadSettings()
 
   if (q) {
-    queue.set({ userQueue: q.userQueue, autoQueue: q.autoQueue, historyQueue: q.historyQueue, activeIndex: q.activeIndex })
+    // `?? q.historyQueue` tolerates rows persisted by app versions that still
+    // used the old field name — the first saveQueue overwrites the row.
+    queue.set({
+      userQueue: q.userQueue,
+      autoQueue: q.autoQueue,
+      recentTrackIds: sanitizeRecent(q.recentTrackIds ?? (q as { historyQueue?: string[] }).historyQueue),
+      activeIndex: q.activeIndex,
+    })
   }
 
   const map = new Map<string, LocalMetadataStore>()
@@ -272,36 +281,10 @@ export function playNext(trackId: string): void {
   })
 }
 
-export function removeFromAutoQueue(trackId: string): void {
-  queue.update((q) => {
-    const autoQueue = q.autoQueue.filter((id) => id !== trackId)
-    const historyQueue = [trackId, ...q.historyQueue].slice(0, 100)
-    saveQueue({ ...q, autoQueue, historyQueue })
-    return { ...q, autoQueue, historyQueue }
-  })
-}
-
-export function removeFromUserQueue(index: number): void {
-  queue.update((q) => {
-    const userQueue = q.userQueue.filter((_, i) => i !== index)
-    const activeIndex = q.activeIndex >= index ? Math.max(0, q.activeIndex - 1) : q.activeIndex
-    saveQueue({ ...q, userQueue, activeIndex })
-    return { ...q, userQueue, activeIndex }
-  })
-}
-
 export function setActiveQueueIndex(index: number): void {
   queue.update((q) => {
     saveQueue({ ...q, activeIndex: index })
     return { ...q, activeIndex: index }
-  })
-}
-
-export function pushHistory(trackId: string): void {
-  queue.update((q) => {
-    const historyQueue = [...q.historyQueue, trackId]
-    saveQueue({ ...q, historyQueue })
-    return { ...q, historyQueue }
   })
 }
 

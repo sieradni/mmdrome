@@ -5,6 +5,7 @@ import { engine } from './engineFacade'
 import { libraryFilters } from './libraryFilters'
 import { nativeEngine, BackgroundAudio, type NativeTrackSnapshot } from './nativePlugin'
 import { queueManager } from './queueManager'
+import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc } from './preloader'
 import { setupMediaSession } from './mediaSession'
 import { getCoverUrl } from './coverArtCache'
@@ -26,7 +27,6 @@ import {
   setCurrentTrack,
   setPlaybackState,
   setActiveQueueIndex,
-  pushHistory,
   autoQueueFilters,
 } from '../stores/appState'
 import { getSetting, setSetting, saveQueue } from './db'
@@ -382,24 +382,27 @@ class PlaybackManager {
     if (idx < 0) {
       // The playing track left the combined queue (dropped auto prefix, etc.) — re-adopt it.
       const prevIdx = get(queue).activeIndex
-      if (prevIdx >= 0) {
-        const prevId = combined[prevIdx]
-        if (prevId) pushHistory(prevId)
-      }
+      const prevId = prevIdx >= 0 ? combined[prevIdx] : undefined
       queue.update((q) => {
         const userQueue = [...q.userQueue, trackId]
-        const updated = { ...q, userQueue, activeIndex: userQueue.length - 1 }
+        const updated = {
+          ...q,
+          userQueue,
+          activeIndex: userQueue.length - 1,
+          recentTrackIds: prevId ? inscribeRecent(q.recentTrackIds, prevId, RECENT_LIMIT) : q.recentTrackIds,
+        }
         saveQueue(updated)
         return updated
       })
       idx = get(queue).activeIndex
     } else {
       const prevIdx = get(queue).activeIndex
-      if (prevIdx >= 0 && prevIdx !== idx) {
-        const prevId = combined[prevIdx]
-        if (prevId) pushHistory(prevId)
+      const prevId = prevIdx >= 0 && prevIdx !== idx ? combined[prevIdx] : undefined
+      if (prevId) {
+        queueManager.advanceTo(idx, prevId)
+      } else {
+        setActiveQueueIndex(idx)
       }
-      setActiveQueueIndex(idx)
     }
 
     setCurrentTrack(track)
@@ -419,7 +422,8 @@ class PlaybackManager {
       // Combined queue may have grown past the native list since the last refresh.
       const nextIdx = q.activeIndex + 1
       if (nextIdx >= 0 && nextIdx < combined.length) {
-        setActiveQueueIndex(nextIdx)
+        const endedId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
+        queueManager.advanceTo(nextIdx, endedId ?? undefined)
         const track = queueManager.findTrack(combined[nextIdx])
         if (track) {
           await this._nativeLoadPlay(track)
@@ -428,7 +432,8 @@ class PlaybackManager {
       }
 
       if (get(loopMode) === 'all' && q.userQueue.length > 0) {
-        setActiveQueueIndex(0)
+        const endedId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
+        queueManager.advanceTo(0, endedId ?? undefined)
         const track = queueManager.findTrack(q.userQueue[0])
         if (track) {
           await this._nativeLoadPlay(track)
@@ -846,10 +851,14 @@ class PlaybackManager {
     if (existingIdx >= 0) {
       await this.playTrackAt(existingIdx)
     } else {
+      const prevId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
       queue.update((q) => {
         const userQueue = [...q.userQueue, trackId]
         const newIndex = userQueue.length - 1
         const updated = { ...q, userQueue, activeIndex: newIndex }
+        if (prevId) {
+          updated.recentTrackIds = inscribeRecent(q.recentTrackIds, prevId, RECENT_LIMIT)
+        }
         saveQueue(updated)
         return updated
       })
@@ -866,7 +875,20 @@ class PlaybackManager {
     const combined = queueManager.getCombinedQueue()
     if (index < 0 || index >= combined.length) return
 
-    setActiveQueueIndex(index)
+    // A forward/backward jump makes the current track leave the active slot —
+    // mark it so it cools down like any other heard track (same-index replays
+    // and plain resumes stay unmarked).
+    const prevIdx = get(queue).activeIndex
+    if (prevIdx >= 0 && prevIdx !== index) {
+      const prevId = combined[prevIdx]
+      if (prevId) {
+        queueManager.advanceTo(index, prevId)
+      } else {
+        setActiveQueueIndex(index)
+      }
+    } else {
+      setActiveQueueIndex(index)
+    }
     const track = queueManager.findTrack(combined[index])
     if (track) {
       if (audioManager.isInBgMode) {
@@ -931,10 +953,9 @@ class PlaybackManager {
     const q = get(queue)
     const nextIndex = q.activeIndex + 1
     if (nextIndex >= 0 && nextIndex < combined.length) {
-      const currentId = combined[q.activeIndex]
-      if (currentId && q.activeIndex >= 0) pushHistory(currentId)
+      const currentId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
+      queueManager.advanceTo(nextIndex, currentId ?? undefined)
 
-      setActiveQueueIndex(nextIndex)
       const track = queueManager.findTrack(combined[nextIndex])
       if (track) {
         if (audioManager.isInBgMode) {
@@ -956,10 +977,11 @@ class PlaybackManager {
       return
     }
 
+    const combined = queueManager.getCombinedQueue()
+    const currentId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
     const prevIndex = q.activeIndex - 1
     if (prevIndex >= 0) {
-      setActiveQueueIndex(prevIndex)
-      const combined = queueManager.getCombinedQueue()
+      queueManager.advanceTo(prevIndex, currentId ?? undefined)
       const track = queueManager.findTrack(combined[prevIndex])
       if (track) {
         if (audioManager.isInBgMode) {
@@ -972,10 +994,9 @@ class PlaybackManager {
     }
 
     if (get(loopMode) === 'all') {
-      const combined = queueManager.getCombinedQueue()
       const lastIndex = combined.length - 1
       if (lastIndex >= 0) {
-        setActiveQueueIndex(lastIndex)
+        queueManager.advanceTo(lastIndex, currentId ?? undefined)
         const track = queueManager.findTrack(combined[lastIndex])
         if (track) {
           if (audioManager.isInBgMode) {

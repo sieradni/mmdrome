@@ -11,8 +11,6 @@
     playbackState,
     clearQueue,
     autoQueueFilters,
-    removeFromAutoQueue,
-    removeFromUserQueue,
     queueWrapNotice,
     type Track,
     type QueueState,
@@ -511,7 +509,7 @@ function seek(e: Event) {
     const q = $queue
     const idx = q.userQueue.indexOf(trackId)
     if (idx < 0) return
-    removeFromUserQueue(idx)
+    queueManager.removeFromUserQueue(idx)
   }
 
   function isCurrentTrack(trackId: string, currentCombinedIdx: number): boolean {
@@ -875,7 +873,7 @@ function seek(e: Event) {
                 </svg>
               </button>
               <button
-                onclick={() => removeFromAutoQueue(item.track.trackId)}
+                onclick={() => queueManager.removeFromAutoQueue(item.track.trackId)}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-red-400"
                 aria-label="Remove from auto queue"
               >
