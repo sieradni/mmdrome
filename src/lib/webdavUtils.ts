@@ -104,7 +104,7 @@ export function authHeaders(user: string, token: string): Record<string, string>
 }
 
 export function normalizeUrl(base: string): string {
-  return base.replace(/\/+$/, "")
+  return base.trim().replace(/\/+$/, "")
 }
 
 export function buildWebdavUrl(baseUrl: string, filePath: string): string {

@@ -211,7 +211,7 @@ function buildAuthParams(username: string, password: string, jsonFormat = true):
 }
 
 function normalizeUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, '')
+  return baseUrl.trim().replace(/\/+$/, '')
 }
 
 function buildUrl(baseUrl: string, endpoint: string, params: Record<string, string | number>): string {

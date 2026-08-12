@@ -132,12 +132,22 @@ export async function upsertMetadata(meta: LocalMetadataStore): Promise<void> {
   await db.localMetadata.put(meta)
 }
 
+/** Rows per IndexedDB bulk transaction. A first connect of a large library
+ *  builds tens of thousands of metadata rows; sending them in one transaction
+ *  spikes memory and can time out/abort in iOS WebKit. Chunking keeps each
+ *  transaction small enough to commit reliably. */
+const BULK_CHUNK = 2000
+
 export async function bulkUpsertMetadata(items: LocalMetadataStore[]): Promise<void> {
-  await db.localMetadata.bulkPut(items)
+  for (let i = 0; i < items.length; i += BULK_CHUNK) {
+    await db.localMetadata.bulkPut(items.slice(i, i + BULK_CHUNK))
+  }
 }
 
 export async function bulkDeleteMetadata(ids: string[]): Promise<void> {
-  await db.localMetadata.bulkDelete(ids)
+  for (let i = 0; i < ids.length; i += BULK_CHUNK) {
+    await db.localMetadata.bulkDelete(ids.slice(i, i + BULK_CHUNK))
+  }
 }
 
 export async function getPendingSyncMetadata(): Promise<LocalMetadataStore[]> {

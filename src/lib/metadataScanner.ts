@@ -20,6 +20,11 @@ import type { WebdavFileEntry } from "./db"
 
 const CONCURRENCY = 6
 
+/** Failure strings lead with the source so a post-connect WebDAV scan error
+ *  can never be misread as the Navidrome connection failing. */
+const INDEX_REFRESH_FAILED = "WebDAV index refresh failed — is the WebDAV server reachable?"
+const CREDENTIALS_MISSING = "WebDAV credentials not configured"
+
 /** Which rows a scan run processes — 'modified' diffs on mtime/fingerprint,
  *  'force' re-reads every library track against a fresh index. */
 export type ScanShape = "modified" | "force"
@@ -64,14 +69,19 @@ function currentIndexKey(): string {
 }
 
 export function setWebdavCredentials(url: string, user: string, token: string): void {
-  if (`${url}|${user}` !== indexBaseKey) {
+  // Trim the URL/user so the baseKey and every derived URL stay stable even if
+  // legacy persisted settings carry stray whitespace (the Settings form writes
+  // through on every keystroke, but old rows may not have been normalized).
+  const davUrl = url.trim()
+  const davUser = user.trim()
+  if (`${davUrl}|${davUser}` !== indexBaseKey) {
     // The index (in-memory or cached) belongs to a different server/user —
     // never reuse it against the new credentials.
     index = []
     indexBuilt = false
     indexBaseKey = ""
   }
-  if (`${url}|${user}` !== tagCacheBaseKey) {
+  if (`${davUrl}|${davUser}` !== tagCacheBaseKey) {
     tagCache = new Map()
     tagCacheLoaded = false
     tagCacheBaseKey = ""
@@ -79,8 +89,8 @@ export function setWebdavCredentials(url: string, user: string, token: string): 
   // Credentials changed mid-probe would fetch tag identity under one server
   // and cache it under another — cancel any running pass up front.
   tagProbeGen++
-  webdavUrl = url
-  webdavUser = user
+  webdavUrl = davUrl
+  webdavUser = davUser
   webdavToken = token
 }
 
@@ -111,7 +121,7 @@ export async function refreshIndex(): Promise<boolean> {
 
 export async function rebuildIndex(): Promise<void> {
   if (!webdavUrl || !webdavUser || !webdavToken) {
-    throw new Error("WebDAV credentials not configured")
+    throw new Error(CREDENTIALS_MISSING)
   }
 
   index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
@@ -370,7 +380,7 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
     metadataScanState.set({
       status: "error",
       progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
-      error: "WebDAV credentials not configured",
+      error: CREDENTIALS_MISSING,
     })
     return
   }
@@ -385,7 +395,7 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
       metadataScanState.set({
         status: "error",
         progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
-        error: "Index refresh failed — is the WebDAV server reachable?",
+        error: INDEX_REFRESH_FAILED,
       })
       return
     }
@@ -403,7 +413,7 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
       metadataScanState.set({
         status: "error",
         progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
-        error: "Index refresh failed — is the WebDAV server reachable?",
+        error: INDEX_REFRESH_FAILED,
       })
       return
     }

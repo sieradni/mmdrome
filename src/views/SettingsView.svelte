@@ -28,25 +28,10 @@
     { id: 'about', label: 'About' },
   ]
 
-  let webdavUrl = $state('')
-  let webdavUser = $state('')
-  let webdavToken = $state('')
-  let navidromeUrl = $state('')
-  let navidromeUser = $state('')
-  let navidromePassword = $state('')
-  let preloadTracks = $state(0)
-  let crossfadeDuration = $state(0)
-  let tapeMode = $state(false)
-  let snapTolerance = $state(0.15)
-  let replayGainMode = $state<'off' | 'track' | 'album'>('off')
-  let scrobbling = $state(false)
   let syncing = $state(false)
   let syncResult = $state('')
   let pendingPushCount = $state(0)
   let confirmPush = $state(false)
-  let ratingSource = $state<'webdav' | 'navidrome'>('webdav')
-  let syncToNavidrome = $state(false)
-  let writeTagsInNavidromeMode = $state(false)
   let reconcileResult = $state('')
   let indexing = $state(false)
   let scrollContainer: HTMLDivElement | null = null
@@ -71,72 +56,48 @@
     })
   }
 
-  $effect(() => {
-    const s = $settings
-    webdavUrl = s.webdavUrl ?? ''
-    webdavUser = s.webdavUser ?? ''
-    webdavToken = s.webdavToken ?? ''
-    navidromeUrl = s.navidromeUrl ?? ''
-    navidromeUser = s.navidromeUser ?? ''
-    navidromePassword = s.navidromePassword ?? ''
-    preloadTracks = s.preloadTracks ?? 0
-    crossfadeDuration = s.crossfadeDuration ?? 0
-    tapeMode = s.tapeMode ?? false
-    snapTolerance = s.snapTolerance ?? 0.15
-    replayGainMode = (s.replayGainMode ?? 'off') as 'off' | 'track' | 'album'
-    scrobbling = s.scrobbling ?? false
-    ratingSource = (s.ratingSource ?? 'webdav') as 'webdav' | 'navidrome'
-    syncToNavidrome = s.syncToNavidrome ?? false
-    writeTagsInNavidromeMode = s.writeTagsInNavidromeMode ?? false
-  })
+  function onInput(field: 'webdavUrl' | 'webdavUser' | 'webdavToken' | 'navidromeUrl' | 'navidromeUser' | 'navidromePassword') {
+    return (e: Event) => {
+      updateSetting(field, (e.target as HTMLInputElement).value)
+    }
+  }
 
   function setPreload(val: number) {
-    preloadTracks = val
     updateSetting('preloadTracks', val)
   }
 
   function setCrossfade(e: Event) {
-    const val = Number((e.target as HTMLInputElement).value)
-    crossfadeDuration = val
-    updateSetting('crossfadeDuration', val)
+    updateSetting('crossfadeDuration', Number((e.target as HTMLInputElement).value))
   }
 
   function setTapeMode() {
-    const val = !tapeMode
-    tapeMode = val
-    updateSetting('tapeMode', val)
+    updateSetting('tapeMode', !($settings.tapeMode ?? false))
   }
 
   function setReplayGainMode(val: 'off' | 'track' | 'album') {
-    replayGainMode = val
     updateSetting('replayGainMode', val)
   }
 
   function setRatingSource(val: 'webdav' | 'navidrome') {
-    ratingSource = val
     updateSetting('ratingSource', val)
     if (val === 'navidrome') {
       // Navidrome-only writing: local file tags are never the target.
-      syncToNavidrome = true
       updateSetting('syncToNavidrome', true)
     }
   }
 
   async function setSyncToNavidrome() {
-    const val = !syncToNavidrome
-    syncToNavidrome = val
+    const val = !($settings.syncToNavidrome ?? false)
     updateSetting('syncToNavidrome', val)
     reconcileResult = ''
-    if (val && ratingSource === 'webdav') {
+    if (val && ($settings.ratingSource ?? 'webdav') === 'webdav') {
       // Turning on server mirroring in WebDAV mode pushes the current local diff.
       reconcileResult = await reconcileRatings()
     }
   }
 
   function setWriteTagsInNavidromeMode() {
-    const val = !writeTagsInNavidromeMode
-    writeTagsInNavidromeMode = val
-    updateSetting('writeTagsInNavidromeMode', val)
+    updateSetting('writeTagsInNavidromeMode', !($settings.writeTagsInNavidromeMode ?? false))
   }
 
   async function reconcileRatings(): Promise<string> {
@@ -149,52 +110,41 @@
   }
 
   function setScrobbling() {
-    const val = !scrobbling
-    scrobbling = val
-    updateSetting('scrobbling', val)
+    updateSetting('scrobbling', !($settings.scrobbling ?? false))
   }
 
   function setSnapTolerance(e: Event) {
-    const val = Number((e.target as HTMLInputElement).value)
-    snapTolerance = val
-    updateSetting('snapTolerance', val)
-  }
-
-  let settingDebounce: ReturnType<typeof setTimeout> | null = null
-
-  function updateField(field: 'webdavUrl' | 'webdavUser' | 'webdavToken' | 'navidromeUrl' | 'navidromeUser' | 'navidromePassword') {
-    return (e: Event) => {
-      const val = (e.target as HTMLInputElement).value
-      if (field === 'webdavUrl') webdavUrl = val
-      if (field === 'webdavUser') webdavUser = val
-      if (field === 'webdavToken') webdavToken = val
-      if (field === 'navidromeUrl') navidromeUrl = val
-      if (field === 'navidromeUser') navidromeUser = val
-      if (field === 'navidromePassword') navidromePassword = val
-      if (settingDebounce) clearTimeout(settingDebounce)
-      settingDebounce = setTimeout(() => updateSetting(field, val), 300)
-    }
+    updateSetting('snapTolerance', Number((e.target as HTMLInputElement).value))
   }
 
   /**
    * Synchronously pushes the edited credential fields into the settings store
-   * AND Dexie. Action buttons must call this before reading `$settings` /
-   * `getSetting`, otherwise a button press within the 300ms debounce window
-   * acts on stale credentials.
+   * AND Dexie, with URL/user normalization applied. Action buttons must call
+   * this before reading `$settings` / `getSetting` so they act on the newest
+   * durable values. There is no debounce window left to race: the inputs write
+   * through to the store on every keystroke, so this only guarantees persistence
+   * + trimming right before a network call.
    */
   async function commitCredentials(): Promise<void> {
+    const s = get(settings)
     const entries: [keyof SettingsMap, string][] = [
-      ['webdavUrl', webdavUrl],
-      ['webdavUser', webdavUser],
-      ['webdavToken', webdavToken],
-      ['navidromeUrl', navidromeUrl],
-      ['navidromeUser', navidromeUser],
-      ['navidromePassword', navidromePassword],
+      ['webdavUrl', s.webdavUrl ?? ''],
+      ['webdavUser', s.webdavUser ?? ''],
+      ['webdavToken', s.webdavToken ?? ''],
+      ['navidromeUrl', s.navidromeUrl ?? ''],
+      ['navidromeUser', s.navidromeUser ?? ''],
+      ['navidromePassword', s.navidromePassword ?? ''],
     ]
+    // URL/user fields are trimmed (stray whitespace breaks request URLs and
+    // cache baseKeys); tokens/passwords are preserved byte-for-byte.
+    const normalize = (key: keyof SettingsMap, value: string): string =>
+      key === 'webdavUrl' || key === 'webdavUser' || key === 'navidromeUrl' || key === 'navidromeUser'
+        ? value.trim()
+        : value
     for (const [key, value] of entries) {
-      updateSetting(key, value)
+      updateSetting(key, normalize(key, value))
     }
-    await Promise.all(entries.map(([key, value]) => setSetting(key, value)))
+    await Promise.all(entries.map(([key, value]) => setSetting(key, normalize(key, value))))
   }
 
   async function testWebdav() {
@@ -234,7 +184,7 @@
         progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
         error: err instanceof Error && err.message === 'WebDAV credentials not configured'
           ? err.message
-          : 'Index refresh failed — is the WebDAV server reachable?',
+          : 'WebDAV index refresh failed — is the WebDAV server reachable?',
       })
     } finally {
       indexing = false
@@ -274,6 +224,7 @@
         loaded: result.loadResult.loaded,
         failed: result.loadResult.failed,
         error: result.loadResult.error,
+        cached: result.loadResult.cached,
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -567,22 +518,22 @@
             <input
               type="url"
               placeholder="https://example.com/remote.php/dav/files/user/"
-              value={webdavUrl}
-              oninput={updateField('webdavUrl')}
+              value={$settings.webdavUrl ?? ''}
+              oninput={onInput('webdavUrl')}
               class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
             />
             <input
               type="text"
               placeholder="Username"
-              value={webdavUser}
-              oninput={updateField('webdavUser')}
+              value={$settings.webdavUser ?? ''}
+              oninput={onInput('webdavUser')}
               class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
             />
             <input
               type="password"
               placeholder="Password / Token"
-              value={webdavToken}
-              oninput={updateField('webdavToken')}
+              value={$settings.webdavToken ?? ''}
+              oninput={onInput('webdavToken')}
               class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
             />
             <div class="flex items-center gap-3">
@@ -644,22 +595,22 @@
             <input
               type="url"
               placeholder="https://music.example.com"
-              value={navidromeUrl}
-              oninput={updateField('navidromeUrl')}
+              value={$settings.navidromeUrl ?? ''}
+              oninput={onInput('navidromeUrl')}
               class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
             />
             <input
               type="text"
               placeholder="Username"
-              value={navidromeUser}
-              oninput={updateField('navidromeUser')}
+              value={$settings.navidromeUser ?? ''}
+              oninput={onInput('navidromeUser')}
               class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
             />
             <input
               type="password"
               placeholder="Password"
-              value={navidromePassword}
-              oninput={updateField('navidromePassword')}
+              value={$settings.navidromePassword ?? ''}
+              oninput={onInput('navidromePassword')}
               class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
             />
             <div class="flex items-center gap-3">
@@ -705,7 +656,7 @@
               <p class="text-sm text-muted">
                 {$navidromeLoadStatus.error
                   ? `Error: ${$navidromeLoadStatus.error}`
-                  : `Loaded ${$navidromeLoadStatus.loaded} song(s), ${$navidromeLoadStatus.failed} failed`}
+                  : `Loaded ${$navidromeLoadStatus.loaded} song(s), ${$navidromeLoadStatus.failed} failed${$navidromeLoadStatus.cached ? ' (from cache)' : ''}`}
               </p>
             {/if}
           </div>
@@ -721,17 +672,17 @@
                 <button
                   onclick={() => setRatingSource(opt.id as 'webdav' | 'navidrome')}
                   class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors"
-                  class:bg-primary={ratingSource === opt.id}
-                  class:text-background={ratingSource === opt.id}
-                  class:bg-surface-hover={ratingSource !== opt.id}
-                  class:text-muted={ratingSource !== opt.id}
+                  class:bg-primary={($settings.ratingSource ?? 'webdav') === opt.id}
+                  class:text-background={($settings.ratingSource ?? 'webdav') === opt.id}
+                  class:bg-surface-hover={($settings.ratingSource ?? 'webdav') !== opt.id}
+                  class:text-muted={($settings.ratingSource ?? 'webdav') !== opt.id}
                 >{opt.label}</button>
               {/each}
             </div>
-            {#if ratingSource === 'navidrome'}
+            {#if ($settings.ratingSource ?? 'webdav') === 'navidrome'}
               <p class="text-sm text-muted">Navidrome is the authoritative store. Ratings are pushed straight to the server.</p>
               <label class="flex cursor-pointer items-center gap-3">
-                <input type="checkbox" checked={writeTagsInNavidromeMode} onchange={setWriteTagsInNavidromeMode} class="accent-yellow-500" />
+                <input type="checkbox" checked={$settings.writeTagsInNavidromeMode ?? false} onchange={setWriteTagsInNavidromeMode} class="accent-yellow-500" />
                 <div>
                   <p class="text-base text-primary">Also write tags to your files</p>
                   <p class="text-sm text-muted">Keep file tags in sync with the server so MusicBee sees phone edits (pushed with Push Changes).</p>
@@ -739,7 +690,7 @@
               </label>
             {:else}
               <label class="flex cursor-pointer items-center gap-3">
-                <input type="checkbox" checked={syncToNavidrome} onchange={setSyncToNavidrome} class="accent-yellow-500" />
+                <input type="checkbox" checked={$settings.syncToNavidrome ?? false} onchange={setSyncToNavidrome} class="accent-yellow-500" />
                 <div>
                   <p class="text-base text-primary">Also mirror ratings to Navidrome</p>
                   <p class="text-sm text-muted">Mirror every rating/loved change to the server while keeping your files as the source of truth.</p>
@@ -763,10 +714,10 @@
               <button
                 onclick={() => setPreload(n)}
                 class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors"
-                class:bg-primary={preloadTracks === n}
-                class:text-background={preloadTracks === n}
-                class:bg-surface-hover={preloadTracks !== n}
-                class:text-muted={preloadTracks !== n}
+                class:bg-primary={($settings.preloadTracks ?? 0) === n}
+                class:text-background={($settings.preloadTracks ?? 0) === n}
+                class:bg-surface-hover={($settings.preloadTracks ?? 0) !== n}
+                class:text-muted={($settings.preloadTracks ?? 0) !== n}
               >{n === 0 ? 'Off' : n}</button>
             {/each}
           </div>
@@ -781,11 +732,11 @@
               min="0"
               max="15"
               step="0.5"
-              value={crossfadeDuration}
+              value={$settings.crossfadeDuration ?? 0}
               oninput={setCrossfade}
               class="h-1 flex-1 accent-yellow-500"
             />
-            <span class="w-10 text-right text-sm text-muted">{crossfadeDuration}s</span>
+            <span class="w-10 text-right text-sm text-muted">{($settings.crossfadeDuration ?? 0)}s</span>
           </div>
         </section>
 
@@ -794,20 +745,20 @@
           <h3 class="mb-3 text-base font-medium text-primary">Pitch & Speed</h3>
           <div class="space-y-3">
             <label class="flex cursor-pointer items-center gap-3">
-              <input type="checkbox" checked={tapeMode} onchange={setTapeMode} class="accent-yellow-500" />
+              <input type="checkbox" checked={$settings.tapeMode ?? false} onchange={setTapeMode} class="accent-yellow-500" />
               <div>
                 <p class="text-base text-primary">Tape Mode</p>
                 <p class="text-sm text-muted">Link pitch and speed changes together</p>
               </div>
             </label>
             <div>
-              <p class="mb-1 text-sm text-muted">Snap tolerance: {snapTolerance.toFixed(2)}</p>
+              <p class="mb-1 text-sm text-muted">Snap tolerance: {($settings.snapTolerance ?? 0.15).toFixed(2)}</p>
               <input
                 type="range"
                 min="0"
                 max="0.5"
                 step="0.01"
-                value={snapTolerance}
+                value={$settings.snapTolerance ?? 0.15}
                 oninput={setSnapTolerance}
                 class="h-1 w-full accent-yellow-500"
               />
@@ -824,10 +775,10 @@
               <button
                 onclick={() => setReplayGainMode(mode as 'off' | 'track' | 'album')}
                 class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors"
-                class:bg-primary={replayGainMode === mode}
-                class:text-background={replayGainMode === mode}
-                class:bg-surface-hover={replayGainMode !== mode}
-                class:text-muted={replayGainMode !== mode}
+                class:bg-primary={($settings.replayGainMode ?? 'off') === mode}
+                class:text-background={($settings.replayGainMode ?? 'off') === mode}
+                class:bg-surface-hover={($settings.replayGainMode ?? 'off') !== mode}
+                class:text-muted={($settings.replayGainMode ?? 'off') !== mode}
               >{mode === 'off' ? 'Off' : mode === 'track' ? 'Track Gain' : 'Album Gain'}</button>
             {/each}
           </div>
@@ -836,7 +787,7 @@
         <!-- Scrobbling -->
         <section class="px-4 py-4">
           <label class="flex cursor-pointer items-center gap-3">
-            <input type="checkbox" checked={scrobbling} onchange={setScrobbling} class="accent-yellow-500" />
+            <input type="checkbox" checked={$settings.scrobbling ?? false} onchange={setScrobbling} class="accent-yellow-500" />
             <div>
               <p class="text-base text-primary">Scrobble to Navidrome</p>
               <p class="text-sm text-muted">Report plays and now-playing status. Navidrome forwards to Last.fm / ListenBrainz if configured there.</p>

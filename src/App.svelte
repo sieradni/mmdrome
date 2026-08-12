@@ -63,6 +63,7 @@
           loaded: result.loadResult.loaded,
           failed: result.loadResult.failed,
           error: result.loadResult.error,
+          cached: result.loadResult.cached,
         })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)

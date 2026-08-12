@@ -111,7 +111,7 @@ async function webdavPutAtomic(
 }
 
 async function getNavidromeConfig(): Promise<NavidromeConfig | null> {
-  const navidromeUrl = await getSetting<string>("navidromeUrl")
+  const navidromeUrl = (await getSetting<string>("navidromeUrl"))?.trim()
   const navidromeUser = await getSetting<string>("navidromeUser")
   const navidromePassword = await getSetting<string>("navidromePassword")
 
@@ -162,8 +162,25 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
     }
   }
 
+  const baseKey = `${config.baseUrl}|${config.username}`
+
   const connection = await navidromeTestConnection(config)
   if (!connection.connected) {
+    // Server unreachable / auth failed — serve the cached library for this
+    // server so an offline startup or transient outage keeps the catalog
+    // browsable (the library + metadata seeding are local-only). The error
+    // stays on both the connection and loadResult so the UI reports the
+    // stale-but-present source instead of silently passing off cache as live.
+    const cached = await getSongLibraryCache()
+    if (cached && cached.baseKey === baseKey && cached.tracks.length > 0) {
+      navidromeSetCachedConfig(config)
+      return {
+        connection,
+        songs: cached.tracks,
+        loadResult: { loaded: cached.tracks.length, failed: 0, cached: true, error: connection.error },
+        lastScan: cached.lastScan,
+      }
+    }
     return { connection, songs: [], loadResult: { loaded: 0, failed: 0, error: connection.error } }
   }
 
@@ -175,11 +192,17 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
     // if scan status fails, proceed without caching
   }
 
-  const baseKey = `${config.baseUrl}|${config.username}`
-
-  if (!forceRefresh && lastScan) {
+  // The cache is valid when it belongs to this server and either carries the
+  // matching scan timestamp OR the server exposes no timestamp at all (in the
+  // latter case any cached snapshot is the best we can offer — the Settings
+  // "Connect & Load Songs" button forces a refresh). Previously a truthy
+  // lastScan was required for BOTH checking and saving the cache, so servers
+  // whose getScanStatus is empty/failing re-paginated the whole catalog on
+  // every launch.
+  if (!forceRefresh) {
     const cached = await getSongLibraryCache()
-    if (cached && cached.baseKey === baseKey && cached.lastScan === lastScan && cached.tracks.length > 0) {
+    if (cached && cached.baseKey === baseKey && cached.tracks.length > 0
+        && (lastScan ? cached.lastScan === lastScan : true)) {
       navidromeSetCachedConfig(config)
       return {
         connection,
@@ -209,7 +232,7 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
     }
   }
 
-  if (songs.length > 0 && lastScan) {
+  if (songs.length > 0) {
     await saveSongLibraryCache({ tracks: songs, lastScan, baseKey })
   }
 
@@ -224,7 +247,10 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
  */
 export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<NavidromeConnectResult> {
   const result = await connectNavidrome(forceRefresh)
-  if (!result.connection.connected) return result
+
+  // Both an offline/cached fallback AND a live failure with no usable songs
+  // return without songs; only the former may proceed below (songs present).
+  if (!result.connection.connected && result.songs.length === 0) return result
 
   // A failed load with nothing usable must NOT replace the in-memory library:
   // setLibrary would reconcile the queue against the empty/partial set and
@@ -242,9 +268,14 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   const s = get(settings)
   if (s.webdavUrl && s.webdavUser && s.webdavToken) {
     setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
-    // scanAll probes the server itself (refreshIndex) — no ensureIndex
-    // pre-call, or the connect would issue two PROPFINDs.
-    void scanAll('modified').catch(() => {})
+    // Skip the automatic scan when the device is offline (navigator.onLine is
+    // reliable on web; the scan already degrades safely if it ever lies) so an
+    // offline startup doesn't fire a doomed PROPFIND and paint a scan error.
+    if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+      // scanAll probes the server itself (refreshIndex) — no ensureIndex
+      // pre-call, or the connect would issue two PROPFINDs.
+      void scanAll('modified').catch(() => {})
+    }
   }
 
   return result
