@@ -573,6 +573,12 @@ class PlaybackManager {
   }
 
   private async _setupNextTrack(): Promise<void> {
+    // While an end-of-track sleep is armed, no next track is prepared and no
+    // crossfade armed — the current track must end naturally and park.
+    if (sleepTimerManager.isEndOfTrackArmed()) {
+      audioManager.cancelNextTrack()
+      return
+    }
     const combined = queueManager.getCombinedQueue()
     const q = get(queue)
     const nextIdx = q.activeIndex + 1
@@ -599,8 +605,27 @@ class PlaybackManager {
     }
   }
 
-  private async _onTrackEnded(): Promise<void> {
+  /**
+   * End-of-track sleep park guard (web parity with the native engine's
+   * `handleSegmentCompletion` sleep check). When the sleep is armed, the advance
+   * decision is consumed here instead of proceeding: the element is paused at
+   * its current position so the track has played out, and `play()` later nudges
+   * it past the parked position to re-trigger the natural advance. Runs at the
+   * exact moment an advance is decided — no polling cadence or race margin.
+   */
+  private _parkAtTrackEnd(): boolean {
+    if (!sleepTimerManager.isEndOfTrackArmed()) return false
+    sleepTimerManager.parkAtEnd()
+    audioManager.playbackElement.pause()
+    setPlaybackState('paused')
+    return true
+  }
+
+  private async _onTrackEnded(fromError = false): Promise<void> {
     if (this._handlingEnd) return
+    // Park beats loop-one/loop-all by guard order; error-driven advances skip
+    // the park (a dead stream can't play out its end — advancing is correct).
+    if (!fromError && this._parkAtTrackEnd()) return
 
     if (get(loopMode) === 'one') {
       audioManager.cancelNextTrack()
@@ -684,6 +709,7 @@ class PlaybackManager {
   private async _onBgTrackEnd(): Promise<void> {
     if (this._handlingEnd) return
     if (!audioManager.isInBgMode) return
+    if (this._parkAtTrackEnd()) return
 
     if (get(loopMode) === 'one') {
       const current = get(currentTrack)
@@ -713,6 +739,7 @@ class PlaybackManager {
 
   private async _handleExitBackground(state: { ended: boolean; wasPlaying: boolean; currentTime: number }): Promise<void> {
     if (this._handlingEnd) return
+    if (this._parkAtTrackEnd()) return
 
     this._handlingEnd = true
     try {
@@ -763,7 +790,7 @@ class PlaybackManager {
     }
     if (this._retryAttempt >= 3) {
       this._clearRetry()
-      this._onTrackEnded()
+      this._onTrackEnded(true)
       return
     }
     this._retryTrackId = track.trackId
@@ -780,6 +807,7 @@ class PlaybackManager {
 
   private async _handleCrossfadeEnd(): Promise<void> {
     if (this._handlingEnd) return
+    if (this._parkAtTrackEnd()) return
 
     if (get(loopMode) === 'one') {
       const current = get(currentTrack)
@@ -912,6 +940,20 @@ class PlaybackManager {
     }
 
     await audioManager.ensureWebAudioReady()
+
+    // An end-of-track sleep parked the element at the track's natural end —
+    // nudge just past the parked position so play() re-fires `ended` and the
+    // normal advance machinery handles the next track (loop-all wrap, queue
+    // end, everything). The near-end gate keeps a stale flag (e.g. a bg
+    // lock-screen resume that bypasses this path) from bumping an unrelated
+    // mid-play track to its end.
+    if (sleepTimerManager.consumeParkedAtEnd()) {
+      const parkedEl = audioManager.playbackElement
+      const dur = get(currentTrack)?.duration ?? 0
+      if (dur > 0 && parkedEl.currentTime >= dur - 0.5) {
+        parkedEl.currentTime = Math.max(parkedEl.currentTime, dur - 0.05)
+      }
+    }
 
     const el = audioManager.activeElement
     if (el.src && el.src !== '') {

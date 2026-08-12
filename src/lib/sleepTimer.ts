@@ -1,16 +1,19 @@
 import { get } from 'svelte/store'
-import { sleepTimer, currentTrack } from '../stores/appState'
+import { sleepTimer } from '../stores/appState'
 import { Capacitor } from '@capacitor/core'
 import { BackgroundAudio } from './nativePlugin'
 import { playbackManager } from './playbackManager'
+import { audioManager } from './audioManager'
 
 /**
  * Sleep timer controller.
  *
- * Web path: a JS interval owns the countdown and pauses via the wrapped engine.
- * Native path: the iOS engine owns the actual timer (it keeps running while the app
- * is in the background); the JS store mirrors remaining time for the UI and listens
- * for the native `sleepTimerFired` event so both stay consistent.
+ * Web path: a JS interval owns the minutes countdown; the end-of-track mode
+ * parks at the natural-end advance decision (playbackManager's advance-hook)
+ * so the full track plays and no polling cadence is involved. Native path: the
+ * iOS engine owns the actual timer (it keeps running while the app is in the
+ * background); the JS store mirrors remaining time for the UI and listens for
+ * the native `sleepTimerFired` event so both stay consistent.
  */
 
 const TICK_MS = 1000
@@ -24,6 +27,11 @@ class SleepTimerController {
    *  keep the transition parked. Cleared by explicit playback control or when a
    *  load honors it. */
   private pendingStop = false
+  /** Set when an end-of-track sleep parked at a track's natural end; consumed
+   *  by `play()` which nudges the element past the parked position so its
+   *  natural `ended` event drives the normal advance machinery. Cleared by any
+   *  manual playback control via `clearPendingStop()`. */
+  private parkedAtEnd = false
 
   private isNative(): boolean {
     return Capacitor.isNativePlatform()
@@ -38,9 +46,35 @@ class SleepTimerController {
   }
 
   /** Cleared by any explicit user playback control (play/next/prev/seek/track
-   *  select) so a stale stop never blocks a manual start. */
+   *  select) so a stale stop never blocks a manual start. Also clears the
+   *  parked-at-end flag — a manual rotation supersedes a fired sleep park. */
   clearPendingStop(): void {
     this.pendingStop = false
+    this.parkedAtEnd = false
+  }
+
+  /** True while the end-of-track sleep is armed (web parks at the advance
+   *  decision; on native the engine owns the timer and the web guard never
+   *  applies). */
+  isEndOfTrackArmed(): boolean {
+    if (this.isNative()) return false
+    const t = get(sleepTimer)
+    return t.active && t.mode === 'endOfTrack'
+  }
+
+  /** A web end-of-track park: clears the timer store and sets the flag for
+   *  `play()` to consume. */
+  parkAtEnd(): void {
+    this.parkedAtEnd = true
+    sleepTimer.set({ active: false, mode: 'minutes', minutes: 30, endsAt: 0, remainingSeconds: 0 })
+  }
+
+  /** Consumes the parked-at-end flag; `play()` nudges the element past the
+   *  parked position so its natural `ended` event drives the advance. */
+  consumeParkedAtEnd(): boolean {
+    const v = this.parkedAtEnd
+    this.parkedAtEnd = false
+    return v
   }
 
   async init(): Promise<void> {
@@ -86,7 +120,11 @@ class SleepTimerController {
     }
 
     if (active && mode === 'minutes') this.startCountdown()
-    if (active && mode === 'endOfTrack') this.startEndOfTrackWatch()
+    if (active && mode === 'endOfTrack') {
+      // The track must reach its natural end cleanly — tear down any armed
+      // crossfade so the ended event parks here instead of advancing mid-fade.
+      audioManager.cancelNextTrack()
+    }
   }
 
   private startCountdown(): void {
@@ -100,21 +138,6 @@ class SleepTimerController {
         return
       }
       sleepTimer.update((s) => (s.active ? { ...s, remainingSeconds: remaining / 1000 } : s))
-    }, TICK_MS)
-  }
-
-  /** Web-only: stop when the current track's id changes (i.e. the queue advanced past
-   *  it). On native the engine pauses at the natural end itself and emits
-   *  `sleepTimerFired`. */
-  private startEndOfTrackWatch(): void {
-    let lastId = get(currentTrack)?.trackId ?? ''
-    this.timer = setInterval(() => {
-      const t = get(sleepTimer)
-      if (!t.active || t.mode !== 'endOfTrack') return
-      const id = get(currentTrack)?.trackId ?? ''
-      if (id !== lastId) {
-        this.clearLocal(true)
-      }
     }, TICK_MS)
   }
 
