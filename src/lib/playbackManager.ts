@@ -608,15 +608,23 @@ class PlaybackManager {
   /**
    * End-of-track sleep park guard (web parity with the native engine's
    * `handleSegmentCompletion` sleep check). When the sleep is armed, the advance
-   * decision is consumed here instead of proceeding: the element is paused at
-   * its current position so the track has played out, and `play()` later nudges
-   * it past the parked position to re-trigger the natural advance. Runs at the
-   * exact moment an advance is decided — no polling cadence or race margin.
+   * decision is consumed here instead of proceeding: the element is paused just
+   * below its end (never ended) so any later play — in-app or the bg lock
+   * screen — plays the last ~0.05s and the re-fired `ended` drives the natural
+   * advance. Runs at the exact moment an advance is decided — no polling cadence
+   * or race margin.
    */
   private _parkAtTrackEnd(): boolean {
     if (!sleepTimerManager.isEndOfTrackArmed()) return false
-    sleepTimerManager.parkAtEnd()
-    audioManager.playbackElement.pause()
+    sleepTimerManager.parkAtEnd(get(currentTrack)?.trackId ?? '')
+    const el = audioManager.playbackElement
+    const dur = get(currentTrack)?.duration ?? 0
+    if (dur > 0 && el.currentTime >= dur - 0.5) {
+      // Nudge below the end: play() on an ENDED element seeks to the start,
+      // which would replay the whole track instead of advancing.
+      el.currentTime = Math.min(el.currentTime, dur - 0.05)
+    }
+    el.pause()
     setPlaybackState('paused')
     return true
   }
@@ -710,6 +718,10 @@ class PlaybackManager {
     if (this._handlingEnd) return
     if (!audioManager.isInBgMode) return
     if (this._parkAtTrackEnd()) return
+    // The bg watchdog keeps polling t >= duration - 0.25 without a paused check,
+    // so after a park (or a manual bg pause near the end) it would re-fire and
+    // undo the pause by advancing. A paused near-end element must stay paused.
+    if (audioManager.playbackElement.paused) return
 
     if (get(loopMode) === 'one') {
       const current = get(currentTrack)
@@ -739,7 +751,31 @@ class PlaybackManager {
 
   private async _handleExitBackground(state: { ended: boolean; wasPlaying: boolean; currentTime: number }): Promise<void> {
     if (this._handlingEnd) return
-    if (this._parkAtTrackEnd()) return
+
+    // Park here if the armed sleep never tripped while backgrounded. After any
+    // park (now or in bg) the bg position isn't otherwise transferred (only the
+    // wasPlaying branch carries it), so carry it to the foreground element and
+    // stay paused — a later play() resumes the tail and advances. A fresh park
+    // carries even when the bg element was playing; an already-parked pause
+    // only carries while still paused (a resumed tail falls through to the
+    // playing branch). The trackId gate keeps a stale park (consumed by a bg
+    // lock-screen resume that already advanced) from landing on the wrong track.
+    const parkedNow = this._parkAtTrackEnd()
+    if (parkedNow) {
+      const el = audioManager.activeElement
+      const dur = get(currentTrack)?.duration ?? 0
+      if (dur > 0) el.currentTime = Math.max(0, Math.min(state.currentTime, dur))
+      return
+    }
+    if (sleepTimerManager.isParkedAtEnd()) {
+      const t = get(currentTrack)
+      if (!state.wasPlaying && sleepTimerManager.parkedTrackId() === t?.trackId) {
+        const el = audioManager.activeElement
+        const dur = t?.duration ?? 0
+        if (dur > 0) el.currentTime = Math.max(0, Math.min(state.currentTime, dur))
+        return
+      }
+    }
 
     this._handlingEnd = true
     try {
@@ -941,20 +977,9 @@ class PlaybackManager {
 
     await audioManager.ensureWebAudioReady()
 
-    // An end-of-track sleep parked the element at the track's natural end —
-    // nudge just past the parked position so play() re-fires `ended` and the
-    // normal advance machinery handles the next track (loop-all wrap, queue
-    // end, everything). The near-end gate keeps a stale flag (e.g. a bg
-    // lock-screen resume that bypasses this path) from bumping an unrelated
-    // mid-play track to its end.
-    if (sleepTimerManager.consumeParkedAtEnd()) {
-      const parkedEl = audioManager.playbackElement
-      const dur = get(currentTrack)?.duration ?? 0
-      if (dur > 0 && parkedEl.currentTime >= dur - 0.5) {
-        parkedEl.currentTime = Math.max(parkedEl.currentTime, dur - 0.05)
-      }
-    }
-
+    // A previous end-of-track park left the element paused just below its end
+    // (never ended), so plain play() continues the tail and the re-fired
+    // `ended` advances. clearPendingStop() above already cleared the park state.
     const el = audioManager.activeElement
     if (el.src && el.src !== '') {
       try {

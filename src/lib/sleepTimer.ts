@@ -27,11 +27,15 @@ class SleepTimerController {
    *  keep the transition parked. Cleared by explicit playback control or when a
    *  load honors it. */
   private pendingStop = false
-  /** Set when an end-of-track sleep parked at a track's natural end; consumed
-   *  by `play()` which nudges the element past the parked position so its
-   *  natural `ended` event drives the normal advance machinery. Cleared by any
-   *  manual playback control via `clearPendingStop()`. */
+  /** Set when an end-of-track sleep parked at a track's natural end. The park
+   *  leaves the element paused just below its end (never ended), so every resume
+   *  path plays the tail and re-fires `ended` to drive the natural advance.
+   *  Cleared by any manual playback control via `clearPendingStop()`. */
   private parkedAtEnd = false
+  /** Track the parked pause belongs to; guards the exit-background position
+   *  carry so a stale park (already resumed in bg) can never land on a
+   *  different track. */
+  private _parkedTrackId: string | null = null
 
   private isNative(): boolean {
     return Capacitor.isNativePlatform()
@@ -47,10 +51,11 @@ class SleepTimerController {
 
   /** Cleared by any explicit user playback control (play/next/prev/seek/track
    *  select) so a stale stop never blocks a manual start. Also clears the
-   *  parked-at-end flag — a manual rotation supersedes a fired sleep park. */
+   *  parked-at-end state — a manual rotation supersedes a fired sleep park. */
   clearPendingStop(): void {
     this.pendingStop = false
     this.parkedAtEnd = false
+    this._parkedTrackId = null
   }
 
   /** True while the end-of-track sleep is armed (web parks at the advance
@@ -62,19 +67,23 @@ class SleepTimerController {
     return t.active && t.mode === 'endOfTrack'
   }
 
-  /** A web end-of-track park: clears the timer store and sets the flag for
-   *  `play()` to consume. */
-  parkAtEnd(): void {
+  /** A web end-of-track park: clears the timer store and records the parked
+   *  state (flag + owning track) for the exit-background carry. */
+  parkAtEnd(trackId: string): void {
     this.parkedAtEnd = true
+    this._parkedTrackId = trackId
     sleepTimer.set({ active: false, mode: 'minutes', minutes: 30, endsAt: 0, remainingSeconds: 0 })
   }
 
-  /** Consumes the parked-at-end flag; `play()` nudges the element past the
-   *  parked position so its natural `ended` event drives the advance. */
-  consumeParkedAtEnd(): boolean {
-    const v = this.parkedAtEnd
-    this.parkedAtEnd = false
-    return v
+  /** True while an end-of-track park is pending (not yet superseded by a
+   *  manual control). */
+  isParkedAtEnd(): boolean {
+    return this.parkedAtEnd
+  }
+
+  /** The track id the pending park belongs to. */
+  parkedTrackId(): string | null {
+    return this._parkedTrackId
   }
 
   async init(): Promise<void> {
