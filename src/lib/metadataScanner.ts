@@ -735,12 +735,13 @@ export const DISPLAY_CAP = 100
  * push would be skipped): no match found, ambiguous tie, previously-matched
  * file vanished from a fresh index, or a stale `webdavBase` (server switched)
  * plus the audit buckets: manual/auto `matched` rows and user-dismissed
-  * `ignored` rows (their pending-ness is reported truthfully). Counts are
-  * exact over the whole library (unbound rows are scored once for the
-  * no-match/ambiguous split); the row list is returned in full ranked order —
-  * unresolved-with-pending-edit first, then unresolved, then matched/ignored —
-  * and is truncated client-side only (DISPLAY_CAP is the UI default).
- * and prompt candidates are retained only for the displayed rows.
+ * `ignored` rows (their pending-ness is reported truthfully). Counts are
+ * exact over the whole library (unbound rows are scored once for the
+ * no-match/ambiguous split); the row list is returned in full ranked order —
+ * unresolved-with-pending-edit first, then unresolved, then matched/ignored —
+ * and is truncated client-side only (DISPLAY_CAP is the UI default).
+ * Prompt candidates are computed and retained on every unbound row, never
+ * trimmed server-side — the caller decides how many to render.
  *
  * Pending-push rows sort first: those block Push Changes, which is the point.
  * Uses the in-memory index when built this session (no extra PROPFIND);
@@ -832,9 +833,9 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
       // Exact no-match/ambiguous split requires scoring every unbound track —
       // there is no cheap classification for "would this tie". The scoring
       // pass is the same work an incremental scan does, and only runs when
-      // this view is open/refreshed. prompt arrays are kept only for the
-      // capped, displayed rows (the slice below drops the rest). Rows bound
-      // to other tracks are excluded so an unclaimed file never scores twice.
+      // this view is open/refreshed. Prompt candidates are computed for
+      // every unbound row (rows bound to other tracks are excluded so an
+      // unclaimed file never scores twice).
       const match = matchTrackToWebdavCandidates(t, index, allBoundPaths)
       counts[match.status === 'ambiguous' ? 'ambiguous' : 'no-match']++
       if (base.pendingPush) pendingBlocked++

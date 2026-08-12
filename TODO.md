@@ -1,191 +1,392 @@
 # mmdrome — Technical Debt & Refactor Plan
 
-A prioritized, phase-ordered plan produced from the holistic codebase audit (2026-08-10).
-Each phase ends with a coherent, buildable, verifiable state (`npm run check`; Swift changes
-verified via the `ios.yml` CI workflow, which is the only place the native engine compiles).
-Items marked **[DECISION]** need a product/design decision before implementation.
+Prioritized plan from the 2026-08-10 audit, re-verified item-by-item against the
+code on 2026-08-11 (verdicts and evidence below — every open item is a CONFIRMED
+issue; stale items were closed or rewritten).
 
-Legend: `[ ]` open · `[x]` done · `HIGH/MED/LOW` impact · `#ref` file:line
+Design principles:
+1. **Clean models for the intended behavior** — a correct abstraction beats the
+   straightforward patch (PlaybackCore over per-path patches; a bounded
+   played-prefix over plain caps).
+2. **Logic lives in pure, injectable modules** — every new decision (retry, park,
+   loop, state transitions, trim, scoring) is a pure function/class over plain
+   data with injected callbacks/clock. Thin adapters bind it to DOM/Swift. This
+   is what makes testing possible and is enforced per item, not aspirational.
+
+The test foundation (0.5) lands BEFORE any refactor so every change is
+regression-checked. **Verification per item = `npm run check` AND `npm test`**;
+Swift items additionally via `ios.yml` (`xcodebuild` + `swift test`).
+
+Legend: `[ ]` open · `[x]` done · HIGH/MED/LOW impact · anchors are file +
+symbol (line numbers drift — grep the symbol). **[DECISION]** needs a product
+call before implementation.
 
 ---
 
-## Phase 0 — Foundations & invariants
+## Phase 0 — Foundations, invariants & test foundation
 
 Fixes that establish invariants the later phases rely on. Ship these first.
 
-- [ ] **0.1** Native: run audio scheduling on the main thread — hop the `TrackFileLoader.prefetch`
-      completion to `DispatchQueue.main.async` (generation guard preserved), and make the loader's
-      `cache`/`activeTasks`/`pendingCompletions` dicts main-thread-only. Fixes data races + AVFoundation
-      graph mutation + `RunLoop.main` timer scheduling from the URLSession delegate queue.
-      `native/BackgroundAudio/ios/AudioEngine.swift:135-157,693-705` — HIGH
-- [ ] **0.2** Native: sleep-timer lifetime invariant — a JS-driven queue snapshot (`setQueue` via
-      `_nativeLoadPlay`: next/prev/select/retry) must NOT cancel an armed sleep timer. Decide:
-      re-arm from JS after `setQueue`, or stop cancelling in `stopPlayback()` when the reset is a
-      queue snapshot. `AudioEngine.swift:340,853-857` + `src/lib/sleepTimer.ts:69-104` — HIGH
-- [ ] **0.3** Normalize CJK-safe everywhere — port the `\p{L}\p{N}` normalization from
-      `metadataReader.normalizeForMatch` into the scanner's `normalizeForHint` (and any other
-      `[^\w\s]` pattern). Restores the documented "never sweep the server" probe guard.
-      `src/lib/metadataScanner.ts:181-195` — HIGH
-- [ ] **0.4** Credential-swap invariant — a foreign index must never be stamped with a new baseKey:
-      capture `currentIndexKey()` BEFORE the probe await in `refreshIndex`/`rebuildIndex`, and bump
-      `scanGen` (not just `tagProbeGen`) in `setWebdavCredentials` so an in-flight scan aborts.
-      Gate SettingsView's `testWebdav` auto-scan on `status !== 'scanning'`.
-      `src/lib/metadataScanner.ts:66-110`, `src/views/SettingsView.svelte:200-220` — HIGH
+- [ ] **0.1** Native: audio scheduling on the main thread — hop the
+      `TrackFileLoader.prefetch` completion to `DispatchQueue.main.async`
+      (generation guards preserved), making the loader's
+      `cache`/`activeTasks`/`pendingCompletions` dicts main-thread-only. Fixes
+      verified data races (URLSession delegate queue mutates the dicts while
+      main-thread callers `localURL`/`evict` read them) and moves AVFoundation
+      graph mutation + `RunLoop.main` timer scheduling onto main, matching
+      where every other engine path already runs. **Test**: extract the
+      cache/pending-completion chain into a pure `LoaderState` struct
+      (claim/chain/complete/evict) + XCTest target; add `swift test` step to
+      `ios.yml`. `AudioEngine.swift` `TrackFileLoader`/`loadAndStart` — HIGH
+- [ ] **0.2** Native: sleep-timer lifetime invariant — every JS queue snapshot
+      (`setQueue` via `_nativeLoadPlay`: next/prev/select/retry AND natural
+      track ends) cancels an armed sleep timer (`stopPlayback()` clears both the
+      `Timer` and `sleepAtTrackEnd`); JS never re-arms → the timer "expires"
+      while playback continues. Decide: re-arm from JS after queue snapshots (JS
+      owns the authoritative armed state — recompute remaining minutes from
+      `endsAt`; recommended) vs stop-cancelling in `stopPlayback()` for snapshot
+      resets. Must cover the end-of-track flag too, not just the timer.
+      **Test**: JS side — the re-arm logic as a pure `SleepTimerMirror`
+      (armed-state → remaining → push-decision), no timer APIs, fake clock.
+      `AudioEngine.swift` `setQueue`/`stopPlayback`,
+      `src/lib/sleepTimer.ts` `set` — HIGH
+- [ ] **0.3** Normalize CJK-safe everywhere — port `/[^\p{L}\p{N}\s]/gu` from
+      `metadataReader.normalizeForMatch` into `metadataScanner.normalizeForHint`
+      (the only two normalization sites repo-wide). Today a CJK title normalizes
+      to `""` and `filenameHintsTitle`'s `.includes("")` matches every file →
+      the "never sweep the server" probe guard degrades to a near-sweep.
+      **Test**: table test — CJK/emoji/diacritics/symbols normalize to stable
+      tokens; `filenameHintsTitle` never matches on empty.
+      `src/lib/metadataScanner.ts` `normalizeForHint` — HIGH
+- [ ] **0.4** Credential-swap invariant — `refreshIndex`/`rebuildIndex` capture
+      `currentIndexKey()` AFTER the probe await → a mid-probe swap stamps a
+      foreign index with the new baseKey; and `setWebdavCredentials` bumps only
+      `tagProbeGen` (not `scanGen`) while clearing the in-memory index →
+      in-flight `processItem`s hit the vanished-clear branch against an EMPTY
+      index and mass-clear every binding. Fix: capture the key before the await;
+      bump `scanGen` on swap. (SettingsView `testWebdav` auto-scan gate is
+      already `idle || error` — done.)
+      `src/lib/metadataScanner.ts` `refreshIndex`/`rebuildIndex`/`setWebdavCredentials` — HIGH
+- [x] **0.5** **[TEST FOUNDATION — closed 2026-08-12; every refactor item is gated on it]**:
+      - **Harness, zero new deps**: `scripts/test-loader.mjs` — a ~20-line ESM
+        `resolve` hook (self-registers via `module.register` — `--import` alone
+        only evaluates the module; candidate appending: plain specifier →
+        `.ts` → `.js` → `/index.ts` → `/index.js`, extensioned + bare
+        specifiers delegated) + `node --test` (Node 24 type stripping is
+        default-on; `npm test` uses default test discovery — `**/*.test.ts` —
+        because `node --test tests/` fails with `ERR_UNSUPPORTED_DIR_IMPORT`).
+        `package.json`: `"test": "node --test --import ./scripts/test-loader.mjs"`.
+      - **Seed suites** (`tests/`, 46 tests, permanent-ize the deleted scratch
+        scripts): `recentWindow.test.ts` (LRU dedupe/move-to-end/cap-oldest,
+        sanitize-keep-newest, 10k-transition bound/unique/recency-order sim),
+        `queueMutation.test.ts` (targeted scenarios for every builder incl.
+        tier-3 cross-section collapse + transition-window promote + the
+        10k×6-seed fuzz: anchor invariant, section uniqueness, drag
+        row-count preservation, null = no-write), `libraryFilters.test.ts`
+        (aggregates rated-only, any-track rating semantics, genre token
+        matching, year/length bounds, sort matrix, input immutability),
+        `tagWriter.test.ts` (POPM round-trip property on the 10-step grid,
+        off-grid landing, MusicBee-calibrated write-map + read-boundary spot
+        checks, the asymmetric-maps drift asserted so nobody "aligns" them).
+      - **Type safety**: `tsconfig.test.json` (module/moduleResolution
+        `esnext`/`bundler` for Vite-style extensionless imports, noEmit +
+        `allowImportingTsExtensions`, `erasableSyntaxOnly` — suites stay
+        Node-strip-compatible, `strict`, noUnusedLocals/Parameters,
+        `paths` `$lib/*` WITHOUT `baseUrl` — TS6 deprecates it, relative
+        `./src/lib/*` targets) folded into `npm run check` (chained after
+        tsconfig.node.json). First tsc pass caught a real dead import —
+        `PlayQueueState` removed from appState.ts.
+      - **CI**: `.github/workflows/test.yml` — ubuntu, `actions/setup-node@v4`
+        node-24, `npm ci && npm test && npm run check`, on push + PR.
+      - Verified in CI: taglib-wasm's Node entry (`dist/index.js`) loads under
+        plain Node 24 (no `--experimental-wasm-exnref` needed); the
+        `localStorage` guards in libraryFilters.ts make it Node-safe; each
+        test file runs in its own child process and inherits `--import`.
+      - **Fallback** (documented, not chosen): vitest as the single added
+        devDependency if the loader proves fragile. — HIGH
 
-## Phase 1 — Playback correctness (web + native)
+## Phase 1 — Playback architecture (the centerpiece)
 
-- [ ] **1.1** Native: crossfade fade-out is dead — the second `rampVolume` call invalidates the first
-      ramp's timer before its first tick. Run both ramps from ONE 40-step timer (or two independent
-      timers with a shared invalidation guard). `AudioEngine.swift:948-995` — HIGH
-- [ ] **1.2** Web bg-mode: failed `playBg` skips tracks with zero retry and loop-one can wedge.
-      Mirror the foreground retry policy (exponential backoff) or surface the failure via
-      `onBgError` instead of routing it to the advance handler.
-      `src/lib/playbackManager.ts:94,658-662,683-689` — HIGH
-- [x] **1.3** Web bg-mode end-of-track sleep: watch paused 1-2 s into the next track or never
-      fired. **Closed 2026-08-11 by the advance-hook** — the park guard fires at the advance
-      decision itself (all four advance sites, incl. the bg watchdog path), so the pause lands at
-      the natural end and the full track plays; the failed-`playBg`-never-fires sub-case remains
-      tracked under **1.2**'s retry-then-advance.
-      `src/lib/sleepTimer.ts:56-78,122-127`, `src/lib/playbackManager.ts:610-628`,
-      `src/lib/mediaSession.ts:76-80` — HIGH
-- [ ] **1.4** Native: `refreshQueue` divergence fallback must notify JS (`ended` or `error`) instead
-      of silently `stopPlayback()`-ing with stale JS indexes. `AudioEngine.swift:360-368` — MED
-- [ ] **1.5** Native: reload reconciliation — `_initNative` should call `getState()` and resync
-      `currentTrack`/`playbackState`/`activeIndex` when the engine is still playing after a
-      webview reload (and warn + stop if the playing trackId is no longer in the library).
-      `src/lib/nativePlugin.ts:107-134`, `src/lib/playbackManager.ts:137-181` — MED
-- [ ] **1.6** Native: empty/url-less snapshot deadlock — when `_buildSnapshot` yields `url:''`
-      (no Navidrome config), fail fast with an error event instead of "playing" with zero tracks.
-      `src/lib/playbackManager.ts:305-325`, `AudioEngine.swift:96-117,346-355` — MED
-- [ ] **1.7** Native: preserve seek position across the "Track not ready" retry — retry the same
-      position instead of a full `setQueue`+`playTrackAt` restart.
-      `AudioEngine.swift:451-461,718-721`, `src/lib/playbackManager.ts:448-471` — MED
-- [ ] **1.8** Native: `pause()` mid-crossfade must tear down ramp + crossfade flags (or the minutes
-      sleep timer can leave wrong-volume/state corruption on resume).
-      `AudioEngine.swift:437-445` — MED
-- [ ] **1.9** Web: `_handleExitBackground` is the only track-end path missing the loop-one branch.
-      `src/lib/playbackManager.ts:709-742` — LOW
-- [ ] **1.10** Web: crossfade hygiene — catch `standbyEl.play()` rejection; teardown the crossfade
-      monitor on end-of-queue stop; refresh `_currentTrackGainDb/_currentAlbumGainDb` after a
-      crossfade switch. `src/lib/audioManager.ts:534-552,758-776,807-809` — LOW
-- [ ] **1.11** Media session: clamp lock-screen seeks to metadata duration + clear `pendingStop`.
-      `src/lib/mediaSession.ts:124-129` — LOW
-- [ ] **1.12** Web: `play()` in bg mode resumes the silent foreground element — route through
-      `playbackElement` like `pause()` does. `src/lib/playbackManager.ts:880-905` — LOW
-- [ ] **1.13** Verify/fix `playbackState:'buffering'` stall recovery (timeout → pause/stop).
-      `src/lib/playbackManager.ts:273-275` — LOW
+### 1.0 PlaybackCore — one orchestration, three transports (NEW, HIGH)
 
-## Phase 2 — Queue model refactor (the "clean refactor" centerpiece)
+`playbackManager.ts` (1130 lines) runs the same orchestration three times over:
+3 load paths (`_loadAndPlay`/`_loadAndPlayInBg`/`_nativeLoadPlay`), 3 retry
+machines (web `_handlePlaybackError` 3 attempts, native `_onNativeError` 2,
+bg zero), 4 copies of the park→loop-one→advance→loop-all→stop chain
+(`_onTrackEnded`, `_onBgTrackEnd`, `_handleExitBackground`,
+`_handleCrossfadeEnd`), and 3-way routing in `next`/`prev`/`playTrackAt` — the
+AGENTS.md log's parity-fix tax ("prev parity", "pause parity", …) is the
+symptom. Replace with a transport abstraction, **test-first at every step**:
 
-Goal: **one owner for all queue math.** Today mutation logic is split across `appState.ts`
-(store + `playNext`/`removeFromUserQueue`/`removeFromAutoQueue`/`clearQueue`/`pushHistory`),
-`queueManager.ts` (advance/replenish/rotate), and `QueueView.svelte` (inline duplicates of
-`playNext` and reorder math). Consolidate:
+- **Step 1 — Types + policy modules (pure)**: `PlaybackTransport` interface
+  (`load(track, pos?)`, `play`/`pause`/`seek`/`stop`, `setNextTrack`/
+  `cancelNextTrack`, events `ended`/`error`/`position`/`state`, capabilities:
+  bg-supported, crossfade, clock ownership). `RetryPolicy` (ONE exponential-
+  backoff machine, configurable cap — replaces the three), `AdvanceDecider`
+  (park → loop-one → advance → loop-all → stop, `fromError` aware),
+  `BgStateMachine` (`foreground · handoff · bg-playing · park-pending ·
+  resuming`, fake clock). **Tests written FIRST**: RetryPolicy
+  (attempt/cap/backoff/clear matrix), AdvanceDecider (table: every combination
+  × {park armed, loop one/all/none, error-driven, queue-end}), BgStateMachine
+  (every transition pair incl. enter/exit races, park-carry, watchdog re-trip
+  guard, `pendingStop` interplay).
+- **Step 2 — WebTransport**: extracts the audioManager a/b + crossfade +
+  preloader orchestration; the crossfade rescue/reconcile block
+  (`_handleCrossfadeEnd` 858-899) moves into the adapter. **Test**: crossfade
+  target reconcile cases (track still queued / removed mid-fade / loop-all
+  wrap) against a fake transport; replay-gain field refresh on switch (1.10's
+  third sub-item).
+- **Step 3 — WebBgTransport**: owns `_bgEl`; the interlock soup (`_inBgMode`,
+  `_enterBgSeq`, `_handlingEnd`, `parkedAtEnd`, `pendingStop`, mediaSession
+  watchdog) becomes BgStateMachine transitions. Retry (1.2) rides `RetryPolicy`
+  with the bg cap. **Test**: full transition graph; the four advance sites
+  collapse into ONE `_onTransportEnded(fromError)` — parity is now tested, not
+  eyeballed.
+- **Step 4 — NativeTransport**: owns `setQueue`/`refreshQueue`/`playTrackAt`,
+  the 250 ms position poll, `_hasNativeEngaged`, queue-sync coalescing, getState
+  reconcile (1.5 JS side), fail-fast empty snapshot (1.6 JS side), seek-position
+  retry memory (1.7 JS side). **Test**: fake `BackgroundAudio` plugin object —
+  snapshot build, coalescing (burst of queue writes → one refresh), divergence
+  handling, reload-reconcile outcomes.
+- **Step 5 — Deletion**: `playbackManager` shrinks to policy + queue wiring;
+  delete the dual paths. **Absorbed items: 1.2, 1.9, 1.10, 1.12, 1.13** — each
+  is a verification checkpoint in the steps above, not a separate patch.
+- **Sequencing/risk**: never a big-bang — each step ends with `npm run check` +
+  `npm test` + the behavior-parity checklist (loop-one/park/sleep/retry/
+  crossfade) run manually on the PWA; the deletion step is last.
 
-- [x] **2.1** One owner for all queue math — closed 2026-08-11, but by a different design than
-      proposed: concrete methods (`addToUserQueue`/`playNext`/`promoteToUser`/`promoteToUserNext`/
-      `moveToNext`/`moveToEnd`/`removeFromAutoQueue`/`promoteActiveTrack`/`clearQueue`/`reorderAll`)
-      over a private `_mutateQueue` choke point (`QueueMutation` sections + `null` no-op + id
-      re-anchor), not the named-DSL API (`insertNext`/`insertAt`/`removeAt`/`moveTo`/`setActive`).
-      The builder bodies live in the pure, store-free `src/lib/queueMutation.ts`
-      (`applyQueueMutation` owns the re-anchor + DEV invariant assert; `_mutateQueue` is a thin
-      shell) — fuzz-verified duplicate-free (manufacture-free rule: an id may enter a section only
-      when the section is empty of it) with a scratch script (deleted after passing).
-      `setActiveQueueIndex` remains in appState by design (explicit index setter, not a
-      length-changing mutation); `removeFromUserQueue` stays the documented position-semantics
-      exception. See AGENTS.md 2026-08-11 entry. — MED
-- [x] **2.2** `playNext` off-by-one family — closed 2026-08-11 by the `_mutateQueue` id-based
-      re-anchor (capture `activeId` pre-mutation → `indexOf` on the rebuilt combined queue; no
-      active id → −1): the `adjustedIndex` dead ternary removed, in-auto inserts clamp to the user
-      tail, and every length-changing edit (incl. removing a preceding auto row while the active
-      sits at `auto[j>0]`, reorders, clears) keeps `activeIndex` on the playing trackId. — MED
-- [x] **2.3** `historyQueue`: removed and replaced by the `recentTrackIds` LRU window (2026-08-10) —
-      persisted in the playQueue row (`RECENT_LIMIT=100`), single writer `queueManager.markRecent`/
-      `advanceTo`, dedupe+move-to-end inscription, cap drops the OLDEST. Clear-Queue case proved the
-      played inscriptions are load-bearing (anti-repeat after trims), so the audit's "session-scoped
-      ~5 ids" + "subsumed by promotion" framing was wrong. `replenishAutoQueue`/`rebuildAutoQueue`
-      exclude the window via `_buildPool` tiers: fresh -> cooling top-up -> full rotation (never the
-      active track, filters always gate). Scrubbed with `node` type-stripping scratch assertions
-      (deleted) + `npm run check`. See AGENTS.md 2026-08-10 entry.
-- [ ] **2.4** **[DECISION]** `removeFromUserQueue` when removing the *active* track — pick a
-      semantic: (a) stop playback, (b) marker stays on the sliding next track (highlight matches
-      what plays next), or (c) current behavior (decrement; correct continuation, wrong highlight).
-      Implement + document. Behavior unchanged by 2.3 (still (c)); removed id now cools down.
-      `queueManager.ts:111-124`
-- [ ] **2.5** **[DECISION]** `userQueue` growth policy — promotion is append-only, so long sessions
-      drain the eligible pool. The functional freeze is MITIGATED (not solved) by 2.3's rotation
-      tier (`_buildPool`), which recycles heard tracks instead of letting the queue die; the
-      remaining concern is memory/unbounded growth of the persisted row + native snapshot size.
-      Options: trim promoted (non-user-pinned) entries behind the active track, or cap with
-      oldest-drop. Must not drop user pins silently. Note (2026-08-11): a tier-3-admitted copy of
-      a user-queued track now collapses out of the tail when it plays (dedupe-append promote), so
-      duplicates no longer cycle in the tail. `queueManager.ts:29-46`
-- [x] **2.6** `queueWrapNotice` lifecycle — cleared on every `replenishAutoQueue` early-return
-      (`needed === 0` and unchanged-pool paths, 2026-08-10); `_rotateAfterAnchor` set/clear
-      contract unchanged; rebuild path re-derives it per fill. `queueManager.ts:143-157`
+### Native crossfade/scheduler package (Swift, one CI round-trip)
+
+- [ ] **1.1** Crossfade fade-out is dead — `startCrossfade` calls `rampVolume`
+      twice back-to-back; the second call invalidates the shared
+      `volumeRampTimer` before its first tick, so the fade-out gain stays pinned
+      until `finalizeCrossfadeSwitch` snaps it. Fix: ONE 40-step timer ramping
+      both gains (matches `rampStepCount`). **Test**: extract `RampPlan`
+      (start/end/target per node, step count) as a pure struct + XCTest
+      (dual-ramp profile, invalidation-on-pause).
+      `AudioEngine.swift` `startCrossfade`/`rampVolume` — HIGH
+- [ ] **1.8** `pause()` mid-crossfade leaves `volumeRampTimer`/
+      `crossfadeActive`/`crossfadeTargetIndex` live (the ramp closure never
+      checks `isPlaying`; the minutes sleep timer can pause mid-fade →
+      wrong-volume/wrong-track switch on resume). Tear down the trio like
+      `cancelScheduled`, minus the node stops. **Test**: `CrossfadeState`
+      struct transitions (armed/in-flight/paused/resumed) + XCTest.
+      `AudioEngine.swift` `pause()` — MED
+  (Bundled: same state, one CI build; 0.1's `LoaderState` is the shared half.)
+
+### Native JS↔engine contract package (Swift + plugin, one CI round-trip)
+
+- [ ] **1.4** `refreshQueue` divergence fallback stops with no `ended`/`error` —
+      JS keeps stale indexes and the next `play()` restarts a different track
+      than JS believes current. Emit `ended` on divergence (the honest signal;
+      JS re-snapshots on it). **Test**: divergence decision as a pure function
+      (snapshot activeId vs engine currentId → action) + XCTest +
+      NativeTransport test. `AudioEngine.swift` `refreshQueue` — MED
+- [ ] **1.5** Webview-reload reconciliation — `_initNative` never calls
+      `getState()`; after a reload the engine keeps playing while JS shows
+      nothing, and the first `play()` kills it via `setQueue`. Resync
+      `currentTrack`/`playbackState`/`activeIndex` by trackId when playing;
+      warn + stop when the trackId is unknown to the library. API exists —
+      pure wiring (JS side inside NativeTransport, tested in step 4).
+      `src/lib/playbackManager.ts` `_initNative`,
+      `src/lib/nativePlugin.ts` `getState` — MED
+- [ ] **1.6** Empty/url-less snapshot — `_buildSnapshot` yields `url:''`
+      without a Navidrome config, yet `_nativeLoadPlay` still sets
+      `setPlaybackState('playing')` while native drops every track (nil-URL
+      guard) and `playTrackAt` silently returns → UI "playing" over a dead
+      engine. Fail fast: reject the call, surface the error.
+      `src/lib/playbackManager.ts` `_buildSnapshot`/`_nativeLoadPlay`,
+      `AudioEngine.swift` track init — MED
+- [ ] **1.7** Seek position lost on the "Track not ready" retry — the retry
+      replays from 0 (`positionBias` wiped by `loadAndStart`). Retry the same
+      position (transport remembers the clamped target and re-issues `seek`
+      after the retry's load resolves, or add an optional start position to
+      `playTrackAt`). `AudioEngine.swift` `seek`/`loadAndStart` — MED
+
+### Media session (independent, LOW)
+
+- [ ] **1.11** Lock-screen seeks write `playbackElement.currentTime` unclamped
+      (the web `seek()` path clamps) and never clear `pendingStop` → a seek
+      after sleep expiry leaves the park flag set and the next load re-parks.
+      Clamp to metadata duration + `clearPendingStop()` in `seekto` (and the bg
+      `'play'` handler for parity). **Test**: clamp/clear logic as pure
+      functions (seek target × pendingStop state matrix).
+      `src/lib/mediaSession.ts` — LOW
+- [x] **1.3** Web bg-mode end-of-track sleep — closed 2026-08-11 by the
+      advance-hook park guard at all four advance sites; the residual
+      failed-`playBg`-never-fires case folds into 1.0's RetryPolicy. — HIGH
+
+## Phase 2 — Queue model
+
+- [x] **2.1** One owner for all queue math — closed 2026-08-11 (concrete
+      methods over the private `_mutateQueue` choke point; pure builders in
+      `src/lib/queueMutation.ts`, fuzz-verified; `setActiveQueueIndex` stays in
+      appState by design; `removeFromUserQueue` the documented position-
+      semantics exception). See AGENTS.md 2026-08-11 entry. — MED
+- [x] **2.2** `playNext` off-by-one family — closed 2026-08-11 by the
+      `_mutateQueue` id-based re-anchor. — MED
+- [x] **2.3** `historyQueue` → `recentTrackIds` LRU window — closed 2026-08-10. — MED
+- [ ] **2.4** **[DECISION]** `removeFromUserQueue` when removing the *active*
+      track — pick: (a) stop playback, (b) keep `activeIndex` so the highlight
+      slides to the next playable row (one-line change; UI already tolerates
+      −1), or (c) current behavior (decrement; correct continuation, wrong
+      highlight). Implement + document. Removed id cools in the recency window
+      regardless. **Test**: behavior matrix — remove active/preceding/last user
+      row × auto depths × each choice; pure builder updated + fuzz-extended.
+      `src/lib/queueManager.ts` `removeFromUserQueue`
+- [ ] **2.5** **[DECISION]** `userQueue` growth — promotion is the INTENDED
+      behavior (played tracks stay listed; auto rows promote and remain; the
+      played rows ARE the anti-repeat context). Model the queue as `played
+      prefix (rows < activeIndex) | deliberate tail (rows ≥ activeIndex)` and
+      bound ONLY the played prefix: new pure builder `trimPlayedPrefix(q, cap)`
+      (oldest-drop, cap aligned with `RECENT_LIMIT`, id re-anchor), folded into
+      the same `queue.update` as `advanceQueue`/`promoteActiveTrack`. Deliberate
+      rows are never dropped; dropped prefix ids need no extra cooling (already
+      in `recentTrackIds` via `advanceTo`); no provenance marker needed. Cap +
+      interplay with 2.4's choice documented. **Test**: trim boundary cases
+      (cap < activeIndex+1, empty queue, all-deliberate, all-promoted), id
+      re-anchor after trim, trim-enabled fuzz runs.
+      `src/lib/queueMutation.ts` `promoteActiveTrack`,
+      `src/lib/queueManager.ts` `advanceQueue`
+- [x] **2.6** `queueWrapNotice` lifecycle — closed 2026-08-10. — LOW
 
 ## Phase 3 — Sync / metadata pipeline hardening
 
-- [ ] **3.1** Push re-pend race — re-check the live `metadataCache` row AFTER the write completes
-      (not before) and never flatten a stale snapshot over a concurrent re-bind.
-      `src/lib/syncEngine.ts:342-364` — MED
-- [ ] **3.2** Navidrome-mode stale seeds — `seedNavidromeFeedback` on a *cached* connect re-applies
-      cached `starred`/`userRating`; either drop rating/loved from the song cache or mark cached
-      rows so a refresh is requested. `src/lib/navidromeApi.ts:342-374`, `appState.ts:372-418` — MED
-- [ ] **3.3** Pagination guard — cap `loadNavidromeSongs`'s `while(true)` loop (max pages / dedupe /
-      progress stall) for servers that ignore `songOffset`. `src/lib/navidromeApi.ts:353-367` — MED
-- [ ] **3.4** Stale cached config — clear `_cachedConfig`/`coverConfig` when credentials are removed
-      (add the `setCachedConfig(null)` call site on settings change). `navidromeApi.ts:330-340` — MED
-- [ ] **3.5** Normalize `webdavBase` keys — derive from the same normalized URL used for requests
-      so a trailing slash doesn't flag the whole library as "Server URL updated".
-      `metadataScanner.ts:62-64`, `syncEngine.ts:265`, `webdavUtils.ts:106-108` — MED
-- [ ] **3.6** Index/probe hygiene — do not persist the full tagged index to Dexie on every probe;
-      re-check `ignored` in the manual-bind fetch path; guard `processItem` against mid-scan
-      library replacement (count, don't stall); make PROPFIND href decoding fault-tolerant.
-      `metadataScanner.ts:98-110,481,530-537`, `metadataReader.ts:22-32` — LOW
-- [ ] **3.7** Preserve cached `comments` when a scanned file has none; normalize mtime comparison
-      (RFC1123 vs ISO) to avoid full-library re-read bursts.
-      `metadataScanner.ts:655`, `metadataReader.ts:166-223` — LOW
-- [ ] **3.8** WebDAV write hardening — orphan `.mmdrome-tmp` cleanup on startup; surface "no ETag"
-      (blind overwrite) in the push confirmation; exclude `ignored` rows from the dialog count.
-      `syncEngine.ts:57-111`, `SettingsView.svelte:296-310` — LOW
+- [ ] **3.1** Push flatten vs concurrent re-bind — the post-PUT re-pend exists
+      but compares only `rating`/`loved`; a mid-push File Matching re-bind
+      (path/base change) or comments-only edit is flattened to `synced` with
+      the OLD path/base. Widen the re-pend comparison to
+      `webdavPath`/`webdavBase`/`comments`. **Test**: re-pend decision as a pure
+      function (stale snapshot × live row variants).
+      `src/lib/syncEngine.ts` `runManualWebDAVSync` — MED
+- [ ] **3.2** Navidrome-mode stale seeds — the song cache stores raw
+      `NavidromeSong[]` incl. `starred`/`userRating`; `seedNavidromeFeedback`
+      runs unconditionally on cached connects → in `ratingSource:'navidrome'`
+      mode an offline/lastScan-matching start re-applies stale server values.
+      Skip seeding when `loadResult.cached === true` (or mark cache rows).
+      **Test**: seed-decision matrix (cached × ratingSource × pending_sync
+      rows). `src/lib/syncEngine.ts` cached-return paths,
+      `src/stores/appState.ts` `seedNavidromeFeedback` — MED
+- [ ] **3.3** Pagination guard — `loadNavidromeSongs`' `while(true)` loop has no
+      max-page cap/dedupe; a server ignoring `songOffset` fetches forever.
+      Cap pages + dedupe (reject a page whose first id repeats). **Test**:
+      pagination driver as a pure generator over a fake fetch — offset-ignoring
+      server terminates within the cap; dedupe stops repeat pages.
+      `src/lib/navidromeApi.ts` `loadNavidromeSongs` — MED
+- [ ] **3.4** Stale cached config — `setCachedConfig` is never called with
+      `null`; removing credentials leaves `_cachedConfig`/`coverConfig` serving
+      stale URLs until restart. Clear on credential removal.
+      `src/lib/navidromeApi.ts` `setCachedConfig` — MED
+- [ ] **3.5** Normalize `webdavBase` keys — rows are stamped with the TRIMMED
+      key, but Push compares the raw `getSetting("webdavUrl")` build → a
+      trailing slash/whitespace flags the whole library "Server URL updated"
+      (only masked by `commitCredentials` trimming first; pre-trim persisted
+      rows never re-stamp). Derive both sides from one normalized URL (trim in
+      `runManualWebDAVSync` as the cheap fix). **Test**: key derivation ×
+      trailing-slash/whitespace/case variants (property: stamp-key and push-key
+      always equal for the same URL). `src/lib/metadataScanner.ts`
+      `currentIndexKey`, `src/lib/syncEngine.ts` `runManualWebDAVSync` — MED
+- [ ] **3.6** Index/probe hygiene — (a) `refreshIndex`/`rebuildIndex` persist
+      the full TAGGED index to Dexie on every probe (the prior-fingerprint diff
+      depends on it — slim the persisted shape, don't stop persisting);
+      (b) the manual-bind fetch path re-checks `pending_sync` but NOT `ignored`,
+      and the `updateMetadata` full-row replace DROPS the ignored flag (the
+      auto-match branch re-checks it — align both); (c) `processItem`'s mid-scan
+      library-replacement guard returns without `scannedCount++` → progress
+      stalls forever (count, don't stall); (d) `stripBasePath`'s
+      `decodeURIComponent` sits outside the try/catch — one malformed href
+      aborts the whole index. `src/lib/metadataScanner.ts` `processItem`,
+      `src/lib/metadataReader.ts` `stripBasePath` — LOW
+- [ ] **3.6t** **[TEST]** extract the pure matching/scoring core
+      (`matchTrackToWebdav`, candidates, evidence gate, fingerprint FNV,
+      mtime-epoch compare) into a DOM/Dexie-free module; port the empirical
+      scenarios as permanent suites — ambiguity ties, tag-led-uncertain rule,
+      size-only never auto-binds, CJK normalization (0.3), fingerprint
+      change-gating, POPM round-trip. Feeds 3.7's mtime tests. — LOW
+- [ ] **3.7** Comments/mtime — (a) the webdav-mode scan writes file comments,
+      wiping a cached comment when the file has none (file is authoritative by
+      design, but preserve the cached value when the file lacks the tag);
+      (b) mtime comparison is raw-string inequality — servers omitting
+      `getlastmodified` re-read every such row per scan, and format variance
+      after a server switch mass-flags unchanged files. Normalize both sides to
+      epoch. **Test**: mtime compare matrix (RFC1123/ISO/absent ×
+      changed/unchanged) via the 3.6t module.
+      `src/lib/metadataScanner.ts` `findChangedTracks`/`processItem` — LOW
+- [ ] **3.8** WebDAV write hardening — (a) orphan `.mmdrome-tmp` cleanup on
+      startup (DELETE exists only on failure paths); (b) the push confirmation
+      never surfaces missing-ETag ("blind overwrite"); (c) the dialog count
+      includes `ignored` rows that Push skips → overstated count.
+      `src/lib/syncEngine.ts` `webdavPutAtomic`,
+      `src/views/SettingsView.svelte` `safeCount` — LOW
 
 ## Phase 4 — UI & state layer
 
-- [ ] **4.1** Settings credential fields — per-field debounce timers (one shared timer drops earlier
-      fields' pending writes, and the mirror `$effect` reverts the typed text).
-      `src/views/SettingsView.svelte:163-177,74-91` — MED
-- [ ] **4.2** Verify SettingsView mount-time scroll restore — the save `$effect` may clobber the
-      session-restored scrollTop (writes 0) before `onMount` applies it. If confirmed, guard the
-      first save. `SettingsView.svelte:54-63` — MED (verification first)
-- [ ] **4.3** Dead code removal — `readFileMetadataWithIndex`, `clearCoverCache`, `formatEqText`,
-      `getAllPresets`, `createSingleCurveEqAudioBuffer`, `LazyThumb` `size` prop, `updateNowPlaying`
-      (TS+Swift), `destroy()` (half-implemented, no callers) — remove or finish. — LOW
-- [ ] **4.4** Native lock-screen artwork race — guard the fetch completion against the current
-      trackId before re-applying art. `NowPlayingController.swift:91-106` — LOW
-- [ ] **4.5** Native resource polish — stable cache filenames (FNV/sanitized id instead of
-      `hashValue`, which re-downloads everything per launch), skip `state()` file opens for
-      zero-duration tracks while stopped, retain/remove `SessionController` observer tokens,
-      handle `CapacitorHttp` `status:-1` as a distinct network error. — LOW
+- [x] **4.1** Settings credential fields debounce — CLOSED 2026-08-11 by
+      store-write-through (every input calls `updateSetting` directly;
+      `commitCredentials` guarantees persistence before network calls —
+      strictly better than the proposed per-field debounce; do not re-open;
+      the AGENTS.md "never reintroduce a mirror" gotcha stands). — MED
+- [ ] **4.2** SettingsView mount-time scroll restore — CONFIRMED: the save
+      `$effect`'s first run sees scrollTop 0, writes `scrollTops[tab] = 0` to
+      sessionStorage before `onMount`'s `await tick()` applies the restore →
+      restore defeated AND the session corrupted. Guard the first save (skip
+      writes until after the onMount restore). (Component-level — manual
+      verification + `npm run check`; too DOM-bound for the node suite.)
+      `src/views/SettingsView.svelte` — MED
+- [ ] **4.3** Dead code removal — `readFileMetadataWithIndex`, `clearCoverCache`,
+      `formatEqText`, `getAllPresets`, `createSingleCurveEqAudioBuffer`,
+      LazyThumb `size` prop, `updateNowPlaying` (TS interface + Swift
+      registration/handler — remove in lockstep), `destroy()` (3 impls, zero
+      callers; note sleepTimer's listener cleanup if teardown is ever needed).
+      Confidence via seeded suites + grep; `npm run check` catches dangling
+      references. — LOW
+- [ ] **4.4** Native lock-screen artwork race — `fetchArtwork`'s completion
+      unconditionally re-applies art; an out-of-order completion (older fetch
+      finishing last) stamps stale art over the current track. Guard against
+      the current trackId (needs a "last updated trackId" field — doesn't exist
+      yet). **Test**: artwork-cache decision as a pure struct (request/
+      completion ordering × current-trackId) + XCTest.
+      `NowPlayingController.swift` `fetchArtwork` — LOW
+- [ ] **4.5** Native resource polish — (a) cache filenames via `String.hashValue`
+      (process-seeded → full re-download per launch + orphaned files) → FNV /
+      sanitized id; (b) `state()` opens `AVAudioFile` for zero-duration tracks
+      even while stopped (the 250 ms poll + `refreshNowPlaying`); (c)
+      SessionController's block-observer tokens are discarded → registrations
+      unremovable. (CapacitorHttp `status:-1` REFUTED for the v8 iOS stack —
+      network errors reject, never resolve with −1; dropped.)
+      `AudioEngine.swift` `destinationURL`/`state()`, `SessionController.swift` — LOW
 
 ## Phase 5 — Documentation & knowledge base
 
-- [ ] **5.1** AGENTS.md corrections — `_bgTrackEndHandled` does not exist (§3); `effectiveDuration`
-      is still exported; the CJK fix was applied only to `metadataReader.normalizeForMatch`, not
-      the scanner's `normalizeForHint`; "prompt arrays kept only for capped rows" is false;
-      "`deriveFileType` in `navidrome.ts`" → `navidromeApi.ts`; the "native setSpeed doesn't echo
-      to the store" note is stale (`engineFacade.ts:46-56` writes stores since 2026-08-05).
-- [ ] **5.2** Document the open invariants (once decided): sleep-timer lifetime vs queue resets,
-      webview-reload behavior, `refreshQueue` divergence policy, `ended`-only wrapper design,
-      `idle`-never-re-entered scan states, `playNext`/`removeFromUserQueue` semantics (2.3-2.5).
-- [ ] **5.3** Add a "Verification" note to AGENTS.md pointing at `npm run check` + the `ios.yml`
-      workflow as the only native compile gate, and reference this TODO file.
+- [ ] **5.1** AGENTS.md corrections — `_bgTrackEndHandled` does not exist (§3;
+      actual: `_handlingEnd` + sleep-park trackId + `_enterBgSeq`);
+      `effectiveDuration` is still exported and used; the CJK fix was applied
+      only to `normalizeForMatch`, not `normalizeForHint`; "prompt arrays kept
+      only for capped rows" is false (retained on every row; the cap is
+      client-side — the function's own docstring repeated the falsehood, fixed
+      2026-08-11); "`deriveFileType` in `navidrome.ts`" → `navidromeApi.ts`;
+      the "native setSpeed doesn't echo to the store" note is stale
+      (`engineFacade.ts:51/61` write stores since 2026-08-05). All sub-claims
+      re-verified; corrections applied in the AGENTS.md 2026-08-11 entry.
+- [ ] **5.2** Document the decided invariants: sleep-timer lifetime vs queue
+      resets (0.2), webview-reload behavior (1.5), `refreshQueue` divergence
+      policy (1.4), the PlaybackCore transport contract + bg state machine
+      (1.0), queue semantics (2.4, 2.5 played-prefix policy), and the test
+      harness (0.5) conventions — where suites live, the purity rule.
+- [ ] **5.3** Add a "Verification" note to AGENTS.md (`npm run check` + `npm
+      test` + `ios.yml` as the only native compile gate) and reference this
+      TODO file. — applied 2026-08-11 (§5 of AGENTS.md now carries the gates).
 
 ---
 
 ## Verification gates
 
-- After each phase: `npm run check` (svelte-check + tsc) — the only test gate in the repo.
-- Swift changes (Phase 0-1, 4.4-4.5): push to `main` → `ios.yml` CI build, or `workflow_dispatch`.
-- Manual PWA checks for bg-mode items (1.2, 1.3, 1.9-1.12): lock the screen mid-track,
-  verify advancement, sleep timer, crossfade.
+- Every item: `npm run check` **and** `npm test`; `npm run build` before CI pushes.
+- JS CI: `.github/workflows/test.yml` (node 24, push + PR) — new (0.5).
+- Swift: push to `main` → `ios.yml` (`xcodebuild` + `swift test` for the new
+  XCTest target).
+- Manual PWA checks for bg-mode items (1.0 step 3 and survivors): lock the
+  screen mid-track, verify advancement, sleep timer, crossfade.
+- Deliberately NOT unit-tested (documented scope): Svelte component/DOM
+  behavior (would need vitest+jsdom; contradicts the zero-dep ethos) — the
+  decision logic behind it IS tested; components stay thin.
