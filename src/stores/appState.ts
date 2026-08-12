@@ -1,5 +1,5 @@
 import { writable, get, derived } from 'svelte/store'
-import type { LocalMetadataStore, PlayQueueState } from '$lib/db'
+import type { LocalMetadataStore } from '$lib/db'
 import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
 import { sanitizeRecent } from '$lib/recentWindow'
 

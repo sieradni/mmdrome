@@ -7,9 +7,10 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
-      "build:ios": "node scripts/build-ios.mjs",
-      "sync:ios": "npm run build:ios && cap sync ios && node scripts/fix-spm-path.mjs",
+    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json && tsc -p tsconfig.test.json",
+    "test": "node --test --import ./scripts/test-loader.mjs",
+    "build:ios": "node scripts/build-ios.mjs",
+    "sync:ios": "npm run build:ios && cap sync ios && node scripts/fix-spm-path.mjs",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist"
   },
