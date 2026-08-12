@@ -41,11 +41,13 @@ Fixes that establish invariants the later phases rely on. Ship these first.
       Mirror the foreground retry policy (exponential backoff) or surface the failure via
       `onBgError` instead of routing it to the advance handler.
       `src/lib/playbackManager.ts:94,658-662,683-689` — HIGH
-- [ ] **1.3** Web bg-mode end-of-track sleep: pauses land 1-2 s into the next track (watchdog
-      advances early) or never (failed `playBg` never changes `currentTrack`). Base the watch on
-      the bg element's own `ended`/position, or pause inside the watchdog before advancing.
-      `src/lib/sleepTimer.ts:109-119`, `src/lib/mediaSession.ts:76-80`,
-      `src/lib/playbackManager.ts:652-656` — HIGH
+- [x] **1.3** Web bg-mode end-of-track sleep: watch paused 1-2 s into the next track or never
+      fired. **Closed 2026-08-11 by the advance-hook** — the park guard fires at the advance
+      decision itself (all four advance sites, incl. the bg watchdog path), so the pause lands at
+      the natural end and the full track plays; the failed-`playBg`-never-fires sub-case remains
+      tracked under **1.2**'s retry-then-advance.
+      `src/lib/sleepTimer.ts:56-78,122-127`, `src/lib/playbackManager.ts:610-628`,
+      `src/lib/mediaSession.ts:76-80` — HIGH
 - [ ] **1.4** Native: `refreshQueue` divergence fallback must notify JS (`ended` or `error`) instead
       of silently `stopPlayback()`-ing with stale JS indexes. `AudioEngine.swift:360-368` — MED
 - [ ] **1.5** Native: reload reconciliation — `_initNative` should call `getState()` and resync
