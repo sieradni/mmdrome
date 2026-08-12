@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { addToUserQueue, playNext } from '../stores/appState'
+  import { queueManager } from '../lib/queueManager'
   import type { Track } from '../stores/appState'
 
   let { track, ondetails }: { track: Track; ondetails?: () => void } = $props()
@@ -8,7 +8,7 @@
   let addedTrackIds = $state(new Set<string>())
 
   function handleAddToQueue(trackId: string) {
-    addToUserQueue(trackId)
+    queueManager.addToUserQueue(trackId)
     addedTrackIds = new Set([...addedTrackIds, trackId])
     setTimeout(() => {
       const next = new Set(addedTrackIds)
@@ -18,7 +18,7 @@
   }
 
   function handlePlayNext() {
-    playNext(track.trackId)
+    queueManager.playNext(track.trackId)
     menuOpen = false
   }
 

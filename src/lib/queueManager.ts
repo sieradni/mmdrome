@@ -2,6 +2,7 @@ import { get } from 'svelte/store'
 import { saveQueue } from './db'
 import { libraryFilters, trackMatchesGenre } from './libraryFilters'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
+import * as queueMutation from './queueMutation'
 import {
   queue,
   library,
@@ -10,7 +11,7 @@ import {
   metadataCache,
   queueWrapNotice,
 } from '../stores/appState'
-import type { Track, AutoQueueFilters } from '../stores/appState'
+import type { Track, AutoQueueFilters, QueueState } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
 
 const MAX_AUTO_QUEUE = 50
@@ -25,23 +26,86 @@ class QueueManager {
     return get(library).find((t) => t.trackId === trackId)
   }
 
-  promoteActiveTrack(): void {
+  /**
+   * Single-write choke point for ANCHOR-PRESERVING queue edits — user-initiated
+   * mutations that must not move the playing-track anchor. The mutation algebra
+   * (section rewrites, id re-anchor, `null` no-op, dev invariant assert) lives
+   * in the pure `queueMutation` module; this method only binds it to the store
+   * and persists.
+   *
+   * Scope boundary: anchor-CHANGING writes are a separate single-writer family
+   * and must NOT route here — `advanceTo` (and the native re-adopt in
+   * playbackManager) move the active id, so re-anchoring would target the
+   * retired track; `removeFromUserQueue` anchors to position, not id (the id is
+   * gone — `indexOf` fails by construction).
+   */
+  private _mutateQueue(mutate: (q: QueueState) => queueMutation.QueueMutation | null): void {
     queue.update((q) => {
-      const combined = [...q.userQueue, ...q.autoQueue]
-      const activeId = combined[q.activeIndex]
-      if (!activeId) return q
-
-      const autoIdx = q.autoQueue.indexOf(activeId)
-      if (autoIdx < 0) return q
-
-      const newUserQueue = [...q.userQueue, activeId]
-      const newAutoQueue = q.autoQueue.slice(autoIdx + 1)
-      const newActiveIndex = newUserQueue.length - 1
-
-      const updated = { ...q, userQueue: newUserQueue, autoQueue: newAutoQueue, activeIndex: newActiveIndex }
+      const updated = queueMutation.applyQueueMutation(q, mutate)
+      if (updated === null) return q
       saveQueue(updated)
       return updated
     })
+  }
+
+  /** Appends a track to the end of the user queue (no-op when it already has a user slot — uniqueness). */
+  addToUserQueue(trackId: string): void {
+    this._mutateQueue((q) => queueMutation.addToUserQueue(q, trackId))
+  }
+
+  /**
+   * Inserts a track right after the active row (clamped to the user tail when
+   * the active row sits in the auto queue); moves an already-queued copy
+   * instead of duplicating it.
+   */
+  playNext(trackId: string): void {
+    this._mutateQueue((q) => queueMutation.playNext(q, trackId))
+  }
+
+  /** Moves an auto row to the end of the user queue (promoting the in-window active row is a plain promote). */
+  promoteToUser(trackId: string): void {
+    this._mutateQueue((q) => queueMutation.promoteToUser(q, trackId))
+  }
+
+  /**
+   * Moves an auto row to the slot right after the active row. When the target
+   * IS the in-window active row, this degrades to a plain promote — the playing
+   * track can only leave the auto side by being promoted up.
+   */
+  promoteToUserNext(trackId: string): void {
+    const q = get(queue)
+    const combined = [...q.userQueue, ...q.autoQueue]
+    if (q.activeIndex >= 0 && q.activeIndex < combined.length && combined[q.activeIndex] === trackId) {
+      this.promoteActiveTrack()
+      return
+    }
+    this._mutateQueue((q) => queueMutation.promoteToUserNext(q, trackId))
+  }
+
+  /**
+   * Reorders a user row to just after the active row (clamped to the user tail
+   * when the active row sits in the auto queue). No-ops — `null`, no write —
+   * when the row is missing or already in place.
+   */
+  moveToNext(trackId: string): void {
+    this._mutateQueue((q) => queueMutation.moveToNext(q, trackId))
+  }
+
+  /** Moves a user row to the very end of the user queue. */
+  moveToEnd(trackId: string): void {
+    this._mutateQueue((q) => queueMutation.moveToEnd(q, trackId))
+  }
+
+  /**
+   * Promotes the active track out of the auto queue — the post-load success
+   * path. The auto tail is sliced from the active id's first occurrence and
+   * the id gains a user slot only when it has none (a tier-3 cross-section
+   * duplicate collapses instead of appending a repeat). No-op (null, no write)
+   * when the active row isn't in auto (already promoted, or the id lives only
+   * in the user queue).
+   */
+  promoteActiveTrack(): void {
+    this._mutateQueue((q) => queueMutation.promoteActiveTrack(q))
   }
 
   /**
@@ -92,21 +156,28 @@ class QueueManager {
   /**
    * "Not now": removes an auto-queued track and cools it down so the next fill
    * doesn't immediately re-suggest it (replenish excludes the window; only a
-   * short pool admits it back).
+   * short pool admits it back). When the target IS the in-window active row,
+   * this degrades to a plain promote — the playing track can only leave the
+   * auto side by being promoted up. The recency mark folds into the same write
+   * (single saveQueue per mutation).
    */
   removeFromAutoQueue(trackId: string): void {
-    queue.update((q) => {
-      const autoQueue = q.autoQueue.filter((id) => id !== trackId)
-      const updated = { ...q, autoQueue, recentTrackIds: inscribeRecent(q.recentTrackIds, trackId, RECENT_LIMIT) }
-      saveQueue(updated)
-      return updated
-    })
+    const q = get(queue)
+    const combined = [...q.userQueue, ...q.autoQueue]
+    if (q.activeIndex >= 0 && q.activeIndex < combined.length && combined[q.activeIndex] === trackId) {
+      this.promoteActiveTrack()
+      return
+    }
+    this._mutateQueue((q) => queueMutation.removeFromAutoQueue(q, trackId))
   }
 
   /**
    * Removes a user-queue row; the removed track cools down too, so it can't
    * instantly re-enter through auto-fill (removal intent is "not now").
-   * Active-track removal keeps the current position semantics (decrement).
+   * DELIBERATE DEVIATION from the `_mutateQueue` re-anchor rule: active-row
+   * removal anchors to the position playback continues from (decrement
+   * arithmetic), not the id — the id is gone, so `indexOf` would fail by
+   * construction. Verified correct for any auto depth. Do NOT convert.
    */
   removeFromUserQueue(index: number): void {
     queue.update((q) => {
@@ -122,6 +193,41 @@ class QueueManager {
       saveQueue(updated)
       return updated
     })
+  }
+
+  /**
+   * Empties the queue down to the actively playing track (kept at user[0]).
+   * The anti-repeat window is deliberately PRESERVED — a clear is an explicit
+   * queue edit, not a "just heard it" event (asymmetric by intent vs. the
+   * Play All flows, which reset the window).
+   */
+  clearQueue(): void {
+    this._mutateQueue((q) => queueMutation.clearQueue(q))
+  }
+
+  /**
+   * Replaces both queue sections wholesale — the drag-reorder path (QueueView
+   * `applyDrop`). The active row is re-anchored by its id (first surviving
+   * occurrence, matching the drag preview), or −1 when nothing is active.
+   */
+  reorderAll(userQueue: string[], autoQueue: string[]): void {
+    this._mutateQueue(() => ({ userQueue, autoQueue }))
+  }
+
+  /**
+   * Full replacement for Play All flows: the user queue becomes the given
+   * tracks, the auto queue is cleared, and the active index points at the
+   * first track (the caller starts playback right after via `playTrackAt(0)`).
+   * Deliberately NOT routed through `_mutateQueue`'s id re-anchor — the
+   * previous active track is replaced wholesale, so the intended active id is
+   * the new first track, not a survivor. Also resets the recency window:
+   * explicit bulk replay supersedes anti-repeat memory.
+   */
+  playAll(trackIds: string[]): void {
+    const updated: QueueState = { ...get(queue), userQueue: trackIds, autoQueue: [], activeIndex: 0 }
+    queue.set(updated)
+    saveQueue(updated)
+    this.resetRecentWindow()
   }
 
   advanceQueue(): Track | null {

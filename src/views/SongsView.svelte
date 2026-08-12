@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { library, metadataCache, addToUserQueue, playNext, currentTrack } from '../stores/appState'
+  import { library, metadataCache, currentTrack } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import { libraryFilters, trackMatchesGenre } from '../lib/libraryFilters'

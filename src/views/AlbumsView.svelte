@@ -1,11 +1,10 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { library, metadataCache, autoQueueFilters, queue, currentTrack } from '../stores/appState'
+  import { library, metadataCache, autoQueueFilters, currentTrack } from '../stores/appState'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import { libraryFilters, applyFilterSort, makeGroupAggregates } from '../lib/libraryFilters'
   import { playbackManager } from '../lib/playbackManager'
-import { queueManager } from '../lib/queueManager'
-  import { saveQueue } from '../lib/db'
+  import { queueManager } from '../lib/queueManager'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import LazyThumb from '../components/LazyThumb.svelte'
@@ -160,14 +159,7 @@ import { queueManager } from '../lib/queueManager'
     if (tracks.length === 0) return
     const trackIds = tracks.map((t) => t.trackId)
     autoQueueFilters.update((f) => ({ ...f, albumScope: selectedAlbum ?? undefined, artistScope: undefined }))
-    queue.update((q) => {
-      const updated = { ...q, userQueue: trackIds, autoQueue: [], activeIndex: 0 }
-      saveQueue(updated)
-      return updated
-    })
-    // Explicit bulk replay supersedes recency memory — Play All opts out of
-    // the anti-repeat window.
-    queueManager.resetRecentWindow()
+    queueManager.playAll(trackIds)
     playbackManager.playTrackAt(0)
   }
 

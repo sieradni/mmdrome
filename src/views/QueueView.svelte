@@ -9,11 +9,9 @@
     playbackSpeed,
     effectiveDuration,
     playbackState,
-    clearQueue,
     autoQueueFilters,
     queueWrapNotice,
     type Track,
-    type QueueState,
   } from '../stores/appState'
   import { onMount, onDestroy, tick } from 'svelte'
   import { flip } from 'svelte/animate'
@@ -21,7 +19,7 @@
   import { queueManager } from '../lib/queueManager'
   import { distinctGenres } from '../lib/libraryFilters'
   import { audioManager } from '../lib/audioManager'
-  import { saveQueue, getSetting, setSetting } from '../lib/db'
+  import { getSetting, setSetting } from '../lib/db'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
@@ -364,25 +362,10 @@ function seek(e: Event) {
       return
     }
 
-    const currentQ = $queue
-    const currentCombinedIds = [...currentQ.userQueue, ...currentQ.autoQueue]
-    const activeTrackId = currentQ.activeIndex >= 0 ? currentCombinedIds[currentQ.activeIndex] : null
-
-    const newUserIds = previewUserItems.map((item) => item.track.trackId)
-    const newAutoIds = previewAutoItems.map((item) => item.track.trackId)
-
-    const newCombinedIds = [...newUserIds, ...newAutoIds]
-    const newActiveIndex = activeTrackId ? newCombinedIds.indexOf(activeTrackId) : -1
-
-    const updated: QueueState = {
-      ...currentQ,
-      userQueue: newUserIds,
-      autoQueue: newAutoIds,
-      activeIndex: newActiveIndex,
-    }
-
-    saveQueue(updated)
-    queue.set(updated)
+    queueManager.reorderAll(
+      previewUserItems.map((item) => item.track.trackId),
+      previewAutoItems.map((item) => item.track.trackId),
+    )
 
     stopPointerDrag()
   }
@@ -438,73 +421,6 @@ function seek(e: Event) {
   })
 
   // Action Helpers
-  function promoteToUser(trackId: string) {
-    queue.update((q) => {
-      const idx = q.autoQueue.indexOf(trackId)
-      if (idx < 0) return q
-      const autoQueue = q.autoQueue.filter((id) => id !== trackId)
-      const userQueue = [...q.userQueue, trackId]
-      const updated = { ...q, userQueue, autoQueue }
-      saveQueue(updated)
-      return updated
-    })
-  }
-
-  function promoteToUserNext(trackId: string) {
-    queue.update((q) => {
-      const idx = q.autoQueue.indexOf(trackId)
-      if (idx < 0) return q
-      const autoQueue = q.autoQueue.filter((id) => id !== trackId)
-      const insertAt = q.activeIndex >= 0 ? q.activeIndex + 1 : q.userQueue.length
-      const userQueue = [...q.userQueue.slice(0, insertAt), trackId, ...q.userQueue.slice(insertAt)]
-      const adjustedIndex = q.activeIndex >= insertAt ? q.activeIndex + 1 : q.activeIndex
-      const updated = { ...q, userQueue, autoQueue, activeIndex: adjustedIndex }
-      saveQueue(updated)
-      return updated
-    })
-  }
-
-  function moveToNext(trackId: string) {
-    queue.update((q) => {
-      const idx = q.userQueue.indexOf(trackId)
-      if (idx < 0) return q
-      const insertAt = q.activeIndex >= 0 ? q.activeIndex + 1 : q.userQueue.length
-      if (idx === insertAt) return q
-      const userQueue = q.userQueue.filter((id) => id !== trackId)
-      const target = insertAt > idx ? insertAt - 1 : insertAt
-      userQueue.splice(target, 0, trackId)
-      let activeIndex = q.activeIndex
-      if (idx === q.activeIndex) {
-        activeIndex = target
-      } else if (idx < q.activeIndex && target >= q.activeIndex) {
-        activeIndex--
-      } else if (idx > q.activeIndex && target <= q.activeIndex) {
-        activeIndex++
-      }
-      const updated = { ...q, userQueue, activeIndex }
-      saveQueue(updated)
-      return updated
-    })
-  }
-
-  function moveToEnd(trackId: string) {
-    queue.update((q) => {
-      const idx = q.userQueue.indexOf(trackId)
-      if (idx < 0) return q
-      const userQueue = q.userQueue.filter((id) => id !== trackId)
-      userQueue.push(trackId)
-      let activeIndex = q.activeIndex
-      if (idx === q.activeIndex) {
-        activeIndex = userQueue.length - 1
-      } else if (idx < q.activeIndex) {
-        activeIndex--
-      }
-      const updated = { ...q, userQueue, activeIndex }
-      saveQueue(updated)
-      return updated
-    })
-  }
-
   function removeFromUser(trackId: string) {
     const q = $queue
     const idx = q.userQueue.indexOf(trackId)
@@ -528,7 +444,7 @@ function seek(e: Event) {
   }
 
   function handleClearQueue() {
-    clearQueue()
+    queueManager.clearQueue()
     queueManager.replenishAutoQueue()
   }
 </script>
@@ -689,7 +605,7 @@ function seek(e: Event) {
                 </svg>
               </button>
               <button
-                onclick={() => moveToNext(item.track.trackId)}
+                onclick={() => queueManager.moveToNext(item.track.trackId)}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Move to next"
               >
@@ -698,7 +614,7 @@ function seek(e: Event) {
                 </svg>
               </button>
               <button
-                onclick={() => moveToEnd(item.track.trackId)}
+                onclick={() => queueManager.moveToEnd(item.track.trackId)}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Move to end"
               >
@@ -855,7 +771,7 @@ function seek(e: Event) {
                 </svg>
               </button>
               <button
-                onclick={() => promoteToUserNext(item.track.trackId)}
+                onclick={() => queueManager.promoteToUserNext(item.track.trackId)}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Play next"
               >
@@ -864,7 +780,7 @@ function seek(e: Event) {
                 </svg>
               </button>
               <button
-                onclick={() => promoteToUser(item.track.trackId)}
+                onclick={() => queueManager.promoteToUser(item.track.trackId)}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Add to user queue"
               >

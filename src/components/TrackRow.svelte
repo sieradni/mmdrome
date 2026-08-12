@@ -1,7 +1,8 @@
 <script lang="ts">
-  import { addToUserQueue, autoQueueFilters } from '../stores/appState'
+  import { autoQueueFilters } from '../stores/appState'
   import { metadataCache } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
+  import { queueManager } from '../lib/queueManager'
   import type { Track } from '../stores/appState'
   import LazyThumb from './LazyThumb.svelte'
   import TrackOptionsDropdown from './TrackOptionsDropdown.svelte'
@@ -47,7 +48,7 @@
 
   function handleAdd(e: MouseEvent, trackId: string) {
     e.stopPropagation()
-    addToUserQueue(trackId)
+    queueManager.addToUserQueue(trackId)
     added = true
     if (addTimer) clearTimeout(addTimer)
     addTimer = setTimeout(() => {

@@ -80,15 +80,23 @@ Goal: **one owner for all queue math.** Today mutation logic is split across `ap
 `queueManager.ts` (advance/replenish/rotate), and `QueueView.svelte` (inline duplicates of
 `playNext` and reorder math). Consolidate:
 
-- [ ] **2.1** Move every queue mutation into `queueManager` (single API: `insertNext`, `insertAt`,
-      `removeAt`, `moveTo`, `moveToEnd`, `clear`, `setActive`), with `appState` exposing only the
-      store + thin wrappers. Delete the inline duplicates in `QueueView.svelte:460-504`.
-      `removeFromAutoQueue`/`removeFromUserQueue` already moved (2026-08-10 recency-window refactor);
-      `playNext`/`clearQueue`/`addToUserQueue`/`setActiveQueueIndex` remain in appState. — MED
-- [ ] **2.2** Fix `playNext` off-by-one — when the active track sits in the auto section, the insert
-      lands at the wrong combined index and `activeIndex` points at the inserted track. The
-      `adjustedIndex` ternary is dead code; replace with index math that always keeps
-      `activeIndex` on the playing trackId. `src/stores/appState.ts:265-273` — MED
+- [x] **2.1** One owner for all queue math — closed 2026-08-11, but by a different design than
+      proposed: concrete methods (`addToUserQueue`/`playNext`/`promoteToUser`/`promoteToUserNext`/
+      `moveToNext`/`moveToEnd`/`removeFromAutoQueue`/`promoteActiveTrack`/`clearQueue`/`reorderAll`)
+      over a private `_mutateQueue` choke point (`QueueMutation` sections + `null` no-op + id
+      re-anchor), not the named-DSL API (`insertNext`/`insertAt`/`removeAt`/`moveTo`/`setActive`).
+      The builder bodies live in the pure, store-free `src/lib/queueMutation.ts`
+      (`applyQueueMutation` owns the re-anchor + DEV invariant assert; `_mutateQueue` is a thin
+      shell) — fuzz-verified duplicate-free (manufacture-free rule: an id may enter a section only
+      when the section is empty of it) with a scratch script (deleted after passing).
+      `setActiveQueueIndex` remains in appState by design (explicit index setter, not a
+      length-changing mutation); `removeFromUserQueue` stays the documented position-semantics
+      exception. See AGENTS.md 2026-08-11 entry. — MED
+- [x] **2.2** `playNext` off-by-one family — closed 2026-08-11 by the `_mutateQueue` id-based
+      re-anchor (capture `activeId` pre-mutation → `indexOf` on the rebuilt combined queue; no
+      active id → −1): the `adjustedIndex` dead ternary removed, in-auto inserts clamp to the user
+      tail, and every length-changing edit (incl. removing a preceding auto row while the active
+      sits at `auto[j>0]`, reorders, clears) keeps `activeIndex` on the playing trackId. — MED
 - [x] **2.3** `historyQueue`: removed and replaced by the `recentTrackIds` LRU window (2026-08-10) —
       persisted in the playQueue row (`RECENT_LIMIT=100`), single writer `queueManager.markRecent`/
       `advanceTo`, dedupe+move-to-end inscription, cap drops the OLDEST. Clear-Queue case proved the
@@ -107,7 +115,9 @@ Goal: **one owner for all queue math.** Today mutation logic is split across `ap
       tier (`_buildPool`), which recycles heard tracks instead of letting the queue die; the
       remaining concern is memory/unbounded growth of the persisted row + native snapshot size.
       Options: trim promoted (non-user-pinned) entries behind the active track, or cap with
-      oldest-drop. Must not drop user pins silently. `queueManager.ts:29-46`
+      oldest-drop. Must not drop user pins silently. Note (2026-08-11): a tier-3-admitted copy of
+      a user-queued track now collapses out of the tail when it plays (dedupe-append promote), so
+      duplicates no longer cycle in the tail. `queueManager.ts:29-46`
 - [x] **2.6** `queueWrapNotice` lifecycle — cleared on every `replenishAutoQueue` early-return
       (`needed === 0` and unchanged-pool paths, 2026-08-10); `_rotateAfterAnchor` set/clear
       contract unchanged; rebuild path re-derives it per fill. `queueManager.ts:143-157`

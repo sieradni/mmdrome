@@ -263,24 +263,6 @@ export function setPlaybackState(state: PlaybackState): void {
   playbackState.set(state)
 }
 
-export function addToUserQueue(trackId: string): void {
-  queue.update((q) => {
-    const userQueue = [...q.userQueue, trackId]
-    saveQueue({ ...q, userQueue })
-    return { ...q, userQueue }
-  })
-}
-
-export function playNext(trackId: string): void {
-  queue.update((q) => {
-    const insertAt = q.activeIndex >= 0 ? q.activeIndex + 1 : q.userQueue.length
-    const userQueue = [...q.userQueue.slice(0, insertAt), trackId, ...q.userQueue.slice(insertAt)]
-    const adjustedIndex = q.activeIndex >= insertAt ? q.activeIndex + 1 : q.activeIndex
-    saveQueue({ ...q, userQueue, activeIndex: adjustedIndex })
-    return { ...q, userQueue, activeIndex: adjustedIndex }
-  })
-}
-
 export function setActiveQueueIndex(index: number): void {
   queue.update((q) => {
     saveQueue({ ...q, activeIndex: index })
@@ -307,17 +289,6 @@ export function updateMetadata(meta: LocalMetadataStore): void {
 export function toggleShuffle(): void {
   shuffleEnabled.update((v) => !v)
   autoQueueFilters.update((f) => ({ ...f, albumScope: undefined, artistScope: undefined }))
-}
-
-export function clearQueue(): void {
-  queue.update((q) => {
-    const combined = [...q.userQueue, ...q.autoQueue];
-    const currentId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : null;
-    const userQueue = currentId ? [currentId] : [];
-    const updated = { ...q, userQueue, autoQueue: [], activeIndex: currentId ? 0 : -1 };
-    saveQueue(updated);
-    return updated;
-  });
 }
 
 export function initMetadataForTracks(tracks: Track[]): void {
