@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { get } from 'svelte/store'
+  import { Capacitor } from '@capacitor/core'
   import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, library } from '../stores/appState'
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
@@ -510,84 +511,6 @@
        onscroll={() => { if (scrollContainer) scrollTops[tab] = scrollContainer.scrollTop }}>
     <div class="divide-y divide-white/10">
       {#if tab === 'sources'}
-        <!-- WebDAV -->
-        <section class="px-4 py-4">
-          <h3 class="mb-3 text-base font-medium text-primary">WebDAV Sync</h3>
-          <p class="mb-2 text-sm text-muted">Requires CORS to be configured on the server.</p>
-          <div class="space-y-3">
-            <input
-              type="url"
-              placeholder="https://example.com/remote.php/dav/files/user/"
-              value={$settings.webdavUrl ?? ''}
-              oninput={onInput('webdavUrl')}
-              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-            />
-            <input
-              type="text"
-              placeholder="Username"
-              value={$settings.webdavUser ?? ''}
-              oninput={onInput('webdavUser')}
-              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-            />
-            <input
-              type="password"
-              placeholder="Password / Token"
-              value={$settings.webdavToken ?? ''}
-              oninput={onInput('webdavToken')}
-              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-            />
-            <div class="flex items-center gap-3">
-              <button
-                onclick={testWebdav}
-                disabled={$webdavConnection.checking}
-                class="flex items-center justify-center gap-2 rounded-lg bg-surface-hover px-5 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
-              >
-                {#if $webdavConnection.checking}
-                  <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                  Testing…
-                {:else}
-                  Test Connection
-                {/if}
-              </button>
-              {#if $webdavConnection.connected}
-                <span class="text-sm text-green-400">Connected</span>
-              {:else if $webdavConnection.error}
-                <span class="text-sm text-red-400">{$webdavConnection.error}</span>
-              {/if}
-            </div>
-            <button
-              onclick={startMetadataScan}
-              disabled={$metadataScanState.status === 'scanning'}
-              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
-            >
-              {#if $metadataScanState.status === 'scanning'}
-                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
-                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
-                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                </svg>
-                Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
-              {:else}
-                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
-                Check Modified Ratings
-              {/if}
-            </button>
-            {#if $metadataScanState.status === 'complete'}
-              {#if $metadataScanState.error}
-                <p class="text-sm text-red-400">{$metadataScanState.error}</p>
-              {:else}
-                <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
-              {/if}
-            {:else if $metadataScanState.status === 'scanning'}
-              <p class="text-sm text-muted">{$metadataScanState.progress.annotation ?? 'Scanning files'} — {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
-            {:else if $metadataScanState.status === 'error'}
-              <p class="text-sm text-red-400">{$metadataScanState.error}</p>
-            {/if}
-          </div>
-        </section>
-
         <!-- Navidrome -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Navidrome</h3>
@@ -658,6 +581,91 @@
                   ? `Error: ${$navidromeLoadStatus.error}`
                   : `Loaded ${$navidromeLoadStatus.loaded} song(s), ${$navidromeLoadStatus.failed} failed${$navidromeLoadStatus.cached ? ' (from cache)' : ''}`}
               </p>
+            {/if}
+          </div>
+        </section>
+
+        <!-- WebDAV -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">WebDAV Sync</h3>
+          <p class="mb-2 text-sm text-muted">
+            {Capacitor.isNativePlatform()
+              ? 'The native app talks to the server directly, so no CORS setup is needed. On the web app the server must allow requests from this site.'
+              : 'Requires CORS to be allowed on the server for this site.'}
+          </p>
+          <div class="space-y-3">
+            <input
+              type="url"
+              placeholder="https://example.com/remote.php/dav/files/user/"
+              value={$settings.webdavUrl ?? ''}
+              oninput={onInput('webdavUrl')}
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+            />
+            <input
+              type="text"
+              placeholder="Username"
+              value={$settings.webdavUser ?? ''}
+              oninput={onInput('webdavUser')}
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+            />
+            <input
+              type="password"
+              placeholder="Password / Token"
+              value={$settings.webdavToken ?? ''}
+              oninput={onInput('webdavToken')}
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+            />
+            <div class="flex items-center gap-3">
+              <button
+                onclick={testWebdav}
+                disabled={$webdavConnection.checking}
+                class="flex items-center justify-center gap-2 rounded-lg bg-surface-hover px-5 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+              >
+                {#if $webdavConnection.checking}
+                  <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Testing…
+                {:else}
+                  Test Connection
+                {/if}
+              </button>
+              {#if $webdavConnection.connected}
+                <span class="text-sm text-green-400">Connected</span>
+              {:else if $webdavConnection.error}
+                <span class="text-sm text-red-400">{$webdavConnection.error}</span>
+              {/if}
+            </div>
+            <button
+              onclick={rescanAllMetadata}
+              disabled={$metadataScanState.status === 'scanning'}
+              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
+            >
+              {#if $metadataScanState.status === 'scanning'}
+                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
+              {:else if $metadataScanState.status === 'complete' && $metadataScanState.progress.total > 0 && $metadataScanState.error === undefined}
+                <svg class="h-4 w-4 text-green-400" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                Done — rescan again
+              {:else}
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
+                Rescan All Metadata
+              {/if}
+            </button>
+            {#if $metadataScanState.status === 'complete'}
+              {#if $metadataScanState.error}
+                <p class="text-sm text-red-400">{$metadataScanState.error}</p>
+              {:else}
+                <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
+              {/if}
+            {:else if $metadataScanState.status === 'scanning'}
+              <p class="text-sm text-muted">{$metadataScanState.progress.annotation ?? 'Scanning files'} — {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
+            {:else if $metadataScanState.status === 'error'}
+              <p class="text-sm text-red-400">{$metadataScanState.error}</p>
             {/if}
           </div>
         </section>
