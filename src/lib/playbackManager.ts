@@ -346,6 +346,10 @@ class PlaybackManager {
 
     this._hasNativeEngaged = true
     setPlaybackState('playing')
+    // setQueue stopped the engine, which also cancelled any armed sleep timer
+    // (native `stopPlayback` invalidates the Timer + end-of-track flag). Re-arm
+    // the mirror so the sleep intent survives this snapshot (0.2).
+    await sleepTimerManager.rearmAfterSnapshot()
     // Track is now playing — promote it from auto to user queue
     queueManager.promoteActiveTrack()
     queueManager.replenishAutoQueue()

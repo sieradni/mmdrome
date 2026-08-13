@@ -2,6 +2,7 @@ import { get } from 'svelte/store'
 import { sleepTimer } from '../stores/appState'
 import { Capacitor } from '@capacitor/core'
 import { BackgroundAudio } from './nativePlugin'
+import { rearmDecision } from './sleepTimerMirror'
 import { playbackManager } from './playbackManager'
 import { audioManager } from './audioManager'
 
@@ -105,6 +106,19 @@ class SleepTimerController {
     this.pendingStop = pause
     sleepTimer.set({ active: false, mode: 'minutes', minutes: 30, endsAt: 0, remainingSeconds: 0 })
     if (pause) void playbackManager.pause()
+  }
+
+  /** Native: every JS queue snapshot (setQueue → native `stopPlayback`)
+   *  cancels the engine's armed timer AND its end-of-track flag. Re-arm the
+   *  engine mirror from the authoritative store so the sleep intent survives
+   *  next/prev/select/retry and queue-end wraps. No-op when the timer is
+   *  inactive or expired (the mirror floors an expired minutes timer at ~1s
+   *  so the pause still arrives). */
+  async rearmAfterSnapshot(): Promise<void> {
+    if (!this.isNative()) return
+    const d = rearmDecision(get(sleepTimer), Date.now())
+    if (!d.shouldReArm) return
+    await BackgroundAudio.setSleepTimer({ active: true, mode: d.mode, minutes: d.minutes }).catch(() => {})
   }
 
   /** Arms or cancels the timer. mode 'minutes' stops after N minutes; `endOfTrack`

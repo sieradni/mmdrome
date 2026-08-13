@@ -15,6 +15,7 @@ import {
   isAudioFilePath,
   verifyEntryAgainstTrack,
 } from "./metadataReader"
+import { filenameHintsTitle, normalizeForHint } from "./matchNormalize"
 import type { FileMetadata } from "./metadataReader"
 import type { WebdavFileEntry } from "./db"
 
@@ -86,8 +87,25 @@ export function setWebdavCredentials(url: string, user: string, token: string): 
     tagCacheLoaded = false
     tagCacheBaseKey = ""
   }
-  // Credentials changed mid-probe would fetch tag identity under one server
-  // and cache it under another — cancel any running pass up front.
+  // Credentials changed mid-scan: in-flight processItems must abort at their
+  // next `scanGen` guard, or the cleared (empty) index above would send them
+  // down the vanished-clear branch against an EMPTY index and mass-clear
+  // every binding. The `cancelled` flag stops the drain loop from
+  // re-dispatching the rest of the old run's queue. The aborted items never
+  // increment counters — surface the cancellation as an error state so the
+  // status line can't sit at "Scanning X/Y" forever (only when a scan is
+  // actually badged as running; idle/complete/error are left alone).
+  cancelled = true
+  scanGen++
+  if (get(metadataScanState).status === 'scanning') {
+    metadataScanState.set({
+      status: 'error',
+      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+      error: 'WebDAV credentials changed — scan cancelled',
+    })
+  }
+  // Cancel any running tag probe too — results must never be fetched under
+  // one server and cached under another.
   tagProbeGen++
   webdavUrl = davUrl
   webdavUser = davUser
@@ -108,11 +126,15 @@ export function setServerLastScan(scan: string): void {
 export async function refreshIndex(): Promise<boolean> {
   if (!webdavUrl || !webdavUser || !webdavToken) return false
   try {
+    // Capture the base key BEFORE the probe: a mid-probe credential swap must
+    // not stamp an index built under the OLD server with the NEW baseKey (the
+    // stamped key lands both in-memory AND in the persisted Dexie snapshot).
+    const baseKey = currentIndexKey()
     index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
-    indexBaseKey = currentIndexKey()
+    indexBaseKey = baseKey
     indexBuilt = true
     await applyCachedTags()
-    await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey, fingerprint: computeIndexFingerprint(index) })
+    await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey, fingerprint: computeIndexFingerprint(index) })
     return true
   } catch {
     return false
@@ -124,11 +146,13 @@ export async function rebuildIndex(): Promise<void> {
     throw new Error(CREDENTIALS_MISSING)
   }
 
+  // Capture the base key BEFORE the probe — see refreshIndex.
+  const baseKey = currentIndexKey()
   index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
-  indexBaseKey = currentIndexKey()
+  indexBaseKey = baseKey
   indexBuilt = true
   await applyCachedTags()
-  await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey: indexBaseKey, fingerprint: computeIndexFingerprint(index) })
+  await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey, fingerprint: computeIndexFingerprint(index) })
 }
 
 // ── In-file identity tags (content probing) ─────────────────────────────
@@ -186,23 +210,6 @@ async function applyCachedTags(): Promise<void> {
       e.tags = cached.tags
     }
   }
-}
-
-function normalizeForHint(s: string): string {
-  return s.toLowerCase().replace(/[^\w\s]/g, "").replace(/\s+/g, " ").trim()
-}
-
-/** A filename "hints" at an unclaimed track when its base (minus track
- *  numbers/separators) matches or contains a normalized unclaimed title. */
-function filenameHintsTitle(filename: string, titles: Set<string>): boolean {
-  const dot = filename.lastIndexOf(".")
-  const base = dot > 0 ? filename.slice(0, dot) : filename
-  const cleaned = normalizeForHint(base).replace(/^[\d\s._-]+/, "")
-  if (!cleaned) return false
-  for (const title of titles) {
-    if (cleaned === title || cleaned.includes(title) || title.includes(cleaned)) return true
-  }
-  return false
 }
 
 /**

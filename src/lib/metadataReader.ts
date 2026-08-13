@@ -1,6 +1,7 @@
 import { webdavFetch, authHeaders, buildWebdavUrl, normalizeUrl } from "./webdavUtils"
 import { getTagLib } from "./taglibSingleton"
 import { popmToLocalRating } from "./tagWriter"
+import { normalizeForMatch } from "./matchNormalize"
 import type { Track } from "../stores/appState"
 import type { WebdavFileEntry, LocalMetadataStore } from "./db"
 
@@ -220,16 +221,6 @@ export function findChangedTracks(
   }
 
   return { changed, unmatched }
-}
-
-/** Case/punctuation folding for title comparisons. MUST use unicode
- *  property escapes with the `u` flag: plain `\w` is ASCII-only, so
- *  Japanese/CJK titles (a large share of this library) normalized to the
- *  empty string — every CJK track scored as a near-match to ANY filename
- *  (`.includes("")` is always true) and `verifyEntryAgainstTrack` could
- *  never reach 'verified'. Letters/numbers of any script survive. */
-function normalizeForMatch(s: string): string {
-  return s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").replace(/\s+/g, " ").trim()
 }
 
 function extractTitleFromFilename(filename: string): string {

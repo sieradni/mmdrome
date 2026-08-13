@@ -27,45 +27,64 @@ call before implementation.
 
 Fixes that establish invariants the later phases rely on. Ship these first.
 
-- [ ] **0.1** Native: audio scheduling on the main thread — hop the
-      `TrackFileLoader.prefetch` completion to `DispatchQueue.main.async`
-      (generation guards preserved), making the loader's
-      `cache`/`activeTasks`/`pendingCompletions` dicts main-thread-only. Fixes
-      verified data races (URLSession delegate queue mutates the dicts while
-      main-thread callers `localURL`/`evict` read them) and moves AVFoundation
-      graph mutation + `RunLoop.main` timer scheduling onto main, matching
-      where every other engine path already runs. **Test**: extract the
-      cache/pending-completion chain into a pure `LoaderState` struct
-      (claim/chain/complete/evict) + XCTest target; add `swift test` step to
-      `ios.yml`. `AudioEngine.swift` `TrackFileLoader`/`loadAndStart` — HIGH
-- [ ] **0.2** Native: sleep-timer lifetime invariant — every JS queue snapshot
-      (`setQueue` via `_nativeLoadPlay`: next/prev/select/retry AND natural
-      track ends) cancels an armed sleep timer (`stopPlayback()` clears both the
-      `Timer` and `sleepAtTrackEnd`); JS never re-arms → the timer "expires"
-      while playback continues. Decide: re-arm from JS after queue snapshots (JS
-      owns the authoritative armed state — recompute remaining minutes from
-      `endsAt`; recommended) vs stop-cancelling in `stopPlayback()` for snapshot
-      resets. Must cover the end-of-track flag too, not just the timer.
-      **Test**: JS side — the re-arm logic as a pure `SleepTimerMirror`
-      (armed-state → remaining → push-decision), no timer APIs, fake clock.
-      `AudioEngine.swift` `setQueue`/`stopPlayback`,
+- [x] **0.1** Native: audio scheduling on the main thread — closed 2026-08-12:
+      `TrackFileLoader` rewritten over a pure `LoaderState` (claim/chain/
+      complete/evict; cache now stores `URL` directly, the `LoadedFile`
+      wrapper is gone) in a NEW dependency-free `BackgroundAudioCore` target
+      (`native/BackgroundAudio/Sources/Core`), and the URLSession
+      downloadTask completion now hops to `DispatchQueue.main.async` — the
+      loader dicts, AVFoundation graph mutation and `RunLoop.main` timers are
+      all main-thread-only (matching `handleSegmentCompletion`). The
+      chained-pendingCompletion behavior is preserved 1:1 (including the
+      stale-fire parity case: an evicted in-flight task's late completion is
+      a no-op via the generation guard). **Test**: XCTest target
+      `BackgroundAudioTests` (6 cases: claim-refuses-duplicates, chain/
+      complete single-fire + chain order, store/cached, evict-all, full
+      cycle) with `swift test` added to `ios.yml` — it runs the Core+Tests
+      closure on the macOS host (Capacitor never enters that build; the
+      manifest declares `.macOS(.v13)` so the host build is unambiguously
+      legal). `AudioEngine.swift` `TrackFileLoader`/`loadAndStart` — HIGH
+- [x] **0.2** Native: sleep-timer lifetime invariant — closed 2026-08-12 via
+      the recommended re-arm-from-JS path (JS owns the authoritative armed
+      state): new pure `src/lib/sleepTimerMirror.ts` — `rearmDecision`
+      (inactive → no re-arm; minutes → exact remaining minutes recomputed
+      from `endsAt`, sub-minute precision, ~1s floor when already expired so
+      the pause still arrives; endOfTrack → re-arm the flag with minutes
+      passed through). `sleepTimerManager.rearmAfterSnapshot()` re-sends
+      `BackgroundAudio.setSleepTimer` after every queue snapshot, invoked
+      from `_nativeLoadPlay` — the ONLY `setQueue` call site (covers
+      next/prev/select/retry and queue-end wraps); `refreshQueue` needs no
+      re-arm (no `stopPlayback`). No Swift change. **Test**: seed suite
+      `tests/sleepTimerMirror.test.ts` (6 cases, fake clock: inactive,
+      exact-remaining, sub-minute, expired-floor, endOfTrack passthrough,
+      idempotence). `AudioEngine.swift` `setQueue`/`stopPlayback`,
       `src/lib/sleepTimer.ts` `set` — HIGH
-- [ ] **0.3** Normalize CJK-safe everywhere — port `/[^\p{L}\p{N}\s]/gu` from
-      `metadataReader.normalizeForMatch` into `metadataScanner.normalizeForHint`
-      (the only two normalization sites repo-wide). Today a CJK title normalizes
-      to `""` and `filenameHintsTitle`'s `.includes("")` matches every file →
-      the "never sweep the server" probe guard degrades to a near-sweep.
-      **Test**: table test — CJK/emoji/diacritics/symbols normalize to stable
-      tokens; `filenameHintsTitle` never matches on empty.
+- [x] **0.3** Normalize CJK-safe everywhere — closed 2026-08-12: the two
+      normalization sites consolidated into the pure `src/lib/matchNormalize.ts`
+      — `normalizeForMatch` (the existing `/[^\p{L}\p{N}\s]/gu` version) plus
+      `normalizeForHint` as an alias (cannot drift again) and
+      `filenameHintsTitle`, which now also skips empty normalized titles
+      (`if (!title) continue`) so a symbol-only title (`"!!!"` → `""`) can
+      never `.includes("")`-match every file. metadataScanner's ASCII-only
+      copy deleted; metadataReader/metadataScanner import the single source.
+      **Test**: seed suite `tests/matchNormalize.test.ts` (table: CJK/emoji/
+      diacritics/symbols → stable tokens, alias-cannot-drift, empty-title
+      never matches, leading-track-number stripping, CJK filename matching,
+      empty-base no-match). NOTE: title-scoring changes only affect FUTURE
+      scoring — already-unmatched CJK rows heal via force rescan or the File
+      Matching picker (fingerprint-gated retry).
       `src/lib/metadataScanner.ts` `normalizeForHint` — HIGH
-- [ ] **0.4** Credential-swap invariant — `refreshIndex`/`rebuildIndex` capture
-      `currentIndexKey()` AFTER the probe await → a mid-probe swap stamps a
-      foreign index with the new baseKey; and `setWebdavCredentials` bumps only
-      `tagProbeGen` (not `scanGen`) while clearing the in-memory index →
-      in-flight `processItem`s hit the vanished-clear branch against an EMPTY
-      index and mass-clear every binding. Fix: capture the key before the await;
-      bump `scanGen` on swap. (SettingsView `testWebdav` auto-scan gate is
-      already `idle || error` — done.)
+- [x] **0.4** Credential-swap invariant — closed 2026-08-12:
+      `refreshIndex`/`rebuildIndex` capture `currentIndexKey()` BEFORE the
+      probe await — a mid-probe swap can no longer stamp a foreign index
+      (in-memory AND the persisted Dexie snapshot) with the new baseKey; and
+      `setWebdavCredentials` now bumps `scanGen` + sets `cancelled = true`
+      alongside the existing `tagProbeGen` bump, so in-flight `processItem`s
+      abort at their next guard and the drain loop stops re-dispatching the
+      old run. Previously the swap (which clears `index = []`) let
+      post-swap-dispatched items match against the empty index and mass-clear
+      every binding via the vanished-clear branch, and pre-swap items with an
+      in-flight fetch re-stamped foreign paths with the new baseKey.
       `src/lib/metadataScanner.ts` `refreshIndex`/`rebuildIndex`/`setWebdavCredentials` — HIGH
 - [x] **0.5** **[TEST FOUNDATION — closed 2026-08-12; every refactor item is gated on it]**:
       - **Harness, zero new deps**: `scripts/test-loader.mjs` — a ~20-line ESM

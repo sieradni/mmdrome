@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import BackgroundAudioCore
 
 // MARK: - Shared models
 
@@ -91,14 +92,9 @@ public struct NativeEngineState {
 /// Downloads remote stream URLs into the caches directory so they can be scheduled
 /// on AVAudioPlayerNode via AVAudioFile (which requires local file URLs).
 final class TrackFileLoader {
-    struct LoadedFile {
-        let url: URL
-    }
-
-    private var cache: [String: LoadedFile] = [:]
-    private var activeTasks: [String: URLSessionDownloadTask] = [:]
-    /// Completions waiting on a download already in flight (see `prefetch`).
-    private var pendingCompletions: [String: [(URL?, Error?) -> Void]] = [:]
+    /// All loader bookkeeping lives here; this class only binds a real
+    /// URLSessionDownloadTask to it. Main-thread-only — see `prefetch`.
+    private var state = LoaderState<URLSessionDownloadTask>()
     private let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.requestCachePolicy = .returnCacheDataElseLoad
@@ -109,8 +105,7 @@ final class TrackFileLoader {
 
     func localURL(for track: NativeTrack) -> URL? {
         if track.url.isFileURL { return track.url }
-        guard let entry = cache[track.trackId] else { return nil }
-        return entry.url
+        return state.cached(track.trackId)
     }
 
     func prefetch(_ track: NativeTrack, completion: @escaping (URL?, Error?) -> Void) {
@@ -118,53 +113,65 @@ final class TrackFileLoader {
             completion(track.url, nil)
             return
         }
-        if cache[track.trackId] != nil {
-            completion(cache[track.trackId]?.url, nil)
+        if let url = state.cached(track.trackId) {
+            completion(url, nil)
             return
         }
-        if activeTasks[track.trackId] != nil {
+        if state.isActive(track.trackId) {
             // A download for this track is already in flight (started by
             // `prefetchNeighbors`). Chain onto it instead of dropping the
             // completion: `loadAndStart` only schedules its track once this
             // fires, so a dropped callback leaves the engine silently stalled.
-            pendingCompletions[track.trackId, default: []].append(completion)
+            state.chain(track.trackId, completion)
             return
         }
 
         let destination = Self.destinationURL(for: track)
         let task = session.downloadTask(with: track.url) { [weak self] tempURL, _, error in
-            guard let self = self else { return }
-            self.activeTasks[track.trackId] = nil
-            let pendings = self.pendingCompletions.removeValue(forKey: track.trackId) ?? []
-            if let tempURL = tempURL, error == nil {
-                do {
-                    try? FileManager.default.removeItem(at: destination)
-                    try FileManager.default.moveItem(at: tempURL, to: destination)
-                    self.cache[track.trackId] = LoadedFile(url: destination)
-                } catch {
+            // Hop to the main thread: this completion runs on the URLSession
+            // delegate queue, while `state` (cache/activeTasks/pending), the
+            // AVFoundation graph and the RunLoop.main timers are all
+            // main-thread-only. Without the hop, the callbacks below race
+            // with every reader (`localURL`/`evict`/`cleanup`).
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                let pendings = self.state.complete(track.trackId)
+                if let tempURL = tempURL, error == nil {
+                    do {
+                        try? FileManager.default.removeItem(at: destination)
+                        try FileManager.default.moveItem(at: tempURL, to: destination)
+                        self.state.store(destination, for: track.trackId)
+                    } catch {
+                        pendings.forEach { $0(nil, error) }
+                        return
+                    }
+                    completion(destination, nil)
+                    pendings.forEach { $0(destination, nil) }
+                } else {
+                    completion(nil, error)
                     pendings.forEach { $0(nil, error) }
-                    return
                 }
-                completion(destination, nil)
-                pendings.forEach { $0(destination, nil) }
-            } else {
-                completion(nil, error)
-                pendings.forEach { $0(nil, error) }
             }
         }
-        activeTasks[track.trackId] = task
-        task.resume()
+        if state.claim(track.trackId, task: task) {
+            task.resume()
+        } else {
+            // Unreachable on the main thread (the isActive check above already
+            // chained) — defensive: never resume a second download for a
+            // claimed id, and never leak the abandoned task.
+            task.cancel()
+            state.chain(track.trackId, completion)
+        }
     }
 
     /// Drops a cached file (e.g. a corrupt or partial download) and cancels any
     /// in-flight fetch for it so the next prefetch re-fetches from the server.
     func evict(_ trackId: String) {
-        if let entry = cache.removeValue(forKey: trackId) {
-            try? FileManager.default.removeItem(at: entry.url)
+        let (task, url) = state.evict(trackId)
+        task?.cancel()
+        if let url = url {
+            try? FileManager.default.removeItem(at: url)
         }
-        activeTasks[trackId]?.cancel()
-        activeTasks[trackId] = nil
-        pendingCompletions.removeValue(forKey: trackId)
     }
 
     /// Deletes cached files for tracks that are no longer within `keepRadius` of `currentIndex`.
@@ -172,11 +179,7 @@ final class TrackFileLoader {
         let minIndex = currentIndex - keepRadius
         let maxIndex = currentIndex + keepRadius
         for track in tracks where track.index < minIndex || track.index > maxIndex {
-            if let entry = cache.removeValue(forKey: track.trackId) {
-                try? FileManager.default.removeItem(at: entry.url)
-            }
-            activeTasks[track.trackId]?.cancel()
-            activeTasks[track.trackId] = nil
+            evict(track.trackId)
         }
     }
 

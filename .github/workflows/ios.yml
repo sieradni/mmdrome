@@ -26,6 +26,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Swift package tests (pure core, macOS host)
+        # BackgroundAudioCore + BackgroundAudioTests have no Capacitor
+        # dependency, so `swift test` compiles/runs them on the macOS runner
+        # (Capacitor is iOS-only and only enters the xcodebuild step below).
+        working-directory: native/BackgroundAudio
+        run: swift test
+
       - name: Build web bundle + sync Capacitor (SPM package)
         # VITE_BASE=./ (via build:ios) so asset URLs resolve under capacitor://localhost
         # (the /mmdrome/ base used for gh-pages would 404 on native -> white screen).
