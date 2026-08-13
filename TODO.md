@@ -147,10 +147,15 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
   bg-paused · park-pending · resuming`, `exitBg{ended,atEnd,wasPlaying,
   position,trackId,parkArmed,loopMode,hasNext,hasUserQueue}` events, `load{
   target,decision}`/`pause`/`play`/`resumeFg`/`carryPaused`/`stop` commands;
-  fake clock N/A — pure reducer). Three deliberate fixes pinned by tests:
-  exit-bg park gated on `parkArmed && (ended || atEnd)` (was: paused mid-track
-  playback on unlock), `bg-paused`/paused exits carry the bg position
-  (`carryPaused`), exit-bg ended chain routes loop-one → RESTART. `pendingStop`
+  fake clock N/A — pure reducer). Deliberate fixes pinned by tests (three
+  exit-behavior + same-day re-review): exit-bg park gated on
+  `parkArmed && (ended || atEnd)` (was: paused mid-track playback on unlock),
+  `bg-paused`/paused exits carry the bg position (`carryPaused`), exit-bg ended
+  chain routes loop-one → RESTART, a re-hide during the fg resume re-engages
+  the swap (`resuming + enterBg → handoff{enter}`), lock-screen pause during a
+  handoff parks immediately (`handoff + pauseCmd → bg-paused`), a superseding
+  load during an enter-swap re-routes to the fg load path on exit
+  (`handoff{superseded}`). `pendingStop`
   deliberately OUT of the machine (load-time guard, stays with sleep-timer).
   **Deferred to Step 2**: the `PlaybackTransport` interface/types.ts — no dead
   code before the adapters land.
