@@ -136,7 +136,7 @@ machines (web `_handlePlaybackError` 3 attempts, native `_onNativeError` 2,
 bg zero), 4 copies of the park→loop-one→advance→loop-all→stop chain
 (`_onTrackEnded`, `_onBgTrackEnd`, `_handleExitBackground`,
 `_handleCrossfadeEnd`), and 3-way routing in `next`/`prev`/`playTrackAt` — the
-AGENTS.md log's parity-fix tax ("prev parity", "pause parity", …) is the
+docs/DEVLOG.md log's parity-fix tax ("prev parity", "pause parity", …) is the
 symptom. Replace with a transport abstraction, **test-first at every step**:
 
 - **Step 1 — Policy modules (pure, LANDED 2026-08-13)**: `src/lib/playbackCore/`
@@ -253,7 +253,7 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       methods over the private `_mutateQueue` choke point; pure builders in
       `src/lib/queueMutation.ts`, fuzz-verified; `setActiveQueueIndex` stays in
       appState by design; `removeFromUserQueue` the documented position-
-      semantics exception). See AGENTS.md 2026-08-11 entry. — MED
+      semantics exception). See docs/DEVLOG.md 2026-08-11 entry. — MED
 - [x] **2.2** `playNext` off-by-one family — closed 2026-08-11 by the
       `_mutateQueue` id-based re-anchor. — MED
 - [x] **2.3** `historyQueue` → `recentTrackIds` LRU window — closed 2026-08-10. — MED
@@ -356,7 +356,7 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       store-write-through (every input calls `updateSetting` directly;
       `commitCredentials` guarantees persistence before network calls —
       strictly better than the proposed per-field debounce; do not re-open;
-      the AGENTS.md "never reintroduce a mirror" gotcha stands). — MED
+      the AGENTS.md §4 C1 "never reintroduce a mirror" gotcha stands). — MED
 - [ ] **4.2** SettingsView mount-time scroll restore — CONFIRMED: the save
       `$effect`'s first run sees scrollTop 0, writes `scrollTops[tab] = 0` to
       sessionStorage before `onMount`'s `await tick()` applies the restore →
@@ -398,7 +398,7 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       2026-08-11); "`deriveFileType` in `navidrome.ts`" → `navidromeApi.ts`;
       the "native setSpeed doesn't echo to the store" note is stale
       (`engineFacade.ts:51/61` write stores since 2026-08-05). All sub-claims
-      re-verified; corrections applied in the AGENTS.md 2026-08-11 entry.
+      re-verified; corrections applied in the docs/DEVLOG.md 2026-08-11 entry.
 - [ ] **5.2** Document the decided invariants: sleep-timer lifetime vs queue
       resets (0.2), webview-reload behavior (1.5), `refreshQueue` divergence
       policy (1.4), the PlaybackCore transport contract + bg state machine

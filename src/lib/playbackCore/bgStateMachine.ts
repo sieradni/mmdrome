@@ -57,7 +57,7 @@
  *     already ended; parity with `_onBgTrackEnd`, which has no stop branch).
  *
  * Deliberate corrections over the current four-site behavior (pinned by tests,
- * documented in AGENTS.md):
+ * documented in AGENTS.md §4 A6):
  *   1. The exit-bg park is gated on `parkArmed && (ended || atEnd)` — the old
  *      `_handleExitBackground` parked unconditionally when the end-of-track
  *      sleep was armed, pausing mid-track playback on unlock (the sleep is
