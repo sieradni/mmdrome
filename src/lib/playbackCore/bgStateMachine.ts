@@ -29,7 +29,14 @@
  *   - `loadRequest` — an explicit load (next/prev/select/play) while bg is
  *                   engaged; the queue was already advanced by the caller, so
  *                   the load decision is 'reload' (load the resolved track).
- *   - `playCmd`/`pauseCmd` — lock-screen media-session commands (in bg).
+ *                   Superseding an in-flight enter-swap marks the handoff
+ *                   `superseded` — the exit then re-routes the load to the fg
+ *                   path (correction 7).
+ *   - `playCmd`/`pauseCmd` — lock-screen media-session commands (in bg). A
+ *                   pause during a handoff parks immediately (correction 6):
+ *                   the audible element pauses and the pending swap is
+ *                   cancelled (a stale bgStarted/bgFailed settle is a no-op
+ *                   in bg-paused).
  *   - `resumed`   — the exit-bg foreground resume finished (adapter fires it
  *                   even when play() rejects — swallowed, same as today).
  *
@@ -40,7 +47,9 @@
  *     'reload' on target:'fg' (exit raced an in-flight load) retries that same
  *     track through the foreground load path.
  *   - load{target:'fg'}    → same decision mapping, foreground load.
- *   - pause / play         → pause/resume the bg element.
+ *   - pause / play         → pause/resume the bg element. During an enter-
+ *     handoff `pause` means the AUDIBLE element (the fg one) and cancels the
+ *     pending swap (correction 6).
  *   - resumeFg(position)   → carry position to the fg element + resume.
  *   - carryPaused(position)→ carry position to the fg element, stay paused.
  *   - stop{target:'fg'}    → clear element src + stopped state (the `_onTrackEnded`
@@ -63,16 +72,41 @@
  *   4. `trackEnded` in any paused or in-flight state is structurally a no-op —
  *      the old `_handlingEnd` re-entrance guard and the watchdog re-trip
  *      paused-guard collapse into state.
+ *   5. A re-hide DURING the fg resume re-engages the swap (`resuming + enterBg
+ *      → handoff{enter}`) — `_enterBackground` (audioManager.ts:209) only
+ *      guards `_inBgMode`, which is already false during the resume window
+ *      (`_exitBackground` flips it before `onExitBackground`), so the current
+ *      code re-enters background there. A no-op would strand the fg element
+ *      playing with no bg element and no lock-screen routing. (Originally
+ *      pinned as a no-op from a misremembered `_enterBgSeq` claim — corrected
+ *      same-day on re-review.)
+ *   6. Lock-screen pause during a handoff parks immediately (`handoff +
+ *      pauseCmd → bg-paused + pause`) instead of being dropped — the current
+ *      code pauses the bg element directly while `_inBgMode` is true mid-swap
+ *      (audioManager.ts:239 sets it synchronously), so the user's pause must
+ *      land. The adapter pauses the AUDIBLE element (fg during an enter-swap)
+ *      and cancels the pending swap; a stale settle is a no-op here.
+ *   7. A load that supersedes an in-flight enter-swap (`loadRequest` marks the
+ *      handoff `superseded`) is re-routed to the fg load path on exit —
+ *      without it the fg element resumes the OLD track while the queue already
+ *      advanced (an in-bg next/prev). The current code has this same flaw;
+ *      the machine fixes it.
  */
 
 import { decideAdvance, type LoopMode } from './advanceDecider'
 
 export type BgState =
   | { name: 'foreground' }
-  | { name: 'handoff'; origin: 'enter' | 'load' }
+  | {
+      name: 'handoff'
+      origin: 'enter' | 'load'
+      /** True when an explicit loadRequest superseded an in-flight enter-swap
+       *  — exit then re-routes the load to the fg path (correction 7). */
+      superseded: boolean
+    }
   | { name: 'bg-playing' }
   | { name: 'bg-paused' }
-  | { name: 'park-pending'; trackId: string }
+  | { name: 'park-pending'; trackId: string | null }
   | { name: 'resuming' }
 
 export type BgEvent =
@@ -151,8 +185,11 @@ function stay(s: BgState): BgTransition {
 }
 
 function enterBg(s: BgState): BgTransition {
-  if (s.name !== 'foreground') return stay(s)
-  return { state: { name: 'handoff', origin: 'enter' }, command: null }
+  // A re-hide during the fg resume re-engages the swap (correction 5): the
+  // adapter fires enterBg only when the fg element is actually playing, so
+  // resuming is a valid handoff source.
+  if (s.name !== 'foreground' && s.name !== 'resuming') return stay(s)
+  return { state: { name: 'handoff', origin: 'enter', superseded: false }, command: null }
 }
 
 function bgStarted(s: BgState): BgTransition {
@@ -186,14 +223,14 @@ function trackEnded(s: BgState, e: Extract<BgEvent, { type: 'trackEnded' }>): Bg
   switch (decision) {
     case 'park':
       return {
-        state: { name: 'park-pending', trackId: e.trackId ?? '' },
+        state: { name: 'park-pending', trackId: e.trackId },
         command: { kind: 'pause' },
       }
     case 'restart':
     case 'advance':
     case 'wrap':
       return {
-        state: { name: 'handoff', origin: 'load' },
+        state: { name: 'handoff', origin: 'load', superseded: false },
         command: { kind: 'load', target: 'bg', decision },
       }
     case 'stop':
@@ -208,13 +245,14 @@ function loadRequest(s: BgState): BgTransition {
       return stay(s)
     case 'handoff':
       // A second load during an in-flight one supersedes it (last wins, like
-      // playBg overwriting the src today).
-      return { state: s, command: { kind: 'load', target: 'bg', decision: 'reload' } }
+      // playBg overwriting the src today). If this was an enter-swap, the exit
+      // re-routes the load to the fg path (correction 7).
+      return { state: { ...s, superseded: true }, command: { kind: 'load', target: 'bg', decision: 'reload' } }
     case 'bg-playing':
     case 'bg-paused':
     case 'park-pending':
       return {
-        state: { name: 'handoff', origin: 'load' },
+        state: { name: 'handoff', origin: 'load', superseded: false },
         command: { kind: 'load', target: 'bg', decision: 'reload' },
       }
   }
@@ -233,8 +271,16 @@ function playCmd(s: BgState): BgTransition {
 }
 
 function pauseCmd(s: BgState): BgTransition {
-  if (s.name !== 'bg-playing') return stay(s)
-  return { state: { name: 'bg-paused' }, command: { kind: 'pause' } }
+  switch (s.name) {
+    case 'bg-playing':
+    case 'handoff':
+      // Pause during a handoff lands immediately (correction 6): the audible
+      // element pauses (fg during an enter-swap, bg during a load) and the
+      // pending swap is cancelled — a stale settle is a no-op in bg-paused.
+      return { state: { name: 'bg-paused' }, command: { kind: 'pause' } }
+    default:
+      return stay(s)
+  }
 }
 
 function resumed(s: BgState): BgTransition {
@@ -248,11 +294,12 @@ function exitBg(s: BgState, e: Extract<BgEvent, { type: 'exitBg' }>): BgTransiti
     case 'resuming':
       return stay(s)
     case 'handoff':
-      if (s.origin === 'enter') {
+      if (s.origin === 'enter' && !s.superseded) {
         // The swap never completed — the fg element is still audible.
         return { state: { name: 'foreground' }, command: null }
       }
-      // Exit raced an in-flight bg load — retry the same track via the fg path.
+      // Exit raced an in-flight bg load — or a load that superseded an
+      // enter-swap (correction 7) — retry the same track via the fg path.
       return {
         state: { name: 'foreground' },
         command: { kind: 'load', target: 'fg', decision: 'reload' },

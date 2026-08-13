@@ -26,17 +26,23 @@ function expectTransition(state: BgState, event: BgEvent, next: BgState, command
 // ── enterBg ────────────────────────────────────────────────────────────────
 
 test('enterBg: foreground → handoff{enter} (fg element still audible)', () => {
-  expectTransition(fg, { type: 'enterBg' }, { name: 'handoff', origin: 'enter' }, null)
+  expectTransition(fg, { type: 'enterBg' }, { name: 'handoff', origin: 'enter', superseded: false }, null)
 })
 
-test('enterBg: no-op in every non-foreground state', () => {
+test('enterBg: re-hide during the fg resume re-engages the swap (correction 5)', () => {
+  // `_enterBackground` only guards `_inBgMode` (already false during the
+  // resume window) — the current code re-enters background there; a no-op
+  // would strand the fg element playing with no bg element.
+  expectTransition({ name: 'resuming' }, { type: 'enterBg' }, { name: 'handoff', origin: 'enter', superseded: false }, null)
+})
+
+test('enterBg: no-op when bg is already engaged', () => {
   const states: BgState[] = [
-    { name: 'handoff', origin: 'enter' },
-    { name: 'handoff', origin: 'load' },
+    { name: 'handoff', origin: 'enter', superseded: false },
+    { name: 'handoff', origin: 'load', superseded: false },
     { name: 'bg-playing' },
     { name: 'bg-paused' },
     { name: 'park-pending', trackId: 't1' },
-    { name: 'resuming' },
   ]
   for (const s of states) expectTransition(s, { type: 'enterBg' }, s, null)
 })
@@ -44,11 +50,11 @@ test('enterBg: no-op in every non-foreground state', () => {
 // ── bgStarted / bgFailed ───────────────────────────────────────────────────
 
 test('bgStarted: enter-handoff → bg-playing, pauses the now-silent fg element', () => {
-  expectTransition({ name: 'handoff', origin: 'enter' }, { type: 'bgStarted' }, { name: 'bg-playing' }, { kind: 'pause' })
+  expectTransition({ name: 'handoff', origin: 'enter', superseded: false }, { type: 'bgStarted' }, { name: 'bg-playing' }, { kind: 'pause' })
 })
 
 test('bgStarted: load-handoff → bg-playing, no command', () => {
-  expectTransition({ name: 'handoff', origin: 'load' }, { type: 'bgStarted' }, { name: 'bg-playing' }, null)
+  expectTransition({ name: 'handoff', origin: 'load', superseded: false }, { type: 'bgStarted' }, { name: 'bg-playing' }, null)
 })
 
 test('bgStarted: stale in any non-handoff state', () => {
@@ -58,11 +64,11 @@ test('bgStarted: stale in any non-handoff state', () => {
 })
 
 test('bgFailed: enter-handoff rolls back to foreground (fg element never paused)', () => {
-  expectTransition({ name: 'handoff', origin: 'enter' }, { type: 'bgFailed' }, fg, null)
+  expectTransition({ name: 'handoff', origin: 'enter', superseded: false }, { type: 'bgFailed' }, fg, null)
 })
 
 test('bgFailed: load-handoff idles in bg-paused (bg has no retry policy)', () => {
-  expectTransition({ name: 'handoff', origin: 'load' }, { type: 'bgFailed' }, { name: 'bg-paused' }, null)
+  expectTransition({ name: 'handoff', origin: 'load', superseded: false }, { type: 'bgFailed' }, { name: 'bg-paused' }, null)
 })
 
 // ── trackEnded (the bg advance chain) ──────────────────────────────────────
@@ -80,7 +86,7 @@ test('trackEnded: loop-one restarts via the bg load path', () => {
   expectTransition(
     { name: 'bg-playing' },
     trackEndedEv({ loopMode: 'one' }),
-    { name: 'handoff', origin: 'load' },
+    { name: 'handoff', origin: 'load', superseded: false },
     { kind: 'load', target: 'bg', decision: 'restart' },
   )
 })
@@ -89,7 +95,7 @@ test('trackEnded: advances via the bg load path', () => {
   expectTransition(
     { name: 'bg-playing' },
     trackEndedEv({ hasNext: true }),
-    { name: 'handoff', origin: 'load' },
+    { name: 'handoff', origin: 'load', superseded: false },
     { kind: 'load', target: 'bg', decision: 'advance' },
   )
 })
@@ -98,7 +104,7 @@ test('trackEnded: loop-all wraps via the bg load path', () => {
   expectTransition(
     { name: 'bg-playing' },
     trackEndedEv({ loopMode: 'all', hasNext: false, hasUserQueue: true }),
-    { name: 'handoff', origin: 'load' },
+    { name: 'handoff', origin: 'load', superseded: false },
     { kind: 'load', target: 'bg', decision: 'wrap' },
   )
 })
@@ -116,7 +122,7 @@ test('trackEnded: error-driven advance skips the park', () => {
   expectTransition(
     { name: 'bg-playing' },
     trackEndedEv({ fromError: true, parkArmed: true, hasNext: true }),
-    { name: 'handoff', origin: 'load' },
+    { name: 'handoff', origin: 'load', superseded: false },
     { kind: 'load', target: 'bg', decision: 'advance' },
   )
 })
@@ -124,8 +130,8 @@ test('trackEnded: error-driven advance skips the park', () => {
 test('trackEnded: no-op in paused/in-flight states (watchdog re-trip + in-flight guards)', () => {
   const states: BgState[] = [
     fg,
-    { name: 'handoff', origin: 'enter' },
-    { name: 'handoff', origin: 'load' },
+    { name: 'handoff', origin: 'enter', superseded: false },
+    { name: 'handoff', origin: 'load', superseded: false },
     { name: 'bg-paused' },
     { name: 'park-pending', trackId: 't1' },
     { name: 'resuming' },
@@ -137,13 +143,13 @@ test('trackEnded: no-op in paused/in-flight states (watchdog re-trip + in-flight
 
 test('loadRequest: bg-playing / bg-paused / park-pending → bg load of the resolved track', () => {
   for (const s of [{ name: 'bg-playing' }, { name: 'bg-paused' }, { name: 'park-pending', trackId: 't1' }] as BgState[]) {
-    expectTransition(s, { type: 'loadRequest' }, { name: 'handoff', origin: 'load' }, { kind: 'load', target: 'bg', decision: 'reload' })
+    expectTransition(s, { type: 'loadRequest' }, { name: 'handoff', origin: 'load', superseded: false }, { kind: 'load', target: 'bg', decision: 'reload' })
   }
 })
 
-test('loadRequest: during a handoff supersedes it (last wins, origin kept)', () => {
-  const h = { name: 'handoff', origin: 'enter' } as BgState
-  expectTransition(h, { type: 'loadRequest' }, h, { kind: 'load', target: 'bg', decision: 'reload' })
+test('loadRequest: during a handoff supersedes it (origin kept, superseded marked)', () => {
+  const h = { name: 'handoff', origin: 'enter', superseded: false } as BgState
+  expectTransition(h, { type: 'loadRequest' }, { name: 'handoff', origin: 'enter', superseded: true }, { kind: 'load', target: 'bg', decision: 'reload' })
 })
 
 test('loadRequest: no-op in foreground and resuming', () => {
@@ -156,6 +162,20 @@ test('loadRequest: no-op in foreground and resuming', () => {
 
 test('pauseCmd: bg-playing → bg-paused + pause', () => {
   expectTransition({ name: 'bg-playing' }, { type: 'pauseCmd' }, { name: 'bg-paused' }, { kind: 'pause' })
+})
+
+test('pauseCmd: during a handoff parks immediately (correction 6 — the user pause must land)', () => {
+  // The current code pauses the bg element directly while `_inBgMode` is true
+  // mid-swap — dropping the event would leave audio playing after the pause.
+  expectTransition({ name: 'handoff', origin: 'enter', superseded: false }, { type: 'pauseCmd' }, { name: 'bg-paused' }, { kind: 'pause' })
+  expectTransition({ name: 'handoff', origin: 'load', superseded: false }, { type: 'pauseCmd' }, { name: 'bg-paused' }, { kind: 'pause' })
+})
+
+test('pauseCmd: a stale settle after the handoff pause is a no-op', () => {
+  // The cancelled swap's pending play() settling (bgStarted or bgFailed) must
+  // not yank the machine out of bg-paused.
+  expectTransition({ name: 'bg-paused' }, { type: 'bgStarted' }, { name: 'bg-paused' }, null)
+  expectTransition({ name: 'bg-paused' }, { type: 'bgFailed' }, { name: 'bg-paused' }, null)
 })
 
 test('pauseCmd: no-op when already paused', () => {
@@ -183,11 +203,17 @@ test('exitBg: no-op in foreground and resuming', () => {
 })
 
 test('exitBg: enter-handoff abandons the swap (fg element still audible)', () => {
-  expectTransition({ name: 'handoff', origin: 'enter' }, exitBgEv(), fg, null)
+  expectTransition({ name: 'handoff', origin: 'enter', superseded: false }, exitBgEv(), fg, null)
+})
+
+test('exitBg: a superseded enter-swap re-routes the load to the fg path (correction 7)', () => {
+  // An in-bg next/prev advanced the queue and superseded the swap — exiting
+  // must NOT resume the old track; load the resolved (new) track in fg.
+  expectTransition({ name: 'handoff', origin: 'enter', superseded: true }, exitBgEv(), fg, { kind: 'load', target: 'fg', decision: 'reload' })
 })
 
 test('exitBg: load-handoff retries the in-flight track via the fg path', () => {
-  expectTransition({ name: 'handoff', origin: 'load' }, exitBgEv(), fg, { kind: 'load', target: 'fg', decision: 'reload' })
+  expectTransition({ name: 'handoff', origin: 'load', superseded: false }, exitBgEv(), fg, { kind: 'load', target: 'fg', decision: 'reload' })
 })
 
 test('exitBg: bg-paused carries the bg position, stays paused (correction 2)', () => {
@@ -234,7 +260,7 @@ test('resumed: resuming → foreground', () => {
 })
 
 test('resumed: stale elsewhere', () => {
-  for (const s of [fg, { name: 'bg-playing' }, { name: 'handoff', origin: 'load' }] as BgState[]) {
+  for (const s of [fg, { name: 'bg-playing' }, { name: 'handoff', origin: 'load', superseded: false }] as BgState[]) {
     expectTransition(s, { type: 'resumed' }, s, null)
   }
 })
@@ -270,7 +296,7 @@ test('flow: enter → play → end → advance → next track → exit mid-track
   ;({ state: s } = transitionBg(s, { type: 'bgStarted' }))
   assert.deepEqual(s, { name: 'bg-playing' })
   ;({ state: s } = transitionBg(s, trackEndedEv({ hasNext: true })))
-  assert.deepEqual(s, { name: 'handoff', origin: 'load' })
+  assert.deepEqual(s, { name: 'handoff', origin: 'load', superseded: false })
   ;({ state: s } = transitionBg(s, { type: 'bgStarted' }))
   assert.deepEqual(s, { name: 'bg-playing' })
   const t = transitionBg(s, exitBgEv({ wasPlaying: true, position: 12 }))
@@ -281,13 +307,23 @@ test('flow: enter → play → end → advance → next track → exit mid-track
 })
 
 test('flow: enter-bg handoff failure rolls back without touching the fg element', () => {
-  const t = transitionBg({ name: 'handoff', origin: 'enter' }, { type: 'bgFailed' })
+  const t = transitionBg({ name: 'handoff', origin: 'enter', superseded: false }, { type: 'bgFailed' })
   assert.deepEqual(t.state, fg)
   assert.equal(t.command, null)
 })
 
-test('flow: a stale enter during resuming is a no-op (sequence race)', () => {
-  const s: BgState = { name: 'resuming' }
-  expectTransition(s, { type: 'enterBg' }, s, null)
-  expectTransition(s, { type: 'bgStarted' }, s, null)
+test('flow: re-hide during the fg resume re-engages the swap; a stale settle stays inert', () => {
+  let s: BgState = { name: 'resuming' }
+  // A stale bgStarted from the abandoned exit must not fire — no-op.
+  const stale = transitionBg(s, { type: 'bgStarted' })
+  assert.deepEqual(stale.state, { name: 'resuming' })
+  assert.equal(stale.command, null)
+  // A real re-hide (the adapter fires enterBg only while the fg element is
+  // actually playing) re-enters the enter-swap (correction 5).
+  ;({ state: s } = transitionBg(s, { type: 'enterBg' }))
+  assert.deepEqual(s, { name: 'handoff', origin: 'enter', superseded: false })
+  // Lock-screen pause during that re-swap parks immediately (correction 6).
+  const p = transitionBg(s, { type: 'pauseCmd' })
+  assert.deepEqual(p.state, { name: 'bg-paused' })
+  assert.deepEqual(p.command, { kind: 'pause' })
 })
