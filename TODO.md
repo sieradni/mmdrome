@@ -137,18 +137,23 @@ bg zero), 4 copies of the park→loop-one→advance→loop-all→stop chain
 AGENTS.md log's parity-fix tax ("prev parity", "pause parity", …) is the
 symptom. Replace with a transport abstraction, **test-first at every step**:
 
-- **Step 1 — Types + policy modules (pure)**: `PlaybackTransport` interface
-  (`load(track, pos?)`, `play`/`pause`/`seek`/`stop`, `setNextTrack`/
-  `cancelNextTrack`, events `ended`/`error`/`position`/`state`, capabilities:
-  bg-supported, crossfade, clock ownership). `RetryPolicy` (ONE exponential-
-  backoff machine, configurable cap — replaces the three), `AdvanceDecider`
-  (park → loop-one → advance → loop-all → stop, `fromError` aware),
-  `BgStateMachine` (`foreground · handoff · bg-playing · park-pending ·
-  resuming`, fake clock). **Tests written FIRST**: RetryPolicy
-  (attempt/cap/backoff/clear matrix), AdvanceDecider (table: every combination
-  × {park armed, loop one/all/none, error-driven, queue-end}), BgStateMachine
-  (every transition pair incl. enter/exit races, park-carry, watchdog re-trip
-  guard, `pendingStop` interplay).
+- **Step 1 — Policy modules (pure, LANDED 2026-08-13)**: `src/lib/playbackCore/`
+  holds three pure, store/DOM-free modules with table-driven suites
+  (`tests/{advanceDecider,retryPolicy,bgStateMachine}.test.ts`, 65 cases):
+  `AdvanceDecider` (park → loop-one → advance → loop-all → stop, `fromError`
+  aware — pins the guard order of the four advance sites), `RetryPolicy` (ONE
+  exponential-backoff machine, configurable cap — web 3×1s/2s/4s, native 2×,
+  bg max 0), `BgStateMachine` (`foreground · handoff{enter|load} · bg-playing ·
+  bg-paused · park-pending · resuming`, `exitBg{ended,atEnd,wasPlaying,
+  position,trackId,parkArmed,loopMode,hasNext,hasUserQueue}` events, `load{
+  target,decision}`/`pause`/`play`/`resumeFg`/`carryPaused`/`stop` commands;
+  fake clock N/A — pure reducer). Three deliberate fixes pinned by tests:
+  exit-bg park gated on `parkArmed && (ended || atEnd)` (was: paused mid-track
+  playback on unlock), `bg-paused`/paused exits carry the bg position
+  (`carryPaused`), exit-bg ended chain routes loop-one → RESTART. `pendingStop`
+  deliberately OUT of the machine (load-time guard, stays with sleep-timer).
+  **Deferred to Step 2**: the `PlaybackTransport` interface/types.ts — no dead
+  code before the adapters land.
 - **Step 2 — WebTransport**: extracts the audioManager a/b + crossfade +
   preloader orchestration; the crossfade rescue/reconcile block
   (`_handleCrossfadeEnd` 858-899) moves into the adapter. **Test**: crossfade
