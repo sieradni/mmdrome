@@ -32,7 +32,9 @@ final class LoaderStateTests: XCTestCase {
         var order: [Int] = []
         s.chain("a", { _, _ in order.append(1) })
         s.chain("a", { _, _ in order.append(2) })
-        _ = s.complete("a")
+        let fired = s.complete("a")
+        XCTAssertEqual(fired.count, 2)
+        fired.forEach { $0(nil, nil) }
         XCTAssertEqual(order, [1, 2])
     }
 
