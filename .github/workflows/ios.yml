@@ -27,10 +27,11 @@ jobs:
         run: npm ci
 
       - name: Swift package tests (pure core, macOS host)
-        # BackgroundAudioCore + BackgroundAudioTests have no Capacitor
-        # dependency, so `swift test` compiles/runs them on the macOS runner
-        # (Capacitor is iOS-only and only enters the xcodebuild step below).
-        working-directory: native/BackgroundAudio
+        # BackgroundAudioCore is its own dependency-free SPM package; swift test
+        # there never sees the Capacitor-bound plugin (Capacitor's XCFrameworks
+        # carry no macOS slices, so building the plugin for the host would fail
+        # on `import Capacitor`). The plugin only enters the xcodebuild step.
+        working-directory: native/BackgroundAudioCore
         run: swift test
 
       - name: Build web bundle + sync Capacitor (SPM package)

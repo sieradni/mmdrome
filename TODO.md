@@ -30,8 +30,10 @@ Fixes that establish invariants the later phases rely on. Ship these first.
 - [x] **0.1** Native: audio scheduling on the main thread — closed 2026-08-12:
       `TrackFileLoader` rewritten over a pure `LoaderState` (claim/chain/
       complete/evict; cache now stores `URL` directly, the `LoadedFile`
-      wrapper is gone) in a NEW dependency-free `BackgroundAudioCore` target
-      (`native/BackgroundAudio/Sources/Core`), and the URLSession
+      wrapper is gone) in a NEW dependency-free `BackgroundAudioCore` package
+      (`native/BackgroundAudioCore/Sources/Core` — its own SPM root, so
+      `swift test` on the macOS host never builds the Capacitor-bound plugin,
+      whose XCFrameworks carry no macOS slices), and the URLSession
       downloadTask completion now hops to `DispatchQueue.main.async` — the
       loader dicts, AVFoundation graph mutation and `RunLoop.main` timers are
       all main-thread-only (matching `handleSegmentCompletion`). The
