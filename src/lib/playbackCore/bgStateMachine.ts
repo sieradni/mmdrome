@@ -6,9 +6,12 @@
  * function. No DOM, no stores, no timers — a pure reducer over plain data,
  * with the advance chain delegated to `decideAdvance`.
  *
- * Adapter contract (WebBgTransport, later step): the adapter translates DOM
- * events into `BgEvent`s, executes the returned `BgCommand`s, and is the ONLY
- * thing that touches the audio elements and queue:
+ * Adapter contract (WebBgTransport): the adapter translates DOM events into
+ * `BgEvent`s, executes the returned `BgCommand`s, and is the ONLY thing that
+ * touches the audio elements. Loads resolve MANAGER-side — the machine's
+ * `load` command surfaces as `onLoad(target, decision)`, the manager resolves
+ * the track (queue/loop logic) and drives the load (the adapter never touches
+ * the queue):
  *
  *   - `enterBg`   — visibilitychange → hidden while the foreground element is
  *                   actually playing (a paused element never enters bg).
