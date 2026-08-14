@@ -800,6 +800,33 @@ test('abortBgLoad after an exit is a no-op', async () => {
   assert.equal(h.t.engaged, false)
 })
 
+test('a failed bg load restores the pre-mirror fg src', async () => {
+  const h = makeHarness()
+  await enterBg(h)
+  h.bgEl.emit('ended')
+  await flush()
+  h.bgEl.rejectPlays = true
+  await h.t.startBgLoad('u2')
+  assert.equal(h.fg.src, 'u1') // the dead url must not outlive the failed load
+})
+
+test('a pause-dropped settle keeps the mirrored fg src', async () => {
+  const h = makeHarness()
+  await enterBg(h)
+  h.bgEl.emit('ended')
+  await flush()
+  h.bgEl.manualPlays = true
+  const p = h.t.startBgLoad('u2')
+  await flush()
+  h.t.mediaPause() // bumps the settle token mid-load
+  h.bgEl.rejectNextPlay() // settle the pending play — the token drops it
+  await flush()
+  assert.equal(h.fg.src, 'u2') // the mirror stays — the pause dropped the settle
+  assert.equal(h.bgEl.src, 'u2')
+  assert.equal(h.bgEl.paused, true)
+  assert.equal(await p, false)
+})
+
 // ── visible while fg / revive ───────────────────────────────────────────────
 
 test('visible while foreground only revives the context', async () => {

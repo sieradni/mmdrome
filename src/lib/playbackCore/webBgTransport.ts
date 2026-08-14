@@ -208,14 +208,17 @@ export class WebBgTransport {
    *  holds the PRE-SWAP track's src forever after a bg advancement — the
    *  resume would play the wrong audio under the current track's UI/position.
    *  Mirrored BEFORE the settle so a settle dropped by a racing pause (token
-   *  bumped) still leaves the fg element on the current track. */
+   *  bumped) still leaves the fg element on the current track. A GENUINE load
+   *  failure (token-valid play() rejection) restores the pre-mirror fg src —
+   *  the dead URL must never outlive the failed load on the fg element. */
   async startBgLoad(url: string): Promise<boolean> {
     if (!this._el || !this.engaged) return false
     this._el.src = url
     this._el.currentTime = 0
     this._el.playbackRate = this._speed
+    const prevFgSrc = this._deps.fgElement().src
     this._deps.fgElement().src = url
-    return this._settlePlay(++this._settleToken)
+    return this._settlePlay(++this._settleToken, prevFgSrc)
   }
 
   /** Aborts an in-flight bg load without touching the element (pendingStop
@@ -408,7 +411,7 @@ export class WebBgTransport {
     this.onParked?.(f.currentTrackId ?? '')
   }
 
-  private async _settlePlay(token: number): Promise<boolean> {
+  private async _settlePlay(token: number, restoreFgSrc?: string): Promise<boolean> {
     if (!this._el) return false
     try {
       await this._el.play()
@@ -418,6 +421,10 @@ export class WebBgTransport {
       return true
     } catch {
       if (token !== this._settleToken) return false
+      // A genuine failure: the mirrored (dead) src must not outlive the failed
+      // load on the fg element. A dropped settle (token bumped) keeps the
+      // mirror — the fg element holds the CURRENT track's src by design.
+      if (restoreFgSrc !== undefined) this._deps.fgElement().src = restoreFgSrc
       await this._dispatch({ type: 'bgFailed' })
       return false
     }
