@@ -280,20 +280,27 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
 > Do NOT skip or indefinitely defer them on the "no local toolchain" excuse —
 > each lands as: write the Swift + XCTest → push → read CI output → iterate.
 
-- [ ] **1.1** Crossfade fade-out is dead — `startCrossfade` calls `rampVolume`
-      twice back-to-back; the second call invalidates the shared
-      `volumeRampTimer` before its first tick, so the fade-out gain stays pinned
-      until `finalizeCrossfadeSwitch` snaps it. Fix: ONE 40-step timer ramping
-      both gains (matches `rampStepCount`). **Test**: extract `RampPlan`
-      (start/end/target per node, step count) as a pure struct + XCTest
-      (dual-ramp profile, invalidation-on-pause).
-      `AudioEngine.swift` `startCrossfade`/`rampVolume` — HIGH
-- [ ] **1.8** `pause()` mid-crossfade leaves `volumeRampTimer`/
+- [x] **1.1** Crossfade fade-out is dead — closed 2026-08-14 (commit
+      `3b99419`, ios.yml run 51 green): `startCrossfade` called `rampVolume`
+      twice; the second call invalidated the shared `volumeRampTimer` before
+      its first tick, so the fade-out gain stayed pinned until
+      `finalizeCrossfadeSwitch` snapped it. Fix: pure `RampPlan` + `RampCurve`
+      in `BackgroundAudioCore` drive ONE 40-step timer (`rampCrossfade`)
+      ramping BOTH gains in lockstep (identical linear/t²/sigmoid math; the
+      per-node `rampVolume` is deleted). **Test**: `CrossfadeTests.swift`
+      dual-ramp profile (monotonic, endpoints, invalidation) — passed in CI.
+      `AudioEngine.swift` `startCrossfade`/`rampCrossfade` — HIGH
+- [x] **1.8** `pause()` mid-crossfade leaves `volumeRampTimer`/
       `crossfadeActive`/`crossfadeTargetIndex` live (the ramp closure never
       checks `isPlaying`; the minutes sleep timer can pause mid-fade →
-      wrong-volume/wrong-track switch on resume). Tear down the trio like
-      `cancelScheduled`, minus the node stops. **Test**: `CrossfadeState`
-      struct transitions (armed/in-flight/paused/resumed) + XCTest.
+      wrong-volume/wrong-track switch on resume) — closed 2026-08-14 (same
+      commit/CI): `pause()` now tears the trio down (ramp stop +
+      `standbyScheduleGeneration` bump + standby stop + `refreshActiveGain`
+      restore, mirroring `refreshQueue`/`setLoopMode`/endOfTrack-sleep); the
+      engine's three fields collapsed into one `CrossfadeState` value (phase +
+      target index) with the pure transition model in Core, so they can never
+      drift. **Test**: `CrossfadeTests.swift` state transitions
+      (armed/in-flight/paused/resumed) — passed in CI.
       `AudioEngine.swift` `pause()` — MED
   (Bundled: same state, one CI build; 0.1's `LoaderState` is the shared half.)
 
