@@ -243,12 +243,10 @@ public final class NativeAudioEngine: NSObject {
     private var isPlaying = false
     /// True once a schedule exists that can be resumed (vs. an empty queue).
     private var hasLiveSchedule = false
-    /// True while a crossfade between active and standby is in progress.
-    private var crossfadeActive = false
-    /// True once the crossfade for the current track has been armed.
-    private var crossfadeArmed = false
-    /// Index of the standby track during an armed crossfade.
-    private var crossfadeTargetIndex = -1
+    /// Crossfade lifecycle — one value (phase + target index) instead of the
+    /// old trio so the two can never drift apart; the pure transition model
+    /// lives in BackgroundAudioCore (TODO 1.1/1.8).
+    private var crossfade = CrossfadeState.idle
 
     /// Incremented on every schedule reset so stale completion handlers are ignored.
     private var scheduleGeneration = 0
@@ -374,7 +372,7 @@ public final class NativeAudioEngine: NSObject {
         // from the new list on its next tick. Only invalidate the standby completion
         // while a crossfade is armed/in-flight — after finalizeCrossfadeSwitch the
         // (former standby) node's completion is the active track's natural-end trigger.
-        let hadCrossfade = crossfadeArmed || crossfadeActive
+        let hadCrossfade = crossfade.isActive
         stopCrossfadeMonitor()
         stopVolumeRamp()
         if hadCrossfade {
@@ -382,9 +380,7 @@ public final class NativeAudioEngine: NSObject {
             standbyNode.stop()
         }
         standbyGain.outputVolume = 0
-        crossfadeActive = false
-        crossfadeArmed = false
-        crossfadeTargetIndex = -1
+        crossfade = .idle
         if isPlaying {
             setupCrossfadeMonitor()
         }
@@ -392,7 +388,7 @@ public final class NativeAudioEngine: NSObject {
 
     public func setLoopMode(_ mode: NativeLoopMode) {
         loopMode = mode
-        let hadCrossfade = crossfadeArmed || crossfadeActive
+        let hadCrossfade = crossfade.isActive
         stopCrossfadeMonitor()
         stopVolumeRamp()
         if hadCrossfade {
@@ -400,9 +396,7 @@ public final class NativeAudioEngine: NSObject {
             standbyNode.stop()
         }
         standbyGain.outputVolume = 0
-        crossfadeActive = false
-        crossfadeArmed = false
-        crossfadeTargetIndex = -1
+        crossfade = .idle
         if isPlaying {
             setupCrossfadeMonitor()
         }
@@ -443,7 +437,22 @@ public final class NativeAudioEngine: NSObject {
         // Pause both players: during a crossfade the standby node is rendering too.
         activeNode.pause()
         standbyNode.pause()
+        // Tear down any armed/in-flight crossfade (1.8): the ramp must not keep
+        // mutating gains while paused (a mid-fade pause would resume with wrong
+        // volumes and a stale switch), and the standby's pending completion
+        // must not fake a natural advance on resume — resume re-arms fresh.
+        let hadCrossfade = crossfade.isActive
         stopCrossfadeMonitor()
+        stopVolumeRamp()
+        if hadCrossfade {
+            standbyScheduleGeneration += 1
+            standbyNode.stop()
+        }
+        standbyGain.outputVolume = 0
+        crossfade = .idle
+        // A mid-fade pause may have ramped the active gain toward 0 — restore
+        // the track's full gain so the next arm starts from a clean base.
+        refreshActiveGain()
         setPlaying(false)
     }
 
@@ -595,17 +604,16 @@ public final class NativeAudioEngine: NSObject {
             sleepAtTrackEnd = true
             // A natural end must be reached cleanly — tear down any armed/in-flight
             // crossfade so the active player's own completion triggers the pause.
-            let hadCrossfade = crossfadeArmed || crossfadeActive
+            let hadCrossfade = crossfade.isActive
             stopCrossfadeMonitor()
             stopVolumeRamp()
             if hadCrossfade {
                 standbyScheduleGeneration += 1
                 standbyNode.stop()
+
             }
             standbyGain.outputVolume = 0
-            crossfadeActive = false
-            crossfadeArmed = false
-            crossfadeTargetIndex = -1
+            crossfade = .idle
             return
         }
 
@@ -759,9 +767,7 @@ public final class NativeAudioEngine: NSObject {
         hasLiveSchedule = true
         positionBias = seconds
         cachedPosition = seconds
-        crossfadeActive = false
-        crossfadeArmed = false
-        crossfadeTargetIndex = -1
+        crossfade = .idle
 
         if autoPlay {
             ensureEngineRunning()
@@ -809,7 +815,7 @@ public final class NativeAudioEngine: NSObject {
             }
 
             // The active player finishing while a crossfade is in progress is the switch point.
-            if self.crossfadeActive {
+            if self.crossfade.isInFlight {
                 self.finalizeCrossfadeSwitch()
                 return
             }
@@ -873,9 +879,7 @@ public final class NativeAudioEngine: NSObject {
     private func cancelScheduled() {
         scheduleGeneration += 1
         waitingAtTrackEnd = false
-        crossfadeActive = false
-        crossfadeArmed = false
-        crossfadeTargetIndex = -1
+        crossfade = .idle
         stopCrossfadeMonitor()
         stopVolumeRamp()
         playerA.stop()
@@ -905,11 +909,15 @@ public final class NativeAudioEngine: NSObject {
     private func stopCrossfadeMonitor() {
         crossfadeMonitor?.invalidate()
         crossfadeMonitor = nil
-        crossfadeArmed = false
+        // An armed-but-not-started fade without a live monitor is meaningless;
+        // an in-flight fade keeps running (the ramp owns it until finalize).
+        if crossfade.phase == .armed {
+            crossfade = .idle
+        }
     }
 
     private func crossfadeMonitorTick() {
-        guard isPlaying, !crossfadeActive, !crossfadeArmed else { return }
+        guard isPlaying, !crossfade.isActive else { return }
         guard crossfadeDuration > 0, tracks.indices.contains(activeIndex) else { return }
 
         let current = tracks[activeIndex]
@@ -917,7 +925,7 @@ public final class NativeAudioEngine: NSObject {
         guard currentPosition >= transitionPoint else { return }
         guard let nextIdx = nextIndex(after: activeIndex), tracks.indices.contains(nextIdx) else { return }
 
-        crossfadeArmed = true
+        crossfade = crossfade.arming(targetIndex: nextIdx)
         startCrossfade(to: nextIdx)
     }
 
@@ -926,12 +934,11 @@ public final class NativeAudioEngine: NSObject {
         guard let localURL = loader.localURL(for: nextTrack),
               let file = try? AVAudioFile(forReading: localURL) else {
             // Standby not ready yet: fall back to plain transition at natural end.
-            crossfadeArmed = false
+            crossfade = .idle
             return
         }
 
-        crossfadeActive = true
-        crossfadeTargetIndex = nextIdx
+        crossfade = crossfade.starting(targetIndex: nextIdx)
         let targetGain = Float(nextTrack.replayGainLinear(mode: replayGainMode))
         let startGain = activeGain.outputVolume
         let duration = Float(crossfadeDuration)
@@ -948,41 +955,37 @@ public final class NativeAudioEngine: NSObject {
         }
         standbyNode.play()
 
-        rampVolume(from: startGain, to: 0, on: activeGain, duration: duration)
-        rampVolume(from: 0, to: targetGain, on: standbyGain, duration: duration)
+        // ONE 40-step timer ramping BOTH gains in lockstep (1.1) — the old code
+        // called rampVolume twice, and the second call invalidated the shared
+        // timer before its first tick, so the fade-out never ran.
+        rampCrossfade(RampPlan(
+            activeStart: startGain,
+            standbyEnd: targetGain,
+            duration: duration,
+            curve: RampCurve(raw: crossfadeCurve, steepness: Float(sigmoidSteepness))
+        ))
     }
 
-    private func rampVolume(from start: Float, to end: Float, on gainNode: AVAudioMixerNode, duration: Float) {
-        let steps = 40
-        guard duration > 0, steps > 0 else {
-            gainNode.outputVolume = end
-            return
-        }
-        let stepTime = duration / Float(steps)
-
+    /// Runs ONE timer driving both sides of a crossfade from a pure RampPlan
+    /// (1.1). Replaces the per-node `rampVolume`, whose second call invalidated
+    /// the shared timer before its first tick — the fade-out never ran.
+    private func rampCrossfade(_ plan: RampPlan) {
         stopVolumeRamp()
         rampStepCount = 0
-        let timer = Timer(timeInterval: Double(stepTime), repeats: true) { [weak self] timer in
+        guard plan.duration > 0 else {
+            activeGain.outputVolume = 0
+            standbyGain.outputVolume = plan.standbyEnd
+            return
+        }
+        let timer = Timer(timeInterval: Double(plan.stepTime), repeats: true) { [weak self] timer in
             guard let self = self, timer === self.volumeRampTimer else {
                 timer.invalidate()
                 return
             }
             self.rampStepCount += 1
-            let t = min(1, Float(self.rampStepCount) / Float(steps))
-            let value: Float
-            switch self.crossfadeCurve {
-            case "linear":
-                value = start + (end - start) * t
-            case "exponential":
-                value = start + (end - start) * (t * t)
-            default:
-                // Sigmoid S-curve, mirroring the web engine's manual interpolation.
-                let k = Float(self.sigmoidSteepness)
-                let sig = 1.0 / (1.0 + exp(-k * (t - 0.5)))
-                value = start + (end - start) * sig
-            }
-            gainNode.outputVolume = value
-            if t >= 1 {
+            self.activeGain.outputVolume = plan.activeGain(atStep: self.rampStepCount)
+            self.standbyGain.outputVolume = plan.standbyGain(atStep: self.rampStepCount)
+            if self.rampStepCount >= RampPlan.stepCount {
                 timer.invalidate()
                 self.volumeRampTimer = nil
             }
@@ -1000,10 +1003,10 @@ public final class NativeAudioEngine: NSObject {
     private func finalizeCrossfadeSwitch() {
         stopVolumeRamp()
         stopCrossfadeMonitor()
-        crossfadeActive = false
-        crossfadeArmed = false
+        let targetIndex = crossfade.targetIndex
+        crossfade = .idle
 
-        activeIndex = crossfadeTargetIndex
+        activeIndex = targetIndex
         isActiveB.toggle()
         standbyNode.stop()
         standbyGain.outputVolume = 0
