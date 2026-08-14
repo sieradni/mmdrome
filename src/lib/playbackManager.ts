@@ -167,6 +167,7 @@ class PlaybackManager {
       () => { this.pause() },
       () => this.next(),
       () => this.prev(),
+      (t) => this.seek(t),
       (track) => {
         const config = getCachedConfig()
         if (!config) return undefined

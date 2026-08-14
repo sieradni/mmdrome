@@ -174,12 +174,20 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
   against a fake engine — crossfade target reconcile (still queued / removed
   mid-fade / loop-all wrap), replay-gain field refresh BEFORE the ended event
   (1.10's third sub-item), retry schedule + give-up → natural+fromError.
-- **Step 3 — WebBgTransport**: owns `_bgEl`; the interlock soup (`_inBgMode`,
-  `_enterBgSeq`, `_handlingEnd`, `parkedAtEnd`, `pendingStop`, mediaSession
-  watchdog) becomes BgStateMachine transitions. Retry (1.2) rides `RetryPolicy`
-  with the bg cap. **Test**: full transition graph; the four advance sites
-  collapse into ONE `_onTransportEnded(fromError)` — parity is now tested, not
-  eyeballed.
+- **Step 3 — WebBgTransport (LANDED 2026-08-13)**: `src/lib/playbackCore/
+  webBgTransport.ts` owns the bg element, visibilitychange (wired only when
+  `engine.isIOS`), settle token, 250 ms watchdog + position tick, swap, park
+  nudge; the interlock soup (`_inBgMode`, `_enterBgSeq`, `_handlingEnd`,
+  `parkedAtEnd`, `pendingStop`, mediaSession watchdog) became BgStateMachine
+  transitions. Retry (1.2) rides `RetryPolicy` with the bg cap (0). Policy
+  exits: `onLoad`/`onStop`/`onParked`/`onTick` — the transport NEVER touches
+  queue/stores/sleepTimer. Rewired `playbackManager` (bg machinery deleted
+  from `audioManager`; `_onBgTrackEnd`/`_handleExitBackground` gone; 1.11
+  closed in the mediaSession rewrite: seekto routes through the manager —
+  clamp + `clearPendingStop`); A4's decideAdvance adopted by `_onTrackEnded`.
+  **Tests**: `tests/webBgTransport.test.ts` (50 cases, fake engine/element/
+  timers/`document` stub) — full transition graph incl. the exit-bg park gate
+  reporting `onParked`; 216 total pass.
 - **Step 4 — NativeTransport**: owns `setQueue`/`refreshQueue`/`playTrackAt`,
   the 250 ms position poll, `_hasNativeEngaged`, queue-sync coalescing, getState
   reconcile (1.5 JS side), fail-fast empty snapshot (1.6 JS side), seek-position
@@ -243,13 +251,10 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
 
 ### Media session (independent, LOW)
 
-- [ ] **1.11** Lock-screen seeks write `playbackElement.currentTime` unclamped
-      (the web `seek()` path clamps) and never clear `pendingStop` → a seek
-      after sleep expiry leaves the park flag set and the next load re-parks.
-      Clamp to metadata duration + `clearPendingStop()` in `seekto` (and the bg
-      `'play'` handler for parity). **Test**: clamp/clear logic as pure
-      functions (seek target × pendingStop state matrix).
-      `src/lib/mediaSession.ts` — LOW
+- [x] **1.11** Lock-screen seeks — closed 2026-08-13 by the mediaSession
+      rewrite (Step 3): `seekto` routes through the manager's `seek()`, which
+      clamps to metadata duration AND clears `pendingStop` (bg included —
+      `sessionElement`). — LOW
 - [x] **1.3** Web bg-mode end-of-track sleep — closed 2026-08-11 by the
       advance-hook park guard at all four advance sites; the residual
       failed-`playBg`-never-fires case folds into 1.0's RetryPolicy. — HIGH

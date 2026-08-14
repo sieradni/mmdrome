@@ -22,6 +22,7 @@ export function setupMediaSession(
   onPause?: () => void,
   onNextTrack?: () => void,
   onPreviousTrack?: () => void,
+  onSeek?: (time: number) => void,
   getCoverBlobUrl?: (track: Track) => string | undefined,
   hooks?: MediaSessionHooks
 ): MediaSessionController {
@@ -85,8 +86,10 @@ export function setupMediaSession(
     h.b.removeEventListener('timeupdate', onTimeUpdate)
   })
 
-  // Play/pause/next/prev route through the manager, which dispatches to the bg
-  // transport (machine) when engaged — media commands need no bg branches here.
+  // Play/pause/next/prev/seek route through the manager, which dispatches to
+  // the bg transport (machine) when engaged — media commands need no bg
+  // branches here. Seek goes through the manager so pendingStop is cleared
+  // (1.11: a seek after sleep expiry must not leave the park flag set).
 
   navigator.mediaSession.setActionHandler('play', () => {
     onPlay?.()
@@ -106,13 +109,7 @@ export function setupMediaSession(
 
   navigator.mediaSession.setActionHandler('seekto', (details) => {
     if (details.seekTime != null) {
-      const el = h.getPositionElement()
-      // Clamp to the metadata duration (1.11 — A1: `HTMLAudioElement.duration`
-      // lies; an unclamped lock-screen seek past the end stalls the element).
-      const metaDur = get(currentTrack)?.duration ?? 0
-      const clamped = metaDur > 0 ? Math.min(details.seekTime, metaDur) : details.seekTime
-      el.currentTime = clamped
-      updatePositionState()
+      onSeek?.(details.seekTime)
     }
   })
 
