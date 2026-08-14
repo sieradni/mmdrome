@@ -91,6 +91,7 @@ export interface NativePluginClient {
   pause(): Promise<void>
   seek(options: { position: number }): Promise<void>
   setLoopMode(options: { loopMode: NativeLoopMode }): Promise<void>
+  getState(): Promise<NativePollState>
 }
 
 /** The client wrapper surface — the real `nativeEngine` satisfies it. */
@@ -311,6 +312,20 @@ export class NativeTransport {
   }
 
   /**
+   * Adopts an already-playing engine state without re-sending the snapshot
+   * (1.5 webview-reload reconcile): the engine kept playing across a reload
+   * while this transport instance is fresh and disengaged. Marks the transport
+   * engaged, remembers the track for retry/seek-memory targeting, and starts
+   * the position poll. Deliberately does NOT call setQueue/playTrackAt — that
+   * would restart the engine and kill the live playback being recovered.
+   */
+  adopt(trackId: string): void {
+    this._engaged = true
+    this._lastTrackId = trackId
+    this._client.setPositionPolling(true, (state) => this.onTick?.(state.position))
+  }
+
+  /**
    * Coalesced queue-tail refresh: same-task bursts collapse into ONE
    * refreshQueue call for the final snapshot. The factory is evaluated at
    * microtask fire time (live state, never stale); returning null skips the
@@ -371,6 +386,10 @@ export class NativeTransport {
 
   setLoopMode(mode: NativeLoopMode): Promise<void> {
     return this._client.plugin().setLoopMode({ loopMode: mode })
+  }
+
+  getState(): Promise<NativePollState> {
+    return this._client.plugin().getState()
   }
 
   private _handleEngineError(message: string): void {

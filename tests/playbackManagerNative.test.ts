@@ -45,6 +45,9 @@ class FakeNativeTransport {
   engageResolvers: Array<(ok: boolean) => void> = []
   calls: string[] = []
   lastEngage: { snapshot: unknown[]; activeIndex: number; loopMode: string } | null = null
+  getStateResult: { trackId: string; position: number; playing: boolean } | null = null
+  getStateError = false
+  adopted: string[] = []
 
   get engaged(): boolean {
     return this.engagedValue
@@ -95,6 +98,16 @@ class FakeNativeTransport {
 
   async init(): Promise<void> {
     this.calls.push('init')
+  }
+
+  async getState(): Promise<{ trackId: string; position: number; playing: boolean } | null> {
+    if (this.getStateError) throw new Error('getState rejected')
+    return this.getStateResult
+  }
+
+  adopt(trackId: string): void {
+    this.adopted.push(trackId)
+    this.engagedValue = true
   }
 
   onTrackChanged: ((trackId: string) => void) | null = null
@@ -167,6 +180,7 @@ type PrivatePM = {
   _onNativeTrackEnded(fromError?: boolean): Promise<void>
   _onNativeRetry(trackId: string): Promise<void>
   _onNativeTrackChanged(trackId: string): void
+  _reconcileNativeReload(): Promise<void>
 }
 
 function makeHarness(opts: { engageOk?: boolean; engaged?: boolean } = {}) {
@@ -359,4 +373,71 @@ test('_nativeLoadPlay skips post-work when a newer load superseded it', async ()
   assert.ok(!h.stm.calls.includes('rearmAfterSnapshot'))
   assert.equal(get(playbackState), 'stopped')
   assert.equal(get(currentTrack)?.trackId, 't2')
+})
+
+test('_reconcileNativeReload resyncs a known playing track', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1', 't2'], [t1, t2], 0)
+  h.nt.getStateResult = { trackId: 't2', position: 77, playing: true }
+  await h.m._reconcileNativeReload()
+
+  assert.equal(get(currentTrack)?.trackId, 't2')
+  assert.equal(get(playbackState), 'playing')
+  assert.equal(get(currentTime), 77)
+  assert.equal(get(queue).activeIndex, 1)
+  assert.deepEqual(h.nt.adopted, ['t2'])
+})
+
+test('_reconcileNativeReload re-adopts a track that left the combined queue', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1'], [t1, t2], 0)
+  h.nt.getStateResult = { trackId: 't2', position: 5, playing: true }
+  await h.m._reconcileNativeReload()
+
+  assert.equal(get(currentTrack)?.trackId, 't2')
+  assert.equal(get(queue).userQueue.length, 2)
+  assert.equal(get(queue).userQueue[1], 't2')
+  assert.deepEqual(h.nt.adopted, ['t2'])
+})
+
+test('_reconcileNativeReload is a no-op when the engine is idle', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1'], [t1], 0)
+  h.nt.getStateResult = { trackId: '', position: 0, playing: false }
+  await h.m._reconcileNativeReload()
+
+  assert.equal(get(currentTrack), null)
+  assert.equal(get(playbackState), 'stopped')
+  assert.deepEqual(h.nt.adopted, [])
+})
+
+test('_reconcileNativeReload stops on an unknown trackId', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1'], [t1], 0)
+  h.nt.getStateResult = { trackId: 'foreign', position: 0, playing: true }
+  await h.m._reconcileNativeReload()
+
+  assert.equal(get(currentTrack), null)
+  assert.equal(get(playbackState), 'stopped')
+  // The engine is audibly playing the unknown track: it must be paused, not
+  // merely disengaged (disengage stops the poll but not the audio).
+  assert.ok(h.nt.calls.includes('pause'))
+  assert.ok(h.nt.calls.includes('disengage'))
+  assert.ok(h.nt.calls.indexOf('pause') < h.nt.calls.indexOf('disengage'))
+})
+
+test('_reconcileNativeReload skips when getState rejects', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1'], [t1], 0)
+  h.nt.getStateError = true
+  await h.m._reconcileNativeReload()
+
+  assert.equal(get(currentTrack), null)
+  assert.equal(get(playbackState), 'stopped')
+  assert.deepEqual(h.nt.adopted, [])
 })

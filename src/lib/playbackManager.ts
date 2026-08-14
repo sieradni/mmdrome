@@ -15,6 +15,7 @@ import { sleepTimerManager } from './sleepTimer'
 import { WebTransport } from './playbackCore/webTransport'
 import { WebBgTransport, type BgFacts, type LoadDecision } from './playbackCore/webBgTransport'
 import { NativeTransport } from './playbackCore/nativeTransport'
+import { reconcileReload } from './playbackCore/nativeReconcile'
 import { decideAdvance } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
 import { computeReplayGainFields } from './playbackCore/replayGain'
@@ -234,6 +235,9 @@ export class PlaybackManager {
     transport.onTick = (position) => currentTime.set(position)
     await transport.init()
 
+    // 1.5 — recover a track the engine kept playing across a webview reload.
+    await this._reconcileNativeReload()
+
     const savedSpeed = await getSetting<number>('playbackSpeed')
     const savedPitch = await getSetting<number>('pitchOctaves')
     const savedGain = await getSetting<number>('masterGain')
@@ -397,6 +401,45 @@ export class PlaybackManager {
     // Track is now playing — promote it from auto to user queue
     this._qm.promoteActiveTrack()
     this._qm.replenishAutoQueue()
+  }
+
+  /**
+   * 1.5 — webview-reload reconciliation. After a reload the native engine
+   * keeps playing while the JS stores reset and this transport instance is
+   * fresh and disengaged. Recover the engine's current track by trackId
+   * (NEVER by `state.index` — E7: the engine's index refers to the last-sent
+   * snapshot, which queue mutations may have reindexed): adopt it back into
+   * the queue/stores and mark the transport engaged WITHOUT re-sending the
+   * snapshot (`setQueue` would restart the engine and kill the live playback).
+   * An unknown trackId warns + stops (the UI cannot represent what it cannot
+   * identify); a `getState` rejection skips gracefully (the plugin may not be
+   * ready yet).
+   */
+  private async _reconcileNativeReload(): Promise<void> {
+    const transport = this._nativeTransport
+    if (!transport) return
+    const state = await transport.getState().catch(() => null)
+    if (!state) return
+    const decision = reconcileReload(
+      state,
+      this._qm.getCombinedQueue(),
+      (trackId) => Boolean(this._qm.findTrack(trackId)),
+    )
+    if (decision.kind === 'resync') {
+      transport.adopt(decision.trackId)
+      this._onNativeTrackChanged(decision.trackId)
+      currentTime.set(decision.position)
+      setPlaybackState('playing')
+    } else if (decision.kind === 'stop') {
+      console.warn('[native] reload reconcile: engine plays an unknown track, stopping:', state.trackId)
+      // The engine is audibly playing here (state.playing was true) and the
+      // bridge has no `stop` command — `_stopPlayback` only disengages JS
+      // (poll + state), leaving the audio running under a "stopped" UI. Pause
+      // first so the unrecoverable audio actually stops.
+      await transport.pause().catch(() => {})
+      this._stopPlayback()
+    }
+    // 'idle' — the engine has no audible track; nothing to resync.
   }
 
   private _onNativeTrackChanged(trackId: string): void {

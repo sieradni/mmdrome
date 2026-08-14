@@ -59,6 +59,12 @@ class FakePlugin implements NativePluginClient {
   async setLoopMode(options: { loopMode: NativeLoopMode }): Promise<void> {
     this.commands.push(`loop:${options.loopMode}`)
   }
+
+  stateResult: NativePollState = { trackId: '', position: 0, playing: false }
+
+  async getState(): Promise<NativePollState> {
+    return this.stateResult
+  }
 }
 
 class FakeClient implements NativeEngineClient {
@@ -632,6 +638,28 @@ test('an engage queued in the settle window (after an awaited engage + seek) is 
   assert.equal(await transport.engage(tracks, 1, 'none'), true)
   assert.equal(transport.engaged, true)
   assert.deepEqual(plugin.order, ['setQueue:0', 'playTrackAt:0', 'seek:1', 'setQueue:1', 'playTrackAt:1'])
+})
+
+test('adopt marks engaged, remembers the track, and starts the poll without setQueue/playTrackAt', () => {
+  const { transport, client, plugin } = setup()
+  transport.adopt('t9')
+  assert.equal(transport.engaged, true)
+  // adopt must NOT re-send the snapshot (that would restart the live engine).
+  assert.equal(plugin.setQueueCalls.length, 0)
+  assert.equal(plugin.playTrackAtCalls.length, 0)
+  const last = client.polling[client.polling.length - 1]
+  assert.equal(last.enabled, true)
+  // The poll handler forwards positions via onTick.
+  const positions: number[] = []
+  transport.onTick = (p) => positions.push(p)
+  last.handler!({ trackId: 't9', position: 12, playing: true })
+  assert.deepEqual(positions, [12])
+})
+
+test('getState delegates to the plugin', async () => {
+  const { transport, plugin } = setup()
+  plugin.stateResult = { trackId: 't7', position: 42, playing: true }
+  assert.deepEqual(await transport.getState(), { trackId: 't7', position: 42, playing: true })
 })
 
 test('a tail sync waits for an in-flight engage to settle before refreshing', async () => {

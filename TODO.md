@@ -299,14 +299,20 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       JS re-snapshots on it). **Test**: divergence decision as a pure function
       (snapshot activeId vs engine currentId → action) + XCTest +
       NativeTransport test. `AudioEngine.swift` `refreshQueue` — MED
-- [ ] **1.5** Webview-reload reconciliation — `_initNative` never calls
-      `getState()`; after a reload the engine keeps playing while JS shows
-      nothing, and the first `play()` kills it via `setQueue`. Resync
-      `currentTrack`/`playbackState`/`activeIndex` by trackId when playing;
-      warn + stop when the trackId is unknown to the library. API exists —
-      pure wiring (JS side inside NativeTransport, tested in step 4).
-      `src/lib/playbackManager.ts` `_initNative`,
-      `src/lib/nativePlugin.ts` `getState` — MED
+- [x] **1.5** Webview-reload reconciliation — closed 2026-08-14. The pure
+      `reconcileReload` (step 4a) is now WIRED: `_initNative` calls
+      `_reconcileNativeReload()` after `transport.init()`, mapping
+      `NativeTransport.getState()` through `reconcileReload` (trackId +
+      combined `indexOf` + library `findTrack`, NEVER `state.index`).
+      `resync` → `transport.adopt(trackId)` (marks engaged + `_lastTrackId`
+      + starts the 250 ms poll WITHOUT `setQueue`/`playTrackAt` — re-sending
+      the snapshot would kill the engine's live playback) then re-anchors via
+      `_onNativeTrackChanged` + sets `currentTime`/`playbackState`; `stop`
+      (unknown trackId) → warn + `_stopPlayback()`; `idle` → no-op. A
+      `getState` rejection skips gracefully. Pinned by 5 cases in
+      `tests/playbackManagerNative.test.ts`.
+      `src/lib/playbackManager.ts` `_reconcileNativeReload`,
+      `src/lib/playbackCore/nativeTransport.ts` `adopt` — MED
 - [ ] **1.6** Empty/url-less snapshot — `_buildSnapshot` yields `url:''`
       without a Navidrome config, yet `_nativeLoadPlay` still sets
       `setPlaybackState('playing')` while native drops every track (nil-URL
