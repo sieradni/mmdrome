@@ -60,6 +60,7 @@ export class PlaybackManager {
   private _amOverride: typeof audioManager | null = null
   private _qmOverride: typeof queueManager | null = null
   private _stmOverride: typeof sleepTimerManager | null = null
+  private _engineOverride: typeof engine | null = null
 
   /**
    * Injectable deps for the glue tests: transports + engine adapters default to
@@ -74,6 +75,7 @@ export class PlaybackManager {
    */
   constructor(deps: {
     audioManager?: typeof audioManager
+    engine?: typeof engine
     queueManager?: typeof queueManager
     sleepTimerManager?: typeof sleepTimerManager
     webTransport?: WebTransport | null
@@ -82,6 +84,7 @@ export class PlaybackManager {
     isNative?: () => boolean
   } = {}) {
     this._amOverride = deps.audioManager ?? null
+    this._engineOverride = deps.engine ?? null
     this._qmOverride = deps.queueManager ?? null
     this._stmOverride = deps.sleepTimerManager ?? null
     this._webTransport = deps.webTransport ?? null
@@ -100,6 +103,10 @@ export class PlaybackManager {
 
   private get _stm(): typeof sleepTimerManager {
     return this._stmOverride ?? sleepTimerManager
+  }
+
+  private get _engine(): typeof engine {
+    return this._engineOverride ?? engine
   }
 
   /**
@@ -213,16 +220,7 @@ export class PlaybackManager {
     const savedGain = await getSetting<number>('masterGain')
     const savedTape = await getSetting<boolean>('tapeMode')
     const savedSnap = await getSetting<number>('snapTolerance')
-    if (savedSpeed !== undefined && savedSpeed !== 1) this._am.setSpeed(savedSpeed)
-    // Snap tolerance must be restored BEFORE pitch: setPitchOctaves quantizes
-    // the raw value against the current tolerance, so restoring pitch first
-    // would re-snap a saved off-grid pitch against the 0.15 default.
-    if (savedSnap !== undefined) this._am.setSnapTolerance(savedSnap)
-    if (savedPitch !== undefined && savedPitch !== 0) this._am.setPitchOctaves(savedPitch)
-    if (savedGain !== undefined && this._am.preamp) {
-      this._am.setMasterVolume(savedGain)
-    }
-    if (savedTape !== undefined) this._am.setTapeMode(savedTape)
+    this._restoreWebPlaybackParams({ speed: savedSpeed, pitch: savedPitch, gain: savedGain, tape: savedTape, snap: savedSnap })
 
     this._refreshPositionState = setupMediaSession(
       () => { this.play() },
@@ -278,25 +276,9 @@ export class PlaybackManager {
     const savedTape = await getSetting<boolean>('tapeMode')
     const savedSnap = await getSetting<number>('snapTolerance')
     const s = get(settings)
-    if (savedSpeed !== undefined) engine.setSpeed(savedSpeed)
-    // Snap tolerance BEFORE pitch (see _initWeb — the native facade snaps the
-    // restored pitch against its own _snapTolerance mirror).
-    if (savedSnap !== undefined) engine.setSnapTolerance(savedSnap)
-    if (savedPitch !== undefined) engine.setPitchOctaves(savedPitch)
-    if (savedGain !== undefined) engine.setMasterVolume(savedGain)
-    if (savedTape !== undefined) engine.setTapeMode(savedTape)
-    engine.setCrossfade(s.crossfadeDuration ?? 0)
-    engine.pushNativeEqFromStore()
-
-    // Sync the stores so the shared subscriptions below (which fire immediately)
-    // don't clobber the restored settings with their defaults.
-    playbackSpeed.set(savedSpeed ?? 1)
-    // Read the facade's effective (already-snapped) pitch back rather than the
-    // raw saved value — the raw value would transiently overwrite the snapped
-    // one the restore just pushed.
-    pitchOctaves.set(savedPitch === undefined ? 0 : engine.pitchOctaves)
-    tapeMode.set(savedTape ?? false)
-    snapTolerance.set(savedSnap ?? 0.15)
+    this._restoreNativePlaybackParams({ speed: savedSpeed, pitch: savedPitch, gain: savedGain, tape: savedTape, snap: savedSnap })
+    this._engine.setCrossfade(s.crossfadeDuration ?? 0)
+    this._engine.pushNativeEqFromStore()
 
     BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode ?? 'off' }).catch(() => {})
     transport.setLoopMode(get(loopMode)).catch(() => {})
@@ -306,24 +288,70 @@ export class PlaybackManager {
     })
 
     settings.subscribe((sv) => {
-      engine.setCrossfade(sv.crossfadeDuration ?? 0)
+      this._engine.setCrossfade(sv.crossfadeDuration ?? 0)
       if (sv.replayGainMode) {
         BackgroundAudio.setReplayGainMode({ mode: sv.replayGainMode }).catch(() => {})
       }
-      if (sv.masterGain !== undefined) engine.setMasterVolume(sv.masterGain)
+      if (sv.masterGain !== undefined) this._engine.setMasterVolume(sv.masterGain)
     })
+  }
+
+  /**
+   * Applies the persisted playback params on web. Snap tolerance is restored
+   * BEFORE pitch because `setPitchOctaves` quantizes the raw value against the
+   * current tolerance — pitch-first would re-snap a saved off-grid pitch
+   * against the 0.15 default. Speed/pitch skip their engine defaults (1×/0 oct)
+   * so the apply is a no-op for first-run (unset) values.
+   */
+  private _restoreWebPlaybackParams(s: {
+    speed?: number
+    pitch?: number
+    gain?: number
+    tape?: boolean
+    snap?: number
+  }): void {
+    if (s.speed !== undefined && s.speed !== 1) this._am.setSpeed(s.speed)
+    if (s.snap !== undefined) this._am.setSnapTolerance(s.snap)
+    if (s.pitch !== undefined && s.pitch !== 0) this._am.setPitchOctaves(s.pitch)
+    if (s.gain !== undefined && this._am.preamp) this._am.setMasterVolume(s.gain)
+    if (s.tape !== undefined) this._am.setTapeMode(s.tape)
+  }
+
+  /**
+   * Native twin of `_restoreWebPlaybackParams` (same snap-before-pitch order)
+   * plus the store sync that runs before `_subscribeShared`. Reads the facade's
+   * effective (already-snapped) pitch back rather than the raw saved value so
+   * the store never transiently holds an off-grid value.
+   */
+  private _restoreNativePlaybackParams(s: {
+    speed?: number
+    pitch?: number
+    gain?: number
+    tape?: boolean
+    snap?: number
+  }): void {
+    if (s.speed !== undefined) this._engine.setSpeed(s.speed)
+    if (s.snap !== undefined) this._engine.setSnapTolerance(s.snap)
+    if (s.pitch !== undefined) this._engine.setPitchOctaves(s.pitch)
+    if (s.gain !== undefined) this._engine.setMasterVolume(s.gain)
+    if (s.tape !== undefined) this._engine.setTapeMode(s.tape)
+
+    playbackSpeed.set(s.speed ?? 1)
+    pitchOctaves.set(s.pitch === undefined ? 0 : this._engine.pitchOctaves)
+    tapeMode.set(s.tape ?? false)
+    snapTolerance.set(s.snap ?? 0.15)
   }
 
   private _subscribeShared(): void {
     playbackSpeed.subscribe((v) => {
       setSetting('playbackSpeed', v)
-      engine.setSpeed(v)
+      this._engine.setSpeed(v)
       // The bg element's rate is owned by the transport (applied at swap/load).
       this._bgTransport?.setSpeed(v)
     })
-    pitchOctaves.subscribe((v) => { setSetting('pitchOctaves', v); engine.setPitchOctaves(v) })
-    tapeMode.subscribe((v) => { setSetting('tapeMode', v); engine.setTapeMode(v) })
-    snapTolerance.subscribe((v) => { setSetting('snapTolerance', v); engine.setSnapTolerance(v) })
+    pitchOctaves.subscribe((v) => { setSetting('pitchOctaves', v); this._engine.setPitchOctaves(v) })
+    tapeMode.subscribe((v) => { setSetting('tapeMode', v); this._engine.setTapeMode(v) })
+    snapTolerance.subscribe((v) => { setSetting('snapTolerance', v); this._engine.setSnapTolerance(v) })
 
     this._qm.replenishAutoQueue()
 
