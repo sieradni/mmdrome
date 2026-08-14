@@ -161,12 +161,19 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
   deliberately OUT of the machine (load-time guard, stays with sleep-timer).
   **Deferred to Step 2**: the `PlaybackTransport` interface/types.ts — no dead
   code before the adapters land.
-- **Step 2 — WebTransport**: extracts the audioManager a/b + crossfade +
-  preloader orchestration; the crossfade rescue/reconcile block
-  (`_handleCrossfadeEnd` 858-899) moves into the adapter. **Test**: crossfade
-  target reconcile cases (track still queued / removed mid-fade / loop-all
-  wrap) against a fake transport; replay-gain field refresh on switch (1.10's
-  third sub-item).
+- **Step 2 — WebTransport (LANDED 2026-08-13)**: extracts the audioManager a/b +
+  crossfade + preloader orchestration into `src/lib/playbackCore/webTransport.ts`
+  (injected `WebTransportEngine`/`WebTransportTimers`); the crossfade
+  rescue/reconcile block (`_handleCrossfadeEnd` 858-899) is now a pure
+  `reconcileCrossfadeTarget` (`crossfadeReconcile.ts` — wrap > rescue >
+  repoint; rescue is anchor-CHANGING → applied via direct `queue.update`, NOT
+  `_mutateQueue`); retry ownership moved into the adapter (1.2 checkpoint);
+  1.10's three sub-items done (standby `play().catch`, `cancelNext` on
+  stop/loop-one branches, armed-RG refresh on switch). **Tests**:
+  `tests/{crossfadeReconcile,replayGain,webTransport}.test.ts` (42 cases)
+  against a fake engine — crossfade target reconcile (still queued / removed
+  mid-fade / loop-all wrap), replay-gain field refresh BEFORE the ended event
+  (1.10's third sub-item), retry schedule + give-up → natural+fromError.
 - **Step 3 — WebBgTransport**: owns `_bgEl`; the interlock soup (`_inBgMode`,
   `_enterBgSeq`, `_handlingEnd`, `parkedAtEnd`, `pendingStop`, mediaSession
   watchdog) becomes BgStateMachine transitions. Retry (1.2) rides `RetryPolicy`
