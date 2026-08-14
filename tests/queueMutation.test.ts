@@ -11,6 +11,7 @@ import {
   promoteToUser,
   promoteToUserNext,
   removeFromAutoQueue,
+  removeFromUserQueue,
   type QueueMutation,
 } from '../src/lib/queueMutation'
 import type { QueueState } from '../src/stores/appState'
@@ -141,6 +142,58 @@ test('removeFromAutoQueue filters the row and cools it down in the recency windo
   const r2 = applyQueueMutation(q(['a'], ['x'], 0, ['x', 'y']), (x) => removeFromAutoQueue(x, 'x'))!
   assert.deepEqual(r2.recentTrackIds, ['y', 'x'])
   assert.equal(applyQueueMutation(q(['a'], ['x'], 0), (x) => removeFromAutoQueue(x, 'zzz')), null)
+})
+
+test('removeFromUserQueue: removing a preceding row decrements the anchor (active id preserved)', () => {
+  const r = removeFromUserQueue(q(['a', 'b', 'c'], [], 1), 0)!
+  assert.deepEqual(r.userQueue, ['b', 'c'])
+  assert.equal(r.activeIndex, 0)
+  assert.equal(combined(r)[r.activeIndex], 'b')
+})
+
+test('removeFromUserQueue: removing the active row keeps the index so the highlight slides to the next row (2.4 option b)', () => {
+  // active 'b' removed → 'c' slides into the slot and becomes the highlight.
+  const r = removeFromUserQueue(q(['a', 'b', 'c'], [], 1), 1)!
+  assert.deepEqual(r.userQueue, ['a', 'c'])
+  assert.equal(r.activeIndex, 1)
+  assert.equal(combined(r)[r.activeIndex], 'c')
+
+  // active 'a' removed with only auto rows after → auto[0] slides in.
+  const r2 = removeFromUserQueue(q(['a'], ['x', 'y'], 0), 0)!
+  assert.deepEqual(r2.userQueue, [])
+  assert.deepEqual(r2.autoQueue, ['x', 'y'])
+  assert.equal(r2.activeIndex, 0)
+  assert.equal(combined(r2)[r2.activeIndex], 'x')
+})
+
+test('removeFromUserQueue: removing a following row leaves the anchor untouched', () => {
+  const r = removeFromUserQueue(q(['a', 'b', 'c'], [], 1), 2)!
+  assert.deepEqual(r.userQueue, ['a', 'b'])
+  assert.equal(r.activeIndex, 1)
+  assert.equal(combined(r)[r.activeIndex], 'b')
+})
+
+test('removeFromUserQueue: removing the active LAST row lands the anchor past the new end (no highlight, honest stop)', () => {
+  // No next playable row exists — activeIndex stays at the removed slot, which
+  // is now out of range. Consumers bounds-check (same graceful path as -1).
+  const r = removeFromUserQueue(q(['a', 'b'], [], 1), 1)!
+  assert.deepEqual(r.userQueue, ['a'])
+  assert.deepEqual(r.autoQueue, [])
+  assert.equal(r.activeIndex, 1)
+  assert.ok(r.activeIndex >= combined(r).length, 'anchor is past the combined end')
+})
+
+test('removeFromUserQueue: the removed id cools in the recency window and auto depth is preserved', () => {
+  const r = removeFromUserQueue(q(['a', 'b'], ['x'], 1, ['k']), 1)!
+  assert.deepEqual(r.recentTrackIds, ['k', 'b'])
+  assert.deepEqual(r.autoQueue, ['x'])
+  assert.equal(r.activeIndex, 1)
+})
+
+test('removeFromUserQueue: out-of-range index is a null no-op (no store write)', () => {
+  assert.equal(removeFromUserQueue(q(['a'], [], 0), 1), null)
+  assert.equal(removeFromUserQueue(q(['a'], [], 0), -1), null)
+  assert.equal(removeFromUserQueue(q([], [], -1), 0), null)
 })
 
 test('clearQueue keeps the active track at user[0] and preserves the recency window', () => {

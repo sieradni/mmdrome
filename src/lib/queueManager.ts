@@ -174,22 +174,16 @@ class QueueManager {
   /**
    * Removes a user-queue row; the removed track cools down too, so it can't
    * instantly re-enter through auto-fill (removal intent is "not now").
-   * DELIBERATE DEVIATION from the `_mutateQueue` re-anchor rule: active-row
-   * removal anchors to the position playback continues from (decrement
-   * arithmetic), not the id — the id is gone, so `indexOf` would fail by
-   * construction. Verified correct for any auto depth. Do NOT convert.
+   * DELIBERATE DEVIATION from the `_mutateQueue` re-anchor rule: removal
+   * anchors to POSITION, not the id — the id may be gone (removing the active
+   * row), so `indexOf` would fail by construction. Semantics live in the pure
+   * `queueMutation.removeFromUserQueue` (2.4 option b: removing the active row
+   * keeps the index so the highlight slides to the next playable row).
    */
   removeFromUserQueue(index: number): void {
     queue.update((q) => {
-      const removedId = q.userQueue[index]
-      const userQueue = q.userQueue.filter((_, i) => i !== index)
-      const activeIndex = q.activeIndex >= index ? Math.max(0, q.activeIndex - 1) : q.activeIndex
-      const updated = {
-        ...q,
-        userQueue,
-        activeIndex,
-        recentTrackIds: removedId ? inscribeRecent(q.recentTrackIds, removedId, RECENT_LIMIT) : q.recentTrackIds,
-      }
+      const updated = queueMutation.removeFromUserQueue(q, index)
+      if (updated === null) return q
       saveQueue(updated)
       return updated
     })

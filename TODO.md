@@ -6,8 +6,8 @@ issue; stale items were closed or rewritten).
 
 Design principles:
 1. **Clean models for the intended behavior** — a correct abstraction beats the
-   straightforward patch (PlaybackCore over per-path patches; a bounded
-   played-prefix over plain caps).
+   straightforward patch (PlaybackCore over per-path patches; a recency
+   window over plain caps).
 2. **Logic lives in pure, injectable modules** — every new decision (retry, park,
    loop, state transitions, trim, scoring) is a pure function/class over plain
    data with injected callbacks/clock. Thin adapters bind it to DOM/Swift. This
@@ -274,6 +274,12 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
 
 ### Native crossfade/scheduler package (Swift, one CI round-trip)
 
+> **NOT DEFERRED** — 1.1/1.4/1.8 are Swift-only and cannot be compiled on the
+> Windows dev box, but they are REQUIRED work and are verified via
+> `.github/workflows/ios.yml` (`xcodebuild` + `swift test`) on push to `main`.
+> Do NOT skip or indefinitely defer them on the "no local toolchain" excuse —
+> each lands as: write the Swift + XCTest → push → read CI output → iterate.
+
 - [ ] **1.1** Crossfade fade-out is dead — `startCrossfade` calls `rampVolume`
       twice back-to-back; the second call invalidates the shared
       `volumeRampTimer` before its first tick, so the fade-out gain stays pinned
@@ -353,28 +359,26 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
 - [x] **2.2** `playNext` off-by-one family — closed 2026-08-11 by the
       `_mutateQueue` id-based re-anchor. — MED
 - [x] **2.3** `historyQueue` → `recentTrackIds` LRU window — closed 2026-08-10. — MED
-- [ ] **2.4** **[DECISION]** `removeFromUserQueue` when removing the *active*
-      track — pick: (a) stop playback, (b) keep `activeIndex` so the highlight
-      slides to the next playable row (one-line change; UI already tolerates
-      −1), or (c) current behavior (decrement; correct continuation, wrong
-      highlight). Implement + document. Removed id cools in the recency window
-      regardless. **Test**: behavior matrix — remove active/preceding/last user
-      row × auto depths × each choice; pure builder updated + fuzz-extended.
+- [x] **2.4** **[DECIDED 2026-08-14 — option b]** `removeFromUserQueue` when
+      removing the *active* track — the pure reducer
+      `queueMutation.removeFromUserQueue` now KEEPS `activeIndex` so the
+      highlight slides to the next playable row (never the already-played
+      predecessor). Preceding-row removal decrements (the active id slid down);
+      following-row removal is a no-op anchor; removing the active LAST row
+      lands the anchor past the new end (out of range, bounds-checked like −1).
+      Removed id cools in the recency window regardless. **Test**:
+      `tests/queueMutation.test.ts` — preceding/active/following/last-active ×
+      auto depths, recency inscription, out-of-range null no-op.
+      `src/lib/queueMutation.ts` `removeFromUserQueue`,
       `src/lib/queueManager.ts` `removeFromUserQueue`
-- [ ] **2.5** **[DECISION]** `userQueue` growth — promotion is the INTENDED
-      behavior (played tracks stay listed; auto rows promote and remain; the
-      played rows ARE the anti-repeat context). Model the queue as `played
-      prefix (rows < activeIndex) | deliberate tail (rows ≥ activeIndex)` and
-      bound ONLY the played prefix: new pure builder `trimPlayedPrefix(q, cap)`
-      (oldest-drop, cap aligned with `RECENT_LIMIT`, id re-anchor), folded into
-      the same `queue.update` as `advanceQueue`/`promoteActiveTrack`. Deliberate
-      rows are never dropped; dropped prefix ids need no extra cooling (already
-      in `recentTrackIds` via `advanceTo`); no provenance marker needed. Cap +
-      interplay with 2.4's choice documented. **Test**: trim boundary cases
-      (cap < activeIndex+1, empty queue, all-deliberate, all-promoted), id
-      re-anchor after trim, trim-enabled fuzz runs.
-      `src/lib/queueMutation.ts` `promoteActiveTrack`,
-      `src/lib/queueManager.ts` `advanceQueue`
+- [x] **2.5** **[DECIDED 2026-08-14 — do NOT bound]** `userQueue` growth: the
+      user queue is left UNBOUNDED. Promotion stays the intended behavior
+      (played tracks stay listed; they ARE the anti-repeat context). The
+      played-prefix trim (`trimPlayedPrefix`) is rejected — no cap is applied.
+      The recency window (`recentTrackIds`, `RECENT_LIMIT`) already bounds
+      anti-repeat memory separately, so queue growth costs only UI list length,
+      not correctness. Revisit only if list rendering becomes a measured
+      problem.
 - [x] **2.6** `queueWrapNotice` lifecycle — closed 2026-08-10. — LOW
 
 ## Phase 3 — Sync / metadata pipeline hardening
@@ -525,7 +529,7 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
 - [ ] **5.2** Document the decided invariants: sleep-timer lifetime vs queue
       resets (0.2), webview-reload behavior (1.5), `refreshQueue` divergence
       policy (1.4), the PlaybackCore transport contract + bg state machine
-      (1.0), queue semantics (2.4, 2.5 played-prefix policy), and the test
+      (1.0), queue semantics (2.4 option b, 2.5 unbounded), and the test
       harness (0.5) conventions — where suites live, the purity rule.
 - [ ] **5.3** Add a "Verification" note to AGENTS.md (`npm run check` + `npm
       test` + `ios.yml` as the only native compile gate) and reference this

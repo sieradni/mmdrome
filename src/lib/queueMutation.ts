@@ -181,6 +181,32 @@ export function removeFromAutoQueue(q: QueueState, trackId: string): QueueMutati
 }
 
 /**
+ * Removes a user-queue row and re-anchors the active index by POSITION, not
+ * id — the removed id may be the playing track itself, so the B1 id re-anchor
+ * (`indexOf`) can't apply. Position semantics (2.4, decided 2026-08-14 —
+ * option b):
+ *   - index < activeIndex  → the active track slid down one slot: decrement;
+ *   - index === activeIndex → the active row is gone: KEEP the index so the
+ *     highlight slides to the next playable row (the track now occupying the
+ *     removed slot), never the already-played predecessor;
+ *   - index > activeIndex  → the active track is untouched: keep.
+ * The removed id cools in the recency window (removal is a "not now" intent).
+ * Returns `null` (no store write) for an out-of-range index.
+ */
+export function removeFromUserQueue(q: QueueState, index: number): QueueState | null {
+  if (index < 0 || index >= q.userQueue.length) return null
+  const removedId = q.userQueue[index]
+  const userQueue = q.userQueue.filter((_, i) => i !== index)
+  const activeIndex = q.activeIndex > index ? Math.max(0, q.activeIndex - 1) : q.activeIndex
+  return {
+    ...q,
+    userQueue,
+    activeIndex,
+    recentTrackIds: inscribeRecent(q.recentTrackIds, removedId, RECENT_LIMIT),
+  }
+}
+
+/**
  * Empties the queue down to the actively playing track (kept at user[0] so
  * playback continues). The anti-repeat window is PRESERVED — a clear is an
  * explicit queue edit, not a "just heard it" event (asymmetric by intent vs.
