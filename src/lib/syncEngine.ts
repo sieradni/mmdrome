@@ -4,6 +4,7 @@ import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache
 import { modifyMetadataBuffer } from "$lib/tagWriter"
 import { metadataCache, settings, library, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
 import { setWebdavCredentials, scanAll, setServerLastScan } from "./metadataScanner"
+import { shouldKeepPushPending } from "./pushReconcile"
 import {
   testNavidromeConnection as navidromeTestConnection,
   loadNavidromeSongs as navidromeLoadSongs,
@@ -365,17 +366,14 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
         }
       }
 
-      // The user may have re-edited rating/loved while the GET→PUT was in
-      // flight: the pushed snapshot is stale by now. Keep the newer pending
-      // edit pending (it surfaces in the next Push) instead of flattening it
-      // to 'synced' — the file already carries the pushed values, so nothing
-      // is lost on either side.
+      // The user may have re-edited rating/loved (or re-bound the row / had a
+      // comment land) while the GET→PUT was in flight: the pushed snapshot is
+      // stale by now. Keep the newer pending edit pending (it surfaces in the
+      // next Push) instead of flattening it to 'synced' with the stale values
+      // — flattening writes the whole snapshot back and would lose the live
+      // edit (3.1).
       const latest = get(metadataCache).get(track.trackId)
-      if (
-        latest &&
-        latest.syncStatus === 'pending_sync' &&
-        (latest.rating !== track.rating || latest.loved !== track.loved)
-      ) {
+      if (latest && shouldKeepPushPending(track, latest)) {
         await upsertMetadata(latest)
         metadataCache.update((map) => {
           const next = new Map(map)

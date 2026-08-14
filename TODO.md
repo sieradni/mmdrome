@@ -313,18 +313,25 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       `tests/playbackManagerNative.test.ts`.
       `src/lib/playbackManager.ts` `_reconcileNativeReload`,
       `src/lib/playbackCore/nativeTransport.ts` `adopt` — MED
-- [ ] **1.6** Empty/url-less snapshot — `_buildSnapshot` yields `url:''`
-      without a Navidrome config, yet `_nativeLoadPlay` still sets
-      `setPlaybackState('playing')` while native drops every track (nil-URL
-      guard) and `playTrackAt` silently returns → UI "playing" over a dead
-      engine. Fail fast: reject the call, surface the error.
-      `src/lib/playbackManager.ts` `_buildSnapshot`/`_nativeLoadPlay`,
-      `AudioEngine.swift` track init — MED
-- [ ] **1.7** Seek position lost on the "Track not ready" retry — the retry
-      replays from 0 (`positionBias` wiped by `loadAndStart`). Retry the same
-      position (transport remembers the clamped target and re-issues `seek`
-      after the retry's load resolves, or add an optional start position to
-      `playTrackAt`). `AudioEngine.swift` `seek`/`loadAndStart` — MED
+- [x] **1.6** Empty/url-less snapshot — closed 2026-08-13 (absorbed into
+      PlaybackCore step 4c): `NativeTransport._doEngage` fail-fast rejects an
+      active row with no url BEFORE any plugin call (`no playable track at
+      index`), and `_nativeLoadPlay` maps `engage() === false` → `setCurrentTrack(null)` +
+      `setPlaybackState('stopped')` — no more fake "playing" over a dead engine.
+      The Swift nil-URL guard already drops the track; the fix was the JS side
+      surfacing it. **Test**: `tests/nativeTransport.test.ts` (engage rejection
+      paths) + `tests/playbackManagerNative.test.ts` (engage fail → stopped).
+      `src/lib/playbackCore/nativeTransport.ts` `_doEngage`,
+      `src/lib/playbackManager.ts` `_nativeLoadPlay` — MED
+- [x] **1.7** Seek position lost on the "Track not ready" retry — closed
+      2026-08-13 (absorbed into PlaybackCore step 4c): `NativeTransport.seek`
+      remembers `{trackId, position}` (`_seekMemory`) and the retry's reload
+      engage of the SAME track re-issues the clamped seek after `playTrackAt`
+      resolves (`positionBias` is wiped by Swift's `loadAndStart`); consumed on
+      re-apply, cleared on disengage/give-up, and only an ACTIVE retry's
+      engage re-seeks (plain re-engages never do). **Test**:
+      `tests/nativeTransport.test.ts` (seek-retry memory cases).
+      `src/lib/playbackCore/nativeTransport.ts` `seek`/`_doEngage` — MED
 
 ### Media session (independent, LOW)
 
@@ -372,13 +379,17 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
 
 ## Phase 3 — Sync / metadata pipeline hardening
 
-- [ ] **3.1** Push flatten vs concurrent re-bind — the post-PUT re-pend exists
-      but compares only `rating`/`loved`; a mid-push File Matching re-bind
-      (path/base change) or comments-only edit is flattened to `synced` with
-      the OLD path/base. Widen the re-pend comparison to
-      `webdavPath`/`webdavBase`/`comments`. **Test**: re-pend decision as a pure
-      function (stale snapshot × live row variants).
-      `src/lib/syncEngine.ts` `runManualWebDAVSync` — MED
+- [x] **3.1** Push flatten vs concurrent re-bind — closed 2026-08-14: the
+      post-PUT re-pend is now a pure `shouldKeepPushPending(stale, live)` in
+      `src/lib/pushReconcile.ts`, diffing `rating`/`loved` AND
+      `webdavPath`/`webdavBase`/`comments` — a mid-push File Matching re-bind
+      (the PUT went to the OLD file, the NEW file was never written) or a
+      comments change is kept `pending_sync` instead of flattened to `synced`
+      with the stale values. **Test**: `tests/pushReconcile.test.ts` (12 cases:
+      no live row, not-pending, identical, each diverging field, cleared
+      optional fields, syncStatus-only no-op).
+      `src/lib/syncEngine.ts` `runManualWebDAVSync`,
+      `src/lib/pushReconcile.ts` `shouldKeepPushPending` — MED
 - [ ] **3.2** Navidrome-mode stale seeds — the song cache stores raw
       `NavidromeSong[]` incl. `starred`/`userRating`; `seedNavidromeFeedback`
       runs unconditionally on cached connects → in `ratingSource:'navidrome'`
