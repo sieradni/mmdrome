@@ -306,12 +306,19 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
 
 ### Native JS↔engine contract package (Swift + plugin, one CI round-trip)
 
-- [ ] **1.4** `refreshQueue` divergence fallback stops with no `ended`/`error` —
-      JS keeps stale indexes and the next `play()` restarts a different track
-      than JS believes current. Emit `ended` on divergence (the honest signal;
-      JS re-snapshots on it). **Test**: divergence decision as a pure function
-      (snapshot activeId vs engine currentId → action) + XCTest +
-      NativeTransport test. `AudioEngine.swift` `refreshQueue` — MED
+- [x] **1.4** `refreshQueue` divergence fallback stops with no `ended`/`error`
+      — closed 2026-08-14 (commit `48af3aa`, ios.yml run 54 + test.yml run 14
+      green): JS kept stale indexes and the next `play()` restarted a different
+      track than JS believed current. The divergence branch now fires
+      `onQueueEnded?()` after the reset (mirroring `handleTrackEnd`) — the
+      honest `ended` signal flows through the already-pinned JS path (transport
+      `onQueueEnded → onTrackEnded(natural)`; manager `_onNativeTrackEnded →
+      decideAdvance → advance re-engages with a FRESH snapshot / stop →
+      disengage), so no JS change was needed. Decision is the pure
+      `queueDivergence(snapshotActiveId:engineCurrentId:)` in Core (empty/empty
+      → synced; one empty → divergent; equality check; out-of-range snapshot
+      index modelled as an empty id). **Test**: `QueueDivergenceTests.swift`
+      (5-case matrix) — passed in CI. `AudioEngine.swift` `refreshQueue` — MED
 - [x] **1.5** Webview-reload reconciliation — closed 2026-08-14. The pure
       `reconcileReload` (step 4a) is now WIRED: `_initNative` calls
       `_reconcileNativeReload()` after `transport.init()`, mapping
