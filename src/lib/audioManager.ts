@@ -16,8 +16,8 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 class AudioManager {
-  readonly a: HTMLAudioElement
-  readonly b: HTMLAudioElement
+  private _elA: HTMLAudioElement | null = null
+  private _elB: HTMLAudioElement | null = null
   private _ctx: AudioContext | null = null
   private _sourceA: MediaElementAudioSourceNode | null = null
   private _sourceB: MediaElementAudioSourceNode | null = null
@@ -65,13 +65,33 @@ class AudioManager {
   private _pipelineLatency = 0
 
   constructor() {
-    this.a = new Audio()
-    this.b = new Audio()
-    this.a.crossOrigin = 'anonymous'
-    this.b.crossOrigin = 'anonymous'
-    this.a.preservesPitch = false
-    this.b.preservesPitch = false
-    this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+    // The elements are created lazily (getters below) so the constructor is
+    // Node-safe — tests import the manager graph without a DOM.
+    this._isIOS =
+      typeof navigator !== 'undefined' &&
+      (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
+  }
+
+  /** Primary foreground element (lazy — never constructed in Node). */
+  get a(): HTMLAudioElement {
+    if (!this._elA) {
+      const el = new Audio()
+      el.crossOrigin = 'anonymous'
+      el.preservesPitch = false
+      this._elA = el
+    }
+    return this._elA
+  }
+
+  /** Secondary foreground element (lazy — never constructed in Node). */
+  get b(): HTMLAudioElement {
+    if (!this._elB) {
+      const el = new Audio()
+      el.crossOrigin = 'anonymous'
+      el.preservesPitch = false
+      this._elB = el
+    }
+    return this._elB
   }
 
   /** Creates the iOS background element (volume stays 0 forever — setting it is

@@ -38,7 +38,7 @@ import { getSetting, setSetting, saveQueue } from './db'
 import { currentEqState, eqBypassed } from './eq/eqStore'
 import type { Track } from '../stores/appState'
 
-class PlaybackManager {
+export class PlaybackManager {
   private _initialized = false
   private _handlingEnd = false
   private _handlingNativeEnd = false
@@ -48,12 +48,35 @@ class PlaybackManager {
   private _webTransport: WebTransport | null = null
   private _bgTransport: WebBgTransport | null = null
   private _refreshPositionState: () => void = () => {}
-  /** The track an in-flight bg load request resolved to — the machine's
+  /** The track an in-flight bg load request resolved to â€” the machine's
    *  'reload' decision loads this (an exit-race re-routes it to the fg path). */
   private _pendingBgTrack: Track | null = null
   private _hasNativeEngaged = false
   private _lastSortKey = ''
   private _queueSyncScheduled = false
+  private _am: typeof audioManager
+  private _qm: typeof queueManager
+  private _stm: typeof sleepTimerManager
+
+  /**
+   * Injectable deps for the glue tests: transports + engine adapters default to
+   * the module singletons, but tests pass fakes so the manager's bg wiring can
+   * be exercised in Node without a DOM or Dexie. `_initWeb` still constructs
+   * the real transports over whatever was injected.
+   */
+  constructor(deps: {
+    audioManager?: typeof audioManager
+    queueManager?: typeof queueManager
+    sleepTimerManager?: typeof sleepTimerManager
+    webTransport?: WebTransport | null
+    bgTransport?: WebBgTransport | null
+  } = {}) {
+    this._am = deps.audioManager ?? audioManager
+    this._qm = deps.queueManager ?? queueManager
+    this._stm = deps.sleepTimerManager ?? sleepTimerManager
+    this._webTransport = deps.webTransport ?? null
+    this._bgTransport = deps.bgTransport ?? null
+  }
 
   /**
    * Coalesces queue-driven native refreshes. User queue mutations (add/remove/
@@ -88,15 +111,15 @@ class PlaybackManager {
 
     scrobbleManager.init()
     scrobbleManager.enable()
-    await sleepTimerManager.init()
+    await this._stm.init()
     this._subscribeShared()
     this._initialized = true
   }
 
   private async _initWeb(): Promise<void> {
-    await audioManager.init()
+    await this._am.init()
 
-    const transport = new WebTransport(audioManager)
+    const transport = new WebTransport(this._am)
     this._webTransport = transport
     transport.onTrackEnded = (event) => {
       if (event.kind === 'crossfade') {
@@ -109,7 +132,7 @@ class PlaybackManager {
       // Track-keyed validity: a stale retry (superseded by a manual load or a
       // sleep park) must never re-load a track that left the active slot.
       if (get(currentTrack)?.trackId !== trackId) return
-      const t = queueManager.findTrack(trackId)
+      const t = this._qm.findTrack(trackId)
       if (t) void this._loadAndPlay(t)
     }
     transport.onPlaybackState = (state) => {
@@ -121,12 +144,12 @@ class PlaybackManager {
     await transport.init()
 
     const bg = new WebBgTransport(
-      audioManager,
+      this._am,
       {
         facts: () => this._bgFacts(),
         // Resolved at use: the fg a/b element can flip on crossfade switches
         // before an engagement, so the swap must read the CURRENT active one.
-        fgElement: () => audioManager.activeElement,
+        fgElement: () => this._am.activeElement,
       },
       {
         interval: (ms, fn) => {
@@ -141,7 +164,7 @@ class PlaybackManager {
       if (target === 'fg') this._stopPlayback()
     }
     bg.onParked = (trackId) => {
-      sleepTimerManager.parkAtEnd(trackId)
+      this._stm.parkAtEnd(trackId)
       setPlaybackState('paused')
     }
     bg.onTick = (position) => {
@@ -150,16 +173,16 @@ class PlaybackManager {
     }
     bg.init()
 
-    audioManager.onSpeedChange = (speed: number) => playbackSpeed.set(speed)
-    audioManager.onPitchChange = (pitch: number) => pitchOctaves.set(pitch)
+    this._am.onSpeedChange = (speed: number) => playbackSpeed.set(speed)
+    this._am.onPitchChange = (pitch: number) => pitchOctaves.set(pitch)
 
     const savedSpeed = await getSetting<number>('playbackSpeed')
     const savedPitch = await getSetting<number>('pitchOctaves')
     const savedGain = await getSetting<number>('masterGain')
-    if (savedSpeed !== undefined && savedSpeed !== 1) audioManager.setSpeed(savedSpeed)
-    if (savedPitch !== undefined && savedPitch !== 0) audioManager.setPitchOctaves(savedPitch)
-    if (savedGain !== undefined && audioManager.preamp) {
-      audioManager.setMasterVolume(savedGain)
+    if (savedSpeed !== undefined && savedSpeed !== 1) this._am.setSpeed(savedSpeed)
+    if (savedPitch !== undefined && savedPitch !== 0) this._am.setPitchOctaves(savedPitch)
+    if (savedGain !== undefined && this._am.preamp) {
+      this._am.setMasterVolume(savedGain)
     }
 
     this._refreshPositionState = setupMediaSession(
@@ -175,22 +198,22 @@ class PlaybackManager {
       },
       {
         getPositionElement: () => this._bgTransport!.sessionElement,
-        a: audioManager.a,
-        b: audioManager.b,
+        a: this._am.a,
+        b: this._am.b,
       },
     ).refreshPositionState
 
     setupPreloader(() => transport.playbackElement, (trackId) => this._resolveUrl(trackId))
 
     settings.subscribe((s) => {
-      audioManager.crossfadeDuration = s.crossfadeDuration ?? 0
+      this._am.crossfadeDuration = s.crossfadeDuration ?? 0
       const track = get(currentTrack)
       if (this._initialized && track && s.replayGainMode) {
-        audioManager.setReplayGainMode(s.replayGainMode)
-        audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
+        this._am.setReplayGainMode(s.replayGainMode)
+        this._am.applyReplayGain(track.replayGain, track.albumReplayGain)
       }
-      if (s.masterGain !== undefined && audioManager.preamp) {
-        audioManager.setMasterVolume(s.masterGain)
+      if (s.masterGain !== undefined && this._am.preamp) {
+        this._am.setMasterVolume(s.masterGain)
       }
     })
   }
@@ -235,7 +258,7 @@ class PlaybackManager {
       if (sv.tapeMode !== undefined) engine.setTapeMode(sv.tapeMode)
     })
 
-    // The native engine owns the playback clock — poll position for the UI.
+    // The native engine owns the playback clock â€” poll position for the UI.
     nativeEngine.setPositionPolling(true, (state) => {
       currentTime.set(state.position)
     })
@@ -250,21 +273,21 @@ class PlaybackManager {
     })
     pitchOctaves.subscribe((v) => { setSetting('pitchOctaves', v); engine.setPitchOctaves(v) })
 
-    queueManager.replenishAutoQueue()
+    this._qm.replenishAutoQueue()
 
     library.subscribe(() => {
       if (this._initialized) {
-        // Replenish (never rebuild) on library changes: the queued auto head —
-        // including any armed crossfade target — stays in place while the fill
+        // Replenish (never rebuild) on library changes: the queued auto head â€”
+        // including any armed crossfade target â€” stays in place while the fill
         // re-ranks by current metadata. A rebuild could drop an armed track,
         // and the crossfade-end handler would then rescue it back into the
-        // user queue mid-play. The queue→native microtask sync covers the
+        // user queue mid-play. The queueâ†’native microtask sync covers the
         // native tail, so no explicit refresh here.
-        queueManager.replenishAutoQueue()
+        this._qm.replenishAutoQueue()
       }
     })
 
-    // A completed metadata scan refreshed rating/loved — re-rank the auto
+    // A completed metadata scan refreshed rating/loved â€” re-rank the auto
     // queue fill so it follows the Songs-view sort. Replenish (not rebuild)
     // keeps the currently queued head untouched, so nothing armed is dropped
     // and the user queue is never mutated by the crossfade rescue path.
@@ -274,19 +297,19 @@ class PlaybackManager {
       const f = get(libraryFilters)
       if (get(shuffleEnabled)) return
       if (f.sortBy !== 'rating' && f.sortBy !== 'loved') return
-      queueManager.replenishAutoQueue()
+      this._qm.replenishAutoQueue()
     })
 
     shuffleEnabled.subscribe(() => {
       if (this._initialized) {
-        queueManager.rebuildAutoQueue()
+        this._qm.rebuildAutoQueue()
         this._refreshNativeQueue()
       }
     })
 
     autoQueueFilters.subscribe(() => {
       if (this._initialized) {
-        queueManager.replenishAutoQueue()
+        this._qm.replenishAutoQueue()
       }
     })
 
@@ -301,7 +324,7 @@ class PlaybackManager {
       const key = `${f.sortBy}|${String(f.sortAsc)}`
       if (key === this._lastSortKey) return
       this._lastSortKey = key
-      queueManager.rebuildAutoQueue()
+      this._qm.rebuildAutoQueue()
       this._refreshNativeQueue()
     })
 
@@ -318,7 +341,7 @@ class PlaybackManager {
   private _resolveUrl(trackId: string): string {
     const config = getCachedConfig()
     if (!config) return ''
-    const track = queueManager.findTrack(trackId)
+    const track = this._qm.findTrack(trackId)
     if (!track) return ''
     return buildStreamUrl(config, track.trackId.replace(/^navidrome-/, ''))
   }
@@ -329,7 +352,7 @@ class PlaybackManager {
   private _buildSnapshot(combined: string[]): NativeTrackSnapshot[] {
     const config = getCachedConfig()
     return combined.map((id, index) => {
-      const track = queueManager.findTrack(id)
+      const track = this._qm.findTrack(id)
       const snapshot: NativeTrackSnapshot = {
         index,
         trackId: id,
@@ -351,7 +374,7 @@ class PlaybackManager {
   private async _nativeLoadPlay(track: Track): Promise<void> {
     this._clearNativeRetry()
 
-    const combined = queueManager.getCombinedQueue()
+    const combined = this._qm.getCombinedQueue()
     const activeIndex = get(queue).activeIndex
     if (activeIndex < 0 || activeIndex >= combined.length) return
 
@@ -372,10 +395,10 @@ class PlaybackManager {
     // setQueue stopped the engine, which also cancelled any armed sleep timer
     // (native `stopPlayback` invalidates the Timer + end-of-track flag). Re-arm
     // the mirror so the sleep intent survives this snapshot (0.2).
-    await sleepTimerManager.rearmAfterSnapshot()
-    // Track is now playing — promote it from auto to user queue
-    queueManager.promoteActiveTrack()
-    queueManager.replenishAutoQueue()
+    await this._stm.rearmAfterSnapshot()
+    // Track is now playing â€” promote it from auto to user queue
+    this._qm.promoteActiveTrack()
+    this._qm.replenishAutoQueue()
   }
 
   /**
@@ -385,7 +408,7 @@ class PlaybackManager {
    */
   private async _refreshNativeQueue(): Promise<void> {
     if (!this.isNative() || !this._hasNativeEngaged) return
-    const combined = queueManager.getCombinedQueue()
+    const combined = this._qm.getCombinedQueue()
     const activeIndex = get(queue).activeIndex
     if (activeIndex < 0 || activeIndex >= combined.length) return
     const snapshot = this._buildSnapshot(combined)
@@ -398,16 +421,16 @@ class PlaybackManager {
 
   private async _onNativeTrackChanged(trackId: string): Promise<void> {
     if (this._handlingNativeEnd) return
-    const combined = queueManager.getCombinedQueue()
+    const combined = this._qm.getCombinedQueue()
     let idx = combined.indexOf(trackId)
-    const track = queueManager.findTrack(trackId)
+    const track = this._qm.findTrack(trackId)
     if (!track) {
       console.warn('[native] trackChanged for unknown track:', trackId)
       return
     }
 
     if (idx < 0) {
-      // The playing track left the combined queue (dropped auto prefix, etc.) — re-adopt it.
+      // The playing track left the combined queue (dropped auto prefix, etc.) â€” re-adopt it.
       const prevIdx = get(queue).activeIndex
       const prevId = prevIdx >= 0 ? combined[prevIdx] : undefined
       queue.update((q) => {
@@ -426,15 +449,15 @@ class PlaybackManager {
       const prevIdx = get(queue).activeIndex
       const prevId = prevIdx >= 0 && prevIdx !== idx ? combined[prevIdx] : undefined
       if (prevId) {
-        queueManager.advanceTo(idx, prevId)
+        this._qm.advanceTo(idx, prevId)
       } else {
         setActiveQueueIndex(idx)
       }
     }
 
     setCurrentTrack(track)
-    queueManager.promoteActiveTrack()
-    queueManager.replenishAutoQueue()
+    this._qm.promoteActiveTrack()
+    this._qm.replenishAutoQueue()
     await this._refreshNativeQueue()
   }
 
@@ -442,16 +465,16 @@ class PlaybackManager {
     if (this._handlingNativeEnd) return
     this._handlingNativeEnd = true
     try {
-      queueManager.replenishAutoQueue()
-      const combined = queueManager.getCombinedQueue()
+      this._qm.replenishAutoQueue()
+      const combined = this._qm.getCombinedQueue()
       const q = get(queue)
 
       // Combined queue may have grown past the native list since the last refresh.
       const nextIdx = q.activeIndex + 1
       if (nextIdx >= 0 && nextIdx < combined.length) {
         const endedId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
-        queueManager.advanceTo(nextIdx, endedId ?? undefined)
-        const track = queueManager.findTrack(combined[nextIdx])
+        this._qm.advanceTo(nextIdx, endedId ?? undefined)
+        const track = this._qm.findTrack(combined[nextIdx])
         if (track) {
           await this._nativeLoadPlay(track)
           return
@@ -460,8 +483,8 @@ class PlaybackManager {
 
       if (get(loopMode) === 'all' && q.userQueue.length > 0) {
         const endedId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
-        queueManager.advanceTo(0, endedId ?? undefined)
-        const track = queueManager.findTrack(q.userQueue[0])
+        this._qm.advanceTo(0, endedId ?? undefined)
+        const track = this._qm.findTrack(q.userQueue[0])
         if (track) {
           await this._nativeLoadPlay(track)
           return
@@ -525,28 +548,28 @@ class PlaybackManager {
     if (!rawUrl) return
     const url = await resolveSrc(rawUrl)
 
-    await audioManager.ensureWebAudioReady()
+    await this._am.ensureWebAudioReady()
 
     const eqState = get(currentEqState)
     if (eqState && eqState.filters.length > 0) {
-      audioManager.setPreampDb(eqState.preampDb)
+      this._am.setPreampDb(eqState.preampDb)
       if (eqState.mode === 'graphic' && !eqState.isBuiltin) {
-        audioManager.applyGraphicEQ(eqState.filters, eqState.graphicEqCurves)
+        this._am.applyGraphicEQ(eqState.filters, eqState.graphicEqCurves)
       } else {
-        audioManager.applyFiltersConfig(eqState.filters)
+        this._am.applyFiltersConfig(eqState.filters)
       }
     }
 
     if (get(eqBypassed)) {
-      audioManager.setEqBypass(true)
+      this._am.setEqBypass(true)
     }
 
     const s = get(settings)
-    if (s.masterGain !== undefined && audioManager.preamp) {
-      audioManager.setMasterVolume(s.masterGain)
+    if (s.masterGain !== undefined && this._am.preamp) {
+      this._am.setMasterVolume(s.masterGain)
     }
 
-    const el = audioManager.activeElement
+    const el = this._am.activeElement
     currentTime.set(0)
     setCurrentTrack(track)
     this._bgTransport!.syncSource(url)
@@ -554,10 +577,10 @@ class PlaybackManager {
 
     // The end-of-track sleep timer fired during this transition: keep the
     // loaded track parked instead of letting the play() below resume it.
-    if (sleepTimerManager.consumePendingStop()) {
+    if (this._stm.consumePendingStop()) {
       setPlaybackState('paused')
-      queueManager.promoteActiveTrack()
-      queueManager.replenishAutoQueue()
+      this._qm.promoteActiveTrack()
+      this._qm.replenishAutoQueue()
       return
     }
 
@@ -573,11 +596,11 @@ class PlaybackManager {
     // skips its startup fire, so without this the engine keeps the 'off'
     // default until the user toggles the mode. playLoaded already applied this
     // track's gain fields; setReplayGainMode re-applies them under the mode.
-    audioManager.setReplayGainMode(get(settings).replayGainMode ?? 'off')
+    this._am.setReplayGainMode(get(settings).replayGainMode ?? 'off')
 
-    // Track is now playing — promote it from auto to user queue
-    queueManager.promoteActiveTrack()
-    queueManager.replenishAutoQueue()
+    // Track is now playing â€” promote it from auto to user queue
+    this._qm.promoteActiveTrack()
+    this._qm.replenishAutoQueue()
 
     setPlaybackState('playing')
 
@@ -589,23 +612,23 @@ class PlaybackManager {
 
   private async _setupNextTrack(): Promise<void> {
     // While an end-of-track sleep is armed, no next track is prepared and no
-    // crossfade armed — the current track must end naturally and park.
-    if (sleepTimerManager.isEndOfTrackArmed()) {
+    // crossfade armed â€” the current track must end naturally and park.
+    if (this._stm.isEndOfTrackArmed()) {
       this._webTransport!.cancelNext()
       return
     }
-    const combined = queueManager.getCombinedQueue()
+    const combined = this._qm.getCombinedQueue()
     const q = get(queue)
     const nextIdx = q.activeIndex + 1
     if (nextIdx >= 0 && nextIdx < combined.length) {
-      const nextTrack = queueManager.findTrack(combined[nextIdx])
+      const nextTrack = this._qm.findTrack(combined[nextIdx])
       const rawUrl = this._resolveUrl(combined[nextIdx])
       if (rawUrl) {
         const url = await resolveSrc(rawUrl)
         const rg = computeReplayGainFields(get(settings).replayGainMode ?? 'off', nextTrack)
         this._webTransport!.prepareNext(combined[nextIdx], url, rg)
       } else {
-        // No URL for the next row — disarm (a stale arm could crossfade into
+        // No URL for the next row â€” disarm (a stale arm could crossfade into
         // an old target at the transition point).
         this._webTransport!.prepareNext(null, null)
       }
@@ -618,15 +641,15 @@ class PlaybackManager {
    * End-of-track sleep park guard (web parity with the native engine's
    * `handleSegmentCompletion` sleep check). When the sleep is armed, the advance
    * decision is consumed here instead of proceeding: the element is paused just
-   * below its end (never ended) so any later play — in-app or the bg lock
-   * screen — plays the last ~0.05s and the re-fired `ended` drives the natural
-   * advance. Runs at the exact moment an advance is decided — no polling cadence
+   * below its end (never ended) so any later play â€” in-app or the bg lock
+   * screen â€” plays the last ~0.05s and the re-fired `ended` drives the natural
+   * advance. Runs at the exact moment an advance is decided â€” no polling cadence
    * or race margin.
    */
   private _parkAtTrackEnd(): boolean {
-    if (!sleepTimerManager.isEndOfTrackArmed()) return false
-    sleepTimerManager.parkAtEnd(get(currentTrack)?.trackId ?? '')
-    const el = audioManager.activeElement
+    if (!this._stm.isEndOfTrackArmed()) return false
+    this._stm.parkAtEnd(get(currentTrack)?.trackId ?? '')
+    const el = this._am.activeElement
     const dur = get(currentTrack)?.duration ?? 0
     if (dur > 0 && el.currentTime >= dur - 0.5) {
       // Nudge below the end: play() on an ENDED element seeks to the start,
@@ -639,7 +662,7 @@ class PlaybackManager {
   }
 
   private _hasNextQueued(): boolean {
-    const combined = queueManager.getCombinedQueue()
+    const combined = this._qm.getCombinedQueue()
     return get(queue).activeIndex + 1 < combined.length
   }
 
@@ -649,16 +672,16 @@ class PlaybackManager {
     setPlaybackState('stopped')
     setCurrentTrack(null)
     this._webTransport?.cancelNext()
-    audioManager.activeElement.src = ''
+    this._am.activeElement.src = ''
   }
 
   private async _onTrackEnded(fromError = false): Promise<void> {
     if (this._handlingEnd) return
     // Park beats loop-one/loop-all by guard order; error-driven advances skip
-    // the park (a dead stream can't play out its end — advancing is correct).
+    // the park (a dead stream can't play out its end â€” advancing is correct).
     if (!fromError && this._parkAtTrackEnd()) return
 
-    // ONE decideAdvance for the whole chain (A4) — the queue facts are computed
+    // ONE decideAdvance for the whole chain (A4) â€” the queue facts are computed
     // BEFORE any mutation. park is unreachable here (handled above).
     const decision = decideAdvance({
       fromError,
@@ -673,7 +696,7 @@ class PlaybackManager {
       switch (decision) {
         case 'restart': {
           this._webTransport!.cancelNext()
-          const el = audioManager.activeElement
+          const el = this._am.activeElement
           el.currentTime = 0
           try { await el.play() } catch { /* user may have paused */ }
           await this._setupNextTrack()
@@ -683,7 +706,7 @@ class PlaybackManager {
           return
         }
         case 'advance': {
-          const nextTrack = queueManager.advanceQueue()
+          const nextTrack = this._qm.advanceQueue()
           if (nextTrack) {
             await this._loadAndPlay(nextTrack)
           } else {
@@ -694,7 +717,7 @@ class PlaybackManager {
         case 'wrap': {
           const q = get(queue)
           setActiveQueueIndex(0)
-          const track = queueManager.findTrack(q.userQueue[0])
+          const track = this._qm.findTrack(q.userQueue[0])
           if (track) {
             await this._loadAndPlay(track)
           } else {
@@ -706,7 +729,7 @@ class PlaybackManager {
           this._stopPlayback()
           return
         case 'park':
-          return // unreachable — consumed by _parkAtTrackEnd above
+          return // unreachable â€” consumed by _parkAtTrackEnd above
       }
     } finally {
       this._handlingEnd = false
@@ -717,7 +740,7 @@ class PlaybackManager {
     const q = get(queue)
     return {
       currentTrackId: get(currentTrack)?.trackId ?? null,
-      parkArmed: sleepTimerManager.isEndOfTrackArmed(),
+      parkArmed: this._stm.isEndOfTrackArmed(),
       loopMode: get(loopMode),
       hasNext: q.activeIndex >= 0 && this._hasNextQueued(),
       hasUserQueue: q.userQueue.length > 0,
@@ -726,19 +749,19 @@ class PlaybackManager {
   }
 
   /** Resolves the machine's load decision against the real queue. Mutations
-   *  (advance/wrap) run HERE, after the machine decided — the events carried
+   *  (advance/wrap) run HERE, after the machine decided â€” the events carried
    *  the pre-mutation facts. */
   private _resolveBgLoad(decision: LoadDecision): Track | null {
     switch (decision) {
       case 'restart':
         return get(currentTrack)
       case 'advance':
-        return queueManager.advanceQueue()
+        return this._qm.advanceQueue()
       case 'wrap': {
         const q = get(queue)
         if (q.userQueue.length > 0) {
           setActiveQueueIndex(0)
-          return queueManager.findTrack(q.userQueue[0]) ?? null
+          return this._qm.findTrack(q.userQueue[0]) ?? null
         }
         return null
       }
@@ -753,10 +776,10 @@ class PlaybackManager {
     const track = this._resolveBgLoad(decision)
     if (!track) {
       if (target === 'fg') {
-        // The exit-ended chain resolved to nothing (queue shrank) — stop.
+        // The exit-ended chain resolved to nothing (queue shrank) â€” stop.
         this._stopPlayback()
       } else {
-        // No track to load — idle in bg-paused (machine bgFailed analog).
+        // No track to load â€” idle in bg-paused (machine bgFailed analog).
         this._bgTransport!.abortBgLoad()
       }
       return
@@ -779,12 +802,12 @@ class PlaybackManager {
     }
 
     // Same guard as _loadAndPlay: an end-of-track sleep that fired mid-transition
-    // must not be undone by the bg load's autoplay — and the machine must still
+    // must not be undone by the bg load's autoplay â€” and the machine must still
     // settle (abort idles it in bg-paused instead of stranding in handoff).
-    if (sleepTimerManager.consumePendingStop()) {
+    if (this._stm.consumePendingStop()) {
       this._bgTransport!.abortBgLoad()
       setPlaybackState('paused')
-      queueManager.promoteActiveTrack()
+      this._qm.promoteActiveTrack()
       return
     }
 
@@ -800,12 +823,12 @@ class PlaybackManager {
     const started = await this._bgTransport!.startBgLoad(url)
     if (!started) {
       // The load was superseded (newer load, park, or an exit that re-routed
-      // the resolution to the fg path) — the machine already decided.
+      // the resolution to the fg path) â€” the machine already decided.
       return
     }
 
-    queueManager.promoteActiveTrack()
-    queueManager.replenishAutoQueue()
+    this._qm.promoteActiveTrack()
+    this._qm.replenishAutoQueue()
     await this._setupNextTrack()
     if (get(loopMode) === 'one') {
       this._webTransport!.cancelNext()
@@ -815,9 +838,9 @@ class PlaybackManager {
   private async _loadAndPlayInBg(track: Track): Promise<void> {
     const s = get(settings)
     if (s.replayGainMode && s.replayGainMode !== 'off') {
-      audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
+      this._am.applyReplayGain(track.replayGain, track.albumReplayGain)
     } else {
-      audioManager.applyReplayGain()
+      this._am.applyReplayGain()
     }
 
     // The queue was already advanced by the caller (next/prev/select/play);
@@ -840,15 +863,15 @@ class PlaybackManager {
 
     this._handlingEnd = true
     try {
-      const advanced = queueManager.advanceQueue()
+      const advanced = this._qm.advanceQueue()
 
       // Reconcile queue state with the track that is actually playing via
-      // crossfade. targetId is null when the arm was cancelled mid-fade — no
+      // crossfade. targetId is null when the arm was cancelled mid-fade â€” no
       // reconcile (parity with the old `_crossfadeTrackId == null` skip).
       const q = get(queue)
       const result = reconcileCrossfadeTarget({
         targetId,
-        combined: queueManager.getCombinedQueue(),
+        combined: this._qm.getCombinedQueue(),
         activeIndex: q.activeIndex,
         userQueue: q.userQueue,
         advanced: advanced !== null,
@@ -857,7 +880,7 @@ class PlaybackManager {
       if (result.kind === 'repoint') {
         setActiveQueueIndex(result.index)
       } else if (result.kind === 'rescue') {
-        // Anchor-CHANGING write — deliberately NOT routed through
+        // Anchor-CHANGING write â€” deliberately NOT routed through
         // `_mutateQueue`'s id re-anchor (B1 scope boundary).
         queue.update((q) => {
           const updated = { ...q, userQueue: result.userQueue, activeIndex: 0 }
@@ -868,11 +891,11 @@ class PlaybackManager {
         setActiveQueueIndex(result.index)
       }
 
-      queueManager.promoteActiveTrack()
-      const combined = queueManager.getCombinedQueue()
+      this._qm.promoteActiveTrack()
+      const combined = this._qm.getCombinedQueue()
       const currentId = combined[get(queue).activeIndex]
       if (currentId) {
-        const track = queueManager.findTrack(currentId)
+        const track = this._qm.findTrack(currentId)
         if (track) setCurrentTrack(track)
       }
       await this._setupNextTrack()
@@ -882,12 +905,12 @@ class PlaybackManager {
   }
 
   async playTrackById(trackId: string): Promise<void> {
-    sleepTimerManager.clearPendingStop()
-    const track = queueManager.findTrack(trackId)
+    this._stm.clearPendingStop()
+    const track = this._qm.findTrack(trackId)
     if (!track) return
 
     const q = get(queue)
-    const combined = queueManager.getCombinedQueue()
+    const combined = this._qm.getCombinedQueue()
     const existingIdx = combined.indexOf(trackId)
     if (existingIdx >= 0) {
       await this.playTrackAt(existingIdx)
@@ -912,25 +935,25 @@ class PlaybackManager {
   }
 
   async playTrackAt(index: number): Promise<void> {
-    sleepTimerManager.clearPendingStop()
-    const combined = queueManager.getCombinedQueue()
+    this._stm.clearPendingStop()
+    const combined = this._qm.getCombinedQueue()
     if (index < 0 || index >= combined.length) return
 
-    // A forward/backward jump makes the current track leave the active slot —
+    // A forward/backward jump makes the current track leave the active slot â€”
     // mark it so it cools down like any other heard track (same-index replays
     // and plain resumes stay unmarked).
     const prevIdx = get(queue).activeIndex
     if (prevIdx >= 0 && prevIdx !== index) {
       const prevId = combined[prevIdx]
       if (prevId) {
-        queueManager.advanceTo(index, prevId)
+        this._qm.advanceTo(index, prevId)
       } else {
         setActiveQueueIndex(index)
       }
     } else {
       setActiveQueueIndex(index)
     }
-    const track = queueManager.findTrack(combined[index])
+    const track = this._qm.findTrack(combined[index])
     if (track) {
       if (this._bgTransport!.engaged) {
         await this._loadAndPlayInBg(track)
@@ -941,7 +964,7 @@ class PlaybackManager {
   }
 
   async play(): Promise<void> {
-    sleepTimerManager.clearPendingStop()
+    this._stm.clearPendingStop()
     if (this.isNative()) {
       if (get(currentTrack) && this._hasNativeEngaged) {
         await BackgroundAudio.play().catch(() => {})
@@ -952,7 +975,7 @@ class PlaybackManager {
       return
     }
 
-    // Lock-screen/app play while bg-engaged (also consumes a bg park — the
+    // Lock-screen/app play while bg-engaged (also consumes a bg park â€” the
     // machine resumes the parked tail). Never touches the fg elements.
     const bg = this._bgTransport
     if (bg?.engaged) {
@@ -961,18 +984,18 @@ class PlaybackManager {
       return
     }
 
-    await audioManager.ensureWebAudioReady()
+    await this._am.ensureWebAudioReady()
 
     // A previous end-of-track park left the element paused just below its end
     // (never ended), so plain play() continues the tail and the re-fired
     // `ended` advances. clearPendingStop() above already cleared the park state.
-    const el = audioManager.activeElement
+    const el = this._am.activeElement
     if (el.src && el.src !== '') {
       try {
         await el.play()
         setPlaybackState('playing')
       } catch {
-        /* play rejected — autoplay policy or no user gesture */
+        /* play rejected â€” autoplay policy or no user gesture */
       }
     } else {
       await this._playFirstInQueue()
@@ -986,7 +1009,7 @@ class PlaybackManager {
       return
     }
     // The engaged-pause filter: while bg-engaged the AUDIBLE element is the bg
-    // element (via the machine) — pausing the fg element would silently fail
+    // element (via the machine) â€” pausing the fg element would silently fail
     // to stop background audio, and a swap-settle fg pause must never write
     // 'paused' while bg audio is playing.
     const bg = this._bgTransport
@@ -995,7 +1018,7 @@ class PlaybackManager {
       setPlaybackState('paused')
       return
     }
-    audioManager.activeElement.pause()
+    this._am.activeElement.pause()
     setPlaybackState('paused')
   }
 
@@ -1008,15 +1031,15 @@ class PlaybackManager {
   }
 
   async next(): Promise<void> {
-    sleepTimerManager.clearPendingStop()
-    const combined = queueManager.getCombinedQueue()
+    this._stm.clearPendingStop()
+    const combined = this._qm.getCombinedQueue()
     const q = get(queue)
     const nextIndex = q.activeIndex + 1
     if (nextIndex >= 0 && nextIndex < combined.length) {
       const currentId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
-      queueManager.advanceTo(nextIndex, currentId ?? undefined)
+      this._qm.advanceTo(nextIndex, currentId ?? undefined)
 
-      const track = queueManager.findTrack(combined[nextIndex])
+      const track = this._qm.findTrack(combined[nextIndex])
       if (track) {
         if (this._bgTransport!.engaged) {
           await this._loadAndPlayInBg(track)
@@ -1028,7 +1051,7 @@ class PlaybackManager {
   }
 
   async prev(): Promise<void> {
-    sleepTimerManager.clearPendingStop()
+    this._stm.clearPendingStop()
     const q = get(queue)
 
     // Native parity: restart the current track if more than a few seconds in.
@@ -1037,12 +1060,12 @@ class PlaybackManager {
       return
     }
 
-    const combined = queueManager.getCombinedQueue()
+    const combined = this._qm.getCombinedQueue()
     const currentId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
     const prevIndex = q.activeIndex - 1
     if (prevIndex >= 0) {
-      queueManager.advanceTo(prevIndex, currentId ?? undefined)
-      const track = queueManager.findTrack(combined[prevIndex])
+      this._qm.advanceTo(prevIndex, currentId ?? undefined)
+      const track = this._qm.findTrack(combined[prevIndex])
       if (track) {
         if (this._bgTransport!.engaged) {
           await this._loadAndPlayInBg(track)
@@ -1056,8 +1079,8 @@ class PlaybackManager {
     if (get(loopMode) === 'all') {
       const lastIndex = combined.length - 1
       if (lastIndex >= 0) {
-        queueManager.advanceTo(lastIndex, currentId ?? undefined)
-        const track = queueManager.findTrack(combined[lastIndex])
+        this._qm.advanceTo(lastIndex, currentId ?? undefined)
+        const track = this._qm.findTrack(combined[lastIndex])
         if (track) {
           if (this._bgTransport!.engaged) {
             await this._loadAndPlayInBg(track)
@@ -1069,12 +1092,12 @@ class PlaybackManager {
       return
     }
 
-    // First track, loop-mode off — restart from the beginning.
+    // First track, loop-mode off â€” restart from the beginning.
     this.seek(0)
   }
 
   seek(time: number): void {
-    sleepTimerManager.clearPendingStop()
+    this._stm.clearPendingStop()
     if (this.isNative()) {
       const track = get(currentTrack)
       const metaDur = track?.duration || time
@@ -1100,7 +1123,7 @@ class PlaybackManager {
       await this.playTrackAt(get(queue).activeIndex)
       return
     }
-    const combined = queueManager.getCombinedQueue()
+    const combined = this._qm.getCombinedQueue()
     if (combined.length > 0) {
       setActiveQueueIndex(0)
       await this.playTrackAt(0)

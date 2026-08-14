@@ -19,7 +19,6 @@ class EngineFacade {
   private _pitchOctaves = 0
   private _tapeMode = false
   private _volume = 1
-  private _preampDb = 0
   private _bypassed = false
   private _filters: EqFilterConfig[] = []
 
@@ -102,7 +101,6 @@ class EngineFacade {
 
   setPreampDb(db: number): void {
     if (this.isNative) {
-      this._preampDb = db
       BackgroundAudio.setPreampDb({ db }).catch(() => {})
     } else {
       audioManager.setPreampDb(db)
@@ -143,7 +141,6 @@ class EngineFacade {
   pushNativeEqFromStore(): void {
     if (!this.isNative) return
     const state = get(currentEqState)
-    this._preampDb = state.preampDb
     this._bypassed = get(eqBypassed)
     this._filters = state.filters.map((f) => ({ ...f }))
     this._pushNativeEq()

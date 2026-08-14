@@ -18,7 +18,15 @@ register(new URL('./test-loader.mjs', import.meta.url))
 
 const HAS_EXT = /\.[a-z0-9]+$/i
 
+/** Resolves the Vite `$lib` alias (`src/lib/`) so store modules reachable
+ *  from tests (e.g. `../stores/appState` → `$lib/db`) load in Node. */
+const SRC_DIR = new URL('../src/lib/', import.meta.url)
+
 function candidates(specifier) {
+  if (specifier.startsWith('$lib/')) {
+    const rest = specifier.slice(5)
+    return [new URL(rest, SRC_DIR).href, new URL(`${rest}.ts`, SRC_DIR).href]
+  }
   if (!specifier.startsWith('.')) return []
   if (HAS_EXT.test(specifier)) return [specifier]
   return [specifier, `${specifier}.ts`, `${specifier}.js`, `${specifier}/index.ts`, `${specifier}/index.js`]
