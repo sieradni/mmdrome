@@ -1,10 +1,11 @@
 /**
  * PlaybackTransport contract (TODO 1.0) — the interface the playback manager
- * drives for track-level playback, implemented by one adapter per transport
- * (WebTransport — Step 2 — then WebBgTransport and NativeTransport in Steps
- * 3–4). This file deliberately declares only the members the foreground
- * adapter needs today; the interface grows as the bg/native adapters land
- * (no dead code before an adapter implements it).
+ * drives for the FOREGROUND web adapter only (WebTransport — Step 2). The bg
+ * and native adapters are SIBLINGS, not implementations: WebBgTransport
+ * (Step 3) and NativeTransport (Step 4) expose their own command surfaces and
+ * policy events because their engines are not element-shaped. This file
+ * deliberately declares only the members the foreground adapter needs (no
+ * dead code before an adapter implements it).
  *
  * Ownership boundary: the transport owns element mechanics — playing the
  * loaded element, arming/cancelling the crossfade, replay-gain refresh on a
