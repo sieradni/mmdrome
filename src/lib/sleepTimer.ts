@@ -3,7 +3,6 @@ import { sleepTimer } from '../stores/appState'
 import { Capacitor } from '@capacitor/core'
 import { BackgroundAudio } from './nativePlugin'
 import { rearmDecision } from './sleepTimerMirror'
-import { playbackManager } from './playbackManager'
 import { audioManager } from './audioManager'
 
 /**
@@ -37,6 +36,13 @@ class SleepTimerController {
    *  carry so a stale park (already resumed in bg) can never land on a
    *  different track. */
   private _parkedTrackId: string | null = null
+  /** Pause action for web minutes-countdown expiry, registered by
+   *  playbackManager.init(). This class must NOT import playbackManager: that
+   *  import closes a module-eval cycle (playbackManager's singleton constructor
+   *  eagerly reads sleepTimerManager), and the production bundle resolves the
+   *  cyclic binding to `undefined` — `this._stm` becomes undefined and every
+   *  playback call throws. The callback inverts the dependency. */
+  private onExpire: (() => void) | null = null
 
   private isNative(): boolean {
     return Capacitor.isNativePlatform()
@@ -57,6 +63,14 @@ class SleepTimerController {
     this.pendingStop = false
     this.parkedAtEnd = false
     this._parkedTrackId = null
+  }
+
+  /** Register the pause action invoked when the web minutes countdown expires.
+   *  playbackManager.init() registers `() => this.pause()` here; the indirection
+   *  (instead of importing the manager singleton) keeps this module out of the
+   *  playbackManager ↔ sleepTimer module-eval cycle. */
+  setExpireHandler(fn: (() => void) | null): void {
+    this.onExpire = fn
   }
 
   /** True while the end-of-track sleep is armed (web parks at the advance
@@ -105,7 +119,7 @@ class SleepTimerController {
     this.stopInterval()
     this.pendingStop = pause
     sleepTimer.set({ active: false, mode: 'minutes', minutes: 30, endsAt: 0, remainingSeconds: 0 })
-    if (pause) void playbackManager.pause()
+    if (pause) this.onExpire?.()
   }
 
   /** Native: every JS queue snapshot (setQueue → native `stopPlayback`)

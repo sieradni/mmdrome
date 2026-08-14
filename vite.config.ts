@@ -26,4 +26,31 @@ export default defineConfig({
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
     __COMMIT_HASH__: JSON.stringify(commitHash),
   },
+  build: {
+    rollupOptions: {
+      // Rolldown's circular-dependency check is OFF by default, so a module
+      // import cycle ships silently — and a cycle that crosses a module-eval
+      // singleton read resolves the cyclic binding to `undefined` in the
+      // bundle (the 2026-08-14 `_stm is undefined` outage). Enable the check
+      // and escalate the warning to a hard build failure.
+      checks: { circularDependency: true },
+      onLog(level, log, defaultHandler) {
+        if (log.code === 'CIRCULAR_DEPENDENCY') {
+          // node_modules packages (e.g. Svelte itself) ship intentional, benign
+          // cycles — those are out of scope. Only a cycle touching our own
+          // `src/` is the module-eval hazard this gate exists to catch.
+          const ids = log.ids ?? (log.id ? [log.id] : [])
+          const projectIds = ids.filter((id) => !id.includes('/node_modules/'))
+          if (projectIds.length > 0) {
+            const root = process.cwd().replace(/\\/g, '/') + '/'
+            throw new Error(
+              `Circular dependency detected in src: ${projectIds.map((id) => id.replace(root, '')).join(' -> ')}`,
+            )
+          }
+          return
+        }
+        defaultHandler(level, log)
+      },
+    },
+  },
 })

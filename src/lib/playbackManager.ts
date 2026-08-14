@@ -118,6 +118,11 @@ export class PlaybackManager {
     scrobbleManager.init()
     scrobbleManager.enable()
     await this._stm.init()
+    // Invert the sleep-timer → manager dependency: sleepTimer must not import
+    // this module (that import is a module-eval cycle that resolves to
+    // `undefined` in the production bundle). The web minutes-countdown expiry
+    // pauses through this callback instead.
+    this._stm.setExpireHandler(() => this.pause())
     this._subscribeShared()
     this._initialized = true
   }
