@@ -402,6 +402,25 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       not correctness. Revisit only if list rendering becomes a measured
       problem.
 - [x] **2.6** `queueWrapNotice` lifecycle — closed 2026-08-10. — LOW
+- [ ] **2.7** **[DECISION]** Native interplay of 1.4's ended-on-divergence with
+      active-row removal (2.4 option b) — found in the 1.4 review
+      2026-08-14. On native, removing the PLAYING track mutates the queue
+      store → the engaged tail sync sends a snapshot whose
+      `combined[activeIndex]` is the NEXT row ≠ the engine's `currentTrackId`
+      (the removed, still-playing track) → the 1.4 divergence branch now
+      emits `ended` → `decideAdvance` (playing-track-aware, 2.4) advances
+      IMMEDIATELY, skipping the removed track. On web the same removal plays
+      the track out to its natural end, then advances. Decide: (a) accept the
+      native skip (document; Spotify-like "removing the current song jumps
+      next"), or (b) web parity (play out) — the engine cannot distinguish
+      "removed active" from "stale snapshot", so (b) needs a JS-side
+      suppression of the divergent tail sync when `currentTrack` is set and
+      not in the queue (skip the refresh; recovery happens at natural end via
+      the engine's trackChanged/ended). **Test** (manager-level native suite):
+      remove the active row while engaged → assert skip-vs-playout per the
+      choice. Pre-1.4 the same divergence silently STOPPED playback (the 1.4
+      bug), so either choice is a strict improvement — this item is about
+      web/native parity, not correctness.
 
 ## Phase 3 — Sync / metadata pipeline hardening
 
