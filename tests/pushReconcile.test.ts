@@ -52,6 +52,16 @@ test('syncStatus-only difference does not keep pending (both pending)', () => {
 })
 
 test('missing optional fields on BOTH sides do not keep pending', () => {
-  const bare = row({ webdavPath: undefined, webdavBase: undefined, comments: undefined })
-  assert.equal(shouldKeepPushPending(bare, row({ webdavPath: undefined, webdavBase: undefined, comments: undefined })), false)
+  const bare = row({ webdavPath: undefined, webdavBase: undefined, comments: undefined, matchSource: undefined, ignored: undefined })
+  assert.equal(shouldKeepPushPending(bare, row({ webdavPath: undefined, webdavBase: undefined, comments: undefined, matchSource: undefined, ignored: undefined })), false)
+})
+
+test('matchSource diverges (manual bind made/revoked) → keep pending', () => {
+  assert.equal(shouldKeepPushPending(row(), row({ matchSource: 'manual' })), true)
+  assert.equal(shouldKeepPushPending(row({ matchSource: 'manual' }), row({ matchSource: undefined })), true)
+})
+
+test('ignored diverges (mid-push dismissal) → keep pending', () => {
+  assert.equal(shouldKeepPushPending(row(), row({ ignored: true })), true)
+  assert.equal(shouldKeepPushPending(row({ ignored: true }), row({ ignored: false })), true)
 })

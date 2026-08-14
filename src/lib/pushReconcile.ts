@@ -12,21 +12,30 @@
  * did not cover would be lost. The old comparison only diffed `rating`/`loved`
  * (the two fields the PUT actually writes); a mid-push re-bind (new
  * `webdavPath`/`webdavBase` — the PUT went to the OLD file, the NEW file was
- * never written) or a `comments` change (never written by the PUT at all) was
- * silently flattened to `synced` with the stale values. This module widens the
- * comparison to the user-intent + file-identity fields:
+ * never written), a `comments` change (never written by the PUT at all), or a
+ * dismissal / match-source flip (File Matching intent) was silently flattened
+ * to `synced` with the stale values. This module diffs every user-intent +
+ * file-identity field the flatten would clobber:
  *
  *  - `rating`/`loved` — the values the PUT wrote; a newer edit must stay pending.
  *  - `webdavPath`/`webdavBase` — a re-bind re-points the row at a different
  *    file; the pushed PUT targeted the OLD path, so the row must be re-pushed.
  *  - `comments` — scan-extracted and never written by the PUT; flattening the
  *    stale snapshot would clobber a live comment.
+ *  - `matchSource` — a manual bind sets `'manual'` (and scans can clear it);
+ *    flattening would re-stamp the stale marker and let a scan re-match a
+ *    binding the user just made or revoked.
+ *  - `ignored` — a dismissal (`ignoreTrack` sets `ignored: true` WITHOUT
+ *    clearing syncStatus or path); flattening would silently un-ignore the row
+ *    so the next scan re-matches and re-pushes it.
  *
  * `syncStatus` is NOT compared (the caller keys on it: the snapshot is always
  * `pending_sync`, and the live row is only kept pending when it is STILL
  * `pending_sync` — a concurrent flatten elsewhere means there is no live edit
  * to preserve). `fileType` is deliberately excluded (the cache row's fileType
- * is stale by design — the library Track is authoritative, D12).
+ * is stale by design — the library Track is authoritative, D12), as is
+ * `webdavLastModified` (a scan-updated cache, re-detected on the next scan —
+ * not user intent).
  */
 
 /** The row surface this decision reads (LocalMetadataStore satisfies it). */
@@ -37,6 +46,8 @@ export interface PushRowSnapshot {
   webdavPath?: string
   webdavBase?: string
   comments?: string
+  matchSource?: 'auto' | 'manual'
+  ignored?: boolean
 }
 
 /**
@@ -44,7 +55,7 @@ export interface PushRowSnapshot {
  * and must therefore stay `pending_sync` instead of being flattened to
  * `synced` with the stale values. False (flatten) when there is no live row,
  * the live row is no longer pending, or the live row matches the snapshot on
- * every pushed/identity field.
+ * every user-intent/identity field.
  */
 export function shouldKeepPushPending(stale: PushRowSnapshot, live: PushRowSnapshot | undefined): boolean {
   if (!live) return false
@@ -54,6 +65,8 @@ export function shouldKeepPushPending(stale: PushRowSnapshot, live: PushRowSnaps
     live.loved !== stale.loved ||
     live.webdavPath !== stale.webdavPath ||
     live.webdavBase !== stale.webdavBase ||
-    live.comments !== stale.comments
+    live.comments !== stale.comments ||
+    live.matchSource !== stale.matchSource ||
+    live.ignored !== stale.ignored
   )
 }

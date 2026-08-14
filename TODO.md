@@ -382,12 +382,14 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
 - [x] **3.1** Push flatten vs concurrent re-bind — closed 2026-08-14: the
       post-PUT re-pend is now a pure `shouldKeepPushPending(stale, live)` in
       `src/lib/pushReconcile.ts`, diffing `rating`/`loved` AND
-      `webdavPath`/`webdavBase`/`comments` — a mid-push File Matching re-bind
-      (the PUT went to the OLD file, the NEW file was never written) or a
-      comments change is kept `pending_sync` instead of flattened to `synced`
-      with the stale values. **Test**: `tests/pushReconcile.test.ts` (12 cases:
-      no live row, not-pending, identical, each diverging field, cleared
-      optional fields, syncStatus-only no-op).
+      `webdavPath`/`webdavBase`/`comments`/`matchSource`/`ignored` — a mid-push
+      File Matching re-bind (the PUT went to the OLD file, the NEW file was
+      never written), a comments change, a manual-bind marker flip, or a
+      dismissal is kept `pending_sync` instead of flattened to `synced` with
+      the stale values (flattening writes the whole snapshot back). **Test**:
+      `tests/pushReconcile.test.ts` (no live row, not-pending, identical, each
+      diverging field incl. cleared/set matchSource + ignored, syncStatus-only
+      no-op).
       `src/lib/syncEngine.ts` `runManualWebDAVSync`,
       `src/lib/pushReconcile.ts` `shouldKeepPushPending` — MED
 - [ ] **3.2** Navidrome-mode stale seeds — the song cache stores raw
