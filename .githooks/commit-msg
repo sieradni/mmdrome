@@ -1,0 +1,12 @@
+#!/bin/sh
+# Strip the Codebuff commit footer — the "🤖 Generated with Codebuff" marker
+# line and the "Co-Authored-By: Codebuff <...>" co-author trailer — before a
+# commit is recorded. Matches only the exact footer forms (end-of-line /
+# start-of-line), so a commit that merely *mentions* Codebuff in its subject or
+# body is left intact.
+msgfile="$1"
+if [ -f "$msgfile" ]; then
+  grep -v -E 'Generated with Codebuff$|^Co-Authored-By: Codebuff ' "$msgfile" > "$msgfile.clean" || exit 1
+  mv "$msgfile.clean" "$msgfile" || exit 1
+fi
+exit 0
