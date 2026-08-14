@@ -187,7 +187,12 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
   clamp + `clearPendingStop`); A4's decideAdvance adopted by `_onTrackEnded`.
   **Tests**: `tests/webBgTransport.test.ts` (50 cases, fake engine/element/
   timers/`document` stub) — full transition graph incl. the exit-bg park gate
-  reporting `onParked`; 216 total pass.
+  reporting `onParked`; 236 total pass. Review round 2 added the manager-glue
+  suite (`tests/playbackManagerBg.test.ts`, 17 cases) — `PlaybackManager` takes
+  injectable deps (audioManager/queueManager/sleepTimerManager/transports),
+  `AudioManager`'s a/b elements are lazy (Node-safe ctor), and the suite pins
+  the settle-safe `_bgLoad` store ordering + decision resolution + fg/bg
+  routing.
 - **Step 4 — NativeTransport**: owns `setQueue`/`refreshQueue`/`playTrackAt`,
   the 250 ms position poll, `_hasNativeEngaged`, queue-sync coalescing, getState
   reconcile (1.5 JS side), fail-fast empty snapshot (1.6 JS side), seek-position
