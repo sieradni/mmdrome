@@ -88,11 +88,7 @@ class AudioManager {
     this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
 
     // Pre-create background element for iOS — keeps audio session warm
-    this._bgEl = new Audio()
-    this._bgEl.crossOrigin = 'anonymous'
-    this._bgEl.preservesPitch = false
-    this._bgEl.preload = 'metadata' // avoid loading full track data until actually needed
-    this._bgEl.volume = 0 // silent until swapped in
+    this._bgEl = this.createBgElement()
     this._bgEl.addEventListener('ended', () => {
       if (this._inBgMode) {
         this.onBgTrackEnd?.()
@@ -103,6 +99,18 @@ class AudioManager {
         this.onBgError?.()
       }
     })
+  }
+
+  /** Creates the iOS background element (volume stays 0 forever — setting it is
+   *  a no-op; the element routes through the hardware output at rocker volume).
+   *  The WebBgTransport adapter takes ownership of the returned element. */
+  createBgElement(): HTMLAudioElement {
+    const el = new Audio()
+    el.crossOrigin = 'anonymous'
+    el.preservesPitch = false
+    el.preload = 'metadata' // avoid loading full track data until actually needed
+    el.volume = 0 // silent until swapped in
+    return el
   }
 
   get ctx(): AudioContext | null { return this._ctx }
@@ -125,6 +133,8 @@ class AudioManager {
   set snapTolerance(value: number) { this._snapTolerance = Math.max(0, value) }
 
   get isInBgMode(): boolean { return this._inBgMode }
+
+  get isIOS(): boolean { return this._isIOS }
 
   get activeElement(): HTMLAudioElement {
     return this._activeElement === 'a' ? this.a : this.b
@@ -212,7 +222,7 @@ class AudioManager {
     const el = this.activeElement
     if (el.paused || el.ended || !el.src) return
 
-    this._teardownCrossfadeMonitor()
+    this.teardownCrossfadeMonitor()
 
     if (!this._bgEl.src || this._bgEl.src !== el.src) {
       this._bgEl.src = el.src
@@ -231,7 +241,7 @@ class AudioManager {
     // hears audio slightly behind the element's decode position (due to SoundTouch,
     // EQ, and output buffering). In background mode the raw element bypasses all
     // this, so we start slightly earlier to match what was just heard.
-    const offset = this._getTransitionOffset()
+    const offset = this.getTransitionOffset()
     this._bgEl.currentTime = Math.max(0, el.currentTime - offset)
     this._bgEl.playbackRate = this._speed
 
@@ -263,19 +273,34 @@ class AudioManager {
     this._bgEl.removeAttribute('src')
     this._bgEl.load()
 
-    if (this._ctx) {
-      if (this._ctx.state !== 'running') {
-        try {
-          await this._ctx.suspend()
-          await this._ctx.resume()
-        } catch {
-          /* Context irrecoverable — play() on element will use system audio */        }
-      }
-      this.reapplyEffects()
-    }
+    await this.reviveContext()
 
     this.onExitBackground?.(state)
 
+    this.resumeCrossfadeAfterBgExit()
+  }
+
+  /** Suspends/resumes a suspended AudioContext (irrecoverable contexts fall back
+   *  to plain element audio) and re-applies the effects graph. Called when
+   *  exiting background mode — iOS suspends the context while backgrounded. */
+  async reviveContext(): Promise<void> {
+    if (!this._ctx) return
+    if (this._ctx.state !== 'running') {
+      try {
+        await this._ctx.suspend()
+        await this._ctx.resume()
+      } catch {
+        /* Context irrecoverable — play() on element will use system audio */
+      }
+    }
+    this.reapplyEffects()
+  }
+
+  /** Re-arms the crossfade monitor after an exit from background mode. The
+   *  enter-bg swap tore the monitor down; `_setupNextTrack` may have re-armed it
+   *  already (idempotent — it tears down first), and the resumed element may be
+   *  sitting inside the crossfade window (fires immediately). */
+  resumeCrossfadeAfterBgExit(): void {
     if (this._nextTrackUrl && this._crossfadeDuration > 0 && this._webAudioReady) {
       this._setupCrossfadeMonitor()
       const el = this.activeElement
@@ -431,7 +456,7 @@ class AudioManager {
   /** Returns the time offset to apply when entering background mode.
    *  Accounts for the WebAudio pipeline latency (SoundTouch + EQ + output buffer)
    *  so the raw _bgEl starts at the position the user was audibly hearing. */
-  private _getTransitionOffset(): number {
+  getTransitionOffset(): number {
     return this._pipelineLatency
   }
 
@@ -477,7 +502,7 @@ class AudioManager {
     if (url && this._crossfadeDuration > 0 && this._webAudioReady) {
       this._setupCrossfadeMonitor()
     } else {
-      this._teardownCrossfadeMonitor()
+      this.teardownCrossfadeMonitor()
     }
   }
 
@@ -756,7 +781,11 @@ class AudioManager {
   }
 
   private _setupCrossfadeMonitor(): void {
-    this._teardownCrossfadeMonitor()
+    this.teardownCrossfadeMonitor()
+    // iOS background: never arm the monitor while hidden — WebBgTransport owns
+    // playback there, and a 100ms tick against the paused fg element is pure
+    // waste. The exit-from-bg re-arm (resumeCrossfadeAfterBgExit) runs visible.
+    if (this._isIOS && document.hidden) return
     if (!this._webAudioReady || this._crossfadeDuration <= 0 || !this._nextTrackUrl) return
 
     this._transitionArmed = false
@@ -775,7 +804,7 @@ class AudioManager {
     }, 100)
   }
 
-  private _teardownCrossfadeMonitor(): void {
+  teardownCrossfadeMonitor(): void {
     if (this._crossfadeInterval !== null) {
       clearInterval(this._crossfadeInterval)
       this._crossfadeInterval = null
@@ -848,7 +877,7 @@ class AudioManager {
       if (!oldEl.ended) oldEl.pause()
     }, fadeDuration * 1000)
 
-    this._teardownCrossfadeMonitor()
+    this.teardownCrossfadeMonitor()
     this._activeElement = this._activeElement === 'a' ? 'b' : 'a'
     this._nextTrackUrl = null
     this._nextTrackReplayGainLinear = null
