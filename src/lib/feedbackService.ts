@@ -39,6 +39,11 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
       webdavPath: existing?.webdavPath,
       webdavLastModified: existing?.webdavLastModified,
       webdavBase: existing?.webdavBase,
+      // The full-row replace must not drop matching intent: a rating edit on a
+      // dismissed or manually-bound track would otherwise un-ignore it / lose
+      // the manual-bind marker and let the next scan re-match it (D8).
+      matchSource: existing?.matchSource,
+      ignored: existing?.ignored,
     }
     updateMetadata(meta)
     // prevRating lets the mirror clear a prior rating when it's actually being
@@ -61,6 +66,10 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
     webdavPath: existing?.webdavPath,
     webdavLastModified: existing?.webdavLastModified,
     webdavBase: existing?.webdavBase,
+    // See the navidrome branch: the full-row replace must preserve matching
+    // intent (dismissal + manual-bind marker), never drop it on an edit.
+    matchSource: existing?.matchSource,
+    ignored: existing?.ignored,
   }
   updateMetadata(meta)
 

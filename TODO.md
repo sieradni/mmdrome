@@ -451,6 +451,19 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       includes `ignored` rows that Push skips → overstated count.
       `src/lib/syncEngine.ts` `webdavPutAtomic`,
       `src/views/SettingsView.svelte` `safeCount` — LOW
+- [ ] **3.9** Pre-PUT live-row re-validation — 3.1 widened the POST-PUT re-pend
+      so a mid-push dismissal/re-bind is not flattened away, but the loop still
+      PUTs against the START-of-loop snapshot: a track dismissed (`ignored`) or
+      re-bound (new `webdavPath`/`webdavBase`) during the GET→modify→PUT window
+      still gets tags written to the OLD/rejected file (the re-pend preserves
+      the flag but cannot undo the write). Re-check the LIVE row (ignored /
+      webdavPath / webdavBase) immediately before the PUT (and the conflict
+      retry's re-PUT) and skip without counting synced; mind the `pushedPaths`
+      dedupe (a skipped row must not mark its path pushed). Also re-derive the
+      current baseKey from live settings rather than the loop-start capture so
+      a mid-push credential swap can't PUT to the old server. **Test**: re-check
+      decision as a pure function (stale snapshot × live row × baseKey).
+      `src/lib/syncEngine.ts` `runManualWebDAVSync` — MED
 
 ## Phase 4 — UI & state layer
 

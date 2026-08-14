@@ -359,6 +359,10 @@ export function seedNavidromeFeedback(tracks: Track[]): void {
       webdavPath: existing?.webdavPath,
       webdavLastModified: existing?.webdavLastModified,
       webdavBase: existing?.webdavBase,
+      // The bulk replace must not drop matching intent (a seeded dismissed /
+      // manually-bound row would otherwise be re-matched on the next scan, D8).
+      matchSource: existing?.matchSource,
+      ignored: existing?.ignored,
     }
     updates.push(next)
   }
