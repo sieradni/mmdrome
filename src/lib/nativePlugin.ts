@@ -50,6 +50,7 @@ interface BackgroundAudioPlugin {
   setSpeed(options: { speed: number }): Promise<void>
   setPitchOctaves(options: { octaves: number }): Promise<void>
   setTapeMode(options: { enabled: boolean }): Promise<void>
+  setSnapTolerance(options: { semitones: number }): Promise<void>
   setReplayGainMode(options: { mode: 'off' | 'track' | 'album' }): Promise<void>
   setPreampDb(options: { db: number }): Promise<void>
   setMasterVolume(options: { volume: number }): Promise<void>

@@ -6,6 +6,7 @@
   let sliderVal = $state(speedToSlider(engine.speed))
   let pitch = $state(engine.pitchOctaves)
   let tapeMode = $state(engine.tapeMode)
+  let snapTolerance = $state(engine.snapTolerance)
 
   let speed = $derived(sliderToSpeed(sliderVal))
 
@@ -25,6 +26,16 @@
 
   function updatePitch() {
     engine.setPitchOctaves(pitch)
+    // Reflect the snapped value back so the thumb sticks to the semitone grid
+    // (the engine may quantize the raw slider value to the nearest semitone).
+    pitch = engine.pitchOctaves
+  }
+
+  function updateSnapTolerance() {
+    engine.setSnapTolerance(snapTolerance)
+    // Widening the tolerance can re-snap the current pitch — reflect the
+    // effective value so the slider/display never show a stale off-grid pitch.
+    pitch = engine.pitchOctaves
   }
 
   function toggleTape() {
@@ -101,6 +112,32 @@
         <span>-2</span>
         <span>0</span>
         <span>+2</span>
+      </div>
+    </div>
+
+    <!-- Snap Tolerance -->
+    <div class="space-y-3" class:opacity-40={tapeMode}>
+      <div class="flex items-center justify-between">
+        <div>
+          <p class="text-sm font-medium text-primary">Snap Tolerance</p>
+          <p class="text-xs text-muted">Pitch snaps to semitones when close</p>
+        </div>
+        <span class="text-sm tabular-nums text-primary">{snapTolerance.toFixed(2)} st</span>
+      </div>
+      <input
+        type="range"
+        min="0"
+        max="0.5"
+        step="0.01"
+        bind:value={snapTolerance}
+        oninput={updateSnapTolerance}
+        disabled={tapeMode}
+        class="h-1 w-full accent-white/80 disabled:opacity-30"
+      />
+      <div class="flex justify-between text-[10px] text-muted/50">
+        <span>Off</span>
+        <span>0.25 st</span>
+        <span>Always</span>
       </div>
     </div>
 

@@ -71,10 +71,6 @@
     updateSetting('crossfadeDuration', Number((e.target as HTMLInputElement).value))
   }
 
-  function setTapeMode() {
-    updateSetting('tapeMode', !($settings.tapeMode ?? false))
-  }
-
   function setReplayGainMode(val: 'off' | 'track' | 'album') {
     updateSetting('replayGainMode', val)
   }
@@ -112,10 +108,6 @@
 
   function setScrobbling() {
     updateSetting('scrobbling', !($settings.scrobbling ?? false))
-  }
-
-  function setSnapTolerance(e: Event) {
-    updateSetting('snapTolerance', Number((e.target as HTMLInputElement).value))
   }
 
   /**
@@ -745,32 +737,6 @@
               class="h-1 flex-1 accent-yellow-500"
             />
             <span class="w-10 text-right text-sm text-muted">{($settings.crossfadeDuration ?? 0)}s</span>
-          </div>
-        </section>
-
-        <!-- Pitch / Speed -->
-        <section class="px-4 py-4">
-          <h3 class="mb-3 text-base font-medium text-primary">Pitch & Speed</h3>
-          <div class="space-y-3">
-            <label class="flex cursor-pointer items-center gap-3">
-              <input type="checkbox" checked={$settings.tapeMode ?? false} onchange={setTapeMode} class="accent-yellow-500" />
-              <div>
-                <p class="text-base text-primary">Tape Mode</p>
-                <p class="text-sm text-muted">Link pitch and speed changes together</p>
-              </div>
-            </label>
-            <div>
-              <p class="mb-1 text-sm text-muted">Snap tolerance: {($settings.snapTolerance ?? 0.15).toFixed(2)}</p>
-              <input
-                type="range"
-                min="0"
-                max="0.5"
-                step="0.01"
-                value={$settings.snapTolerance ?? 0.15}
-                oninput={setSnapTolerance}
-                class="h-1 w-full accent-yellow-500"
-              />
-            </div>
           </div>
         </section>
 

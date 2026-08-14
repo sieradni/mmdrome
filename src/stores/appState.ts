@@ -95,6 +95,8 @@ export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; 
 export const shuffleEnabled = writable<boolean>(false)
 export const currentTime = writable<number>(0)
 export const playbackSpeed = writable<number>(1)
+export const tapeMode = writable<boolean>(false)
+export const snapTolerance = writable<number>(0.15)
 export const effectiveDuration = derived(
   [currentTrack],
   ([$ct]) => {

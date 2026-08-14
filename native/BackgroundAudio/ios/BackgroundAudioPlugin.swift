@@ -22,6 +22,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setSpeed", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPitchOctaves", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setTapeMode", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setSnapTolerance", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setReplayGainMode", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPreampDb", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setMasterVolume", returnType: CAPPluginReturnPromise),
@@ -177,6 +178,11 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func setTapeMode(_ call: CAPPluginCall) {
         engine.setTapeMode(call.getBool("enabled", false))
+        call.resolve()
+    }
+
+    @objc func setSnapTolerance(_ call: CAPPluginCall) {
+        engine.setSnapTolerance(call.getDouble("semitones", 0.15))
         call.resolve()
     }
 

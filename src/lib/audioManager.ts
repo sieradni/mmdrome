@@ -7,6 +7,7 @@ import type { EqFilterConfig } from './eq/eqTypes'
 import type { EqPoint } from './eq/eqTypes'
 import { get } from 'svelte/store'
 import { currentTrack } from '../stores/appState'
+import { snapPitchToSemitone } from './playbackCore/pitchSnap'
 
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 const WORKLET_CACHE_BUST = '1' // increment when public/*-processor.js files change
@@ -57,6 +58,8 @@ class AudioManager {
   onTrackEnd: (() => void) | null = null
   onSpeedChange: ((speed: number) => void) | null = null
   onPitchChange: ((pitch: number) => void) | null = null
+  onTapeModeChange: ((enabled: boolean) => void) | null = null
+  onSnapToleranceChange: ((tolerance: number) => void) | null = null
   private _isIOS: boolean
   private _webAudioFailed = false
   /** Estimated latency of the WebAudio processing pipeline (SoundTouch + EQ + output buffer).
@@ -123,7 +126,21 @@ class AudioManager {
   get graphicEqMode(): boolean { return this._graphicEqMode }
   get graphicEqCurves(): EqPoint[][] { return this._graphicEqCurves }
 
-  set snapTolerance(value: number) { this._snapTolerance = Math.max(0, value) }
+  setSnapTolerance(value: number): void {
+    const clamped = Math.min(0.5, Math.max(0, value))
+    if (this._snapTolerance === clamped) return
+    this._snapTolerance = clamped
+    this.onSnapToleranceChange?.(clamped)
+    // A tolerance change can only PULL an off-grid pitch onto the semitone grid
+    // (a snapped value stays snapped for any tolerance), so re-snap the current
+    // pitch so widening the tolerance takes effect immediately.
+    const snapped = this._snapPitch(this._pitchOctaves)
+    if (snapped !== this._pitchOctaves) {
+      this._pitchOctaves = snapped
+      this._applyPitch(snapped)
+      this.onPitchChange?.(snapped)
+    }
+  }
 
   get isIOS(): boolean { return this._isIOS }
 
@@ -357,7 +374,7 @@ class AudioManager {
 
   setPitchOctaves(octaves: number): void {
     this._pitchOctaves = clamp(octaves, -2, 2)
-    const snapped = this._snapOctaves(this._pitchOctaves)
+    const snapped = this._snapPitch(this._pitchOctaves)
     this._pitchOctaves = snapped
     this._applyPitch(snapped)
     this.onPitchChange?.(this._pitchOctaves)
@@ -367,6 +384,7 @@ class AudioManager {
     this._tapeMode = !this._tapeMode
     this._applyTempo()
     this._applyPitch(this._pitchOctaves)
+    this.onTapeModeChange?.(this._tapeMode)
   }
 
   setTapeMode(enabled: boolean): void {
@@ -374,6 +392,7 @@ class AudioManager {
     this._tapeMode = enabled
     this._applyTempo()
     this._applyPitch(this._pitchOctaves)
+    this.onTapeModeChange?.(this._tapeMode)
   }
 
   reapplyEffects(): void {
@@ -653,16 +672,8 @@ class AudioManager {
     }
   }
 
-  private _snapOctaves(octaves: number): number {
-    const nearestSemitone = Math.round(octaves * 12) / 12
-    const semitoneDist = Math.abs(octaves - nearestSemitone)
-    const nearestOctave = Math.round(octaves)
-    const octDist = Math.abs(octaves - nearestOctave)
-
-    const best = semitoneDist <= octDist ? nearestSemitone : nearestOctave
-    const bestDist = Math.min(semitoneDist, octDist)
-
-    return bestDist <= this._snapTolerance ? best : octaves
+  private _snapPitch(octaves: number): number {
+    return snapPitchToSemitone(octaves, this._snapTolerance)
   }
 
   private _setupCrossfadeMonitor(): void {

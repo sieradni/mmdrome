@@ -282,6 +282,7 @@ public final class NativeAudioEngine: NSObject {
     private var speed: Double = 1
     private var pitchOctaves: Double = 0
     private var tapeMode = false
+    private var snapTolerance: Double = 0.15
     private var replayGainMode = "off"
     private var preampDb: Double = 0
     private var masterVolume: Double = 1
@@ -523,14 +524,29 @@ public final class NativeAudioEngine: NSObject {
 
     public func setPitchOctaves(_ octaves: Double) {
         let clamped = max(-2, min(2, octaves))
-        guard clamped != pitchOctaves else { return }
-        pitchOctaves = clamped
+        let snapped = snapPitchToSemitone(octaves: clamped, toleranceSemitones: snapTolerance)
+        guard snapped != pitchOctaves else { return }
+        pitchOctaves = snapped
         scheduleParamRestart()
     }
 
     public func setTapeMode(_ enabled: Bool) {
         guard enabled != tapeMode else { return }
         tapeMode = enabled
+        scheduleParamRestart()
+    }
+
+    /// Snap tolerance in semitones (0…0.5). Widening the tolerance can pull an
+    /// off-grid pitch (set while a tighter/zero tolerance let it through) onto
+    /// the grid, so re-snap here; a snapped value stays snapped for any
+    /// tolerance, which makes the common case a no-op.
+    public func setSnapTolerance(_ semitones: Double) {
+        let clamped = max(0, min(0.5, semitones))
+        guard clamped != snapTolerance else { return }
+        snapTolerance = clamped
+        let resnapped = snapPitchToSemitone(octaves: pitchOctaves, toleranceSemitones: snapTolerance)
+        guard resnapped != pitchOctaves else { return }
+        pitchOctaves = resnapped
         scheduleParamRestart()
     }
 

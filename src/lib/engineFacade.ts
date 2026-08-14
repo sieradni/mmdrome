@@ -3,7 +3,8 @@ import { get } from 'svelte/store'
 import { audioManager } from './audioManager'
 import { BackgroundAudio, type NativeFilterSnapshot } from './nativePlugin'
 import { eqBypassed, currentEqState } from './eq/eqStore'
-import { playbackSpeed, pitchOctaves } from '../stores/appState'
+import { playbackSpeed, pitchOctaves, tapeMode, snapTolerance } from '../stores/appState'
+import { snapPitchToSemitone } from './playbackCore/pitchSnap'
 import type { EqFilterConfig, EqPoint } from './eq/eqTypes'
 
 /**
@@ -18,6 +19,7 @@ class EngineFacade {
   private _speed = 1
   private _pitchOctaves = 0
   private _tapeMode = false
+  private _snapTolerance = 0.15
   private _volume = 1
   private _bypassed = false
   private _filters: EqFilterConfig[] = []
@@ -38,6 +40,10 @@ class EngineFacade {
     return this.isNative ? this._tapeMode : audioManager.tapeMode
   }
 
+  get snapTolerance(): number {
+    return this.isNative ? this._snapTolerance : audioManager.snapTolerance
+  }
+
   get volume(): number {
     return this.isNative ? this._volume : audioManager.preamp?.gain.value ?? 1
   }
@@ -56,9 +62,14 @@ class EngineFacade {
 
   setPitchOctaves(octaves: number): void {
     if (this.isNative) {
-      this._pitchOctaves = octaves
-      pitchOctaves.set(octaves)
-      BackgroundAudio.setPitchOctaves({ octaves }).catch(() => {})
+      // Clamp + snap on the facade so `engine.pitchOctaves` reflects what
+      // actually plays (the plugin re-snaps defensively, but this keeps the
+      // UI/store honest and matches the web/Swift [-2, 2] clamp).
+      const clamped = Math.min(2, Math.max(-2, octaves))
+      const snapped = snapPitchToSemitone(clamped, this._snapTolerance)
+      this._pitchOctaves = snapped
+      pitchOctaves.set(snapped)
+      BackgroundAudio.setPitchOctaves({ octaves: snapped }).catch(() => {})
     } else {
       audioManager.setPitchOctaves(octaves)
     }
@@ -67,9 +78,30 @@ class EngineFacade {
   setTapeMode(enabled: boolean): void {
     if (this.isNative) {
       this._tapeMode = enabled
+      tapeMode.set(enabled)
       BackgroundAudio.setTapeMode({ enabled }).catch(() => {})
     } else {
       audioManager.setTapeMode(enabled)
+    }
+  }
+
+  setSnapTolerance(value: number): void {
+    const clamped = Math.min(0.5, Math.max(0, value))
+    if (this.isNative) {
+      if (this._snapTolerance === clamped) return
+      this._snapTolerance = clamped
+      snapTolerance.set(clamped)
+      BackgroundAudio.setSnapTolerance({ semitones: clamped }).catch(() => {})
+      // Widening the tolerance can pull an off-grid pitch onto the grid — re-snap
+      // the mirrored pitch so the facade, store, and engine stay in lockstep.
+      const snapped = snapPitchToSemitone(this._pitchOctaves, clamped)
+      if (snapped !== this._pitchOctaves) {
+        this._pitchOctaves = snapped
+        pitchOctaves.set(snapped)
+        BackgroundAudio.setPitchOctaves({ octaves: snapped }).catch(() => {})
+      }
+    } else {
+      audioManager.setSnapTolerance(clamped)
     }
   }
 
