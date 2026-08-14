@@ -788,6 +788,15 @@ class PlaybackManager {
       return
     }
 
+    // The stores reflect the resolved track BEFORE the settle: a settle dropped
+    // by a racing lock-screen pause (token bumped) must not leave the UI on the
+    // previous track while the element/queue already moved on. The pause's
+    // 'paused' write lands after; a dropped settle by an exit re-route is
+    // idempotent (the fg load re-sets everything).
+    setCurrentTrack(track)
+    currentTime.set(0)
+    setPlaybackState('playing')
+
     const started = await this._bgTransport!.startBgLoad(url)
     if (!started) {
       // The load was superseded (newer load, park, or an exit that re-routed
@@ -795,9 +804,6 @@ class PlaybackManager {
       return
     }
 
-    setCurrentTrack(track)
-    currentTime.set(0)
-    setPlaybackState('playing')
     queueManager.promoteActiveTrack()
     queueManager.replenishAutoQueue()
     await this._setupNextTrack()

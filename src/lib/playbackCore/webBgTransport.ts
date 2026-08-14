@@ -8,7 +8,9 @@
  *    watchdog) into ONE explicit transition function;
  *  - the swap mechanics (src copy, latency-offset seek, iOS `load()`) and the
  *    bg load path, both guarded by the settle token (the `_enterBgSeq` analog —
- *    a stale play() settle from a superseded load is dropped);
+ *    a stale play() settle from a superseded load is dropped); bg loads mirror
+ *    the src onto the fg element so an exit-resume lands on the CURRENT track
+ *    (the fg element otherwise holds the pre-swap track forever);
  *  - the 250 ms position/watchdog tick (iOS stalls `timeupdate` in background
  *    — the ONE unavoidable poll; runs only while the bg element is audible);
  *  - the park nudge: a parked element is paused just below its end (never
@@ -55,7 +57,6 @@ export interface WebBgEngine {
   getTransitionOffset(): number
   teardownCrossfadeMonitor(): void
   reviveContext(): Promise<void>
-  reapplyEffects(): void
   resumeCrossfadeAfterBgExit(): void
 }
 
@@ -200,12 +201,20 @@ export class WebBgTransport {
    *  Resolves when the play() settles — `bgStarted`/`bgFailed` are dispatched
    *  into the machine (token-filtered, so only the LAST load's settle lands).
    *  Returns false when the element is gone or not engaged (an exit raced the
-   *  load — the machine already re-routed it to the fg path). */
+   *  load — the machine already re-routed it to the fg path).
+   *
+   *  The src is ALSO mirrored onto the fg element (paused, monitor torn down):
+   *  an exit mid-track resumes/carries onto the fg element, which otherwise
+   *  holds the PRE-SWAP track's src forever after a bg advancement — the
+   *  resume would play the wrong audio under the current track's UI/position.
+   *  Mirrored BEFORE the settle so a settle dropped by a racing pause (token
+   *  bumped) still leaves the fg element on the current track. */
   async startBgLoad(url: string): Promise<boolean> {
     if (!this._el || !this.engaged) return false
     this._el.src = url
     this._el.currentTime = 0
     this._el.playbackRate = this._speed
+    this._deps.fgElement().src = url
     return this._settlePlay(++this._settleToken)
   }
 

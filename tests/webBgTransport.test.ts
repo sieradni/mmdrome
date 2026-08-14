@@ -102,10 +102,6 @@ class FakeEngine implements WebBgEngine {
     this.calls.push('reviveContext')
   }
 
-  reapplyEffects(): void {
-    this.calls.push('reapplyEffects')
-  }
-
   resumeCrossfadeAfterBgExit(): void {
     this.calls.push('resumeCrossfadeAfterBgExit')
   }
@@ -752,6 +748,47 @@ test('startBgLoad after an exit is refused (machine already re-routed to fg)', a
   assert.equal(ok, false)
   assert.equal(h.bgEl.src, '') // torn down by the exit — the load was refused
   assert.equal(h.bgEl.playCalls, 1) // only the enter swap ever played
+})
+
+// ── fg src mirror (exit-resume must play the CURRENT bg track) ─────────────
+
+test('startBgLoad mirrors the src onto the fg element', async () => {
+  const h = makeHarness()
+  await enterBg(h)
+  h.bgEl.emit('ended')
+  await flush()
+  await h.t.startBgLoad('u2')
+  assert.equal(h.fg.src, 'u2')
+})
+
+test('exit-resume after a bg advance plays the bg track src', async () => {
+  const h = makeHarness()
+  await enterBg(h)
+  h.bgEl.emit('ended')
+  await flush()
+  await h.t.startBgLoad('u2')
+  h.bgEl.currentTime = 40
+  await h.t.handleVisibility(false)
+  assert.equal(h.fg.src, 'u2') // not the stale pre-swap 'u1'
+  assert.equal(h.fg.currentTime, 40)
+  assert.equal(h.fg.paused, false)
+})
+
+test('exit park-carry after a bg advance lands on the bg track src', async () => {
+  const h = makeHarness()
+  await enterBg(h)
+  h.bgEl.emit('ended')
+  await flush()
+  await h.t.startBgLoad('u2') // advance — the fg element mirrors u2
+  h.facts.parkArmed = true
+  h.bgEl.currentTime = 299.9
+  h.timers.tick() // watchdog park
+  await flush()
+  assert.deepEqual(h.parked, ['t1'])
+  await h.t.handleVisibility(false)
+  assert.equal(h.fg.src, 'u2')
+  assert.equal(h.fg.currentTime, 299.9)
+  assert.equal(h.fg.paused, true)
 })
 
 test('abortBgLoad after an exit is a no-op', async () => {
