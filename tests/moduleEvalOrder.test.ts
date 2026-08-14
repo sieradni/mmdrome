@@ -1,13 +1,15 @@
-// Regression pin for the module-eval-order cycle between playbackManager and
+// Regression pin for the module-eval-order hazard between playbackManager and
 // sleepTimer. App.svelte imports `sleepTimerManager` BEFORE `playbackManager`;
 // when sleepTimer imported the manager back, that ordering evaluated
-// playbackManager's singleton constructor (which eagerly reads
-// `sleepTimerManager`) before sleepTimer finished initializing the binding.
-// Native ESM throws a TDZ ReferenceError there; the production (Rollup) bundle
-// hoists the cyclic `const` to `undefined`, so `playbackManager._stm` was
-// undefined and `init()`/`play()` threw "can't access property ... this._stm
-// is undefined" at runtime. This file reproduces the App.svelte import order
-// (sleepTimer FIRST) and asserts the singleton wired up the real controller.
+// playbackManager's singleton constructor (which eagerly read
+// `sleepTimerManager`) before sleepTimer finished initializing the binding — a
+// TDZ ReferenceError under Node, silently `undefined` in the production bundle
+// ("can't access property ... this._stm is undefined"). Two fixes landed: the
+// dependency was inverted (sleepTimer exposes `setExpireHandler`), and the
+// manager's engine deps became lazy getters so construction no longer reads
+// any module binding. This file still reproduces App.svelte's import order
+// (sleepTimer FIRST) and asserts the graph loads and `_stm` resolves to the
+// real controller.
 //
 // Import order is the whole point of the test — do NOT reorder these.
 

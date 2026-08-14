@@ -40,7 +40,8 @@ export default defineConfig({
           // cycles — those are out of scope. Only a cycle touching our own
           // `src/` is the module-eval hazard this gate exists to catch.
           const ids = log.ids ?? (log.id ? [log.id] : [])
-          const projectIds = ids.filter((id) => !id.includes('/node_modules/'))
+          const srcPrefix = path.resolve('src').replace(/\\/g, '/') + '/'
+          const projectIds = ids.filter((id) => id.replace(/\\/g, '/').startsWith(srcPrefix))
           if (projectIds.length > 0) {
             const root = process.cwd().replace(/\\/g, '/') + '/'
             throw new Error(

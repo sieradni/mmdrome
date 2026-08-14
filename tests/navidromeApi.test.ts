@@ -13,8 +13,11 @@ const config: NavidromeConfig = { baseUrl: 'https://srv.example/', username: 'u'
 
 /** Replaces fetch with a stub that records each requested URL and answers a
  *  minimal successful `subsonic-response` (the helpers only inspect status/ok
- *  and the JSON envelope). */
-function stubFetch(): string[] {
+ *  and the JSON envelope). Returns the recorded URLs plus a `restore` that
+ *  reinstates the real fetch — hook it with `t.after` so a failing assertion
+ *  still leaves the global untouched. */
+function stubFetch(): { urls: string[]; restore: () => void } {
+  const original = globalThis.fetch
   const urls: string[] = []
   globalThis.fetch = (async (input: unknown) => {
     urls.push(String(input))
@@ -23,11 +26,12 @@ function stubFetch(): string[] {
       headers: { 'content-type': 'application/json' },
     })
   }) as typeof fetch
-  return urls
+  return { urls, restore: () => { globalThis.fetch = original } }
 }
 
-test('submitNowPlaying posts to scrobble with submission=false and no stray params', async () => {
-  const urls = stubFetch()
+test('submitNowPlaying posts to scrobble with submission=false and no stray params', async (t) => {
+  const { urls, restore } = stubFetch()
+  t.after(restore)
   await submitNowPlaying(config, 'song-1')
   assert.equal(urls.length, 1)
 
@@ -42,8 +46,9 @@ test('submitNowPlaying posts to scrobble with submission=false and no stray para
   assert.equal(url.searchParams.has('duration'), false)
 })
 
-test('submitScrobble posts to scrobble with submission=true and a millisecond time', async () => {
-  const urls = stubFetch()
+test('submitScrobble posts to scrobble with submission=true and a millisecond time', async (t) => {
+  const { urls, restore } = stubFetch()
+  t.after(restore)
   await submitScrobble(config, 'song-2', 1784102400123)
   assert.equal(urls.length, 1)
 

@@ -55,15 +55,20 @@ export class PlaybackManager {
    *  'reload' decision loads this (an exit-race re-routes it to the fg path). */
   private _pendingBgTrack: Track | null = null
   private _lastSortKey = ''
-  private _am: typeof audioManager
-  private _qm: typeof queueManager
-  private _stm: typeof sleepTimerManager
+  private _amOverride: typeof audioManager | null = null
+  private _qmOverride: typeof queueManager | null = null
+  private _stmOverride: typeof sleepTimerManager | null = null
 
   /**
    * Injectable deps for the glue tests: transports + engine adapters default to
    * the module singletons, but tests pass fakes so the manager's bg wiring can
    * be exercised in Node without a DOM or Dexie. `_initWeb` still constructs
    * the real transports over whatever was injected.
+   *
+   * The engine deps are LAZY (see the getters below): reading a module
+   * singleton during construction is an eval-time read that breaks if that
+   * module imports this one back (F2b) — deferred to first use, the bindings
+   * are always initialized. Only the override fields are captured here.
    */
   constructor(deps: {
     audioManager?: typeof audioManager
@@ -74,13 +79,25 @@ export class PlaybackManager {
     nativeTransport?: NativeTransport | null
     isNative?: () => boolean
   } = {}) {
-    this._am = deps.audioManager ?? audioManager
-    this._qm = deps.queueManager ?? queueManager
-    this._stm = deps.sleepTimerManager ?? sleepTimerManager
+    this._amOverride = deps.audioManager ?? null
+    this._qmOverride = deps.queueManager ?? null
+    this._stmOverride = deps.sleepTimerManager ?? null
     this._webTransport = deps.webTransport ?? null
     this._bgTransport = deps.bgTransport ?? null
     this._nativeTransport = deps.nativeTransport ?? null
     this._isNative = deps.isNative ?? null
+  }
+
+  private get _am(): typeof audioManager {
+    return this._amOverride ?? audioManager
+  }
+
+  private get _qm(): typeof queueManager {
+    return this._qmOverride ?? queueManager
+  }
+
+  private get _stm(): typeof sleepTimerManager {
+    return this._stmOverride ?? sleepTimerManager
   }
 
   /**

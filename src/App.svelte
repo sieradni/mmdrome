@@ -29,6 +29,10 @@
   let searchQuery = $state('')
   let view = $state<'songs' | 'albums' | 'artists' | 'settings'>('songs')
   let initError = $state('')
+  /** Set only after onMount's async boot chain resolves — the deterministic
+   *  "ready" signal for the e2e smoke test (tests/e2e/smoke.spec.ts). Stays
+   *  false on a boot failure, which the smoke test treats as a failed boot. */
+  let appReady = $state(false)
 
   onMount(async () => {
     if (Capacitor.isNativePlatform()) {
@@ -78,6 +82,8 @@
     if (navigator.storage?.persist) {
       navigator.storage.persist()
     }
+
+    appReady = true
   })
 
   function toggleNowPlaying() {
@@ -220,7 +226,7 @@ function seek(e: Event) {
   }
 </script>
 
-<div class="flex h-dvh flex-col bg-background text-primary safe-area-top safe-area-x">
+<div class="flex h-dvh flex-col bg-background text-primary safe-area-top safe-area-x" data-app-ready={appReady || undefined}>
   <!-- ─── Sticky Header ─── -->
   {#if view !== 'settings'}
     <header class="sticky top-0 z-30 flex flex-col bg-background">

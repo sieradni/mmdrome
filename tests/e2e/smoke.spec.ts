@@ -9,20 +9,41 @@ import { test, expect } from '@playwright/test'
 
 test('app mounts and boots with no console errors', async ({ page }) => {
   const errors: string[] = []
-  page.on('console', (msg) => {
-    if (msg.type() === 'error') errors.push(`console.error: ${msg.text()}`)
+  let onFirstError: (err: Error) => void = () => {}
+  const firstError = new Promise<never>((_resolve, reject) => {
+    onFirstError = reject
   })
-  page.on('pageerror', (err) => errors.push(`pageerror: ${err.message}`))
+  // A rejection after the race below has already settled on "ready" must not
+  // surface as an unhandled rejection.
+  void firstError.catch(() => {})
+
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') {
+      const text = msg.text()
+      errors.push(`console.error: ${text}`)
+      onFirstError(new Error(`console.error during boot: ${text}`))
+    }
+  })
+  page.on('pageerror', (err) => {
+    errors.push(`pageerror: ${err.message}`)
+    onFirstError(new Error(`pageerror during boot: ${err.message}`))
+  })
 
   await page.goto('/mmdrome/', { waitUntil: 'networkidle' })
 
-  // The header search input only renders once the Svelte shell is mounted.
+  // The header search input renders as soon as the Svelte shell is mounted.
   await expect(page.locator('input[placeholder^="Fuzzy Search"]')).toBeVisible()
 
-  // Let the async boot chain settle (initStores → initEqStore → taglib wasm →
-  // playbackManager.init) so late unhandled rejections surface before the
-  // clean-console assertion.
-  await page.waitForTimeout(1500)
+  // App.svelte sets `data-app-ready` only after onMount's async boot chain
+  // (initStores → initEqStore → taglib wasm → playbackManager.init) resolves;
+  // on a boot failure it stays absent. Race "ready" against the first
+  // captured error so a boot failure fails fast with its real message instead
+  // of a generic `[data-app-ready]` timeout.
+  await Promise.race([
+    expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 }),
+    firstError,
+  ])
 
+  // A "ready" win can still race a just-fired error — assert the log is clean.
   expect(errors, 'app boot produced console errors').toEqual([])
 })
