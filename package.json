@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json && tsc -p tsconfig.test.json",
     "test": "node --test --import ./scripts/test-loader.mjs",
+    "test:e2e": "playwright test",
     "build:ios": "node scripts/build-ios.mjs",
     "sync:ios": "npm run build:ios && cap sync ios && node scripts/fix-spm-path.mjs",
     "predeploy": "npm run build",
@@ -16,6 +17,7 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.0",
+    "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.13.2",
