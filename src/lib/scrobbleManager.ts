@@ -4,9 +4,9 @@ import { getCachedConfig, submitNowPlaying, submitScrobble } from './navidromeAp
 import type { Track } from '../stores/appState'
 
 /**
- * Client-side listening tracker. Feeds Navidrome's `nowPlaying`/`scrobble` Subsonic
- * endpoints; Navidrome handles forwarding to Last.fm / ListenBrainz server-side and
- * bumps its own play counts.
+ * Client-side listening tracker. Feeds Navidrome's Subsonic `scrobble` endpoint
+ * (`submission=false` on start, `submission=true` on leave); Navidrome handles
+ * forwarding to Last.fm / ListenBrainz server-side and bumps its own play counts.
  *
  * Policy (Last.fm-style): a listen counts when the track played ≥ 50% (or ≥ 4 min
  * for long tracks). Subscribes to the shared `currentTrack`/`currentTime` stores so a
@@ -111,12 +111,7 @@ class ScrobbleManager {
     const config = getCachedConfig()
     if (!config) return
     try {
-      await submitNowPlaying(config, stripPrefix(track.trackId), {
-        artist: track.artist,
-        title: track.title,
-        album: track.album,
-        duration: track.duration,
-      })
+      await submitNowPlaying(config, stripPrefix(track.trackId))
     } catch {
       // Non-fatal: a failed nowPlaying heartbeat is not worth surfacing.
     }
@@ -129,7 +124,7 @@ class ScrobbleManager {
     const config = getCachedConfig()
     if (!config) return
     try {
-      await submitScrobble(config, stripPrefix(ph.track.trackId), Math.floor(ph.startedAt / 1000))
+      await submitScrobble(config, stripPrefix(ph.track.trackId), ph.startedAt)
     } catch {
       // A failed scrobble is dropped — the server is authoritative anyway and
       // external listeners (Last.fm) keep their own session; retries add noise.

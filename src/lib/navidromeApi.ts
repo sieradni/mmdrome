@@ -490,33 +490,24 @@ export async function getNavidromeSong(config: NavidromeConfig, songId: string):
 // ── Scrobbling & now-playing ───────────────────────────────────────────
 
 /**
- * Submits a track as "now playing". Navidrome feeds this into its own listen
- * tracking and forwards it to any configured external scrobblers (Last.fm,
- * ListenBrainz), so no client-side API key is required.
+ * Reports a track as "now playing". The Subsonic/OpenSubsonic API has no
+ * dedicated `nowPlaying` endpoint — this is the `scrobble` endpoint with
+ * `submission=false` (a "now playing" notification, not a completed listen).
+ * Navidrome feeds it into its own listen tracking and forwards it to any
+ * configured external scrobblers (Last.fm, ListenBrainz).
  */
-export async function submitNowPlaying(
-  config: NavidromeConfig,
-  songId: string,
-  meta?: { artist?: string; title?: string; album?: string; duration?: number },
-): Promise<void> {
-  const params: Record<string, string | number> = { id: songId }
-  if (meta?.artist) params.artist = meta.artist
-  if (meta?.title) params.title = meta.title
-  if (meta?.album) params.album = meta.album
-  if (meta?.duration) params.duration = meta.duration
-  await callSubsonic(config, 'nowPlaying.view', params)
+export async function submitNowPlaying(config: NavidromeConfig, songId: string): Promise<void> {
+  await callSubsonic(config, 'scrobble', { id: songId, submission: 'false' })
 }
 
 /**
- * Submits a completed listen (scrobble) at the given unix `time` (seconds).
- * `submission=true` is an actual scrobble (counts as a play).
+ * Submits a completed listen (scrobble) at the given `timeMs` (milliseconds
+ * since 1 Jan 1970 — the Subsonic `time` unit; Navidrome parses it with
+ * `time.UnixMilli`). `submission=true` is an actual scrobble (counts as a
+ * play and bumps play counts).
  */
-export async function submitScrobble(
-  config: NavidromeConfig,
-  songId: string,
-  time: number,
-): Promise<void> {
-  await callSubsonicWithPairs(config, 'scrobble.view', { id: songId, time }, [['submission', 'true']])
+export async function submitScrobble(config: NavidromeConfig, songId: string, timeMs: number): Promise<void> {
+  await callSubsonic(config, 'scrobble', { id: songId, time: timeMs, submission: 'true' })
 }
 
 /**
