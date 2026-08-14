@@ -633,3 +633,25 @@ test('an engage queued in the settle window (after an awaited engage + seek) is 
   assert.equal(transport.engaged, true)
   assert.deepEqual(plugin.order, ['setQueue:0', 'playTrackAt:0', 'seek:1', 'setQueue:1', 'playTrackAt:1'])
 })
+
+test('a tail sync waits for an in-flight engage to settle before refreshing', async () => {
+  const { transport, plugin } = setup()
+  await transport.engage(tracks, 0, 'none')
+
+  let release!: () => void
+  plugin.setQueueGate = new Promise((r) => {
+    release = r
+  })
+  const p2 = transport.engage(tracks, 1, 'none')
+
+  transport.scheduleSync(() => ({ tracks: tracks3, activeIndex: 1 }))
+  await tick()
+  // The refresh must NOT fire while the engage is in flight.
+  assert.equal(plugin.refreshCalls.length, 0)
+
+  release()
+  assert.equal(await p2, true)
+  await tick()
+  assert.equal(plugin.refreshCalls.length, 1)
+  assert.deepEqual(plugin.order, ['setQueue:0', 'playTrackAt:0', 'setQueue:1', 'playTrackAt:1', 'refreshQueue'])
+})

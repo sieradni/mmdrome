@@ -2,8 +2,8 @@
  * Pure exponential-backoff retry policy — ONE machine for the three (plus a
  * hidden fourth) retry paths in playbackManager (TODO 1.0 Step 1).
  *
- * The current code has: web `_handlePlaybackError` (cap 3, 1s/2s/4s), native
- * `_onNativeError` (cap 2, 1s/2s), background (zero — a bg load failure just
+ * The current code has: web `WebTransport` (cap 3, 1s/2s/4s), native
+ * `NativeTransport` (cap 2, 1s/2s), background (zero — a bg load failure just
  * idles), and the play()-rejection loop inside `_loadAndPlay` (cap 3, 1s/2s,
  * different delay shape — deliberately NOT modeled here: an autoplay-policy
  * rejection is not fixed by backoff, it needs a user gesture).

@@ -14,6 +14,7 @@ import { scrobbleManager } from './scrobbleManager'
 import { sleepTimerManager } from './sleepTimer'
 import { WebTransport } from './playbackCore/webTransport'
 import { WebBgTransport, type BgFacts, type LoadDecision } from './playbackCore/webBgTransport'
+import { NativeTransport } from './playbackCore/nativeTransport'
 import { decideAdvance } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
 import { computeReplayGainFields } from './playbackCore/replayGain'
@@ -42,18 +43,16 @@ export class PlaybackManager {
   private _initialized = false
   private _handlingEnd = false
   private _handlingNativeEnd = false
-  private _nativeRetryTrackId: string | null = null
-  private _nativeRetryAttempt = 0
-  private _nativeRetryTimer: ReturnType<typeof setTimeout> | null = null
   private _webTransport: WebTransport | null = null
   private _bgTransport: WebBgTransport | null = null
+  private _nativeTransport: NativeTransport | null = null
+  /** Test override for Capacitor.isNativePlatform — the glue suite runs under Node. */
+  private _isNative: (() => boolean) | null = null
   private _refreshPositionState: () => void = () => {}
   /** The track an in-flight bg load request resolved to â€” the machine's
    *  'reload' decision loads this (an exit-race re-routes it to the fg path). */
   private _pendingBgTrack: Track | null = null
-  private _hasNativeEngaged = false
   private _lastSortKey = ''
-  private _queueSyncScheduled = false
   private _am: typeof audioManager
   private _qm: typeof queueManager
   private _stm: typeof sleepTimerManager
@@ -70,12 +69,16 @@ export class PlaybackManager {
     sleepTimerManager?: typeof sleepTimerManager
     webTransport?: WebTransport | null
     bgTransport?: WebBgTransport | null
+    nativeTransport?: NativeTransport | null
+    isNative?: () => boolean
   } = {}) {
     this._am = deps.audioManager ?? audioManager
     this._qm = deps.queueManager ?? queueManager
     this._stm = deps.sleepTimerManager ?? sleepTimerManager
     this._webTransport = deps.webTransport ?? null
     this._bgTransport = deps.bgTransport ?? null
+    this._nativeTransport = deps.nativeTransport ?? null
+    this._isNative = deps.isNative ?? null
   }
 
   /**
@@ -83,21 +86,22 @@ export class PlaybackManager {
    * reorder/clear via QueueView, "Add next", play history, etc.) go through the
    * `queue` store but don't run through the native-bound call sites; refreshing
    * on every store write would re-arm the native crossfade several times per
-   * transition. Queueing a microtask collapses same-task mutations into one
-   * `refreshQueue` call for the final snapshot.
+   * transition. The transport owns the microtask coalescing (same-task bursts
+   * collapse into ONE `refreshQueue` call); the factory is evaluated at fire
+   * time so it always carries the final snapshot.
    */
   private _scheduleNativeQueueSync(): void {
-    if (!this.isNative() || !this._hasNativeEngaged || !this._initialized) return
-    if (this._queueSyncScheduled) return
-    this._queueSyncScheduled = true
-    queueMicrotask(() => {
-      this._queueSyncScheduled = false
-      void this._refreshNativeQueue()
+    if (!this.isNative() || !this._nativeTransport?.engaged || !this._initialized) return
+    this._nativeTransport.scheduleSync(() => {
+      const combined = this._qm.getCombinedQueue()
+      const activeIndex = get(queue).activeIndex
+      if (activeIndex < 0 || activeIndex >= combined.length) return null
+      return { tracks: this._buildSnapshot(combined), activeIndex }
     })
   }
 
   private isNative(): boolean {
-    return Capacitor.isNativePlatform()
+    return this._isNative !== null ? this._isNative() : Capacitor.isNativePlatform()
   }
 
   async init(): Promise<void> {
@@ -219,12 +223,16 @@ export class PlaybackManager {
   }
 
   private async _initNative(): Promise<void> {
-    await nativeEngine.init({
-      onTrackChanged: (trackId) => { void this._onNativeTrackChanged(trackId) },
-      onPlaybackStateChanged: (playing) => setPlaybackState(playing ? 'playing' : 'paused'),
-      onQueueEnded: () => { void this._onNativeEnd() },
-      onError: (message) => this._onNativeError(message),
-    })
+    const transport = this._nativeTransport ?? new NativeTransport(nativeEngine)
+    this._nativeTransport = transport
+    transport.onTrackChanged = (trackId) => { this._onNativeTrackChanged(trackId) }
+    transport.onTrackEnded = (event) => {
+      if (event.kind === 'natural') void this._onNativeTrackEnded(event.fromError)
+    }
+    transport.onRetry = (trackId) => { void this._onNativeRetry(trackId) }
+    transport.onPlaybackState = (state) => setPlaybackState(state)
+    transport.onTick = (position) => currentTime.set(position)
+    await transport.init()
 
     const savedSpeed = await getSetting<number>('playbackSpeed')
     const savedPitch = await getSetting<number>('pitchOctaves')
@@ -243,10 +251,10 @@ export class PlaybackManager {
     pitchOctaves.set(savedPitch ?? 0)
 
     BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode ?? 'off' }).catch(() => {})
-    BackgroundAudio.setLoopMode({ loopMode: get(loopMode) }).catch(() => {})
+    transport.setLoopMode(get(loopMode)).catch(() => {})
 
     loopMode.subscribe((m) => {
-      BackgroundAudio.setLoopMode({ loopMode: m }).catch(() => {})
+      transport.setLoopMode(m).catch(() => {})
     })
 
     settings.subscribe((sv) => {
@@ -256,11 +264,6 @@ export class PlaybackManager {
       }
       if (sv.masterGain !== undefined) engine.setMasterVolume(sv.masterGain)
       if (sv.tapeMode !== undefined) engine.setTapeMode(sv.tapeMode)
-    })
-
-    // The native engine owns the playback clock â€” poll position for the UI.
-    nativeEngine.setPositionPolling(true, (state) => {
-      currentTime.set(state.position)
     })
   }
 
@@ -303,7 +306,6 @@ export class PlaybackManager {
     shuffleEnabled.subscribe(() => {
       if (this._initialized) {
         this._qm.rebuildAutoQueue()
-        this._refreshNativeQueue()
       }
     })
 
@@ -325,14 +327,11 @@ export class PlaybackManager {
       if (key === this._lastSortKey) return
       this._lastSortKey = key
       this._qm.rebuildAutoQueue()
-      this._refreshNativeQueue()
     })
 
     // Keep the native engine's queue snapshot in step with ANY queue mutation
-    // (user edits add/remove/reorder/clear, plus promotions/replenishments done
-    // outside `_refreshNativeQueue`'s explicit call sites). The microtask
-    // coalescing turns same-task bursts into a single refresh.
-    this._queueSyncScheduled = false
+    // (user edits add/remove/reorder/clear, plus promotions/replenishments).
+    // The transport's scheduleSync coalesces same-task bursts into one refresh.
     queue.subscribe(() => {
       this._scheduleNativeQueueSync()
     })
@@ -372,8 +371,6 @@ export class PlaybackManager {
   }
 
   private async _nativeLoadPlay(track: Track): Promise<void> {
-    this._clearNativeRetry()
-
     const combined = this._qm.getCombinedQueue()
     const activeIndex = get(queue).activeIndex
     if (activeIndex < 0 || activeIndex >= combined.length) return
@@ -382,44 +379,27 @@ export class PlaybackManager {
     currentTime.set(0)
     setCurrentTrack(track)
 
-    try {
-      await BackgroundAudio.setQueue({ tracks: snapshot, activeIndex, loopMode: get(loopMode) })
-      await BackgroundAudio.playTrackAt({ index: activeIndex, autoPlay: true })
-    } catch (err) {
-      console.error('[native] failed to start playback:', err)
+    const ok = await this._nativeTransport!.engage(snapshot, activeIndex, get(loopMode))
+    // A superseded engage must not reflect its outcome: a newer load already
+    // moved currentTrack, so this request's success/failure is stale.
+    if (get(currentTrack)?.trackId !== track.trackId) return
+    if (!ok) {
+      setCurrentTrack(null)
+      setPlaybackState('stopped')
       return
     }
 
-    this._hasNativeEngaged = true
     setPlaybackState('playing')
     // setQueue stopped the engine, which also cancelled any armed sleep timer
     // (native `stopPlayback` invalidates the Timer + end-of-track flag). Re-arm
     // the mirror so the sleep intent survives this snapshot (0.2).
     await this._stm.rearmAfterSnapshot()
-    // Track is now playing â€” promote it from auto to user queue
+    // Track is now playing — promote it from auto to user queue
     this._qm.promoteActiveTrack()
     this._qm.replenishAutoQueue()
   }
 
-  /**
-   * Re-sends the current combined queue to the native engine without disturbing
-   * the actively playing track, keeping its tail in sync with JS-side queue
-   * mutations (promotions, auto-queue replenishment).
-   */
-  private async _refreshNativeQueue(): Promise<void> {
-    if (!this.isNative() || !this._hasNativeEngaged) return
-    const combined = this._qm.getCombinedQueue()
-    const activeIndex = get(queue).activeIndex
-    if (activeIndex < 0 || activeIndex >= combined.length) return
-    const snapshot = this._buildSnapshot(combined)
-    try {
-      await BackgroundAudio.refreshQueue({ tracks: snapshot, activeIndex })
-    } catch (err) {
-      console.error('[native] refreshQueue failed:', err)
-    }
-  }
-
-  private async _onNativeTrackChanged(trackId: string): Promise<void> {
+  private _onNativeTrackChanged(trackId: string): void {
     if (this._handlingNativeEnd) return
     const combined = this._qm.getCombinedQueue()
     let idx = combined.indexOf(trackId)
@@ -458,80 +438,68 @@ export class PlaybackManager {
     setCurrentTrack(track)
     this._qm.promoteActiveTrack()
     this._qm.replenishAutoQueue()
-    await this._refreshNativeQueue()
   }
 
-  private async _onNativeEnd(): Promise<void> {
+  /**
+   * Native `ended` → the uniform A4 advance chain. The native engine owns the
+   * clock and advances through the snapshot itself (emitting trackChanged per
+   * row); `ended` fires only when it exhausts its snapshot. `parkArmed` is
+   * always false — end-of-track sleep parks in the engine (E8), never here.
+   * `fromError` (retry give-up) skips the park the same way the web chain does.
+   */
+  private async _onNativeTrackEnded(fromError = false): Promise<void> {
     if (this._handlingNativeEnd) return
+    const decision = decideAdvance({
+      fromError,
+      parkArmed: false,
+      loopMode: get(loopMode),
+      hasNext: this._hasNextQueued(),
+      hasUserQueue: get(queue).userQueue.length > 0,
+    })
+
     this._handlingNativeEnd = true
     try {
-      this._qm.replenishAutoQueue()
-      const combined = this._qm.getCombinedQueue()
-      const q = get(queue)
-
-      // Combined queue may have grown past the native list since the last refresh.
-      const nextIdx = q.activeIndex + 1
-      if (nextIdx >= 0 && nextIdx < combined.length) {
-        const endedId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
-        this._qm.advanceTo(nextIdx, endedId ?? undefined)
-        const track = this._qm.findTrack(combined[nextIdx])
-        if (track) {
-          await this._nativeLoadPlay(track)
+      switch (decision) {
+        case 'restart': {
+          const track = get(currentTrack)
+          if (track) await this._loadAndPlay(track)
           return
         }
-      }
-
-      if (get(loopMode) === 'all' && q.userQueue.length > 0) {
-        const endedId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
-        this._qm.advanceTo(0, endedId ?? undefined)
-        const track = this._qm.findTrack(q.userQueue[0])
-        if (track) {
-          await this._nativeLoadPlay(track)
+        case 'advance': {
+          const nextTrack = this._qm.advanceQueue()
+          if (nextTrack) await this._loadAndPlay(nextTrack)
+          else this._stopPlayback()
           return
         }
+        case 'wrap': {
+          const q = get(queue)
+          setActiveQueueIndex(0)
+          const track = this._qm.findTrack(q.userQueue[0])
+          if (track) await this._loadAndPlay(track)
+          else this._stopPlayback()
+          return
+        }
+        case 'stop':
+          this._stopPlayback()
+          return
+        case 'park':
+          return // unreachable natively — parkArmed is always false
       }
-
-      setPlaybackState('stopped')
-      setCurrentTrack(null)
-      currentTime.set(0)
-      this._hasNativeEngaged = false
     } finally {
       this._handlingNativeEnd = false
     }
   }
 
-  private _onNativeError(message: string): void {
-    console.error('[native] engine error:', message)
-    const track = get(currentTrack)
-    if (!track || this._handlingNativeEnd) return
-
-    if (this._nativeRetryTrackId !== track.trackId) {
-      this._clearNativeRetry()
-    }
-    if (this._nativeRetryAttempt >= 2) {
-      this._clearNativeRetry()
-      void this._onNativeEnd()
-      return
-    }
-    this._nativeRetryTrackId = track.trackId
-    this._nativeRetryAttempt++
-    const delay = Math.pow(2, this._nativeRetryAttempt - 1) * 1000
-    this._nativeRetryTimer = setTimeout(() => {
-      this._nativeRetryTimer = null
-      const t = get(currentTrack)
-      if (t && t.trackId === this._nativeRetryTrackId) {
-        void this._nativeLoadPlay(t)
-      }
-    }, delay)
-  }
-
-  private _clearNativeRetry(): void {
-    this._nativeRetryTrackId = null
-    this._nativeRetryAttempt = 0
-    if (this._nativeRetryTimer !== null) {
-      clearTimeout(this._nativeRetryTimer)
-      this._nativeRetryTimer = null
-    }
+  /**
+   * A native retry timer fired for the last-engaged track. Track-keyed validity
+   * (A5): a stale retry must never re-load a track that left the active slot
+   * (e.g. the user skipped away during the backoff window). The transport owns
+   * the timer + give-up; this just re-runs the load.
+   */
+  private async _onNativeRetry(trackId: string): Promise<void> {
+    if (get(currentTrack)?.trackId !== trackId) return
+    const t = this._qm.findTrack(trackId)
+    if (t) await this._loadAndPlay(t)
   }
 
   // MARK: - Web engine path
@@ -672,7 +640,10 @@ export class PlaybackManager {
     setPlaybackState('stopped')
     setCurrentTrack(null)
     this._webTransport?.cancelNext()
-    this._am.activeElement.src = ''
+    this._nativeTransport?.disengage()
+    if (!this.isNative()) {
+      this._am.activeElement.src = ''
+    }
   }
 
   private async _onTrackEnded(fromError = false): Promise<void> {
@@ -966,8 +937,8 @@ export class PlaybackManager {
   async play(): Promise<void> {
     this._stm.clearPendingStop()
     if (this.isNative()) {
-      if (get(currentTrack) && this._hasNativeEngaged) {
-        await BackgroundAudio.play().catch(() => {})
+      if (get(currentTrack) && this._nativeTransport?.engaged) {
+        await this._nativeTransport.play().catch(() => {})
         setPlaybackState('playing')
       } else {
         await this._playFirstInQueue()
@@ -1004,7 +975,7 @@ export class PlaybackManager {
 
   pause(): void {
     if (this.isNative()) {
-      BackgroundAudio.pause().catch(() => {})
+      this._nativeTransport?.pause().catch(() => {})
       setPlaybackState('paused')
       return
     }
@@ -1102,7 +1073,7 @@ export class PlaybackManager {
       const track = get(currentTrack)
       const metaDur = track?.duration || time
       const clamped = Math.min(time, metaDur)
-      BackgroundAudio.seek({ position: clamped }).catch(() => {})
+      this._nativeTransport?.seek(clamped).catch(() => {})
       currentTime.set(clamped)
       return
     }
@@ -1132,7 +1103,7 @@ export class PlaybackManager {
 
   destroy(): void {
     if (this.isNative()) {
-      void nativeEngine.destroy()
+      void this._nativeTransport?.destroy()
       return
     }
     this._webTransport?.destroy()

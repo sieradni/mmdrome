@@ -262,9 +262,12 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
   stale-settle guard: a disengage/destroy mid-engage drops the settle via an
   engagement generation, plus a compile-time shape test pinning the real
   `nativeEngine` against `NativeEngineClient`); (c) retry + seek memory +
-  fail-fast + engage serialization + suite;
-  (d) manager rewiring (DI, `_initNative` shrink, `_onNativeEnd` → A4,
-  routing) + glue suite; (e) deletion + `npm run build` + doc updates.
+  fail-fast + engage serialization + suite — LANDED 2026-08-13;
+  (d) manager rewiring (DI + `isNative` seam, `_initNative` shrink,
+  `_onNativeEnd` → A4 `decideAdvance`, routing) + glue suite — LANDED
+  2026-08-13 (299 tests); (e) deletion + `npm run build` + doc updates —
+  LANDED 2026-08-13 (AGENTS.md E9, DEVLOG; manual PWA/device parity checks
+  remain).
   Native-path verification limits: `ios.yml` stays green but cannot exercise
   the JS bridge — manual device testing for snapshot/advance/retry under real
   queue mutations.

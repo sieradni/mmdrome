@@ -37,7 +37,8 @@
  *    coalescing: same-task bursts collapse to ONE refreshQueue call; the
  *    factory is evaluated AT FIRE TIME (lazy → always the final snapshot) and
  *    `null` skips the refresh. Re-checks `engaged` at fire time so a
- *    disengage mid-tick never refreshes;
+ *    disengage mid-tick never refreshes; the refresh AWAITS any in-flight
+ *    engage cycle so a tail write can never interleave setQueue/playTrackAt;
  *  - the command pass-throughs (play/pause/seek/setLoopMode).
  *
  * Policy events (wired by the manager in (d)):
@@ -332,6 +333,14 @@ export class NativeTransport {
   }
 
   private async _refreshQueue(payload: NativeRefreshPayload): Promise<void> {
+    // Serialize against engage: the tail refresh must never land between an
+    // engage's setQueue and playTrackAt. Engage cycles drain one pending
+    // request at a time and null the cycle flag in their finally, so waiting
+    // until the flag clears is bounded.
+    while (this._engageCycle !== null) {
+      await this._engageCycle
+    }
+    if (!this._engaged) return
     try {
       await this._client.plugin().refreshQueue({ tracks: payload.tracks, activeIndex: payload.activeIndex })
     } catch (err) {
