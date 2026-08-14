@@ -31,8 +31,9 @@
  *    crossfade re-arm runs after the fg load.
  *  - `onStop(target)` — the end-of-queue stop decision ('fg': clear the
  *    stores + element; 'bg': idle no-op, parity with `_onBgTrackEnd`).
- *  - `onParked(trackId)` — the sleep park landed in bg; the manager records
- *    the park (sleepTimerManager.parkAtEnd) and sets the paused state.
+ *  - `onParked(trackId)` — a park decision LANDED (the bg trackEnded park OR
+ *    the exit-bg park gate); the manager records it (sleepTimerManager.parkAtEnd)
+ *    and sets the paused state.
  *  - `onTick(position)` — the 250 ms bg position for the UI + lock screen.
  *
  * Element mechanics stay INSIDE the transport; `deps.fgElement` is stable
@@ -72,8 +73,11 @@ export interface BgFacts {
 
 export interface WebBgDeps {
   facts(): BgFacts
-  /** The foreground a/b element. Stable: `activeElement` can't flip during bg. */
-  fgElement: HTMLAudioElement
+  /** The current foreground a/b element, resolved at USE — the element can flip
+   *  on crossfade switches before an engagement, so the swap must read the
+   *  active one dynamically. Stable while engaged (the crossfade monitor is
+   *  torn down at the swap). */
+  fgElement: () => HTMLAudioElement
 }
 
 export interface WebBgTimers {
@@ -119,7 +123,7 @@ export class WebBgTransport {
   /** The element seeks/position target: the bg element while engaged, the fg
    *  element otherwise (parity with the old bg-aware `playbackElement`). */
   get sessionElement(): HTMLAudioElement {
-    return this.engaged && this._el ? this._el : this._deps.fgElement
+    return this.engaged && this._el ? this._el : this._deps.fgElement()
   }
 
   /** Creates the bg element and wires listeners; installs the iOS
@@ -225,7 +229,7 @@ export class WebBgTransport {
 
   private _onHidden(): void {
     if (!this._el) return
-    const fg = this._deps.fgElement
+    const fg = this._deps.fgElement()
     // The enterBg gate: only a genuinely playing fg element hands off (parity
     // with the old `_enterBackground` guard). A re-hide in any bg state is
     // dropped by the machine — never re-runs the swap.
@@ -238,7 +242,7 @@ export class WebBgTransport {
 
   private _startSwap(): void {
     const el = this._el
-    const fg = this._deps.fgElement
+    const fg = this._deps.fgElement()
     if (!el) return
     this._engine.teardownCrossfadeMonitor()
     if (!el.src || el.src !== fg.src) {
@@ -296,6 +300,12 @@ export class WebBgTransport {
     const t = transitionBg(prev, event)
     this._state = t.state
     if (t.command) await this._executeCommand(t.command, event, prev)
+    // The exit-bg park (correction 1): an armed end-of-track sleep at the track
+    // end parks at exit — the manager records it (parkAtEnd + paused state).
+    // Already-reported park-pending carries are excluded.
+    if (event.parkArmed && (event.ended || event.atEnd) && prev.name !== 'park-pending') {
+      this.onParked?.(event.trackId ?? '')
+    }
     this._engine.resumeCrossfadeAfterBgExit()
   }
 
@@ -345,7 +355,7 @@ export class WebBgTransport {
       case 'pause':
         if (event.type === 'bgStarted') {
           // The enter-swap completed — the fg element was audible until now.
-          this._deps.fgElement.pause()
+          this._deps.fgElement().pause()
           return
         }
         if (event.type === 'pauseCmd' && prev.name === 'handoff') {
@@ -353,7 +363,7 @@ export class WebBgTransport {
           // pending swap — a stale settle is a no-op via the token.
           ++this._settleToken
           this._el?.pause()
-          this._deps.fgElement.pause()
+          this._deps.fgElement().pause()
           return
         }
         this._el?.pause()
@@ -362,12 +372,12 @@ export class WebBgTransport {
         this._el?.play().catch(() => {})
         return
       case 'resumeFg':
-        this._deps.fgElement.currentTime = command.position
-        await this._deps.fgElement.play().catch(() => {})
+        this._deps.fgElement().currentTime = command.position
+        await this._deps.fgElement().play().catch(() => {})
         await this._dispatch({ type: 'resumed' })
         return
       case 'carryPaused':
-        this._deps.fgElement.currentTime = command.position
+        this._deps.fgElement().currentTime = command.position
         return
       case 'stop':
         this.onStop?.(command.target)

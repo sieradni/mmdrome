@@ -11,12 +11,6 @@ import { currentTrack } from '../stores/appState'
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 const WORKLET_CACHE_BUST = '1' // increment when public/*-processor.js files change
 
-export interface BgTransitionState {
-  ended: boolean
-  wasPlaying: boolean
-  currentTime: number
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max)
 }
@@ -60,18 +54,10 @@ class AudioManager {
   private _replayGainMode: 'off' | 'track' | 'album' = 'off'
   private _currentTrackGainDb: number | null = null
   private _currentAlbumGainDb: number | null = null
-  private _bgEl: HTMLAudioElement | null = null
-  private _inBgMode = false
   onTrackEnd: (() => void) | null = null
-  /** Fires when _bgEl ends while in background mode */
-  onBgTrackEnd: (() => void) | null = null
-  /** Fires when _bgEl encounters an error in background mode */
-  onBgError: (() => void) | null = null
-  onExitBackground: ((state: BgTransitionState) => void) | null = null
   onSpeedChange: ((speed: number) => void) | null = null
   onPitchChange: ((pitch: number) => void) | null = null
   private _isIOS: boolean
-  private _enterBgSeq = 0
   private _webAudioFailed = false
   /** Estimated latency of the WebAudio processing pipeline (SoundTouch + EQ + output buffer).
    *  Used to compensate when transitioning between WebAudio and raw element playback
@@ -86,19 +72,6 @@ class AudioManager {
     this.a.preservesPitch = false
     this.b.preservesPitch = false
     this._isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
-
-    // Pre-create background element for iOS — keeps audio session warm
-    this._bgEl = this.createBgElement()
-    this._bgEl.addEventListener('ended', () => {
-      if (this._inBgMode) {
-        this.onBgTrackEnd?.()
-      }
-    })
-    this._bgEl.addEventListener('error', () => {
-      if (this._inBgMode) {
-        this.onBgError?.()
-      }
-    })
   }
 
   /** Creates the iOS background element (volume stays 0 forever — setting it is
@@ -132,8 +105,6 @@ class AudioManager {
 
   set snapTolerance(value: number) { this._snapTolerance = Math.max(0, value) }
 
-  get isInBgMode(): boolean { return this._inBgMode }
-
   get isIOS(): boolean { return this._isIOS }
 
   get activeElement(): HTMLAudioElement {
@@ -144,9 +115,9 @@ class AudioManager {
     return this._activeElement === 'a' ? this.b : this.a
   }
 
-  /** Returns the element currently driving audible playback (respects bg mode) */
+  /** The element currently driving audible foreground playback. */
   get playbackElement(): HTMLAudioElement {
-    return this._inBgMode && this._bgEl ? this._bgEl : this.activeElement
+    return this.activeElement
   }
 
   get crossfadeDuration(): number {
@@ -176,108 +147,6 @@ class AudioManager {
   async init(): Promise<void> {
     if (this._initialized) return
     this._initialized = true
-    this._setupVisibilityHandler()
-  }
-
-  private _setupVisibilityHandler(): void {
-    if (!this._isIOS) return
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) {
-        this._enterBackground()
-      } else if (this._inBgMode) {
-        this._exitBackground()
-      } else if (this._ctx && this._ctx.state !== 'running') {
-        /* _bgEl.play() may have failed — still try to revive context */
-        this._ctx.resume().catch(() => {})
-      }
-    })
-  }
-
-  /** Keep the background element's source in sync so it can resume from a loaded buffer */
-  syncBgSource(url: string): void {
-    if (!this._bgEl || this._inBgMode) return
-    if (this._bgEl.src !== url) {
-      this._bgEl.src = url
-    }
-  }
-
-  /** Load and play a URL on the background element (used during bg track advancement).
-   *  Returns true if playback started successfully, false if it failed or was interrupted. */
-  async playBg(url: string): Promise<boolean> {
-    if (!this._bgEl || !this._inBgMode) return false
-    this._bgEl.src = url
-    this._bgEl.currentTime = 0
-    this._bgEl.playbackRate = this._speed
-    try {
-      await this._bgEl.play()
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  private _enterBackground(): void {
-    if (this._inBgMode || !this._bgEl) return
-
-    const el = this.activeElement
-    if (el.paused || el.ended || !el.src) return
-
-    this.teardownCrossfadeMonitor()
-
-    if (!this._bgEl.src || this._bgEl.src !== el.src) {
-      this._bgEl.src = el.src
-      // On iOS, preload is ignored and the element may not have loaded enough
-      // data for a reliable seek. Force a reinitialization so currentTime
-      // takes effect properly.
-      if (this._isIOS) {
-        this._bgEl.load()
-      }
-    } else if (this._isIOS && this._bgEl.readyState < 2) {
-      // Same src already set but element hasn't loaded enough data for accurate seeking.
-      this._bgEl.load()
-    }
-
-    // Compensate for the WebAudio pipeline latency: in foreground mode the user
-    // hears audio slightly behind the element's decode position (due to SoundTouch,
-    // EQ, and output buffering). In background mode the raw element bypasses all
-    // this, so we start slightly earlier to match what was just heard.
-    const offset = this.getTransitionOffset()
-    this._bgEl.currentTime = Math.max(0, el.currentTime - offset)
-    this._bgEl.playbackRate = this._speed
-
-    const seq = ++this._enterBgSeq
-    this._inBgMode = true
-    this._bgEl.play().then(() => {
-      if (this._enterBgSeq !== seq) return
-      el.pause()
-    }).catch(() => {
-      if (this._enterBgSeq !== seq) return
-      this._inBgMode = false
-      this._bgEl!.volume = 0
-    })
-  }
-
-  private async _exitBackground(): Promise<void> {
-    if (!this._bgEl) return
-
-    const state: BgTransitionState = {
-      ended: this._bgEl.ended,
-      wasPlaying: !this._bgEl.paused,
-      currentTime: this._bgEl.currentTime,
-    }
-
-    this._enterBgSeq++
-    this._inBgMode = false
-
-    this._bgEl.pause()
-    this._bgEl.removeAttribute('src')
-    this._bgEl.load()
-
-    await this.reviveContext()
-
-    this.onExitBackground?.(state)
-
-    this.resumeCrossfadeAfterBgExit()
   }
 
   /** Suspends/resumes a suspended AudioContext (irrecoverable contexts fall back
@@ -751,10 +620,6 @@ class AudioManager {
     } else {
       this.a.playbackRate = this._speed
       this.b.playbackRate = this._speed
-    }
-
-    if (this._bgEl) {
-      this._bgEl.playbackRate = this._speed
     }
   }
 

@@ -165,7 +165,7 @@ function makeHarness(): Harness {
     duration: 300,
   }
   const timers = new FakeTimers()
-  const t = new WebBgTransport(engine, { facts: () => facts, fgElement: fg as unknown as HTMLAudioElement }, timers)
+  const t = new WebBgTransport(engine, { facts: () => facts, fgElement: () => fg as unknown as HTMLAudioElement }, timers)
   const loads: Harness['loads'] = []
   const stops: Harness['stops'] = []
   const parked: string[] = []
@@ -444,15 +444,37 @@ test('exit-ended with no next and loop stop → onStop([fg])', async () => {
   assert.deepEqual(h.stops, ['fg'])
 })
 
-test('exit with parkArmed at end → carryPaused, no onParked, no resume (correction 1)', async () => {
+test('exit with parkArmed at end → carryPaused, no resume (correction 1)', async () => {
   const h = makeHarness()
   h.facts.parkArmed = true
   await enterBg(h)
   h.bgEl.currentTime = 299.9 // atEnd (>= dur-0.5) but not literally ended
   await h.t.handleVisibility(false)
-  assert.deepEqual(h.parked, [])
+  assert.deepEqual(h.parked, ['t1']) // the park gate reported the exit park
   assert.equal(h.fg.paused, true)
   assert.equal(h.fg.currentTime, 299.9)
+})
+
+test('exit-park gate reports onParked (the manager records the exit park)', async () => {
+  const h = makeHarness()
+  h.facts.parkArmed = true
+  await enterBg(h)
+  h.bgEl.currentTime = 300 // ended + atEnd → the correction-1 park gate
+  await h.t.handleVisibility(false)
+  assert.deepEqual(h.parked, ['t1'])
+  assert.equal(h.fg.paused, true)
+  assert.equal(h.fg.currentTime, 300)
+})
+
+test('exit-park onParked is not re-fired for a matching park-pending carry', async () => {
+  const h = makeHarness()
+  h.facts.parkArmed = true
+  await enterBg(h)
+  h.bgEl.emit('ended')
+  await flush()
+  assert.deepEqual(h.parked, ['t1'])
+  await h.t.handleVisibility(false)
+  assert.deepEqual(h.parked, ['t1']) // the exit carry reports nothing new
 })
 
 test('exit with parkArmed mid-track (not at end) → plain resume', async () => {

@@ -1,18 +1,39 @@
-import { audioManager } from './audioManager'
-import { currentTrack, currentTime, playbackState, setPlaybackState } from '../stores/appState'
+import { currentTrack, playbackState } from '../stores/appState'
 import type { Track } from '../stores/appState'
 import { get } from 'svelte/store'
+
+export interface MediaSessionHooks {
+  /** The element position reads/writes target — the bg element while engaged,
+   *  the fg element otherwise (WebBgTransport.sessionElement). */
+  getPositionElement: () => HTMLAudioElement
+  /** The foreground a/b elements (position-state refresh on timeupdate). */
+  a: HTMLAudioElement
+  b: HTMLAudioElement
+}
+
+export interface MediaSessionController {
+  /** Re-pushes the current position into the lock-screen position state
+   *  (called from the bg transport's 250 ms tick — iOS stalls timeupdate). */
+  refreshPositionState(): void
+}
 
 export function setupMediaSession(
   onPlay?: () => void,
   onPause?: () => void,
   onNextTrack?: () => void,
   onPreviousTrack?: () => void,
-  getCoverBlobUrl?: (track: Track) => string | undefined
-): () => void {
+  getCoverBlobUrl?: (track: Track) => string | undefined,
+  hooks?: MediaSessionHooks
+): MediaSessionController {
   const cleanup: (() => void)[] = []
 
-  if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return () => {}
+  if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) {
+    return { refreshPositionState: () => {} }
+  }
+  if (!hooks) {
+    return { refreshPositionState: () => {} }
+  }
+  const h = hooks // closure-safe: params don't narrow inside closures
 
   const unsubTrack = currentTrack.subscribe((track) => {
     if (!track) {
@@ -40,16 +61,16 @@ export function setupMediaSession(
   })
   cleanup.push(unsubPlayState)
 
-function updatePositionState() {
-     const el = audioManager.playbackElement
-     const metaDur = get(currentTrack)?.duration ?? 0
-     if (metaDur) {
-       try {
-         navigator.mediaSession.setPositionState?.({
-           duration: metaDur,
-           playbackRate: el.playbackRate,
-           position: el.currentTime,
-         })
+  function updatePositionState(): void {
+    const el = h.getPositionElement()
+    const metaDur = get(currentTrack)?.duration ?? 0
+    if (metaDur) {
+      try {
+        navigator.mediaSession.setPositionState?.({
+          duration: metaDur,
+          playbackRate: el.playbackRate,
+          position: el.currentTime,
+        })
       } catch {
         /* setPositionState may throw if metadata hasn't been set yet */
       }
@@ -57,76 +78,45 @@ function updatePositionState() {
   }
 
   const onTimeUpdate = () => updatePositionState()
-  audioManager.a.addEventListener('timeupdate', onTimeUpdate)
-  audioManager.b.addEventListener('timeupdate', onTimeUpdate)
+  h.a.addEventListener('timeupdate', onTimeUpdate)
+  h.b.addEventListener('timeupdate', onTimeUpdate)
   cleanup.push(() => {
-    audioManager.a.removeEventListener('timeupdate', onTimeUpdate)
-    audioManager.b.removeEventListener('timeupdate', onTimeUpdate)
+    h.a.removeEventListener('timeupdate', onTimeUpdate)
+    h.b.removeEventListener('timeupdate', onTimeUpdate)
   })
 
-  // Poll position state during background mode (iOS timeupdate can stall)
-  let bgInterval: ReturnType<typeof setInterval> | null = null
-  const bgCheck = () => {
-    if (audioManager.isInBgMode) {
-      if (!bgInterval) {
-        bgInterval = setInterval(() => {
-          updatePositionState()
-          const t = audioManager.playbackElement.currentTime
-          currentTime.set(t)
-          // End-of-track watchdog: iOS can stall events in background
-          const track = get(currentTrack)
-          if (track && track.duration > 0 && t >= track.duration - 0.25) {
-            audioManager.onBgTrackEnd?.()
-          }
-        }, 250)
-      }
-    } else {
-      if (bgInterval) { clearInterval(bgInterval); bgInterval = null }
-    }
-  }
-  const unsubBgPlay = playbackState.subscribe(bgCheck)
-  const unsubBgTrack = currentTrack.subscribe(bgCheck)
-  cleanup.push(unsubBgPlay, unsubBgTrack, () => { if (bgInterval) clearInterval(bgInterval) })
+  // Play/pause/next/prev route through the manager, which dispatches to the bg
+  // transport (machine) when engaged — media commands need no bg branches here.
 
   navigator.mediaSession.setActionHandler('play', () => {
-    if (audioManager.isInBgMode) {
-      const el = audioManager.playbackElement
-      el.play().catch(() => {})
-      setPlaybackState('playing')
-    } else {
-      onPlay?.()
-    }
+    onPlay?.()
   })
 
   navigator.mediaSession.setActionHandler('pause', () => {
-    if (audioManager.isInBgMode) {
-      audioManager.playbackElement.pause()
-      setPlaybackState('paused')
-    } else {
-      onPause?.()
-    }
+    onPause?.()
   })
 
   navigator.mediaSession.setActionHandler('nexttrack', () => {
-    if (audioManager.isInBgMode) {
-      /* PlaybackManager.next() routes to _loadAndPlayInBg when in bg mode */
-    }
     onNextTrack?.()
   })
 
   navigator.mediaSession.setActionHandler('previoustrack', () => {
-    if (audioManager.isInBgMode) {
-      /* PlaybackManager.prev() routes to _loadAndPlayInBg when in bg mode */
-    }
     onPreviousTrack?.()
   })
 
   navigator.mediaSession.setActionHandler('seekto', (details) => {
     if (details.seekTime != null) {
-      audioManager.playbackElement.currentTime = details.seekTime
+      const el = h.getPositionElement()
+      // Clamp to the metadata duration (1.11 — A1: `HTMLAudioElement.duration`
+      // lies; an unclamped lock-screen seek past the end stalls the element).
+      const metaDur = get(currentTrack)?.duration ?? 0
+      const clamped = metaDur > 0 ? Math.min(details.seekTime, metaDur) : details.seekTime
+      el.currentTime = clamped
       updatePositionState()
     }
   })
 
-  return () => { for (const fn of cleanup) fn() }
+  return {
+    refreshPositionState: updatePositionState,
+  }
 }

@@ -13,6 +13,8 @@ import { getCachedConfig, buildStreamUrl, buildCoverArtUrl, resolveCoverArtId } 
 import { scrobbleManager } from './scrobbleManager'
 import { sleepTimerManager } from './sleepTimer'
 import { WebTransport } from './playbackCore/webTransport'
+import { WebBgTransport, type BgFacts, type LoadDecision } from './playbackCore/webBgTransport'
+import { decideAdvance } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
 import { computeReplayGainFields } from './playbackCore/replayGain'
 import {
@@ -44,6 +46,11 @@ class PlaybackManager {
   private _nativeRetryAttempt = 0
   private _nativeRetryTimer: ReturnType<typeof setTimeout> | null = null
   private _webTransport: WebTransport | null = null
+  private _bgTransport: WebBgTransport | null = null
+  private _refreshPositionState: () => void = () => {}
+  /** The track an in-flight bg load request resolved to — the machine's
+   *  'reload' decision loads this (an exit-race re-routes it to the fg path). */
+  private _pendingBgTrack: Track | null = null
   private _hasNativeEngaged = false
   private _lastSortKey = ''
   private _queueSyncScheduled = false
@@ -105,12 +112,44 @@ class PlaybackManager {
       const t = queueManager.findTrack(trackId)
       if (t) void this._loadAndPlay(t)
     }
-    transport.onPlaybackState = (state) => setPlaybackState(state)
+    transport.onPlaybackState = (state) => {
+      // The engaged-pause filter: the bg swap pauses the fg element, whose
+      // pause event would otherwise write 'paused' while bg audio is playing.
+      if (this._bgTransport?.engaged && state === 'paused') return
+      setPlaybackState(state)
+    }
     await transport.init()
 
-    audioManager.onBgTrackEnd = () => this._onBgTrackEnd()
-    audioManager.onBgError = () => this._onBgTrackEnd()
-    audioManager.onExitBackground = (state) => this._handleExitBackground(state)
+    const bg = new WebBgTransport(
+      audioManager,
+      {
+        facts: () => this._bgFacts(),
+        // Resolved at use: the fg a/b element can flip on crossfade switches
+        // before an engagement, so the swap must read the CURRENT active one.
+        fgElement: () => audioManager.activeElement,
+      },
+      {
+        interval: (ms, fn) => {
+          const id = setInterval(fn, ms)
+          return () => clearInterval(id)
+        },
+      },
+    )
+    this._bgTransport = bg
+    bg.onLoad = (target, decision) => this._handleBgLoad(target, decision)
+    bg.onStop = (target) => {
+      if (target === 'fg') this._stopPlayback()
+    }
+    bg.onParked = (trackId) => {
+      sleepTimerManager.parkAtEnd(trackId)
+      setPlaybackState('paused')
+    }
+    bg.onTick = (position) => {
+      currentTime.set(position)
+      this._refreshPositionState()
+    }
+    bg.init()
+
     audioManager.onSpeedChange = (speed: number) => playbackSpeed.set(speed)
     audioManager.onPitchChange = (pitch: number) => pitchOctaves.set(pitch)
 
@@ -123,7 +162,7 @@ class PlaybackManager {
       audioManager.setMasterVolume(savedGain)
     }
 
-    setupMediaSession(
+    this._refreshPositionState = setupMediaSession(
       () => { this.play() },
       () => { this.pause() },
       () => this.next(),
@@ -133,7 +172,12 @@ class PlaybackManager {
         if (!config) return undefined
         return getCoverUrl(track, config, 512) || undefined
       },
-    )
+      {
+        getPositionElement: () => this._bgTransport!.sessionElement,
+        a: audioManager.a,
+        b: audioManager.b,
+      },
+    ).refreshPositionState
 
     setupPreloader(() => transport.playbackElement, (trackId) => this._resolveUrl(trackId))
 
@@ -197,7 +241,12 @@ class PlaybackManager {
   }
 
   private _subscribeShared(): void {
-    playbackSpeed.subscribe((v) => { setSetting('playbackSpeed', v); engine.setSpeed(v) })
+    playbackSpeed.subscribe((v) => {
+      setSetting('playbackSpeed', v)
+      engine.setSpeed(v)
+      // The bg element's rate is owned by the transport (applied at swap/load).
+      this._bgTransport?.setSpeed(v)
+    })
     pitchOctaves.subscribe((v) => { setSetting('pitchOctaves', v); engine.setPitchOctaves(v) })
 
     queueManager.replenishAutoQueue()
@@ -499,7 +548,7 @@ class PlaybackManager {
     const el = audioManager.activeElement
     currentTime.set(0)
     setCurrentTrack(track)
-    audioManager.syncBgSource(url)
+    this._bgTransport!.syncSource(url)
     el.src = url
 
     // The end-of-track sleep timer fired during this transition: keep the
@@ -576,7 +625,7 @@ class PlaybackManager {
   private _parkAtTrackEnd(): boolean {
     if (!sleepTimerManager.isEndOfTrackArmed()) return false
     sleepTimerManager.parkAtEnd(get(currentTrack)?.trackId ?? '')
-    const el = audioManager.playbackElement
+    const el = audioManager.activeElement
     const dur = get(currentTrack)?.duration ?? 0
     if (dur > 0 && el.currentTime >= dur - 0.5) {
       // Nudge below the end: play() on an ENDED element seeks to the start,
@@ -588,79 +637,160 @@ class PlaybackManager {
     return true
   }
 
+  private _hasNextQueued(): boolean {
+    const combined = queueManager.getCombinedQueue()
+    return get(queue).activeIndex + 1 < combined.length
+  }
+
+  /** Uniform end-of-queue stop (A4): the machine's stop{fg} and the fg advance
+   *  chain map here. */
+  private _stopPlayback(): void {
+    setPlaybackState('stopped')
+    setCurrentTrack(null)
+    this._webTransport?.cancelNext()
+    audioManager.activeElement.src = ''
+  }
+
   private async _onTrackEnded(fromError = false): Promise<void> {
     if (this._handlingEnd) return
     // Park beats loop-one/loop-all by guard order; error-driven advances skip
     // the park (a dead stream can't play out its end — advancing is correct).
     if (!fromError && this._parkAtTrackEnd()) return
 
-    if (get(loopMode) === 'one') {
-      this._webTransport!.cancelNext()
-      const el = audioManager.activeElement
-      el.currentTime = 0
-      try { await el.play() } catch { /* user may have paused */ }
-      await this._setupNextTrack()
-      if (get(loopMode) === 'one') {
-        this._webTransport!.cancelNext()
-      }
-      return
-    }
+    // ONE decideAdvance for the whole chain (A4) — the queue facts are computed
+    // BEFORE any mutation. park is unreachable here (handled above).
+    const decision = decideAdvance({
+      fromError,
+      parkArmed: false,
+      loopMode: get(loopMode),
+      hasNext: this._hasNextQueued(),
+      hasUserQueue: get(queue).userQueue.length > 0,
+    })
 
     this._handlingEnd = true
     try {
-      const nextTrack = queueManager.advanceQueue()
-      if (nextTrack) {
-        await this._loadAndPlay(nextTrack)
-      } else if (get(loopMode) === 'all') {
-        const q = get(queue)
-        if (q.userQueue.length > 0) {
+      switch (decision) {
+        case 'restart': {
+          this._webTransport!.cancelNext()
+          const el = audioManager.activeElement
+          el.currentTime = 0
+          try { await el.play() } catch { /* user may have paused */ }
+          await this._setupNextTrack()
+          if (get(loopMode) === 'one') {
+            this._webTransport!.cancelNext()
+          }
+          return
+        }
+        case 'advance': {
+          const nextTrack = queueManager.advanceQueue()
+          if (nextTrack) {
+            await this._loadAndPlay(nextTrack)
+          } else {
+            this._stopPlayback()
+          }
+          return
+        }
+        case 'wrap': {
+          const q = get(queue)
           setActiveQueueIndex(0)
           const track = queueManager.findTrack(q.userQueue[0])
-          if (track) await this._loadAndPlay(track)
-        } else {
-          setPlaybackState('stopped')
-          setCurrentTrack(null)
-          this._webTransport!.cancelNext()
-          audioManager.activeElement.src = ''
+          if (track) {
+            await this._loadAndPlay(track)
+          } else {
+            this._stopPlayback()
+          }
+          return
         }
-      } else {
-        setPlaybackState('stopped')
-        setCurrentTrack(null)
-        this._webTransport!.cancelNext()
-        audioManager.activeElement.src = ''
+        case 'stop':
+          this._stopPlayback()
+          return
+        case 'park':
+          return // unreachable — consumed by _parkAtTrackEnd above
       }
     } finally {
       this._handlingEnd = false
     }
   }
 
-  private async _loadAndPlayInBg(track: Track): Promise<void> {
-    const url = this._resolveUrl(track.trackId)
-    if (!url) return
+  private _bgFacts(): BgFacts {
+    const q = get(queue)
+    return {
+      currentTrackId: get(currentTrack)?.trackId ?? null,
+      parkArmed: sleepTimerManager.isEndOfTrackArmed(),
+      loopMode: get(loopMode),
+      hasNext: q.activeIndex >= 0 && this._hasNextQueued(),
+      hasUserQueue: q.userQueue.length > 0,
+      duration: get(currentTrack)?.duration ?? 0,
+    }
+  }
 
-    const s = get(settings)
-    if (s.replayGainMode && s.replayGainMode !== 'off') {
-      audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
-    } else {
-      audioManager.applyReplayGain()
+  /** Resolves the machine's load decision against the real queue. Mutations
+   *  (advance/wrap) run HERE, after the machine decided — the events carried
+   *  the pre-mutation facts. */
+  private _resolveBgLoad(decision: LoadDecision): Track | null {
+    switch (decision) {
+      case 'restart':
+        return get(currentTrack)
+      case 'advance':
+        return queueManager.advanceQueue()
+      case 'wrap': {
+        const q = get(queue)
+        if (q.userQueue.length > 0) {
+          setActiveQueueIndex(0)
+          return queueManager.findTrack(q.userQueue[0]) ?? null
+        }
+        return null
+      }
+      case 'reload':
+        // The caller (next/prev/select/play while engaged) resolved the track
+        // and recorded it; an in-flight bg load records it before settling.
+        return this._pendingBgTrack
+    }
+  }
+
+  private async _handleBgLoad(target: 'fg' | 'bg', decision: LoadDecision): Promise<void> {
+    const track = this._resolveBgLoad(decision)
+    if (!track) {
+      if (target === 'fg') {
+        // The exit-ended chain resolved to nothing (queue shrank) — stop.
+        this._stopPlayback()
+      } else {
+        // No track to load — idle in bg-paused (machine bgFailed analog).
+        this._bgTransport!.abortBgLoad()
+      }
+      return
+    }
+    if (target === 'fg') {
+      // The exit path awaits this: the crossfade re-arm runs after the load.
+      await this._loadAndPlay(track)
+      return
+    }
+    await this._bgLoad(track)
+  }
+
+  private async _bgLoad(track: Track): Promise<void> {
+    // Record the in-flight target so an exit-race reload resolves it.
+    this._pendingBgTrack = track
+    const url = this._resolveUrl(track.trackId)
+    if (!url) {
+      this._bgTransport!.abortBgLoad()
+      return
     }
 
     // Same guard as _loadAndPlay: an end-of-track sleep that fired mid-transition
-    // must not be undone by playBg's autoplay.
+    // must not be undone by the bg load's autoplay — and the machine must still
+    // settle (abort idles it in bg-paused instead of stranding in handoff).
     if (sleepTimerManager.consumePendingStop()) {
+      this._bgTransport!.abortBgLoad()
       setPlaybackState('paused')
       queueManager.promoteActiveTrack()
       return
     }
 
-    const started = await audioManager.playBg(url)
-
-    if (!started && audioManager.isInBgMode) {
-      return
-    }
-
-    if (!audioManager.isInBgMode) {
-      await this._loadAndPlay(track)
+    const started = await this._bgTransport!.startBgLoad(url)
+    if (!started) {
+      // The load was superseded (newer load, park, or an exit that re-routed
+      // the resolution to the fg path) — the machine already decided.
       return
     }
 
@@ -668,107 +798,25 @@ class PlaybackManager {
     currentTime.set(0)
     setPlaybackState('playing')
     queueManager.promoteActiveTrack()
+    queueManager.replenishAutoQueue()
     await this._setupNextTrack()
     if (get(loopMode) === 'one') {
       this._webTransport!.cancelNext()
     }
   }
 
-  private async _onBgTrackEnd(): Promise<void> {
-    if (this._handlingEnd) return
-    if (!audioManager.isInBgMode) return
-    if (this._parkAtTrackEnd()) return
-    // The bg watchdog keeps polling t >= duration - 0.25 without a paused check,
-    // so after a park (or a manual bg pause near the end) it would re-fire and
-    // undo the pause by advancing. A paused near-end element must stay paused.
-    if (audioManager.playbackElement.paused) return
-
-    if (get(loopMode) === 'one') {
-      const current = get(currentTrack)
-      if (current) {
-        await this._loadAndPlayInBg(current)
-      }
-      return
+  private async _loadAndPlayInBg(track: Track): Promise<void> {
+    const s = get(settings)
+    if (s.replayGainMode && s.replayGainMode !== 'off') {
+      audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
+    } else {
+      audioManager.applyReplayGain()
     }
 
-    this._handlingEnd = true
-    try {
-      const nextTrack = queueManager.advanceQueue()
-      if (nextTrack) {
-        await this._loadAndPlayInBg(nextTrack)
-      } else if (get(loopMode) === 'all') {
-        const q = get(queue)
-        if (q.userQueue.length > 0) {
-          setActiveQueueIndex(0)
-          const track = queueManager.findTrack(q.userQueue[0])
-          if (track) await this._loadAndPlayInBg(track)
-        }
-      }
-    } finally {
-      this._handlingEnd = false
-    }
-  }
-
-  private async _handleExitBackground(state: { ended: boolean; wasPlaying: boolean; currentTime: number }): Promise<void> {
-    if (this._handlingEnd) return
-
-    // Park here if the armed sleep never tripped while backgrounded. After any
-    // park (now or in bg) the bg position isn't otherwise transferred (only the
-    // wasPlaying branch carries it), so carry it to the foreground element and
-    // stay paused — a later play() resumes the tail and advances. A fresh park
-    // carries even when the bg element was playing; an already-parked pause
-    // only carries while still paused (a resumed tail falls through to the
-    // playing branch). The trackId gate keeps a stale park (consumed by a bg
-    // lock-screen resume that already advanced) from landing on the wrong track.
-    const parkedNow = this._parkAtTrackEnd()
-    if (parkedNow) {
-      const el = audioManager.activeElement
-      const dur = get(currentTrack)?.duration ?? 0
-      if (dur > 0) el.currentTime = Math.max(0, Math.min(state.currentTime, dur))
-      return
-    }
-    if (sleepTimerManager.isParkedAtEnd()) {
-      const t = get(currentTrack)
-      if (!state.wasPlaying && sleepTimerManager.parkedTrackId() === t?.trackId) {
-        const el = audioManager.activeElement
-        const dur = t?.duration ?? 0
-        if (dur > 0) el.currentTime = Math.max(0, Math.min(state.currentTime, dur))
-        return
-      }
-    }
-
-    this._handlingEnd = true
-    try {
-      if (state.ended) {
-        const nextTrack = queueManager.advanceQueue()
-        if (nextTrack) {
-          await this._loadAndPlay(nextTrack)
-        } else if (get(loopMode) === 'all') {
-          const q = get(queue)
-          if (q.userQueue.length > 0) {
-            setActiveQueueIndex(0)
-            const track = queueManager.findTrack(q.userQueue[0])
-            if (track) await this._loadAndPlay(track)
-          } else {
-            setPlaybackState('stopped')
-            setCurrentTrack(null)
-            this._webTransport!.cancelNext()
-            audioManager.activeElement.src = ''
-          }
-        } else {
-          setPlaybackState('stopped')
-          setCurrentTrack(null)
-          this._webTransport!.cancelNext()
-          audioManager.activeElement.src = ''
-        }
-      } else if (state.wasPlaying) {
-        const el = audioManager.activeElement
-        el.currentTime = state.currentTime
-        await el.play().catch(() => {})
-      }
-    } finally {
-      this._handlingEnd = false
-    }
+    // The queue was already advanced by the caller (next/prev/select/play);
+    // the machine's 'reload' decision loads this resolved track.
+    this._pendingBgTrack = track
+    this._bgTransport!.loadRequest()
   }
 
   private async _handleCrossfadeEnd(targetId: string | null): Promise<void> {
@@ -848,7 +896,7 @@ class PlaybackManager {
         saveQueue(updated)
         return updated
       })
-      if (audioManager.isInBgMode) {
+      if (this._bgTransport!.engaged) {
         await this._loadAndPlayInBg(track)
       } else {
         await this._loadAndPlay(track)
@@ -877,7 +925,7 @@ class PlaybackManager {
     }
     const track = queueManager.findTrack(combined[index])
     if (track) {
-      if (audioManager.isInBgMode) {
+      if (this._bgTransport!.engaged) {
         await this._loadAndPlayInBg(track)
       } else {
         await this._loadAndPlay(track)
@@ -894,6 +942,15 @@ class PlaybackManager {
       } else {
         await this._playFirstInQueue()
       }
+      return
+    }
+
+    // Lock-screen/app play while bg-engaged (also consumes a bg park — the
+    // machine resumes the parked tail). Never touches the fg elements.
+    const bg = this._bgTransport
+    if (bg?.engaged) {
+      bg.mediaPlay()
+      setPlaybackState('playing')
       return
     }
 
@@ -921,10 +978,17 @@ class PlaybackManager {
       setPlaybackState('paused')
       return
     }
-    // playbackElement respects iOS background mode (the audible element is
-    // _bgEl there, not the foreground a/b element) — pausing activeElement
-    // would silently fail to stop background audio.
-    audioManager.playbackElement.pause()
+    // The engaged-pause filter: while bg-engaged the AUDIBLE element is the bg
+    // element (via the machine) — pausing the fg element would silently fail
+    // to stop background audio, and a swap-settle fg pause must never write
+    // 'paused' while bg audio is playing.
+    const bg = this._bgTransport
+    if (bg?.engaged) {
+      bg.mediaPause()
+      setPlaybackState('paused')
+      return
+    }
+    audioManager.activeElement.pause()
     setPlaybackState('paused')
   }
 
@@ -947,7 +1011,7 @@ class PlaybackManager {
 
       const track = queueManager.findTrack(combined[nextIndex])
       if (track) {
-        if (audioManager.isInBgMode) {
+        if (this._bgTransport!.engaged) {
           await this._loadAndPlayInBg(track)
         } else {
           await this._loadAndPlay(track)
@@ -973,7 +1037,7 @@ class PlaybackManager {
       queueManager.advanceTo(prevIndex, currentId ?? undefined)
       const track = queueManager.findTrack(combined[prevIndex])
       if (track) {
-        if (audioManager.isInBgMode) {
+        if (this._bgTransport!.engaged) {
           await this._loadAndPlayInBg(track)
         } else {
           await this._loadAndPlay(track)
@@ -988,7 +1052,7 @@ class PlaybackManager {
         queueManager.advanceTo(lastIndex, currentId ?? undefined)
         const track = queueManager.findTrack(combined[lastIndex])
         if (track) {
-          if (audioManager.isInBgMode) {
+          if (this._bgTransport!.engaged) {
             await this._loadAndPlayInBg(track)
           } else {
             await this._loadAndPlay(track)
@@ -1012,7 +1076,7 @@ class PlaybackManager {
       currentTime.set(clamped)
       return
     }
-    const el = audioManager.playbackElement
+    const el = this._bgTransport!.sessionElement
     if (!el.src) {
       this.play()
       return
@@ -1042,6 +1106,7 @@ class PlaybackManager {
       return
     }
     this._webTransport?.destroy()
+    this._bgTransport?.teardown()
     teardownPreloader()
   }
 }
