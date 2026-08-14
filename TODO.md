@@ -193,18 +193,81 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
   `AudioManager`'s a/b elements are lazy (Node-safe ctor), and the suite pins
   the settle-safe `_bgLoad` store ordering + decision resolution + fg/bg
   routing.
-- **Step 4 — NativeTransport**: owns `setQueue`/`refreshQueue`/`playTrackAt`,
-  the 250 ms position poll, `_hasNativeEngaged`, queue-sync coalescing, getState
-  reconcile (1.5 JS side), fail-fast empty snapshot (1.6 JS side), seek-position
-  retry memory (1.7 JS side). **Test**: fake `BackgroundAudio` plugin object —
-  snapshot build, coalescing (burst of queue writes → one refresh), divergence
-  handling, reload-reconcile outcomes.
+- **Step 4 — NativeTransport (JS-only; no Swift round-trip)**: the native
+  adapter — a SIBLING of `WebBgTransport`, NOT a `PlaybackTransport`: that
+  contract is element-shaped (`playLoaded`/`prepareNext`/`playbackElement`),
+  the native engine is command/event-shaped (it owns the clock) — the bg
+  adapter's policy-event-callback precedent wins over a forced shared
+  interface. Shape: injected `NativeEngineClient` (structural — the real
+  `nativeEngine` satisfies it) + injectable timers (deterministic node tests).
+  - **Owns** (A6 boundary — never touches queue/stores/sleepTimer): plugin
+    listeners; `engage(snapshot, activeIndex, loopMode)` = `setQueue` +
+    `playTrackAt` with **fail-fast** (1.6: active url empty → reject, no
+    plugin calls — no more fake 'playing' over a dead engine); **engage
+    serialization** (NEW — pre-existing race found in review: two rapid
+    `_nativeLoadPlay` calls interleave at their awaits →
+    `setQueue(A)→setQueue(B)→playTrackAt(B)→playTrackAt(A)` leaves the engine
+    on queue B, index A; adapter gets a settle-style in-flight guard +
+    pending-latest-request, like the bg settle token); queue-sync coalescing
+    (`scheduleSync(lazyFactory)` — microtask collapse; snapshot built only
+    when a refresh actually fires, fresh at fire time); 250 ms position poll
+    → `onTick`; `RetryPolicy` native `{maxAttempts: 2, baseDelayMs: 1000}`
+    (exact 1s/2s parity), track-keyed validity, give-up →
+    `onTrackEnded({kind:'natural', fromError:true})`; seek-retry memory (1.7:
+    remember the clamped target, re-issue `seek` after the retry's engage
+    resolves, cleared on engage/trackChanged/user-seek); reload reconcile
+    (1.5 JS side, below); `play`/`pause`/`seek`/`setLoopMode` routing.
+  - **Stays in the manager**: `_buildSnapshot` (needs config + queueManager),
+    `_onNativeTrackChanged` (queue re-anchor/adopt — the B1 exemption),
+    store writes + promote/replenish/rearmAfterSnapshot (0.2) after a
+    successful engage, `_handlingNativeEnd` guard, `loopMode`/`settings`
+    subscriptions (forward to transport methods).
+  - **`_onNativeEnd` → the A4 chain**: the last hand-rolled
+    park→loop-one→advance→loop-all→stop copy (besides `_handleCrossfadeEnd`)
+    becomes `decideAdvance({fromError, parkArmed: false, loopMode, hasNext,
+    hasUserQueue})` — park stays native-side on iOS (`sleepTimerFired` pauses
+    at the natural end). advance → `advanceQueue()` + engage; wrap →
+    `setActiveQueueIndex(0)` + engage; restart → re-engage current; stop →
+    clear stores + `disengage()`. Retry give-up enters the same chain.
+  - **1.5 JS side — reload reconcile**: pure `nativeReconcile.ts`
+    `reconcileReload(state, combined, isKnown)` → `{kind:'idle'} |
+    {kind:'resync', trackId, index, position} | {kind:'stop'}` — by trackId,
+    NEVER state.index (E7: the engine's index refers to the last-sent
+    snapshot; the combined queue's own indexOf is the truth); `index: -1` =
+    re-adopt (the `_onNativeTrackChanged` idx<0 branch). NO deferral needed:
+    App.svelte awaits `loadLibraryFromNavidrome()` before
+    `playbackManager.init()` (verified 2026-08-13) — library + restored
+    queue are populated before `_initNative` runs. Unknown trackId → 'stop'
+    (warn + stop, the honest signal).
+  - **Tests**: `tests/nativeReconcile.test.ts` (pure — lands first),
+    `tests/nativeTransport.test.ts` (fake plugin + timers: engage happy path
+    + fail-fast, retry 1s/2s → give-up natural/fromError, stale-retry
+    validity, seek memory, engage serialization with out-of-order
+    resolutions, coalescing burst → ONE refreshQueue with the final
+    snapshot, poll start/stop, event forwarding, command routing),
+    `tests/playbackManagerNative.test.ts` (glue via the DI seam: native
+    `ended` → A4 advance/wrap/stop/restart, engage fail-fast → stopped,
+    trackChanged re-adopt, rearmAfterSnapshot after engage).
+  - **Not in this step**: 1.4's Swift half (emit `ended` on `refreshQueue`
+    divergence) — batches with the 1.1/1.8 crossfade CI round-trip.
 - **Step 5 — Deletion**: `playbackManager` shrinks to policy + queue wiring;
   delete the dual paths. **Absorbed items: 1.2, 1.9, 1.10, 1.12, 1.13** — each
   is a verification checkpoint in the steps above, not a separate patch.
 - **Sequencing/risk**: never a big-bang — each step ends with `npm run check` +
   `npm test` + the behavior-parity checklist (loop-one/park/sleep/retry/
-  crossfade) run manually on the PWA; the deletion step is last.
+  crossfade) run manually on the PWA; the deletion step is last. Step 4 itself
+  lands in five sub-steps, each gated: (a) pure `nativeReconcile.ts` + suite
+  — LANDED 2026-08-13; (b) NativeTransport skeleton (init/listeners/poll/
+  coalescing/engaged) + suite — LANDED 2026-08-13 (self-review added the
+  stale-settle guard: a disengage/destroy mid-engage drops the settle via an
+  engagement generation, plus a compile-time shape test pinning the real
+  `nativeEngine` against `NativeEngineClient`); (c) retry + seek memory +
+  fail-fast + engage serialization + suite;
+  (d) manager rewiring (DI, `_initNative` shrink, `_onNativeEnd` → A4,
+  routing) + glue suite; (e) deletion + `npm run build` + doc updates.
+  Native-path verification limits: `ios.yml` stays green but cannot exercise
+  the JS bridge — manual device testing for snapshot/advance/retry under real
+  queue mutations.
 
 ### Native crossfade/scheduler package (Swift, one CI round-trip)
 
