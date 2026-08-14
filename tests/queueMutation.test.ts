@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   addToUserQueue,
+  advanceTargetIndex,
   applyQueueMutation,
   clearQueue,
   moveToEnd,
@@ -194,6 +195,32 @@ test('removeFromUserQueue: out-of-range index is a null no-op (no store write)',
   assert.equal(removeFromUserQueue(q(['a'], [], 0), 1), null)
   assert.equal(removeFromUserQueue(q(['a'], [], 0), -1), null)
   assert.equal(removeFromUserQueue(q([], [], -1), 0), null)
+})
+
+test('advanceTargetIndex: normally targets the row after the playing track', () => {
+  // combined[activeIndex] === playingId → +1 (standard advance).
+  assert.equal(advanceTargetIndex(q(['a', 'b', 'c'], [], 1), ['a', 'b', 'c'], 'b'), 2)
+  // active row in auto.
+  assert.equal(advanceTargetIndex(q(['x'], ['y', 'z'], 1), ['x', 'y', 'z'], 'y'), 2)
+})
+
+test('advanceTargetIndex: after an active-row removal the next row is AT activeIndex (2.4 option b)', () => {
+  // Removed 'b' (playing, now unqueued) — combined[1] = 'c' is the next row.
+  const s = removeFromUserQueue(q(['a', 'b', 'c'], [], 1), 1)!
+  assert.equal(advanceTargetIndex(s, combined(s), 'b'), 1)
+  // Removing the active LAST row: target = the removed slot (past the end).
+  const s2 = removeFromUserQueue(q(['a', 'b'], [], 1), 1)!
+  assert.equal(advanceTargetIndex(s2, combined(s2), 'b'), 1)
+  // Removing the ONLY row: target = the removed slot (0).
+  const s3 = removeFromUserQueue(q(['a'], [], 0), 0)!
+  assert.equal(advanceTargetIndex(s3, combined(s3), 'a'), 0)
+})
+
+test('advanceTargetIndex: no playing track keeps the plain +1 target (end-of-queue refill path)', () => {
+  // Stopped state: currentTrack null, activeIndex still pointing at a row.
+  assert.equal(advanceTargetIndex(q(['a', 'b'], [], 0), ['a', 'b'], undefined), 1)
+  // Truly empty queue.
+  assert.equal(advanceTargetIndex(q([], [], -1), [], undefined), 0)
 })
 
 test('clearQueue keeps the active track at user[0] and preserves the recency window', () => {

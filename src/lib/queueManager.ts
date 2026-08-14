@@ -10,6 +10,7 @@ import {
   autoQueueFilters,
   metadataCache,
   queueWrapNotice,
+  currentTrack,
 } from '../stores/appState'
 import type { Track, AutoQueueFilters, QueueState } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
@@ -227,10 +228,16 @@ class QueueManager {
   advanceQueue(): Track | null {
     const q = get(queue)
     const combined = this.getCombinedQueue()
-    const currentId = combined[q.activeIndex]
-    const nextIndex = q.activeIndex + 1
+    const playingId = get(currentTrack)?.trackId
+    const currentId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : undefined
+    const nextIndex = queueMutation.advanceTargetIndex(q, combined, playingId)
+    // The track leaving the active slot: normally `currentId` (the ended
+    // track); after an active-row removal it's the removed PLAYING track
+    // (already inscribed by the removal — re-inscribing is idempotent). Never
+    // the next row: pre-marking it would cool it down before it plays.
+    const leavingId = (playingId ?? currentId) ?? undefined
     if (nextIndex >= 0 && nextIndex < combined.length) {
-      this.advanceTo(nextIndex, currentId ?? undefined)
+      this.advanceTo(nextIndex, leavingId)
       this.replenishAutoQueue()
       return this.findTrack(combined[nextIndex]) ?? null
     }
@@ -242,7 +249,7 @@ class QueueManager {
     this.replenishAutoQueue()
     const updatedCombined = this.getCombinedQueue()
     if (nextIndex >= 0 && nextIndex < updatedCombined.length) {
-      this.advanceTo(nextIndex, currentId ?? undefined)
+      this.advanceTo(nextIndex, leavingId)
       return this.findTrack(updatedCombined[nextIndex]) ?? null
     }
 

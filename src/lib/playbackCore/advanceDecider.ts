@@ -36,7 +36,9 @@ export interface AdvanceDecisionInput {
   /** True while the end-of-track sleep timer is armed (web only; native owns it). */
   parkArmed: boolean
   loopMode: LoopMode
-  /** True when `combined[activeIndex + 1]` exists. */
+  /** True when a next row exists to advance to (the caller's playing-track-
+   *  aware advance target — normally `activeIndex + 1`, but `activeIndex`
+   *  itself after an active-row removal, 2.4 option b). */
   hasNext: boolean
   /** True when the user queue is non-empty (loop-all wrap target). */
   hasUserQueue: boolean

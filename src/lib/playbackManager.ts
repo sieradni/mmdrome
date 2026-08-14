@@ -5,6 +5,7 @@ import { engine } from './engineFacade'
 import { libraryFilters } from './libraryFilters'
 import { nativeEngine, BackgroundAudio, type NativeTrackSnapshot } from './nativePlugin'
 import { queueManager } from './queueManager'
+import { advanceTargetIndex } from './queueMutation'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc } from './preloader'
 import { setupMediaSession } from './mediaSession'
@@ -673,8 +674,13 @@ export class PlaybackManager {
   }
 
   private _hasNextQueued(): boolean {
+    const q = get(queue)
     const combined = this._qm.getCombinedQueue()
-    return get(queue).activeIndex + 1 < combined.length
+    // Playing-track-aware: after an active-row removal (2.4 option b) the row
+    // AT activeIndex is the next playable one — `activeIndex + 1 < length`
+    // would wrongly read as "queue ended" and stop/wrap.
+    const target = advanceTargetIndex(q, combined, get(currentTrack)?.trackId)
+    return target >= 0 && target < combined.length
   }
 
   /** Uniform end-of-queue stop (A4): the machine's stop{fg} and the fg advance
@@ -1048,10 +1054,13 @@ export class PlaybackManager {
     this._stm.clearPendingStop()
     const combined = this._qm.getCombinedQueue()
     const q = get(queue)
-    const nextIndex = q.activeIndex + 1
+    const playingId = get(currentTrack)?.trackId
+    const nextIndex = advanceTargetIndex(q, combined, playingId)
     if (nextIndex >= 0 && nextIndex < combined.length) {
-      const currentId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
-      this._qm.advanceTo(nextIndex, currentId ?? undefined)
+      const currentId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : undefined
+      // Never pre-mark the next row (it's about to play) — after an active-row
+      // removal the leaving track is the removed PLAYING track instead.
+      this._qm.advanceTo(nextIndex, (playingId ?? currentId) ?? undefined)
 
       const track = this._qm.findTrack(combined[nextIndex])
       if (track) {

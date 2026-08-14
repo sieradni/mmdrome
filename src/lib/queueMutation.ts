@@ -207,6 +207,29 @@ export function removeFromUserQueue(q: QueueState, index: number): QueueState | 
 }
 
 /**
+ * The index the advance paths (`advanceQueue`/`next`/`_hasNextQueued`) should
+ * target, given the queue snapshot, the combined id list and the currently-
+ * PLAYING track id.
+ *
+ * Normally `combined[activeIndex]` IS the playing track (B1), so the next
+ * target is `activeIndex + 1`. After an active-row removal (2.4 option b) the
+ * playing track is NOT in the queue and `combined[activeIndex]` is the NEXT
+ * row — the target is `activeIndex` itself; `activeIndex + 1` would skip the
+ * highlighted row (and `activeIndex + 1 < length` would wrongly read as
+ * "queue ended" → stop/wrap). When there is no playing track at all
+ * (`playingId` undefined — stopped, or a truly empty queue), the target stays
+ * `activeIndex + 1` (the end-of-queue refill path targets the first new row).
+ */
+export function advanceTargetIndex(
+  q: QueueState,
+  combined: string[],
+  playingId: string | undefined,
+): number {
+  const currentId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : undefined
+  return playingId !== undefined && currentId !== playingId ? q.activeIndex : q.activeIndex + 1
+}
+
+/**
  * Empties the queue down to the actively playing track (kept at user[0] so
  * playback continues). The anti-repeat window is PRESERVED — a clear is an
  * explicit queue edit, not a "just heard it" event (asymmetric by intent vs.

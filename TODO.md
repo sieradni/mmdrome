@@ -366,10 +366,18 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       predecessor). Preceding-row removal decrements (the active id slid down);
       following-row removal is a no-op anchor; removing the active LAST row
       lands the anchor past the new end (out of range, bounds-checked like −1).
-      Removed id cools in the recency window regardless. **Test**:
-      `tests/queueMutation.test.ts` — preceding/active/following/last-active ×
-      auto depths, recency inscription, out-of-range null no-op.
-      `src/lib/queueMutation.ts` `removeFromUserQueue`,
+      Removed id cools in the recency window regardless. **Advance-chain
+      corollary (review finding, fixed)**: the playing track is not in the
+      queue after an active-row removal, so the advance paths target
+      `activeIndex` itself via the pure `advanceTargetIndex(q, combined,
+      playingId)` (`_hasNextQueued`/`advanceQueue`/`next`) — otherwise
+      end-of-track stopped/wrapped and `next()` no-op'd with the next row
+      right there. **Test**: `tests/queueMutation.test.ts`
+      (preceding/active/following/last-active × auto depths, recency
+      inscription, out-of-range null no-op, advanceTargetIndex matrix),
+      `tests/playbackManagerAdvance.test.ts` (end-of-track + next() after
+      active-row removal advance to the next row; control unchanged).
+      `src/lib/queueMutation.ts` `removeFromUserQueue`/`advanceTargetIndex`,
       `src/lib/queueManager.ts` `removeFromUserQueue`
 - [x] **2.5** **[DECIDED 2026-08-14 — do NOT bound]** `userQueue` growth: the
       user queue is left UNBOUNDED. Promotion stays the intended behavior
