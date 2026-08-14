@@ -402,25 +402,40 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       not correctness. Revisit only if list rendering becomes a measured
       problem.
 - [x] **2.6** `queueWrapNotice` lifecycle — closed 2026-08-10. — LOW
-- [ ] **2.7** **[DECISION]** Native interplay of 1.4's ended-on-divergence with
-      active-row removal (2.4 option b) — found in the 1.4 review
-      2026-08-14. On native, removing the PLAYING track mutates the queue
-      store → the engaged tail sync sends a snapshot whose
-      `combined[activeIndex]` is the NEXT row ≠ the engine's `currentTrackId`
-      (the removed, still-playing track) → the 1.4 divergence branch now
-      emits `ended` → `decideAdvance` (playing-track-aware, 2.4) advances
-      IMMEDIATELY, skipping the removed track. On web the same removal plays
-      the track out to its natural end, then advances. Decide: (a) accept the
-      native skip (document; Spotify-like "removing the current song jumps
-      next"), or (b) web parity (play out) — the engine cannot distinguish
-      "removed active" from "stale snapshot", so (b) needs a JS-side
-      suppression of the divergent tail sync when `currentTrack` is set and
-      not in the queue (skip the refresh; recovery happens at natural end via
-      the engine's trackChanged/ended). **Test** (manager-level native suite):
-      remove the active row while engaged → assert skip-vs-playout per the
-      choice. Pre-1.4 the same divergence silently STOPPED playback (the 1.4
-      bug), so either choice is a strict improvement — this item is about
-      web/native parity, not correctness.
+- [x] **2.7** Native interplay of 1.4's ended-on-divergence with active-row
+      removal (2.4 option b) — CLOSED 2026-08-14 as **"removing the current
+      track skips to the next row, on both platforms"** (the user's original
+      2.4 intent; the 1.4 review surfaced that web had quietly implemented
+      play-out instead). Native already skips: the engaged tail sync sends a
+      snapshot whose `combined[activeIndex]` is the NEXT row ≠ the engine's
+      `currentTrackId` → 1.4's divergence branch emits `ended` → `decideAdvance`
+      (playing-track-aware, 2.4) advances immediately — even under loop-one,
+      the 'restart' engage targets `activeIndex`, which post-removal IS the
+      next row, so the engine plays the next row and `trackChanged` syncs JS.
+      Web now matches: `QueueView` reports the removed id (manager
+      `removeFromUserQueue` returns it) → `playbackManager.handleQueueRowRemoved`
+      runs the SAME A4 chain NOW, with the park skipped (the skip supersedes
+      the end-of-track sleep park, matching the engine's divergence stop
+      cancelling its timer) and loop-one disabled (a removed track is
+      unloopable). `removeFromUserQueue` no longer returns void.
+      **Edge pinned during the parity review (same commit)**: NO successor
+      (the removed row was the active LAST one, or the queue emptied) → BOTH
+      platforms play the track out to its natural end, then stop/wrap —
+      `handleQueueRowRemoved` early-returns when `_hasNextQueued()` is false,
+      mirroring the native sync guard (bails on the out-of-range index) and
+      the Swift empty-snapshot guard (no-op), so web must not cut the audio.
+      The loop-one natural-end RESTART is also made removal-proof on both
+      platforms: `_onTrackEnded` (web) and `_onNativeTrackEnded` stop when the
+      current track has left the combined queue — a removed track is
+      unloopable and its out-of-range index can't re-engage. A future "stop
+      now for the last row" would require relaxing the native sync guard + the
+      Swift empty-snapshot guard (a CI round-trip); deliberately not done.
+      **Tests**: `tests/playbackManagerAdvance.test.ts` (immediate skip,
+      loop-one still advances, non-active removal no-op, native handler no-op,
+      last-row play-out, loop-one removed-track stop) +
+      `tests/playbackManagerNative.test.ts` (loop-one restart-guard stop).
+      Pre-1.4 the same divergence silently STOPPED playback, so this is a
+      strict improvement over both prior behaviors.
 
 ## Phase 3 — Sync / metadata pipeline hardening
 

@@ -180,14 +180,19 @@ class QueueManager {
    * row), so `indexOf` would fail by construction. Semantics live in the pure
    * `queueMutation.removeFromUserQueue` (2.4 option b: removing the active row
    * keeps the index so the highlight slides to the next playable row).
+   * Returns the removed track id (undefined for an out-of-range no-op) so the
+   * caller can react when the PLAYING row was removed (2.7: skip now, both
+   * platforms).
    */
-  removeFromUserQueue(index: number): void {
+  removeFromUserQueue(index: number): string | undefined {
+    const removedId = get(queue).userQueue[index]
     queue.update((q) => {
       const updated = queueMutation.removeFromUserQueue(q, index)
       if (updated === null) return q
       saveQueue(updated)
       return updated
     })
+    return removedId
   }
 
   /**

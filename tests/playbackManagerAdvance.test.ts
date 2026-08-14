@@ -33,6 +33,7 @@ import {
 } from '../src/stores/appState'
 import { PlaybackManager } from '../src/lib/playbackManager'
 import { audioManager } from '../src/lib/audioManager'
+import { queueManager } from '../src/lib/queueManager'
 import { sleepTimerManager } from '../src/lib/sleepTimer'
 import { get } from 'svelte/store'
 import { setCachedConfig } from '../src/lib/navidromeApi'
@@ -121,9 +122,10 @@ class FakeSleepTimer {
 type PrivatePM = {
   _onTrackEnded(fromError?: boolean): Promise<void>
   next(): Promise<void>
+  handleQueueRowRemoved(removedId: string): Promise<void>
 }
 
-function makeHarness() {
+function makeHarness(isNative: () => boolean = () => false) {
   const am = new FakeAudioManager()
   const stm = new FakeSleepTimer()
   const web = new FakeWebTransport()
@@ -133,7 +135,7 @@ function makeHarness() {
     sleepTimerManager: stm as unknown as typeof sleepTimerManager,
     webTransport: web as unknown as WebTransport,
     bgTransport: bg as unknown as WebBgTransport,
-    isNative: () => false,
+    isNative,
   }) as unknown as PrivatePM
   return { am, stm, web, bg, m }
 }
@@ -188,6 +190,118 @@ test('next() after removing the ACTIVE row plays the highlighted row (not a no-o
 
   assert.equal(get(currentTrack)?.trackId, 'navidrome-t2')
   assert.equal(get(playbackState), 'playing')
+})
+
+test('removing the PLAYING row skips to the next track immediately (2.7)', async () => {
+  const h = makeHarness()
+  resetStores()
+  library.set([t0, t1, t2])
+  queue.set({ userQueue: ['navidrome-t1', 'navidrome-t2'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(t1)
+  setPlaybackState('playing')
+
+  const removedId = queueManager.removeFromUserQueue(0)
+  assert.equal(removedId, 'navidrome-t1')
+  await h.m.handleQueueRowRemoved(removedId)
+
+  // The skip happened NOW — not at the removed track's natural end.
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t2')
+  assert.equal(get(playbackState), 'playing')
+  const q = get(queue)
+  assert.equal(q.activeIndex, 0)
+  assert.equal([...q.userQueue, ...q.autoQueue][q.activeIndex], 'navidrome-t2')
+  // The removed track entered the recency window (removal = "not now"); the
+  // next row was NOT pre-marked (it is about to play).
+  assert.ok(q.recentTrackIds.includes('navidrome-t1'))
+  assert.ok(!q.recentTrackIds.includes('navidrome-t2'))
+})
+
+test('removal skip ignores loop-one — the removed track never restarts', async () => {
+  const h = makeHarness()
+  resetStores()
+  loopMode.set('one')
+  library.set([t0, t1, t2])
+  queue.set({ userQueue: ['navidrome-t1', 'navidrome-t2'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(t1)
+  setPlaybackState('playing')
+
+  const removedId = queueManager.removeFromUserQueue(0)
+  assert.ok(removedId)
+  await h.m.handleQueueRowRemoved(removedId)
+
+  // The removed track is unloopable — the chain must ADVANCE, not restart it.
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t2')
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('removing a non-playing row leaves playback untouched', async () => {
+  const h = makeHarness()
+  resetStores()
+  library.set([t0, t1, t2])
+  queue.set({ userQueue: ['navidrome-t1', 'navidrome-t2'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(t1)
+  setPlaybackState('playing')
+
+  const removedId = queueManager.removeFromUserQueue(1) // t2, the NEXT row
+  assert.equal(removedId, 'navidrome-t2')
+  await h.m.handleQueueRowRemoved(removedId)
+
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t1')
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('native: the removal handler is a no-op — the engine drives the skip', async () => {
+  const h = makeHarness(() => true)
+  resetStores()
+  library.set([t0, t1, t2])
+  queue.set({ userQueue: ['navidrome-t1', 'navidrome-t2'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(t1)
+  setPlaybackState('playing')
+
+  const removedId = queueManager.removeFromUserQueue(0)
+  assert.ok(removedId)
+  await h.m.handleQueueRowRemoved(removedId)
+
+  // The divergent tail sync → engine `ended` (1.4) owns the skip natively.
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t1')
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('removing the active LAST row lets it play out (native parity, 2.7)', async () => {
+  const h = makeHarness()
+  resetStores()
+  library.set([t0, t1, t2])
+  queue.set({ userQueue: ['navidrome-t1', 'navidrome-t2'], autoQueue: [], recentTrackIds: [], activeIndex: 1 })
+  setCurrentTrack(t2)
+  setPlaybackState('playing')
+
+  const removedId = queueManager.removeFromUserQueue(1) // the PLAYING, LAST row
+  assert.equal(removedId, 'navidrome-t2')
+  await h.m.handleQueueRowRemoved(removedId)
+
+  // No successor exists — the native sync guard bails on the out-of-range
+  // index, so the engine plays the track out; web must not cut the audio.
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t2')
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('loop-one stops instead of restarting a removed track at its natural end (2.7)', async () => {
+  const h = makeHarness()
+  resetStores()
+  loopMode.set('one')
+  library.set([t0, t1, t2])
+  // The playing track was removed — it is not in the queue anymore.
+  queue.set({ userQueue: [], autoQueue: [], recentTrackIds: [], activeIndex: -1 })
+  setCurrentTrack(t1)
+  setPlaybackState('playing')
+
+  await h.m._onTrackEnded(false)
+
+  // A removed track is unloopable: the natural-end restart must STOP, never
+  // replay the row that left the queue (native's engage also can't re-target
+  // its out-of-range index).
+  assert.equal(get(currentTrack), null)
+  assert.equal(get(playbackState), 'stopped')
 })
 
 test('control: end-of-track advance is unchanged when the active row is queued', async () => {

@@ -17,7 +17,7 @@ import { WebTransport } from './playbackCore/webTransport'
 import { WebBgTransport, type BgFacts, type LoadDecision } from './playbackCore/webBgTransport'
 import { NativeTransport } from './playbackCore/nativeTransport'
 import { reconcileReload } from './playbackCore/nativeReconcile'
-import { decideAdvance } from './playbackCore/advanceDecider'
+import { decideAdvance, type LoopMode } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
 import { computeReplayGainFields } from './playbackCore/replayGain'
 import {
@@ -506,7 +506,14 @@ export class PlaybackManager {
       switch (decision) {
         case 'restart': {
           const track = get(currentTrack)
-          if (track) await this._loadAndPlay(track)
+          // 2.7: loop-one restarts only tracks still in the combined queue — a
+          // played-out removed row can't re-engage (its index is out of range)
+          // and must stop instead of stranding in a stale 'playing' state.
+          if (track && this._qm.getCombinedQueue().includes(track.trackId)) {
+            await this._loadAndPlay(track)
+          } else {
+            this._stopPlayback()
+          }
           return
         }
         case 'advance': {
@@ -695,18 +702,24 @@ export class PlaybackManager {
     }
   }
 
-  private async _onTrackEnded(fromError = false): Promise<void> {
+  private async _onTrackEnded(
+    fromError = false,
+    opts: { skipPark?: boolean; loopMode?: LoopMode } = {},
+  ): Promise<void> {
     if (this._handlingEnd) return
     // Park beats loop-one/loop-all by guard order; error-driven advances skip
     // the park (a dead stream can't play out its end â€” advancing is correct).
-    if (!fromError && this._parkAtTrackEnd()) return
+    // User-initiated removal (2.7) also skips it: the user's skip supersedes
+    // the end-of-track sleep park, matching the native engine's divergence
+    // stop, which cancels its own sleep timer.
+    if (!fromError && !opts.skipPark && this._parkAtTrackEnd()) return
 
     // ONE decideAdvance for the whole chain (A4) â€” the queue facts are computed
     // BEFORE any mutation. park is unreachable here (handled above).
     const decision = decideAdvance({
       fromError,
       parkArmed: false,
-      loopMode: get(loopMode),
+      loopMode: opts.loopMode ?? get(loopMode),
       hasNext: this._hasNextQueued(),
       hasUserQueue: get(queue).userQueue.length > 0,
     })
@@ -715,6 +728,13 @@ export class PlaybackManager {
     try {
       switch (decision) {
         case 'restart': {
+          const track = get(currentTrack)
+          // 2.7: a removed track is unloopable — a played-out row that left the
+          // combined queue (active-last-row removal) must STOP, never loop.
+          if (track && !this._qm.getCombinedQueue().includes(track.trackId)) {
+            this._stopPlayback()
+            return
+          }
           this._webTransport!.cancelNext()
           const el = this._am.activeElement
           el.currentTime = 0
@@ -1048,6 +1068,32 @@ export class PlaybackManager {
     } else {
       this.play()
     }
+  }
+
+  /**
+   * The user removed a row from the queue. When that row was the PLAYING
+   * track, playback skips to the next row NOW — the 2.4 decision applied
+   * consistently on both platforms (2.7). Native is engine-driven: the 1.4
+   * divergence branch of `refreshQueue` emits `ended` and the manager's A4
+   * chain advances (even under loop-one the engage targets `activeIndex`,
+   * which post-removal IS the next row). Web mirrors that here: the same A4
+   * chain runs immediately, with the park skipped (the skip supersedes the
+   * end-of-track sleep park, like the engine's divergence stop cancels its
+   * timer) and loop-one disabled — a removed track is unloopable and must
+   * never restart.
+   *
+   * No successor (the removed row was the active LAST one, or the queue
+   * emptied): the native sync guard bails on the out-of-range index, so the
+   * engine plays the track out and the natural-end chain stops/wraps. Mirror
+   * that exactly instead of cutting the audio — parity, not a second policy.
+   */
+  async handleQueueRowRemoved(removedId: string): Promise<void> {
+    if (this.isNative()) return // native: engine-driven skip (1.4)
+    if (removedId !== get(currentTrack)?.trackId) return
+    // No successor → let it play out (native parity, see above).
+    if (!this._hasNextQueued()) return
+    this._stm.clearPendingStop()
+    await this._onTrackEnded(false, { skipPark: true, loopMode: 'none' })
   }
 
   async next(): Promise<void> {

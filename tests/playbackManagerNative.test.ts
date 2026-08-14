@@ -301,6 +301,23 @@ test('_onNativeTrackEnded restarts the current track under loop-one', async () =
   assert.ok(h.nt.calls.some((c) => c.startsWith('engage:')))
 })
 
+test('_onNativeTrackEnded loop-one stops when the current track left the queue (2.7)', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1'], [t1], 0)
+  loopMode.set('one')
+  setCurrentTrack(t1)
+  // The playing track was removed and played out — it is no longer queued and
+  // its index is out of range, so a loop-one restart cannot re-engage it.
+  h.qm.combined = []
+  await h.m._onNativeTrackEnded(false)
+
+  assert.equal(get(currentTrack), null)
+  assert.equal(get(playbackState), 'stopped')
+  assert.ok(h.nt.calls.includes('disengage'))
+  assert.equal(h.nt.lastEngage, null)
+})
+
 test('_onNativeRetry reloads the matching current track', async () => {
   const h = makeHarness()
   resetStores()

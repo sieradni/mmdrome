@@ -425,7 +425,10 @@ function seek(e: Event) {
     const q = $queue
     const idx = q.userQueue.indexOf(trackId)
     if (idx < 0) return
-    queueManager.removeFromUserQueue(idx)
+    // Removing the PLAYING row skips to the next track immediately (2.4/2.7)
+    // — playbackManager decides whether the removed id was the playing one.
+    const removedId = queueManager.removeFromUserQueue(idx)
+    if (removedId !== undefined) playbackManager.handleQueueRowRemoved(removedId)
   }
 
   function isCurrentTrack(trackId: string, currentCombinedIdx: number): boolean {
