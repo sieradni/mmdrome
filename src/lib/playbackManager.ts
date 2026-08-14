@@ -12,6 +12,9 @@ import { getCoverUrl } from './coverArtCache'
 import { getCachedConfig, buildStreamUrl, buildCoverArtUrl, resolveCoverArtId } from './navidromeApi'
 import { scrobbleManager } from './scrobbleManager'
 import { sleepTimerManager } from './sleepTimer'
+import { WebTransport } from './playbackCore/webTransport'
+import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
+import { computeReplayGainFields } from './playbackCore/replayGain'
 import {
   currentTrack,
   playbackState,
@@ -36,14 +39,11 @@ import type { Track } from '../stores/appState'
 class PlaybackManager {
   private _initialized = false
   private _handlingEnd = false
-  private _retryTrackId: string | null = null
-  private _retryAttempt = 0
-  private _retryTimer: ReturnType<typeof setTimeout> | null = null
-  private _crossfadeTrackId: string | null = null
   private _handlingNativeEnd = false
   private _nativeRetryTrackId: string | null = null
   private _nativeRetryAttempt = 0
   private _nativeRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private _webTransport: WebTransport | null = null
   private _hasNativeEngaged = false
   private _lastSortKey = ''
   private _queueSyncScheduled = false
@@ -89,7 +89,25 @@ class PlaybackManager {
   private async _initWeb(): Promise<void> {
     await audioManager.init()
 
-    audioManager.onTrackEnd = () => this._handleCrossfadeEnd()
+    const transport = new WebTransport(audioManager)
+    this._webTransport = transport
+    transport.onTrackEnded = (event) => {
+      if (event.kind === 'crossfade') {
+        void this._handleCrossfadeEnd(event.targetId)
+      } else {
+        void this._onTrackEnded(event.fromError)
+      }
+    }
+    transport.onRetry = (trackId) => {
+      // Track-keyed validity: a stale retry (superseded by a manual load or a
+      // sleep park) must never re-load a track that left the active slot.
+      if (get(currentTrack)?.trackId !== trackId) return
+      const t = queueManager.findTrack(trackId)
+      if (t) void this._loadAndPlay(t)
+    }
+    transport.onPlaybackState = (state) => setPlaybackState(state)
+    await transport.init()
+
     audioManager.onBgTrackEnd = () => this._onBgTrackEnd()
     audioManager.onBgError = () => this._onBgTrackEnd()
     audioManager.onExitBackground = (state) => this._handleExitBackground(state)
@@ -117,7 +135,7 @@ class PlaybackManager {
       },
     )
 
-    setupPreloader(() => audioManager.playbackElement, (trackId) => this._resolveUrl(trackId))
+    setupPreloader(() => transport.playbackElement, (trackId) => this._resolveUrl(trackId))
 
     settings.subscribe((s) => {
       audioManager.crossfadeDuration = s.crossfadeDuration ?? 0
@@ -130,8 +148,6 @@ class PlaybackManager {
         audioManager.setMasterVolume(s.masterGain)
       }
     })
-
-    this._attachPlaybackListeners()
   }
 
   private async _initNative(): Promise<void> {
@@ -249,48 +265,6 @@ class PlaybackManager {
     })
   }
 
-  private _attachPlaybackListeners(): void {
-    const onPlay = () => setPlaybackState('playing')
-    const onPause = (e: Event) => {
-      const target = e.target as HTMLAudioElement
-      if (target !== audioManager.activeElement) return
-      if (target.ended) return
-      setPlaybackState('paused')
-    }
-    const onEnded = (e: Event) => {
-      const target = e.target as HTMLAudioElement
-      if (target !== audioManager.activeElement) return
-      this._clearRetry()
-      this._onTrackEnded()
-    }
-    const onError = (e: Event) => {
-      const target = e.target as HTMLAudioElement
-      if (target !== audioManager.activeElement) return
-      const track = get(currentTrack)
-      if (!track) return
-      this._handlePlaybackError(track)
-    }
-    const onWaiting = () => {
-      setPlaybackState('buffering')
-    }
-    const onPlaying = () => {
-      setPlaybackState('playing')
-    }
-
-    audioManager.a.addEventListener('play', onPlay)
-    audioManager.a.addEventListener('pause', onPause)
-    audioManager.a.addEventListener('ended', onEnded)
-    audioManager.a.addEventListener('error', onError)
-    audioManager.a.addEventListener('waiting', onWaiting)
-    audioManager.a.addEventListener('playing', onPlaying)
-    audioManager.b.addEventListener('play', onPlay)
-    audioManager.b.addEventListener('pause', onPause)
-    audioManager.b.addEventListener('ended', onEnded)
-    audioManager.b.addEventListener('error', onError)
-    audioManager.b.addEventListener('waiting', onWaiting)
-    audioManager.b.addEventListener('playing', onPlaying)
-  }
-
   private _resolveUrl(trackId: string): string {
     const config = getCachedConfig()
     if (!config) return ''
@@ -326,7 +300,6 @@ class PlaybackManager {
 
   private async _nativeLoadPlay(track: Track): Promise<void> {
     this._clearNativeRetry()
-    this._crossfadeTrackId = null
 
     const combined = queueManager.getCombinedQueue()
     const activeIndex = get(queue).activeIndex
@@ -496,8 +469,7 @@ class PlaybackManager {
       return
     }
 
-    this._crossfadeTrackId = null
-    audioManager.cancelNextTrack()
+    this._webTransport!.cancelNext()
 
     const rawUrl = this._resolveUrl(track.trackId)
     if (!rawUrl) return
@@ -539,40 +511,29 @@ class PlaybackManager {
       return
     }
 
-    let playAttempt = 0
-    let played = false
-    while (playAttempt < 3 && !played) {
-      try {
-        await el.play()
-        played = true
-      } catch {
-        playAttempt++
-        if (playAttempt >= 3) {
-          setCurrentTrack(null)
-          setPlaybackState('stopped')
-          return
-        }
-        await new Promise(resolve => setTimeout(resolve, Math.pow(2, playAttempt) * 500))
-      }
+    const started = await this._webTransport!.playLoaded(track)
+    if (!started) {
+      setCurrentTrack(null)
+      setPlaybackState('stopped')
+      return
     }
+
+    // Push the RG mode onto the engine on every web load (parity with the
+    // pre-extraction path): the settings subscription's `_initialized` guard
+    // skips its startup fire, so without this the engine keeps the 'off'
+    // default until the user toggles the mode. playLoaded already applied this
+    // track's gain fields; setReplayGainMode re-applies them under the mode.
+    audioManager.setReplayGainMode(get(settings).replayGainMode ?? 'off')
 
     // Track is now playing — promote it from auto to user queue
     queueManager.promoteActiveTrack()
     queueManager.replenishAutoQueue()
 
-    audioManager.reapplyEffects()
     setPlaybackState('playing')
-
-    if (s.replayGainMode && s.replayGainMode !== 'off') {
-      audioManager.setReplayGainMode(s.replayGainMode)
-      audioManager.applyReplayGain(track.replayGain, track.albumReplayGain)
-    } else {
-      audioManager.applyReplayGain()
-    }
 
     await this._setupNextTrack()
     if (get(loopMode) === 'one') {
-      audioManager.cancelNextTrack()
+      this._webTransport!.cancelNext()
     }
   }
 
@@ -580,32 +541,26 @@ class PlaybackManager {
     // While an end-of-track sleep is armed, no next track is prepared and no
     // crossfade armed — the current track must end naturally and park.
     if (sleepTimerManager.isEndOfTrackArmed()) {
-      audioManager.cancelNextTrack()
+      this._webTransport!.cancelNext()
       return
     }
     const combined = queueManager.getCombinedQueue()
     const q = get(queue)
     const nextIdx = q.activeIndex + 1
     if (nextIdx >= 0 && nextIdx < combined.length) {
-      this._crossfadeTrackId = combined[nextIdx]
+      const nextTrack = queueManager.findTrack(combined[nextIdx])
       const rawUrl = this._resolveUrl(combined[nextIdx])
       if (rawUrl) {
         const url = await resolveSrc(rawUrl)
-        let linearGain: number | undefined
-        const nextTrack = queueManager.findTrack(combined[nextIdx])
-        if (nextTrack) {
-          const s = get(settings)
-          if (s.replayGainMode === 'track' && nextTrack.replayGain != null) {
-            linearGain = Math.pow(10, nextTrack.replayGain / 20)
-          } else if (s.replayGainMode === 'album' && nextTrack.albumReplayGain != null) {
-            linearGain = Math.pow(10, nextTrack.albumReplayGain / 20)
-          }
-        }
-        audioManager.setNextTrack(url, linearGain)
+        const rg = computeReplayGainFields(get(settings).replayGainMode ?? 'off', nextTrack)
+        this._webTransport!.prepareNext(combined[nextIdx], url, rg)
+      } else {
+        // No URL for the next row — disarm (a stale arm could crossfade into
+        // an old target at the transition point).
+        this._webTransport!.prepareNext(null, null)
       }
     } else {
-      this._crossfadeTrackId = null
-      audioManager.setNextTrack(null)
+      this._webTransport!.prepareNext(null, null)
     }
   }
 
@@ -640,13 +595,13 @@ class PlaybackManager {
     if (!fromError && this._parkAtTrackEnd()) return
 
     if (get(loopMode) === 'one') {
-      audioManager.cancelNextTrack()
+      this._webTransport!.cancelNext()
       const el = audioManager.activeElement
       el.currentTime = 0
       try { await el.play() } catch { /* user may have paused */ }
       await this._setupNextTrack()
       if (get(loopMode) === 'one') {
-        audioManager.cancelNextTrack()
+        this._webTransport!.cancelNext()
       }
       return
     }
@@ -665,11 +620,13 @@ class PlaybackManager {
         } else {
           setPlaybackState('stopped')
           setCurrentTrack(null)
+          this._webTransport!.cancelNext()
           audioManager.activeElement.src = ''
         }
       } else {
         setPlaybackState('stopped')
         setCurrentTrack(null)
+        this._webTransport!.cancelNext()
         audioManager.activeElement.src = ''
       }
     } finally {
@@ -678,7 +635,6 @@ class PlaybackManager {
   }
 
   private async _loadAndPlayInBg(track: Track): Promise<void> {
-    this._crossfadeTrackId = null
     const url = this._resolveUrl(track.trackId)
     if (!url) return
 
@@ -714,7 +670,7 @@ class PlaybackManager {
     queueManager.promoteActiveTrack()
     await this._setupNextTrack()
     if (get(loopMode) === 'one') {
-      audioManager.cancelNextTrack()
+      this._webTransport!.cancelNext()
     }
   }
 
@@ -796,11 +752,13 @@ class PlaybackManager {
           } else {
             setPlaybackState('stopped')
             setCurrentTrack(null)
+            this._webTransport!.cancelNext()
             audioManager.activeElement.src = ''
           }
         } else {
           setPlaybackState('stopped')
           setCurrentTrack(null)
+          this._webTransport!.cancelNext()
           audioManager.activeElement.src = ''
         }
       } else if (state.wasPlaying) {
@@ -813,39 +771,7 @@ class PlaybackManager {
     }
   }
 
-  private _clearRetry(): void {
-    this._retryTrackId = null
-    this._retryAttempt = 0
-    if (this._retryTimer !== null) {
-      clearTimeout(this._retryTimer)
-      this._retryTimer = null
-    }
-  }
-
-  private _handlePlaybackError(track: Track): void {
-    if (this._handlingEnd) return
-    if (get(currentTrack)?.trackId !== track.trackId) return
-    if (this._retryTrackId !== track.trackId) {
-      this._clearRetry()
-    }
-    if (this._retryAttempt >= 3) {
-      this._clearRetry()
-      this._onTrackEnded(true)
-      return
-    }
-    this._retryTrackId = track.trackId
-    this._retryAttempt++
-    const delay = Math.pow(2, this._retryAttempt - 1) * 1000
-    this._retryTimer = setTimeout(() => {
-      this._retryTimer = null
-      const t = get(currentTrack)
-      if (t && t.trackId === this._retryTrackId) {
-        this._loadAndPlay(t)
-      }
-    }, delay)
-  }
-
-  private async _handleCrossfadeEnd(): Promise<void> {
+  private async _handleCrossfadeEnd(targetId: string | null): Promise<void> {
     if (this._handlingEnd) return
     if (this._parkAtTrackEnd()) return
 
@@ -861,43 +787,35 @@ class PlaybackManager {
     try {
       const advanced = queueManager.advanceQueue()
 
-      // Reconcile queue state with the track that is actually playing via crossfade
-      if (this._crossfadeTrackId) {
-        const q = get(queue)
-        const combined = queueManager.getCombinedQueue()
-        const playingIdx = combined.indexOf(this._crossfadeTrackId)
-
-        if (playingIdx >= 0) {
-          // Track still in queue — ensure activeIndex points to it
-          if (q.activeIndex !== playingIdx) {
-            setActiveQueueIndex(playingIdx)
-          }
-        } else {
-          // Track was removed from queue mid-crossfade — re-insert it
-          queue.update((q) => {
-            const userQueue = [this._crossfadeTrackId!, ...q.userQueue]
-            const updated = { ...q, userQueue, activeIndex: 0 }
-            saveQueue(updated)
-            return updated
-          })
-        }
-
-        // Loop-all: if advanced exhausted the queue, wrap to start
-        if (!advanced && get(loopMode) === 'all') {
-          const q2 = get(queue)
-          if (q2.userQueue.length > 0) {
-            const wrapIdx = queueManager.getCombinedQueue().indexOf(q2.userQueue[0])
-            setActiveQueueIndex(wrapIdx >= 0 ? wrapIdx : 0)
-          }
-        }
-
-        this._crossfadeTrackId = null
+      // Reconcile queue state with the track that is actually playing via
+      // crossfade. targetId is null when the arm was cancelled mid-fade — no
+      // reconcile (parity with the old `_crossfadeTrackId == null` skip).
+      const q = get(queue)
+      const result = reconcileCrossfadeTarget({
+        targetId,
+        combined: queueManager.getCombinedQueue(),
+        activeIndex: q.activeIndex,
+        userQueue: q.userQueue,
+        advanced: advanced !== null,
+        loopMode: get(loopMode),
+      })
+      if (result.kind === 'repoint') {
+        setActiveQueueIndex(result.index)
+      } else if (result.kind === 'rescue') {
+        // Anchor-CHANGING write — deliberately NOT routed through
+        // `_mutateQueue`'s id re-anchor (B1 scope boundary).
+        queue.update((q) => {
+          const updated = { ...q, userQueue: result.userQueue, activeIndex: 0 }
+          saveQueue(updated)
+          return updated
+        })
+      } else if (result.kind === 'wrap') {
+        setActiveQueueIndex(result.index)
       }
 
       queueManager.promoteActiveTrack()
       const combined = queueManager.getCombinedQueue()
-      const q = get(queue)
-      const currentId = combined[q.activeIndex]
+      const currentId = combined[get(queue).activeIndex]
       if (currentId) {
         const track = queueManager.findTrack(currentId)
         if (track) setCurrentTrack(track)
@@ -1123,11 +1041,8 @@ class PlaybackManager {
       void nativeEngine.destroy()
       return
     }
-    this._crossfadeTrackId = null
-    this._clearRetry()
+    this._webTransport?.destroy()
     teardownPreloader()
-    audioManager.cancelNextTrack()
-    audioManager.onTrackEnd = null
   }
 }
 

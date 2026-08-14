@@ -806,7 +806,10 @@ class AudioManager {
 
     const standbyEl = this.standbyElement
     standbyEl.src = this._nextTrackUrl
-    standbyEl.play()
+    // Swallow an autoplay rejection mid-fade (1.10-1) — the fade ramps are
+    // scheduled regardless; an unhandled rejection would surface as an
+    // uncaught promise error while the switch completes anyway.
+    standbyEl.play().catch(() => {})
     this.reapplyEffects()
 
     const steps = 40
