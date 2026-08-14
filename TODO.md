@@ -407,9 +407,14 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       server terminates within the cap; dedupe stops repeat pages.
       `src/lib/navidromeApi.ts` `loadNavidromeSongs` — MED
 - [ ] **3.4** Stale cached config — `setCachedConfig` is never called with
-      `null`; removing credentials leaves `_cachedConfig`/`coverConfig` serving
-      stale URLs until restart. Clear on credential removal.
-      `src/lib/navidromeApi.ts` `setCachedConfig` — MED
+      `null`; clearing the Navidrome fields (there is no dedicated "disconnect"
+      — credentials are cleared by committing empty fields via
+      `commitCredentials`) leaves `_cachedConfig`/`coverConfig` serving stale
+      URLs until restart. Clear the cache when the Navidrome url/user no longer
+      match the cached config (in `commitCredentials` or `connectNavidrome`'s
+      auth-failure path).
+      `src/lib/navidromeApi.ts` `setCachedConfig`,
+      `src/views/SettingsView.svelte` `commitCredentials` — MED
 - [ ] **3.5** Normalize `webdavBase` keys — rows are stamped with the TRIMMED
       key, but Push compares the raw `getSetting("webdavUrl")` build → a
       trailing slash/whitespace flags the whole library "Server URL updated"
@@ -454,15 +459,18 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
 - [ ] **3.9** Pre-PUT live-row re-validation — 3.1 widened the POST-PUT re-pend
       so a mid-push dismissal/re-bind is not flattened away, but the loop still
       PUTs against the START-of-loop snapshot: a track dismissed (`ignored`) or
-      re-bound (new `webdavPath`/`webdavBase`) during the GET→modify→PUT window
-      still gets tags written to the OLD/rejected file (the re-pend preserves
-      the flag but cannot undo the write). Re-check the LIVE row (ignored /
-      webdavPath / webdavBase) immediately before the PUT (and the conflict
-      retry's re-PUT) and skip without counting synced; mind the `pushedPaths`
-      dedupe (a skipped row must not mark its path pushed). Also re-derive the
-      current baseKey from live settings rather than the loop-start capture so
-      a mid-push credential swap can't PUT to the old server. **Test**: re-check
-      decision as a pure function (stale snapshot × live row × baseKey).
+      re-bound (new `webdavPath`) during the GET→modify→PUT window still gets
+      tags written to the OLD/rejected file (the re-pend preserves the flag but
+      cannot undo the write). Re-check the LIVE row immediately before the PUT
+      (and the conflict retry's re-PUT) against the SAME loop-start
+      `currentBaseKey` and skip without counting synced:
+      `!live.webdavPath || live.ignored || live.webdavPath !== stale.webdavPath
+      || live.webdavBase !== currentBaseKey`. Mind the `pushedPaths` dedupe (a
+      skipped row must un-mark its path so a later same-path row can still
+      push). OUT OF SCOPE: a full mid-push credential swap that has not yet
+      re-stamped rows (would need re-reading url/user/token, not just baseKey;
+      it self-heals via 3.1's `webdavBase` diff on the next scan). **Test**:
+      re-check decision as a pure function (stale snapshot × live row × baseKey).
       `src/lib/syncEngine.ts` `runManualWebDAVSync` — MED
 
 ## Phase 4 — UI & state layer
