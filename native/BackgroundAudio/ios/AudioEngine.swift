@@ -360,11 +360,16 @@ public final class NativeAudioEngine: NSObject {
     /// JS side re-sends the full current combined queue after its own promotions.
     public func refreshQueue(tracks: [NativeTrack], activeIndex: Int) {
         guard !tracks.isEmpty else { return }
-        guard tracks.indices.contains(activeIndex), tracks[activeIndex].trackId == currentTrackId else {
-            // Divergent queue — fall back to a full reset.
+        let snapshotActiveId = tracks.indices.contains(activeIndex) ? tracks[activeIndex].trackId : ""
+        guard queueDivergence(snapshotActiveId: snapshotActiveId, engineCurrentId: currentTrackId) == .synced else {
+            // Divergent queue — fall back to a full reset and report ENDED (1.4,
+            // mirroring handleTrackEnd): the honest signal that JS navigates the
+            // stale index. On `ended` JS re-snapshots from its own authoritative
+            // queue, so the engine can't sit on a snapshot JS can't navigate.
             stopPlayback()
             self.tracks = tracks
             self.activeIndex = max(0, min(activeIndex, tracks.count - 1))
+            onQueueEnded?()
             return
         }
         self.tracks = tracks
