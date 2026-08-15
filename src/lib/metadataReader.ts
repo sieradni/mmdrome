@@ -461,11 +461,6 @@ export interface MatchCandidates {
  * `matchTrackToWebdav`, but exposes the tied/near-miss entries instead of
  * collapsing them to an unambiguous boolean.
  */
-/**
- * Candidate view for the File Matching UI: the same scoring as
- * `matchTrackToWebdav`, but exposes the tied/near-miss entries instead of
- * collapsing them to an unambiguous boolean.
- */
 export function matchTrackToWebdavCandidates(
   track: Track,
   index: WebdavFileEntry[],

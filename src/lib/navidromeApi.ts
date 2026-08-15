@@ -353,8 +353,6 @@ export function cachedConfigMatches(cached: NavidromeConfig | null, baseUrl: str
 }
 
 export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ songs: NavidromeSong[]; result: NavidromeLoadResult }> {
-  let failed = 0
-
   try {
     // Sets both _cachedConfig and coverConfig (the store LazyThumb gates on).
     // Without the store update, thumbnails stay blank after a first-ever connect
@@ -375,10 +373,14 @@ export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ son
       return resp.searchResult3?.song ?? []
     })
 
-    return { songs, result: { loaded: songs.length, failed } }
+    // `failed` is always 0 BY CONSTRUCTION: a pagination error aborts the
+    // whole load (the catch returns zero songs with the error), so there is
+    // never a partial-failure state with both loaded and failed > 0. The field
+    // stays (the UI renders it); only the dead counter is gone.
+    return { songs, result: { loaded: songs.length, failed: 0 } }
   } catch (err) {
     const error = err as SubsonicError
-    return { songs: [], result: { loaded: 0, failed, error: error.message } }
+    return { songs: [], result: { loaded: 0, failed: 0, error: error.message } }
   }
 }
 

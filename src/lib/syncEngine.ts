@@ -178,7 +178,10 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
     navidromeSetCachedConfig(null)
   }
 
-  const baseKey = `${config.baseUrl}|${config.username}`
+  // Trim the username for the cache identity: commitCredentials persists the
+  // trimmed value, so a legacy row with stray whitespace must not silently
+  // change the cache key (baseUrl is already trimmed by getNavidromeConfig).
+  const baseKey = `${config.baseUrl.trim()}|${config.username.trim()}`
 
   const connection = await navidromeTestConnection(config)
   if (!connection.connected) {
