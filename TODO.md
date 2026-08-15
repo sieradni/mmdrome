@@ -495,6 +495,22 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       `src/lib/navidromeApi.ts` `cachedConfigMatches`,
       `src/views/SettingsView.svelte` `commitCredentials`,
       `src/lib/syncEngine.ts` `connectNavidrome` — MED
+- [x] **3.13** **[TEST]** load-pipeline orchestration planner + browser e2e —
+      closed 2026-08-14: the inline decisions in `loadLibraryFromNavidrome`
+      (bail rule, cached-connect seed skip, WebDAV auto-scan gating) were
+      untested glue — a future "simplification" could drop a gate and every
+      pure test would still pass. Extracted into pure `planNavidromeLoad`
+      (`src/lib/navidromeLoadPlan.ts`): apply iff songs present OR
+      (connected && !error); seed iff applying AND songs present AND
+      `shouldSeedFeedback`; `configureWebdav`/`scanWebdav` gated on creds +
+      `navigator.onLine`. The async glue is now a thin interpreter.
+      **Test**: `tests/navidromeLoadPlan.test.ts` (9-case matrix: fresh apply,
+      cached no-seed, disconnected/failed bail, empty-server truth, cached
+      fallback applies, scan online/offline/bail) + `tests/e2e/sync.spec.ts`
+      (route-mocked Subsonic: fresh connect seeds; scan-timestamp-matching
+      reconnect serves "(from cache)" and does NOT re-paginate search3).
+      `src/lib/navidromeLoadPlan.ts` `planNavidromeLoad`,
+      `src/lib/syncEngine.ts` `loadLibraryFromNavidrome` — MED
 - [ ] **3.5** Normalize `webdavBase` keys — rows are stamped with the TRIMMED
       key, but Push compares the raw `getSetting("webdavUrl")` build → a
       trailing slash/whitespace flags the whole library "Server URL updated"

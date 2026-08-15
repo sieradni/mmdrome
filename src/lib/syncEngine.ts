@@ -5,7 +5,8 @@ import { modifyMetadataBuffer } from "$lib/tagWriter"
 import { metadataCache, settings, library, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
 import { setWebdavCredentials, scanAll, setServerLastScan } from "./metadataScanner"
 import { shouldKeepPushPending, shouldSkipBeforePut } from "./pushReconcile"
-import { cachedLibraryUsable, shouldSeedFeedback } from "./syncCachePolicy"
+import { cachedLibraryUsable } from "./syncCachePolicy"
+import { planNavidromeLoad } from "./navidromeLoadPlan"
 import {
   testNavidromeConnection as navidromeTestConnection,
   loadNavidromeSongs as navidromeLoadSongs,
@@ -260,30 +261,30 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
 export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<NavidromeConnectResult> {
   const result = await connectNavidrome(forceRefresh)
 
-  // Both an offline/cached fallback AND a live failure with no usable songs
-  // return without songs; only the former may proceed below (songs present).
-  if (!result.connection.connected && result.songs.length === 0) return result
-
-  // A failed load with nothing usable must NOT replace the in-memory library:
-  // setLibrary would reconcile the queue against the empty/partial set and
-  // wipe it. (A failed load that fell back to the cached snapshot carries
-  // songs and IS applied — they're valid.) A genuinely empty server (success,
-  // zero songs) still replaces — that's the truth.
-  if (result.loadResult.error && result.songs.length === 0) return result
-
-  const tracks = result.songs.map(navidromeSongToTrack)
-  setLibrary(tracks)
-  initMetadataForTracks(tracks)
-  if (shouldSeedFeedback(result.loadResult)) seedNavidromeFeedback(tracks)
-  if (result.lastScan) setServerLastScan(result.lastScan)
-
   const s = get(settings)
-  if (s.webdavUrl && s.webdavUser && s.webdavToken) {
-    setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
+  const plan = planNavidromeLoad(result, {
+    mapSong: navidromeSongToTrack,
+    webdavConfigured: !!(s.webdavUrl && s.webdavUser && s.webdavToken),
+    online: typeof navigator === 'undefined' || navigator.onLine !== false,
+  })
+
+  // The planner encodes the bail rule: a disconnected/failed load with no
+  // usable songs must NOT replace the in-memory library (setLibrary would
+  // reconcile the queue against the empty set and wipe it). A genuinely empty
+  // server (connected, clean) still applies — that's the truth.
+  if (!plan.applyLibrary) return result
+
+  setLibrary(plan.tracks)
+  initMetadataForTracks(plan.tracks)
+  if (plan.seedFeedback) seedNavidromeFeedback(plan.tracks)
+  if (plan.lastScan) setServerLastScan(plan.lastScan)
+
+  if (plan.configureWebdav) {
+    setWebdavCredentials(s.webdavUrl!, s.webdavUser!, s.webdavToken!)
     // Skip the automatic scan when the device is offline (navigator.onLine is
     // reliable on web; the scan already degrades safely if it ever lies) so an
     // offline startup doesn't fire a doomed PROPFIND and paint a scan error.
-    if (typeof navigator === 'undefined' || navigator.onLine !== false) {
+    if (plan.scanWebdav) {
       // scanAll probes the server itself (refreshIndex) — no ensureIndex
       // pre-call, or the connect would issue two PROPFINDs.
       void scanAll('modified').catch(() => {})

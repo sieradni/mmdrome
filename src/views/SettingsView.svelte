@@ -518,6 +518,7 @@
           <div class="space-y-3">
             <input
               type="url"
+              data-testid="navidrome-url"
               placeholder="https://music.example.com"
               value={$settings.navidromeUrl ?? ''}
               oninput={onInput('navidromeUrl')}
@@ -525,6 +526,7 @@
             />
             <input
               type="text"
+              data-testid="navidrome-user"
               placeholder="Username"
               value={$settings.navidromeUser ?? ''}
               oninput={onInput('navidromeUser')}
@@ -532,6 +534,7 @@
             />
             <input
               type="password"
+              data-testid="navidrome-password"
               placeholder="Password"
               value={$settings.navidromePassword ?? ''}
               oninput={onInput('navidromePassword')}

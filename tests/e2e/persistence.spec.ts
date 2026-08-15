@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
+import { bootApp } from './boot'
 
 // Exercises the persisted-store layer (AGENTS.md C6/A10) in the real
 // production bundle: the stores persist to IndexedDB on change and restore
@@ -11,36 +12,6 @@ import { test, expect, type Page } from '@playwright/test'
 // loaded — the loop toggle does not, it sits in the currentTrack-only
 // Utility Row).
 
-async function boot(page: Page): Promise<void> {
-  const errors: string[] = []
-  let onFirstError: (err: Error) => void = () => {}
-  const firstError = new Promise<never>((_resolve, reject) => {
-    onFirstError = reject
-  })
-  // A rejection after the race below has settled on "ready" must not surface
-  // as an unhandled rejection.
-  void firstError.catch(() => {})
-
-  page.on('console', (msg) => {
-    if (msg.type() === 'error') {
-      const text = msg.text()
-      errors.push(`console.error: ${text}`)
-      onFirstError(new Error(`console.error during boot: ${text}`))
-    }
-  })
-  page.on('pageerror', (err) => {
-    errors.push(`pageerror: ${err.message}`)
-    onFirstError(new Error(`pageerror during boot: ${err.message}`))
-  })
-
-  await page.goto('/mmdrome/', { waitUntil: 'networkidle' })
-  await Promise.race([
-    expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 }),
-    firstError,
-  ])
-  expect(errors, 'app boot produced console errors').toEqual([])
-}
-
 async function openQueueFilter(page: Page): Promise<void> {
   // The mini-player bar (empty-state text is present with no track loaded)
   // opens the now-playing overlay; its header holds the queue button. The
@@ -52,7 +23,7 @@ async function openQueueFilter(page: Page): Promise<void> {
 }
 
 test('queue filter rating inputs snap cleared fields to their boundary and persist', async ({ page }) => {
-  await boot(page)
+  await bootApp(page)
   await openQueueFilter(page)
 
   const min = page.getByTestId('min-rating')
@@ -85,7 +56,7 @@ test('queue filter rating inputs snap cleared fields to their boundary and persi
 })
 
 test('shuffle mode round-trips through a reload', async ({ page }) => {
-  await boot(page)
+  await bootApp(page)
 
   await page.getByText('Not playing').first().click()
   const shuffle = page.getByRole('button', { name: 'Toggle shuffle' })
