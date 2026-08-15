@@ -1,6 +1,5 @@
 <script lang="ts">
   import { currentTrack, metadataCache } from '../stores/appState'
-  import type { Track } from '../stores/appState'
   import { commitFeedback } from '../lib/feedbackService'
   import LazyThumb from '../components/LazyThumb.svelte'
 
@@ -61,10 +60,6 @@
     return segs
   }
 
-  function toggleLoved() {
-    loved = !loved
-    commit()
-  }
 </script>
 
 <div class="flex h-full flex-col bg-background">
@@ -79,7 +74,6 @@
 
   <div class="flex-1 overflow-y-auto px-4">
     {#if $currentTrack}
-      {@const meta = $metadataCache.get($currentTrack.trackId)}
       <div class="flex flex-col items-center">
         <div class="aspect-square w-48 overflow-hidden rounded-2xl bg-surface-hover shadow-xl">
           <LazyThumb track={$currentTrack} wrapperClass="h-full w-full" />

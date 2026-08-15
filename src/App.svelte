@@ -10,7 +10,6 @@
   import { audioManager } from './lib/audioManager'
   import { engine } from './lib/engineFacade'
   import { getTagLib } from './lib/taglibSingleton'
-  import type { Track } from './stores/appState'
   import SongsView from './views/SongsView.svelte'
   import AlbumsView from './views/AlbumsView.svelte'
   import ArtistsView from './views/ArtistsView.svelte'

@@ -3,7 +3,7 @@ import { writable } from "svelte/store"
 import { library, metadataCache, metadataScanState, settings, updateMetadata } from "../stores/appState"
 import type { Track } from "../stores/appState"
 import { saveWebdavFileIndex, getWebdavFileIndex, getFileTagsForBase, putFileTag } from "./db"
-import type { LocalMetadataStore, FileTagCacheEntry, FileTags } from "./db"
+import type { LocalMetadataStore, FileTagCacheEntry } from "./db"
 import { buildWebdavFileIndex, readFileMetadata } from "./metadataReader"
 import {
   matchTrackToWebdav,
@@ -1007,7 +1007,7 @@ export async function bindTrackToFile(
         conflictTitle: pOther ? `${pOther.title} — ${pOther.artist}` : pid,
       }
     }
-    for (const [id, row] of hostile) {
+    for (const [, row] of hostile) {
       updateMetadata({
         ...row,
         webdavPath: undefined,

@@ -125,7 +125,6 @@
   })
 
   $effect(() => {
-    const groups = artistGroups
     if (!scrollRestorePending) return
     if (selectedArtist) {
       if (!detailScrollContainer) return

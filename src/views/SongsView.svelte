@@ -1,13 +1,10 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
   import { library, metadataCache, currentTrack } from '../stores/appState'
-  import { playbackManager } from '../lib/playbackManager'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import { libraryFilters, trackMatchesGenre } from '../lib/libraryFilters'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
-  import LazyThumb from '../components/LazyThumb.svelte'
-  import TrackOptionsDropdown from '../components/TrackOptionsDropdown.svelte'
   import TrackRow from '../components/TrackRow.svelte'
   import FilterSortBar from '../components/FilterSortBar.svelte'
   import JumpToCurrentButton from '../components/JumpToCurrentButton.svelte'

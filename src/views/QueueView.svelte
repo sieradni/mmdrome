@@ -6,7 +6,6 @@
     shuffleEnabled,
     toggleShuffle,
     currentTime,
-    playbackSpeed,
     effectiveDuration,
     playbackState,
     autoQueueFilterFields,
@@ -22,7 +21,6 @@
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
   import { distinctGenres } from '../lib/libraryFilters'
-  import { audioManager } from '../lib/audioManager'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
@@ -182,7 +180,6 @@
       }))
     }
 
-    const A = autoTracks.length
     const fromIdx = draggedCombinedIndex
     const toIdx = targetCombinedIndex
     const isUserSource = fromIdx < U
@@ -317,12 +314,12 @@ function seek(e: Event) {
     updateTargetFromPointer(e.clientY)
   }
 
-  function handlePointerUp(e: PointerEvent) {
+  function handlePointerUp() {
     if (!isDragging) return
     applyDrop()
   }
 
-  function handlePointerCancel(e: PointerEvent) {
+  function handlePointerCancel() {
     stopPointerDrag()
   }
 
@@ -401,7 +398,7 @@ function seek(e: Event) {
     if (removedId !== undefined) playbackManager.handleQueueRowRemoved(removedId)
   }
 
-  function isCurrentTrack(trackId: string, currentCombinedIdx: number): boolean {
+  function isCurrentTrack(currentCombinedIdx: number): boolean {
     if ($queue.activeIndex < 0) return false
     return currentCombinedIdx === $queue.activeIndex
   }
@@ -538,7 +535,7 @@ function seek(e: Event) {
             tabindex="0"
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(item.track.trackId, itemIndex) }}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
-              (isCurrentTrack(item.track.trackId, itemIndex) ? 'bg-white/10 ' : 'hover:bg-surface-hover ') +
+              (isCurrentTrack(itemIndex) ? 'bg-white/10 ' : 'hover:bg-surface-hover ') +
               (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-yellow-500/50 bg-yellow-500/10 ' : '')
             }
             data-combined-index={itemIndex}
@@ -712,7 +709,7 @@ function seek(e: Event) {
             tabindex="0"
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(item.track.trackId, itemCombinedIndex) }}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
-              (isCurrentTrack(item.track.trackId, itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-surface-hover ') +
+              (isCurrentTrack(itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-surface-hover ') +
               (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-yellow-500/50 bg-yellow-500/10 ' : '')
             }
             data-combined-index={itemCombinedIndex}
