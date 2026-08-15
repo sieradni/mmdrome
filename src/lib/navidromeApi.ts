@@ -350,33 +350,58 @@ export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ son
     setCachedConfig(config)
 
     // Fetch all songs via search3 pagination (standard Subsonic endpoint).
-    // The loop is capped so a server that ignores songOffset (repeating the
-    // same page) terminates instead of accumulating forever (3.3).
-    const PAGE_SIZE = 500
-    const MAX_PAGES = 200 // 100k songs at 500/page — a sane ceiling
-    let offset = 0
-    let pages = 0
-    while (pages < MAX_PAGES) {
-      const resp = await callSubsonic(config, 'search3.view', {
-        query: '',
-        songCount: PAGE_SIZE,
-        songOffset: offset,
-        artistCount: 0,
-        albumCount: 0,
-      })
-      const page: NavidromeSong[] = resp.searchResult3?.song ?? []
-      if (!Array.isArray(page) || page.length === 0) break
-      songs.push(...page)
-      offset += page.length
-      pages++
-      if (page.length < PAGE_SIZE) break
-    }
+    // The pure driver caps pages AND stops on a repeated first id, so a server
+    // that ignores songOffset terminates instead of accumulating forever (3.3).
+    songs.push(
+      ...(await paginateSearch3(async (offset, count) => {
+        const resp = await callSubsonic(config, 'search3.view', {
+          query: '',
+          songCount: count,
+          songOffset: offset,
+          artistCount: 0,
+          albumCount: 0,
+        })
+        return resp.searchResult3?.song ?? []
+      })),
+    )
 
     return { songs, result: { loaded: songs.length, failed } }
   } catch (err) {
     const error = err as SubsonicError
     return { songs: [], result: { loaded: 0, failed, error: error.message } }
   }
+}
+
+/**
+ * Pure pagination driver for `search3.view` (TODO 3.3). Fetches pages until a
+ * short/empty tail, the page cap, or a repeated first id — an offset-ignoring
+ * server returns the same page forever, so the first-id dedupe stops it after
+ * one repeat instead of accumulating duplicate pages up to the cap.
+ */
+export async function paginateSearch3(
+  fetchPage: (offset: number, count: number) => Promise<NavidromeSong[]>,
+  opts: { pageSize?: number; maxPages?: number } = {},
+): Promise<NavidromeSong[]> {
+  const pageSize = opts.pageSize ?? 500
+  const maxPages = opts.maxPages ?? 200 // 100k songs at 500/page — a sane ceiling
+  const songs: NavidromeSong[] = []
+  const firstIds = new Set<string>()
+  let offset = 0
+  let pages = 0
+  while (pages < maxPages) {
+    const page = await fetchPage(offset, pageSize)
+    if (!Array.isArray(page) || page.length === 0) break
+    const firstId = page[0]?.id
+    if (firstId !== undefined) {
+      if (firstIds.has(firstId)) break
+      firstIds.add(firstId)
+    }
+    songs.push(...page)
+    offset += page.length
+    pages++
+    if (page.length < pageSize) break
+  }
+  return songs
 }
 
 export function buildStreamUrl(config: NavidromeConfig, songId: string): string {

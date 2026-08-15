@@ -452,20 +452,33 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       no-op).
       `src/lib/syncEngine.ts` `runManualWebDAVSync`,
       `src/lib/pushReconcile.ts` `shouldKeepPushPending` — MED
-- [ ] **3.2** Navidrome-mode stale seeds — the song cache stores raw
-      `NavidromeSong[]` incl. `starred`/`userRating`; `seedNavidromeFeedback`
-      runs unconditionally on cached connects → in `ratingSource:'navidrome'`
-      mode an offline/lastScan-matching start re-applies stale server values.
-      Skip seeding when `loadResult.cached === true` (or mark cache rows).
-      **Test**: seed-decision matrix (cached × ratingSource × pending_sync
-      rows). `src/lib/syncEngine.ts` cached-return paths,
-      `src/stores/appState.ts` `seedNavidromeFeedback` — MED
-- [ ] **3.3** Pagination guard — `loadNavidromeSongs`' `while(true)` loop has no
-      max-page cap/dedupe; a server ignoring `songOffset` fetches forever.
-      Cap pages + dedupe (reject a page whose first id repeats). **Test**:
-      pagination driver as a pure generator over a fake fetch — offset-ignoring
-      server terminates within the cap; dedupe stops repeat pages.
-      `src/lib/navidromeApi.ts` `loadNavidromeSongs` — MED
+- [x] **3.2** Navidrome-mode stale seeds — closed 2026-08-14: the song cache
+      stores raw `NavidromeSong[]` incl. `starred`/`userRating`;
+      `seedNavidromeFeedback` ran unconditionally on cached connects → in
+      `ratingSource:'navidrome'` mode an offline/lastScan-matching start
+      re-applied stale server values over local `synced` edits (which commit
+      straight to the server, never `pending_sync`, so the pending-skip guard
+      couldn't protect them). Fix: pure `shouldSeedFeedback(loadResult)` in
+      `syncCachePolicy.ts` (`cached !== true` → seed), gating the seed in
+      `loadLibraryFromNavidrome` — a cached connect carries no fresh server
+      data, so the persisted Dexie metadata cache is authoritative. The
+      per-row source/pending logic in `seedNavidromeFeedback` is untouched.
+      **Test**: `tests/syncCachePolicy.test.ts` (cached skip is
+      source-independent + offline-fallback skip; live/undefined-cached seed;
+      per-row guards remain pinned by metadataWriters).
+      `src/lib/syncEngine.ts` `loadLibraryFromNavidrome`,
+      `src/lib/syncCachePolicy.ts` `shouldSeedFeedback` — MED
+- [x] **3.3** Pagination guard — closed 2026-08-14: the search3 loop is now a
+      pure `paginateSearch3(fetchPage, { pageSize, maxPages })` driver in
+      `navidromeApi.ts` — it caps pages (default 200×500), stops on a
+      short/empty tail, AND stops on a repeated first id (an offset-ignoring
+      server returns the same page forever; the dedupe halts after one repeat
+      instead of accumulating duplicates up to the cap).
+      `loadNavidromeSongs` is a thin wrapper passing a `callSubsonic` closure.
+      **Test**: `tests/navidromeApi.test.ts` — repeat-page dedupe (2 fetches,
+      one page accumulated), fresh-pages cap (200 pages, 100k songs),
+      partial-tail early stop.
+      `src/lib/navidromeApi.ts` `paginateSearch3` — MED
 - [ ] **3.4** Stale cached config — `setCachedConfig` is never called with
       `null`; clearing the Navidrome fields (there is no dedicated "disconnect"
       — credentials are cleared by committing empty fields via

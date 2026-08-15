@@ -1,4 +1,5 @@
 import type { SongLibraryCache } from './db'
+import type { NavidromeLoadResult } from './navidromeApi'
 
 export interface CacheUseOptions {
   /** "Connect & Load" forces a live re-pagination even when the cache is valid. */
@@ -31,4 +32,17 @@ export function cachedLibraryUsable(cached: SongLibraryCache | undefined, baseKe
     if (opts.lastScan && cached.lastScan !== opts.lastScan) return false
   }
   return true
+}
+
+/**
+ * Pure D6 policy (TODO 3.2): may this connect's songs seed rating/loved
+ * feedback into the metadata cache? A cached connect carries a stale server
+ * snapshot — in `ratingSource: 'navidrome'` mode the server always wins, so
+ * re-seeding would clobber local edits (which commit straight to the server
+ * and land as `synced`, not `pending_sync`) with the pre-edit values. The
+ * persisted Dexie metadata cache is already authoritative for a cached
+ * connect, so seeding is skipped for it regardless of rating source.
+ */
+export function shouldSeedFeedback(loadResult: Partial<NavidromeLoadResult>): boolean {
+  return loadResult.cached !== true
 }

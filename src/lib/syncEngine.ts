@@ -5,7 +5,7 @@ import { modifyMetadataBuffer } from "$lib/tagWriter"
 import { metadataCache, settings, library, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
 import { setWebdavCredentials, scanAll, setServerLastScan } from "./metadataScanner"
 import { shouldKeepPushPending, shouldSkipBeforePut } from "./pushReconcile"
-import { cachedLibraryUsable } from "./syncCachePolicy"
+import { cachedLibraryUsable, shouldSeedFeedback } from "./syncCachePolicy"
 import {
   testNavidromeConnection as navidromeTestConnection,
   loadNavidromeSongs as navidromeLoadSongs,
@@ -261,7 +261,7 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   const tracks = result.songs.map(navidromeSongToTrack)
   setLibrary(tracks)
   initMetadataForTracks(tracks)
-  seedNavidromeFeedback(tracks)
+  if (shouldSeedFeedback(result.loadResult)) seedNavidromeFeedback(tracks)
   if (result.lastScan) setServerLastScan(result.lastScan)
 
   const s = get(settings)

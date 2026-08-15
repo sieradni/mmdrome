@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { submitNowPlaying, submitScrobble, loadNavidromeSongs, type NavidromeConfig } from '../src/lib/navidromeApi'
+import { submitNowPlaying, submitScrobble, paginateSearch3, type NavidromeConfig } from '../src/lib/navidromeApi'
 
 // The Subsonic/OpenSubsonic API has no `nowPlaying` endpoint: a "now playing"
 // notification is `scrobble?submission=false`, and a completed listen is
@@ -59,37 +59,41 @@ test('submitScrobble posts to scrobble with submission=true and a millisecond ti
   assert.equal(url.searchParams.get('time'), '1784102400123')
 })
 
-test('loadNavidromeSongs caps pagination so an offset-ignoring server terminates (3.3)', async (t) => {
+test('paginateSearch3 stops on a repeated first id (dedupe, 3.3)', async () => {
   // A misbehaving server that ignores songOffset repeats the same full page
-  // forever; without the cap the loop accumulates unboundedly. The cap is
-  // 200 pages × 500 = 100k songs.
+  // forever; the first-id dedupe stops it after ONE repeat instead of
+  // accumulating duplicate pages up to the cap.
   const page = Array.from({ length: 500 }, (_, i) => ({
     id: `s-${i}`, title: `T${i}`, artist: 'A', album: 'B', duration: 100,
   }))
-  const body = JSON.stringify({ 'subsonic-response': { status: 'ok', version: '1.16.1', searchResult3: { song: page } } })
-  const original = globalThis.fetch
-  globalThis.fetch = (async () => new Response(body, {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
-  })) as typeof fetch
-  t.after(() => { globalThis.fetch = original })
-
-  const { songs } = await loadNavidromeSongs(config)
-  assert.equal(songs.length, 100_000, 'the loop terminates at the page cap')
+  let calls = 0
+  const songs = await paginateSearch3(async () => {
+    calls++
+    return page
+  })
+  assert.equal(calls, 2, 'the repeat page is detected on the second fetch')
+  assert.equal(songs.length, 500, 'only the first page is accumulated')
 })
 
-test('loadNavidromeSongs stops early when a page is short (partial tail)', async (t) => {
+test('paginateSearch3 terminates at the page cap for a stream of fresh pages (3.3)', async () => {
+  // A server that always returns a FULL page of distinct ids would never hit a
+  // short tail or a repeat; the cap bounds the work.
+  let calls = 0
+  const songs = await paginateSearch3(async () => {
+    const base = calls * 500
+    calls++
+    return Array.from({ length: 500 }, (_, i) => ({
+      id: `s-${base + i}`, title: `T${base + i}`, artist: 'A', album: 'B', duration: 100,
+    }))
+  })
+  assert.equal(calls, 200, 'the cap is 200 pages')
+  assert.equal(songs.length, 100_000, '200 × 500 = 100k songs')
+})
+
+test('paginateSearch3 stops early when a page is short (partial tail)', async () => {
   const page = Array.from({ length: 120 }, (_, i) => ({
     id: `t-${i}`, title: `T${i}`, artist: 'A', album: 'B', duration: 100,
   }))
-  const body = JSON.stringify({ 'subsonic-response': { status: 'ok', version: '1.16.1', searchResult3: { song: page } } })
-  const original = globalThis.fetch
-  globalThis.fetch = (async () => new Response(body, {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
-  })) as typeof fetch
-  t.after(() => { globalThis.fetch = original })
-
-  const { songs } = await loadNavidromeSongs(config)
+  const songs = await paginateSearch3(async () => page)
   assert.equal(songs.length, 120, 'a page shorter than PAGE_SIZE ends the loop')
 })

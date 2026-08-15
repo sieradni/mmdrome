@@ -6,7 +6,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { cachedLibraryUsable } from '../src/lib/syncCachePolicy'
+import { cachedLibraryUsable, shouldSeedFeedback } from '../src/lib/syncCachePolicy'
 import type { SongLibraryCache } from '../src/lib/db'
 
 function cache(over: Partial<SongLibraryCache> = {}): SongLibraryCache {
@@ -42,4 +42,18 @@ test('fresh path accepts any cache when the server exposes no timestamp', () => 
 test('offline/fallback path ignores freshness and forceRefresh', () => {
   assert.equal(cachedLibraryUsable(cache({ lastScan: 'old' }), 'https://srv|user', { forceRefresh: true }), true, 'offline serves any snapshot despite forceRefresh')
   assert.equal(cachedLibraryUsable(cache(), 'https://srv|user'), true, 'plain usable')
+})
+
+// TODO 3.2 — a cached connect must never re-seed feedback: its server values
+// are stale, and in navidrome mode the server always wins over local synced
+// edits (which commit straight to the server, never pending_sync).
+test('feedback seeding: cached connect never seeds (both rating sources)', () => {
+  assert.equal(shouldSeedFeedback({ cached: true }), false, 'cached skip is source-independent')
+  assert.equal(shouldSeedFeedback({ cached: true, error: 'offline' }), false, 'offline fallback also skips')
+})
+
+test('feedback seeding: live connect seeds', () => {
+  assert.equal(shouldSeedFeedback({ loaded: 10, failed: 0 }), true, 'fresh load seeds')
+  assert.equal(shouldSeedFeedback({ cached: false }), true, 'explicit non-cached seeds')
+  assert.equal(shouldSeedFeedback({}), true, 'missing cached flag seeds')
 })
