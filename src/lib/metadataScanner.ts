@@ -74,6 +74,17 @@ function currentIndexKey(): string {
   return webdavBaseKey(webdavUrl, webdavUser)
 }
 
+/**
+ * The live in-memory PROPFIND index (with content-probe tags applied), for
+ * callers that need full-fidelity matching after a fresh `refreshIndex()`. The
+ * Dexie-persisted snapshot is SLIMMED (tags dropped, TODO 3.6a) — the debug
+ * track view must not match against it, or tag-only matches lose their
+ * evidence. Read-only consumers only: the returned array is the live one.
+ */
+export function getCurrentIndex(): WebdavFileEntry[] {
+  return index
+}
+
 export function setWebdavCredentials(url: string, user: string, token: string): void {
   // Normalize through the SAME derivation currentIndexKey() uses (TODO 3.5):
   // trim-only, so a whitespace-only edit never clears the index/tag cache

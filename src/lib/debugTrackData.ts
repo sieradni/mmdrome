@@ -3,9 +3,8 @@ import { library, metadataCache, settings } from '../stores/appState'
 import type { Track } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
 import { getNavidromeSong, type NavidromeConfig, type NavidromeSong } from './navidromeApi'
-import { refreshIndex } from './metadataScanner'
+import { refreshIndex, getCurrentIndex } from './metadataScanner'
 import { matchTrackToWebdav, readMetadataChunk, extractRawTagProperties } from './metadataReader'
-import { getWebdavFileIndex } from './db'
 
 export interface DebugTrackData {
   track: Track
@@ -61,8 +60,10 @@ export async function debugFetchTrackData(trackId: string): Promise<DebugTrackDa
   if (webdavUrl && webdavUser && webdavToken) {
     try {
       const refreshed = await refreshIndex()
-      const index = refreshed ? await getWebdavFileIndex() : undefined
-      const entries = index?.entries ?? []
+      // Match against the LIVE in-memory index, not the persisted snapshot:
+      // the snapshot is slimmed (content-probe tags dropped, TODO 3.6a), so
+      // tag-only matches would otherwise lose their evidence here.
+      const entries = refreshed ? getCurrentIndex() : []
 
       const match = matchTrackToWebdav(track, entries)
       if (match.entry && !match.ambiguous) {
