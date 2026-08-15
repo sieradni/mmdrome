@@ -15,6 +15,7 @@ import {
   autoQueueScope,
   autoQueueFilters,
   decodeAutoQueueFilters,
+  ratingBound,
 } from '../src/stores/appState'
 
 const rows = new Map<string, unknown>()
@@ -60,6 +61,14 @@ test('legacy JSON-string row migrates into the fields store on initStores', asyn
   assert.equal(f.maxLength, 300)
   assert.equal(f.searchQuery, 'foo')
   assert.ok(!('albumScope' in f), 'scopes are absent from the fields type')
+})
+
+test('rating input clear snaps to the field boundary, not 0', () => {
+  assert.equal(ratingBound('', 0), 0, 'cleared minRating keeps its 0 boundary')
+  assert.equal(ratingBound('', 100), 100, 'cleared maxRating snaps to 100 instead of 0')
+  assert.equal(ratingBound('0', 100), 0, 'a typed 0 maxRating is preserved (the only-unrated filter)')
+  assert.equal(ratingBound('75', 100), 75)
+  assert.equal(ratingBound('40', 0), 40)
 })
 
 test('decodeAutoQueueFilters falls back to defaults on corrupt or wrong-typed rows', () => {

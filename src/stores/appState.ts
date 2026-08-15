@@ -173,6 +173,16 @@ function normNumber(v: unknown): number | '' {
 }
 
 /**
+ * Coerces a rating filter number-input value (QueueView). A cleared field
+ * (`''`) snaps to its boundary — min 0 / max 100 — instead of 0: snapping a
+ * cleared maxRating to 0 would make the filter reject every rated track. A
+ * typed `0` is preserved (the only-unrated filter).
+ */
+export function ratingBound(v: string, fallback: number): number {
+  return v === '' ? fallback : Number(v)
+}
+
+/**
  * Coerces a saved `autoQueueFilters` row into the fields shape. Older app
  * versions stored a JSON string under the key; the persisted store now holds
  * the object itself. Returns `undefined` (keep initial) on corrupt input.
