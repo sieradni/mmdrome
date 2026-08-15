@@ -66,6 +66,13 @@ test('decodeAutoQueueFilters falls back to defaults on corrupt or wrong-typed ro
   assert.equal(decodeAutoQueueFilters('not json{'), undefined, 'corrupt string keeps initial')
   assert.equal(decodeAutoQueueFilters(42), undefined, 'wrong-typed row keeps initial')
   assert.equal(decodeAutoQueueFilters(undefined), undefined)
+  // null is typeof 'object' — must not crash on `p.minRating` (regression: it
+  // threw a TypeError that rejected initStores on a null row). The cast
+  // expresses a corrupt row Dexie could hand us at runtime despite the type.
+  assert.equal(decodeAutoQueueFilters(null as never), undefined, 'null row keeps initial')
+  assert.equal(decodeAutoQueueFilters('null'), undefined, 'JSON literal null keeps initial')
+  assert.equal(decodeAutoQueueFilters('"a string"'), undefined, 'parsed primitive keeps initial')
+  assert.equal(decodeAutoQueueFilters('[1, 2]'), undefined, 'parsed array keeps initial')
   const merged = decodeAutoQueueFilters({ minRating: 40, genre: 'Jazz' })
   assert.equal(merged?.minRating, 40)
   assert.equal(merged?.maxRating, 100, 'missing fields merge over the defaults')
@@ -87,8 +94,12 @@ test('scopes never persist: setting a scope writes no scope keys into the Dexie 
   assert.equal(get(autoQueueFilters).albumScope, 'The Album')
 })
 
-test('scope set without a filter write persists nothing (no write, no row)', () => {
-  const before = rows.has('autoQueueFilters')
+test('scope set without a filter write persists nothing (row untouched)', () => {
+  const before = JSON.stringify(rows.get('autoQueueFilters'))
   autoQueueScope.set({ artistScope: 'Some Artist' })
-  assert.equal(rows.has('autoQueueFilters'), before, 'a scope-only change must not create/persist the row')
+  assert.equal(
+    JSON.stringify(rows.get('autoQueueFilters')),
+    before,
+    'a scope-only change must not create, mutate, or persist the row',
+  )
 })

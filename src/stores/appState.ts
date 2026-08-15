@@ -188,8 +188,12 @@ export function decodeAutoQueueFilters(raw: PersistedValue | undefined): AutoQue
       return undefined
     }
   } else {
-    p = raw as Partial<AutoQueueFilterFields>
+    p = raw as Partial<AutoQueueFilterFields> | null
   }
+  // `null` is typeof 'object' and JSON.parse can return null/arrays/primitives
+  // from a corrupt row — any of those must fall back to the initial, not crash
+  // (`p.minRating` on null) or spread junk keys (a string/array).
+  if (p === null || typeof p !== 'object' || Array.isArray(p)) return undefined
   return {
     ...AUTO_QUEUE_FILTER_DEFAULTS,
     ...p,
