@@ -1,6 +1,7 @@
 import Foundation
 import MediaPlayer
 import UIKit
+import BackgroundAudioCore
 
 /// Native lock-screen / control-center integration:
 /// - Publishes now playing metadata (title, artist, album, artwork, position) to
