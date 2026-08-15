@@ -511,15 +511,23 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       reconnect serves "(from cache)" and does NOT re-paginate search3).
       `src/lib/navidromeLoadPlan.ts` `planNavidromeLoad`,
       `src/lib/syncEngine.ts` `loadLibraryFromNavidrome` — MED
-- [ ] **3.5** Normalize `webdavBase` keys — rows are stamped with the TRIMMED
-      key, but Push compares the raw `getSetting("webdavUrl")` build → a
-      trailing slash/whitespace flags the whole library "Server URL updated"
-      (only masked by `commitCredentials` trimming first; pre-trim persisted
-      rows never re-stamp). Derive both sides from one normalized URL (trim in
-      `runManualWebDAVSync` as the cheap fix). **Test**: key derivation ×
-      trailing-slash/whitespace/case variants (property: stamp-key and push-key
-      always equal for the same URL). `src/lib/metadataScanner.ts`
-      `currentIndexKey`, `src/lib/syncEngine.ts` `runManualWebDAVSync` — MED
+- [x] **3.5** Normalize `webdavBase` keys — closed 2026-08-14: rows were
+      stamped with the TRIMMED key but Push compared a raw
+      `getSetting("webdavUrl")` build, so stray whitespace flagged the whole
+      library "Server URL updated" (only masked by `commitCredentials`
+      trimming first; pre-trim persisted rows never re-stamp). Fix: ONE pure
+      `webdavBaseKey(url, user)` in `webdavUtils.ts` (trim url + trim user;
+      trailing slash AND case preserved deliberately — the stamp predates the
+      fix and kept the trailing slash, so normalizing it away would flag every
+      existing row `wrongServer`) now feeds BOTH
+      `metadataScanner.currentIndexKey` (the stamp) and
+      `runManualWebDAVSync`'s current-server check; `setWebdavCredentials`'
+      change-detection normalizes through the same key. **Test**:
+      `tests/webdavBaseKey.test.ts` (trim, trailing-slash-preserved, case
+      preserved, pure/deterministic, `normalizeUrl` interior-path check).
+      `src/lib/webdavUtils.ts` `webdavBaseKey`,
+      `src/lib/metadataScanner.ts` `currentIndexKey`,
+      `src/lib/syncEngine.ts` `runManualWebDAVSync` — MED
 - [ ] **3.6** Index/probe hygiene — (a) `refreshIndex`/`rebuildIndex` persist
       the full TAGGED index to Dexie on every probe (the prior-fingerprint diff
       depends on it — slim the persisted shape, don't stop persisting);

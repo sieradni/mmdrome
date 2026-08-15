@@ -16,6 +16,7 @@ import {
   verifyEntryAgainstTrack,
 } from "./metadataReader"
 import { filenameHintsTitle, normalizeForHint } from "./matchNormalize"
+import { webdavBaseKey } from "./webdavUtils"
 import type { FileMetadata } from "./metadataReader"
 import type { WebdavFileEntry } from "./db"
 
@@ -66,23 +67,27 @@ function annotationFor(s: ScanShape): string {
 }
 
 function currentIndexKey(): string {
-  return `${webdavUrl}|${webdavUser}`
+  // The shared derivation (webdavUtils.webdavBaseKey) — Push's current-server
+  // check uses the same function, so the stamp and the check can never drift
+  // (TODO 3.5).
+  return webdavBaseKey(webdavUrl, webdavUser)
 }
 
 export function setWebdavCredentials(url: string, user: string, token: string): void {
-  // Trim the URL/user so the baseKey and every derived URL stay stable even if
-  // legacy persisted settings carry stray whitespace (the Settings form writes
-  // through on every keystroke, but old rows may not have been normalized).
+  // Normalize through the SAME derivation currentIndexKey() uses (TODO 3.5):
+  // trim-only, so a whitespace-only edit never clears the index/tag cache
+  // (legacy persisted settings may carry stray whitespace).
   const davUrl = url.trim()
   const davUser = user.trim()
-  if (`${davUrl}|${davUser}` !== indexBaseKey) {
+  const davKey = webdavBaseKey(url, user)
+  if (davKey !== indexBaseKey) {
     // The index (in-memory or cached) belongs to a different server/user —
     // never reuse it against the new credentials.
     index = []
     indexBuilt = false
     indexBaseKey = ""
   }
-  if (`${davUrl}|${davUser}` !== tagCacheBaseKey) {
+  if (davKey !== tagCacheBaseKey) {
     tagCache = new Map()
     tagCacheLoaded = false
     tagCacheBaseKey = ""

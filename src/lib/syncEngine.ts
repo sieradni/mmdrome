@@ -1,5 +1,5 @@
 import { get } from "svelte/store"
-import { webdavFetch, authHeaders, buildWebdavUrl } from "./webdavUtils"
+import { webdavFetch, authHeaders, buildWebdavUrl, webdavBaseKey } from "./webdavUtils"
 import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache, saveSongLibraryCache } from "$lib/db"
 import { modifyMetadataBuffer } from "$lib/tagWriter"
 import { metadataCache, settings, library, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
@@ -306,7 +306,10 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   const pending = await getPendingSyncMetadata()
   if (pending.length === 0) return { synced: 0, failed: 0, skipped: 0, wrongServer: 0 }
 
-  const currentBaseKey = `${webdavUrl}|${webdavUser}`
+  // Same derivation as the scan's stamp (webdavUtils.webdavBaseKey) — a raw
+  // template here used to diverge on stray whitespace and flag every row
+  // "Server URL updated" (TODO 3.5).
+  const currentBaseKey = webdavBaseKey(webdavUrl, webdavUser)
   // The cache row's fileType can be stale (coerced to 'mp3' by older mappers);
   // the library Track is authoritative for the tag-write format branch.
   const libTracks = new Map(get(library).map((t) => [t.trackId, t]))

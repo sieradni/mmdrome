@@ -107,6 +107,19 @@ export function normalizeUrl(base: string): string {
   return base.trim().replace(/\/+$/, "")
 }
 
+/**
+ * Server identity key for metadata stamping (TODO 3.5): the ONE derivation
+ * used by both the scan's `webdavBase` stamp and Push's current-server check,
+ * so stray whitespace can never make the two sides diverge and flag the whole
+ * library "Server URL updated". TRIM-ONLY by design: the trailing slash is
+ * preserved to match how existing rows were stamped (the Settings placeholder
+ * is a trailing-slash URL), and case is preserved because URL paths can be
+ * case-sensitive — either change would invalidate already-stamped rows.
+ */
+export function webdavBaseKey(url: string, user: string): string {
+  return `${url.trim()}|${user.trim()}`
+}
+
 export function buildWebdavUrl(baseUrl: string, filePath: string): string {
   const encodedPath = filePath.split("/").map((s) => encodeURIComponent(s)).join("/")
   return `${normalizeUrl(baseUrl)}/${encodedPath.replace(/^\/+/, "")}`
