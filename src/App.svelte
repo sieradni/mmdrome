@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { Capacitor, SystemBars, SystemBarType, SystemBarsStyle } from '@capacitor/core'
-  import { currentTrack, queue, playbackState, initStores, settings, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, effectiveDuration, toggleShuffle, loopMode, sleepTimer, updateSetting } from './stores/appState'
+  import { currentTrack, queue, playbackState, initStores, settings, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, effectiveDuration, toggleShuffle, loopMode, sleepTimer } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
   import { sleepTimerManager } from './lib/sleepTimer'
   import { loadLibraryFromNavidrome } from './lib/syncEngine'
@@ -135,7 +135,6 @@
 
   function updateVolumePopover() {
     engine.setMasterVolume(volValue)
-    updateSetting('masterGain', volValue)
   }
 
   $effect(() => {

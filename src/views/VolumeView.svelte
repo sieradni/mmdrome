@@ -1,6 +1,5 @@
 <script lang="ts">
   import { engine } from '../lib/engineFacade'
-  import { updateSetting } from '../stores/appState'
 
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
@@ -8,7 +7,6 @@
 
   function updateVolume() {
     engine.setMasterVolume(volume)
-    updateSetting('masterGain', volume)
   }
 </script>
 

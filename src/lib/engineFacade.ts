@@ -3,7 +3,7 @@ import { get } from 'svelte/store'
 import { audioManager } from './audioManager'
 import { BackgroundAudio, type NativeFilterSnapshot } from './nativePlugin'
 import { eqBypassed, currentEqState } from './eq/eqStore'
-import { playbackSpeed, pitchOctaves, tapeMode, snapTolerance } from '../stores/appState'
+import { playbackSpeed, pitchOctaves, tapeMode, snapTolerance, masterGain } from '../stores/appState'
 import { snapPitchToSemitone } from './playbackCore/pitchSnap'
 import type { EqFilterConfig, EqPoint } from './eq/eqTypes'
 
@@ -106,6 +106,9 @@ class EngineFacade {
   }
 
   setMasterVolume(volume: number): void {
+    // The store mirrors the applied volume so it persists and restores (the
+    // store is the single source of truth; the engine push stays here).
+    masterGain.set(volume)
     if (this.isNative) {
       this._volume = volume
       BackgroundAudio.setMasterVolume({ volume }).catch(() => {})

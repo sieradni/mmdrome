@@ -31,6 +31,7 @@ import {
   pitchOctaves,
   tapeMode,
   snapTolerance,
+  masterGain,
   currentTime,
   loopMode,
   metadataScanState,
@@ -39,7 +40,7 @@ import {
   setActiveQueueIndex,
   autoQueueFilters,
 } from '../stores/appState'
-import { getSetting, setSetting, saveQueue } from './db'
+import { saveQueue } from './db'
 import { currentEqState, eqBypassed } from './eq/eqStore'
 import type { Track } from '../stores/appState'
 
@@ -53,10 +54,13 @@ export class PlaybackManager {
   /** Test override for Capacitor.isNativePlatform — the glue suite runs under Node. */
   private _isNative: (() => boolean) | null = null
   private _refreshPositionState: () => void = () => {}
-  /** The track an in-flight bg load request resolved to â€” the machine's
+  /** The track an in-flight bg load request resolved to — the machine's
    *  'reload' decision loads this (an exit-race re-routes it to the fg path). */
   private _pendingBgTrack: Track | null = null
   private _lastSortKey = ''
+  /** Subscription teardown handles collected from `_subscribeShared` and the
+   *  native-only `loopMode` wiring, released by `destroy()`. */
+  private _unsubscribers: Array<() => void> = []
   private _amOverride: typeof audioManager | null = null
   private _qmOverride: typeof queueManager | null = null
   private _stmOverride: typeof sleepTimerManager | null = null
@@ -149,7 +153,7 @@ export class PlaybackManager {
     // `undefined` in the production bundle). The web minutes-countdown expiry
     // pauses through this callback instead.
     this._stm.setExpireHandler(() => this.pause())
-    this._subscribeShared()
+    this._unsubscribers.push(...this._subscribeShared())
     this._initialized = true
   }
 
@@ -215,12 +219,9 @@ export class PlaybackManager {
     this._am.onTapeModeChange = (enabled: boolean) => tapeMode.set(enabled)
     this._am.onSnapToleranceChange = (tolerance: number) => snapTolerance.set(tolerance)
 
-    const savedSpeed = await getSetting<number>('playbackSpeed')
-    const savedPitch = await getSetting<number>('pitchOctaves')
-    const savedGain = await getSetting<number>('masterGain')
-    const savedTape = await getSetting<boolean>('tapeMode')
-    const savedSnap = await getSetting<number>('snapTolerance')
-    this._restoreWebPlaybackParams({ speed: savedSpeed, pitch: savedPitch, gain: savedGain, tape: savedTape, snap: savedSnap })
+    // The persisted stores were already restored by initStores; push them to
+    // the engine in the required order (snap tolerance before pitch).
+    this._applyPlaybackParams()
 
     this._refreshPositionState = setupMediaSession(
       () => { this.play() },
@@ -241,18 +242,6 @@ export class PlaybackManager {
     ).refreshPositionState
 
     setupPreloader(() => transport.playbackElement, (trackId) => this._resolveUrl(trackId))
-
-    settings.subscribe((s) => {
-      this._am.crossfadeDuration = s.crossfadeDuration ?? 0
-      const track = get(currentTrack)
-      if (this._initialized && track && s.replayGainMode) {
-        this._am.setReplayGainMode(s.replayGainMode)
-        this._am.applyReplayGain(track.replayGain, track.albumReplayGain)
-      }
-      if (s.masterGain !== undefined && this._am.preamp) {
-        this._am.setMasterVolume(s.masterGain)
-      }
-    })
   }
 
   private async _initNative(): Promise<void> {
@@ -270,148 +259,129 @@ export class PlaybackManager {
     // 1.5 — recover a track the engine kept playing across a webview reload.
     await this._reconcileNativeReload()
 
-    const savedSpeed = await getSetting<number>('playbackSpeed')
-    const savedPitch = await getSetting<number>('pitchOctaves')
-    const savedGain = await getSetting<number>('masterGain')
-    const savedTape = await getSetting<boolean>('tapeMode')
-    const savedSnap = await getSetting<number>('snapTolerance')
     const s = get(settings)
-    this._restoreNativePlaybackParams({ speed: savedSpeed, pitch: savedPitch, gain: savedGain, tape: savedTape, snap: savedSnap })
+    // The persisted stores were already restored by initStores; push them to
+    // the engine in the required order (snap tolerance before pitch).
+    this._applyPlaybackParams()
     this._engine.setCrossfade(s.crossfadeDuration ?? 0)
     this._engine.pushNativeEqFromStore()
 
     BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode ?? 'off' }).catch(() => {})
     transport.setLoopMode(get(loopMode)).catch(() => {})
 
-    loopMode.subscribe((m) => {
+    this._unsubscribers.push(loopMode.subscribe((m) => {
       transport.setLoopMode(m).catch(() => {})
-    })
+    }))
+  }
 
-    settings.subscribe((sv) => {
-      this._engine.setCrossfade(sv.crossfadeDuration ?? 0)
-      if (sv.replayGainMode) {
-        BackgroundAudio.setReplayGainMode({ mode: sv.replayGainMode }).catch(() => {})
+  /**
+   * Pushes the restored playback params to the engine, shared by web and native
+   * (the facade delegates to the audioManager on web and the plugin on native).
+   * The persisted stores were already restored by `initStores`, so this reads
+   * `get(store)` — never a re-read of Dexie — and applies them.
+   *
+   * Order matters: snap tolerance BEFORE pitch, because `setPitchOctaves`
+   * quantizes the raw value against the current tolerance — pitch-first would
+   * re-snap a saved off-grid pitch against the 0.15 default.
+   */
+  private _applyPlaybackParams(): void {
+    this._engine.setSnapTolerance(get(snapTolerance))
+    this._engine.setPitchOctaves(get(pitchOctaves))
+    this._engine.setSpeed(get(playbackSpeed))
+    this._engine.setTapeMode(get(tapeMode))
+    this._engine.setMasterVolume(get(masterGain))
+  }
+
+  private _subscribeShared(): Array<() => void> {
+    const unsubs: Array<() => void> = []
+
+    // Settings that still drive engine effects (crossfade / replay-gain). The
+    // pitch/speed/volume params are `persisted` stores applied by
+    // `_applyPlaybackParams`, so their persistence + engine echo no longer live
+    // here. The `_initialized` guard skips the immediate fire for the
+    // track-scoped replay-gain apply (no track is loaded yet at subscribe time).
+    unsubs.push(settings.subscribe((s) => {
+      this._engine.setCrossfade(s.crossfadeDuration ?? 0)
+      if (this.isNative()) {
+        if (s.replayGainMode) {
+          BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode }).catch(() => {})
+        }
+      } else {
+        const track = get(currentTrack)
+        if (this._initialized && track && s.replayGainMode) {
+          this._am.setReplayGainMode(s.replayGainMode)
+          this._am.applyReplayGain(track.replayGain, track.albumReplayGain)
+        }
       }
-      if (sv.masterGain !== undefined) this._engine.setMasterVolume(sv.masterGain)
-    })
-  }
+    }))
 
-  /**
-   * Applies the persisted playback params on web. Snap tolerance is restored
-   * BEFORE pitch because `setPitchOctaves` quantizes the raw value against the
-   * current tolerance — pitch-first would re-snap a saved off-grid pitch
-   * against the 0.15 default. Speed/pitch skip their engine defaults (1×/0 oct)
-   * so the apply is a no-op for first-run (unset) values.
-   */
-  private _restoreWebPlaybackParams(s: {
-    speed?: number
-    pitch?: number
-    gain?: number
-    tape?: boolean
-    snap?: number
-  }): void {
-    if (s.speed !== undefined && s.speed !== 1) this._am.setSpeed(s.speed)
-    if (s.snap !== undefined) this._am.setSnapTolerance(s.snap)
-    if (s.pitch !== undefined && s.pitch !== 0) this._am.setPitchOctaves(s.pitch)
-    if (s.gain !== undefined && this._am.preamp) this._am.setMasterVolume(s.gain)
-    if (s.tape !== undefined) this._am.setTapeMode(s.tape)
-  }
-
-  /**
-   * Native twin of `_restoreWebPlaybackParams` (same snap-before-pitch order)
-   * plus the store sync that runs before `_subscribeShared`. Reads the facade's
-   * effective (already-snapped) pitch back rather than the raw saved value so
-   * the store never transiently holds an off-grid value.
-   */
-  private _restoreNativePlaybackParams(s: {
-    speed?: number
-    pitch?: number
-    gain?: number
-    tape?: boolean
-    snap?: number
-  }): void {
-    if (s.speed !== undefined) this._engine.setSpeed(s.speed)
-    if (s.snap !== undefined) this._engine.setSnapTolerance(s.snap)
-    if (s.pitch !== undefined) this._engine.setPitchOctaves(s.pitch)
-    if (s.gain !== undefined) this._engine.setMasterVolume(s.gain)
-    if (s.tape !== undefined) this._engine.setTapeMode(s.tape)
-
-    playbackSpeed.set(s.speed ?? 1)
-    pitchOctaves.set(s.pitch === undefined ? 0 : this._engine.pitchOctaves)
-    tapeMode.set(s.tape ?? false)
-    snapTolerance.set(s.snap ?? 0.15)
-  }
-
-  private _subscribeShared(): void {
-    playbackSpeed.subscribe((v) => {
-      setSetting('playbackSpeed', v)
-      this._engine.setSpeed(v)
-      // The bg element's rate is owned by the transport (applied at swap/load).
+    // The bg element's playback rate is owned by the transport (applied at
+    // swap/load), so this is the one store→engine edge left for speed.
+    unsubs.push(playbackSpeed.subscribe((v) => {
       this._bgTransport?.setSpeed(v)
-    })
-    pitchOctaves.subscribe((v) => { setSetting('pitchOctaves', v); this._engine.setPitchOctaves(v) })
-    tapeMode.subscribe((v) => { setSetting('tapeMode', v); this._engine.setTapeMode(v) })
-    snapTolerance.subscribe((v) => { setSetting('snapTolerance', v); this._engine.setSnapTolerance(v) })
+    }))
 
     this._qm.replenishAutoQueue()
 
-    library.subscribe(() => {
+    unsubs.push(library.subscribe(() => {
       if (this._initialized) {
-        // Replenish (never rebuild) on library changes: the queued auto head â€”
-        // including any armed crossfade target â€” stays in place while the fill
+        // Replenish (never rebuild) on library changes: the queued auto head —
+        // including any armed crossfade target — stays in place while the fill
         // re-ranks by current metadata. A rebuild could drop an armed track,
         // and the crossfade-end handler would then rescue it back into the
-        // user queue mid-play. The queueâ†’native microtask sync covers the
+        // user queue mid-play. The queue→native microtask sync covers the
         // native tail, so no explicit refresh here.
         this._qm.replenishAutoQueue()
       }
-    })
+    }))
 
-    // A completed metadata scan refreshed rating/loved â€” re-rank the auto
+    // A completed metadata scan refreshed rating/loved — re-rank the auto
     // queue fill so it follows the Songs-view sort. Replenish (not rebuild)
     // keeps the currently queued head untouched, so nothing armed is dropped
     // and the user queue is never mutated by the crossfade rescue path.
-    metadataScanState.subscribe((st) => {
+    unsubs.push(metadataScanState.subscribe((st) => {
       if (!this._initialized) return
       if (st.status !== 'complete') return
       const f = get(libraryFilters)
       if (get(shuffleEnabled)) return
       if (f.sortBy !== 'rating' && f.sortBy !== 'loved') return
       this._qm.replenishAutoQueue()
-    })
+    }))
 
-    shuffleEnabled.subscribe(() => {
+    unsubs.push(shuffleEnabled.subscribe(() => {
       if (this._initialized) {
         this._qm.rebuildAutoQueue()
       }
-    })
+    }))
 
-    autoQueueFilters.subscribe(() => {
+    unsubs.push(autoQueueFilters.subscribe(() => {
       if (this._initialized) {
         this._qm.replenishAutoQueue()
       }
-    })
+    }))
 
     // Rebuild the auto queue when the shared sort changes so it follows the
     // Songs-view ordering while shuffle is off. Only sortBy/sortAsc matter here
     // (the rank map in queueManager ignores the filter ranges), so skip no-op
     // subscription fires and opening/closing the filter panel.
     this._lastSortKey = `${get(libraryFilters).sortBy}|${get(libraryFilters).sortAsc}`
-    libraryFilters.subscribe((f) => {
+    unsubs.push(libraryFilters.subscribe((f) => {
       if (!this._initialized) return
       if (get(shuffleEnabled)) return
       const key = `${f.sortBy}|${String(f.sortAsc)}`
       if (key === this._lastSortKey) return
       this._lastSortKey = key
       this._qm.rebuildAutoQueue()
-    })
+    }))
 
     // Keep the native engine's queue snapshot in step with ANY queue mutation
     // (user edits add/remove/reorder/clear, plus promotions/replenishments).
     // The transport's scheduleSync coalesces same-task bursts into one refresh.
-    queue.subscribe(() => {
+    unsubs.push(queue.subscribe(() => {
       this._scheduleNativeQueueSync()
-    })
+    }))
+
+    return unsubs
   }
 
   private _resolveUrl(trackId: string): string {
@@ -526,7 +496,7 @@ export class PlaybackManager {
     }
 
     if (idx < 0) {
-      // The playing track left the combined queue (dropped auto prefix, etc.) â€” re-adopt it.
+      // The playing track left the combined queue (dropped auto prefix, etc.) — re-adopt it.
       const prevIdx = get(queue).activeIndex
       const prevId = prevIdx >= 0 ? combined[prevIdx] : undefined
       queue.update((q) => {
@@ -655,10 +625,7 @@ export class PlaybackManager {
       this._am.setEqBypass(true)
     }
 
-    const s = get(settings)
-    if (s.masterGain !== undefined && this._am.preamp) {
-      this._am.setMasterVolume(s.masterGain)
-    }
+    this._am.setMasterVolume(get(masterGain))
 
     const el = this._am.activeElement
     currentTime.set(0)
@@ -689,7 +656,7 @@ export class PlaybackManager {
     // track's gain fields; setReplayGainMode re-applies them under the mode.
     this._am.setReplayGainMode(get(settings).replayGainMode ?? 'off')
 
-    // Track is now playing â€” promote it from auto to user queue
+    // Track is now playing — promote it from auto to user queue
     this._qm.promoteActiveTrack()
     this._qm.replenishAutoQueue()
 
@@ -703,7 +670,7 @@ export class PlaybackManager {
 
   private async _setupNextTrack(): Promise<void> {
     // While an end-of-track sleep is armed, no next track is prepared and no
-    // crossfade armed â€” the current track must end naturally and park.
+    // crossfade armed — the current track must end naturally and park.
     if (this._stm.isEndOfTrackArmed()) {
       this._webTransport!.cancelNext()
       return
@@ -719,7 +686,7 @@ export class PlaybackManager {
         const rg = computeReplayGainFields(get(settings).replayGainMode ?? 'off', nextTrack)
         this._webTransport!.prepareNext(combined[nextIdx], url, rg)
       } else {
-        // No URL for the next row â€” disarm (a stale arm could crossfade into
+        // No URL for the next row — disarm (a stale arm could crossfade into
         // an old target at the transition point).
         this._webTransport!.prepareNext(null, null)
       }
@@ -732,9 +699,9 @@ export class PlaybackManager {
    * End-of-track sleep park guard (web parity with the native engine's
    * `handleSegmentCompletion` sleep check). When the sleep is armed, the advance
    * decision is consumed here instead of proceeding: the element is paused just
-   * below its end (never ended) so any later play â€” in-app or the bg lock
-   * screen â€” plays the last ~0.05s and the re-fired `ended` drives the natural
-   * advance. Runs at the exact moment an advance is decided â€” no polling cadence
+   * below its end (never ended) so any later play — in-app or the bg lock
+   * screen — plays the last ~0.05s and the re-fired `ended` drives the natural
+   * advance. Runs at the exact moment an advance is decided — no polling cadence
    * or race margin.
    */
   private _parkAtTrackEnd(): boolean {
@@ -780,13 +747,13 @@ export class PlaybackManager {
   ): Promise<void> {
     if (this._handlingEnd) return
     // Park beats loop-one/loop-all by guard order; error-driven advances skip
-    // the park (a dead stream can't play out its end â€” advancing is correct).
+    // the park (a dead stream can't play out its end — advancing is correct).
     // User-initiated removal (2.7) also skips it: the user's skip supersedes
     // the end-of-track sleep park, matching the native engine's divergence
     // stop, which cancels its own sleep timer.
     if (!fromError && !opts.skipPark && this._parkAtTrackEnd()) return
 
-    // ONE decideAdvance for the whole chain (A4) â€” the queue facts are computed
+    // ONE decideAdvance for the whole chain (A4) — the queue facts are computed
     // BEFORE any mutation. park is unreachable here (handled above).
     const decision = decideAdvance({
       fromError,
@@ -841,7 +808,7 @@ export class PlaybackManager {
           this._stopPlayback()
           return
         case 'park':
-          return // unreachable â€” consumed by _parkAtTrackEnd above
+          return // unreachable — consumed by _parkAtTrackEnd above
       }
     } finally {
       this._handlingEnd = false
@@ -861,7 +828,7 @@ export class PlaybackManager {
   }
 
   /** Resolves the machine's load decision against the real queue. Mutations
-   *  (advance/wrap) run HERE, after the machine decided â€” the events carried
+   *  (advance/wrap) run HERE, after the machine decided — the events carried
    *  the pre-mutation facts. */
   private _resolveBgLoad(decision: LoadDecision): Track | null {
     switch (decision) {
@@ -888,10 +855,10 @@ export class PlaybackManager {
     const track = this._resolveBgLoad(decision)
     if (!track) {
       if (target === 'fg') {
-        // The exit-ended chain resolved to nothing (queue shrank) â€” stop.
+        // The exit-ended chain resolved to nothing (queue shrank) — stop.
         this._stopPlayback()
       } else {
-        // No track to load â€” idle in bg-paused (machine bgFailed analog).
+        // No track to load — idle in bg-paused (machine bgFailed analog).
         this._bgTransport!.abortBgLoad()
       }
       return
@@ -914,7 +881,7 @@ export class PlaybackManager {
     }
 
     // Same guard as _loadAndPlay: an end-of-track sleep that fired mid-transition
-    // must not be undone by the bg load's autoplay â€” and the machine must still
+    // must not be undone by the bg load's autoplay — and the machine must still
     // settle (abort idles it in bg-paused instead of stranding in handoff).
     if (this._stm.consumePendingStop()) {
       this._bgTransport!.abortBgLoad()
@@ -935,7 +902,7 @@ export class PlaybackManager {
     const started = await this._bgTransport!.startBgLoad(url)
     if (!started) {
       // The load was superseded (newer load, park, or an exit that re-routed
-      // the resolution to the fg path) â€” the machine already decided.
+      // the resolution to the fg path) — the machine already decided.
       return
     }
 
@@ -978,7 +945,7 @@ export class PlaybackManager {
       const advanced = this._qm.advanceQueue()
 
       // Reconcile queue state with the track that is actually playing via
-      // crossfade. targetId is null when the arm was cancelled mid-fade â€” no
+      // crossfade. targetId is null when the arm was cancelled mid-fade — no
       // reconcile (parity with the old `_crossfadeTrackId == null` skip).
       const q = get(queue)
       const result = reconcileCrossfadeTarget({
@@ -992,7 +959,7 @@ export class PlaybackManager {
       if (result.kind === 'repoint') {
         setActiveQueueIndex(result.index)
       } else if (result.kind === 'rescue') {
-        // Anchor-CHANGING write â€” deliberately NOT routed through
+        // Anchor-CHANGING write — deliberately NOT routed through
         // `_mutateQueue`'s id re-anchor (B1 scope boundary).
         queue.update((q) => {
           const updated = { ...q, userQueue: result.userQueue, activeIndex: 0 }
@@ -1051,7 +1018,7 @@ export class PlaybackManager {
     const combined = this._qm.getCombinedQueue()
     if (index < 0 || index >= combined.length) return
 
-    // A forward/backward jump makes the current track leave the active slot â€”
+    // A forward/backward jump makes the current track leave the active slot —
     // mark it so it cools down like any other heard track (same-index replays
     // and plain resumes stay unmarked).
     const prevIdx = get(queue).activeIndex
@@ -1087,7 +1054,7 @@ export class PlaybackManager {
       return
     }
 
-    // Lock-screen/app play while bg-engaged (also consumes a bg park â€” the
+    // Lock-screen/app play while bg-engaged (also consumes a bg park — the
     // machine resumes the parked tail). Never touches the fg elements.
     const bg = this._bgTransport
     if (bg?.engaged) {
@@ -1107,7 +1074,7 @@ export class PlaybackManager {
         await el.play()
         setPlaybackState('playing')
       } catch {
-        /* play rejected â€” autoplay policy or no user gesture */
+        /* play rejected — autoplay policy or no user gesture */
       }
     } else {
       await this._playFirstInQueue()
@@ -1121,7 +1088,7 @@ export class PlaybackManager {
       return
     }
     // The engaged-pause filter: while bg-engaged the AUDIBLE element is the bg
-    // element (via the machine) â€” pausing the fg element would silently fail
+    // element (via the machine) — pausing the fg element would silently fail
     // to stop background audio, and a swap-settle fg pause must never write
     // 'paused' while bg audio is playing.
     const bg = this._bgTransport
@@ -1233,7 +1200,7 @@ export class PlaybackManager {
       return
     }
 
-    // First track, loop-mode off â€” restart from the beginning.
+    // First track, loop-mode off — restart from the beginning.
     this.seek(0)
   }
 
@@ -1272,6 +1239,8 @@ export class PlaybackManager {
   }
 
   destroy(): void {
+    for (const unsubscribe of this._unsubscribers) unsubscribe()
+    this._unsubscribers = []
     if (this.isNative()) {
       void this._nativeTransport?.destroy()
       return

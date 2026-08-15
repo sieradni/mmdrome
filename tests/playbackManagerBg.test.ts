@@ -1,7 +1,7 @@
 // Manager-level glue tests for the bg-load wiring (TODO 1.0 step 3 review
 // round). The PlaybackManager's injectable deps (audioManager/queueManager/
 // sleepTimerManager/webTransport/bgTransport) are replaced with fakes so the
-// store-ordering and decision-resolution glue can be exercised in Node â€” no
+// store-ordering and decision-resolution glue can be exercised in Node — no
 // DOM, no Dexie. Pins: the settle-safe _bgLoad store ordering (review finding
 // 2), the machine decision resolution, and the fg/bg routing of _handleBgLoad.
 

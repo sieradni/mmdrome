@@ -1,6 +1,7 @@
 import { writable, get, derived } from 'svelte/store'
 import type { LocalMetadataStore } from '$lib/db'
 import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
+import { persisted } from '$lib/persistedStore'
 import { sanitizeRecent } from '$lib/recentWindow'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
@@ -63,7 +64,6 @@ export interface MetadataScanState {
 export interface SettingsMap {
   preloadTracks?: number
   crossfadeDuration?: number
-  masterGain?: number
   activeEqProfile?: string
   savedEqProfiles?: object
   webdavUrl?: string
@@ -72,11 +72,7 @@ export interface SettingsMap {
   navidromeUrl?: string
   navidromeUser?: string
   navidromePassword?: string
-  tapeMode?: boolean
-  snapTolerance?: number
   replayGainMode?: 'off' | 'track' | 'album'
-  playbackSpeed?: number
-  pitchOctaves?: number
   scrobbling?: boolean
   ratingSource?: 'webdav' | 'navidrome'
   syncToNavidrome?: boolean
@@ -92,18 +88,32 @@ export const library = writable<Track[]>([])
 export const webdavConnection = writable<{ connected: boolean; error?: string; checking: boolean }>({ connected: false, checking: false })
 export const navidromeConnection = writable<{ connected: boolean; error?: string; checking: boolean; serverVersion?: string }>({ connected: false, checking: false })
 export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string; cached?: boolean }>({ loading: false, loaded: 0, failed: 0 })
-export const shuffleEnabled = writable<boolean>(false)
+// Engine-bound scalar settings: store-layer persistence via `persisted`, and
+// the engine push lives in playbackManager (`_applyPlaybackParams` at restore,
+// `_subscribeShared` reactions for the live edges). Restored once in
+// `initStores`; the value is only trusted after `restore()` runs.
+const _playbackSpeed = persisted<number>('playbackSpeed', 1)
+const _pitchOctaves = persisted<number>('pitchOctaves', 0)
+const _tapeMode = persisted<boolean>('tapeMode', false)
+const _snapTolerance = persisted<number>('snapTolerance', 0.15)
+const _masterGain = persisted<number>('masterGain', 1)
+const _shuffleEnabled = persisted<boolean>('shuffleEnabled', false)
+const _loopMode = persisted<LoopMode>('loopMode', 'none')
+
+export const shuffleEnabled = _shuffleEnabled.store
 export const currentTime = writable<number>(0)
-export const playbackSpeed = writable<number>(1)
-export const tapeMode = writable<boolean>(false)
-export const snapTolerance = writable<number>(0.15)
+export const playbackSpeed = _playbackSpeed.store
+export const tapeMode = _tapeMode.store
+export const snapTolerance = _snapTolerance.store
+export const masterGain = _masterGain.store
+export const loopMode = _loopMode.store
 export const effectiveDuration = derived(
   [currentTrack],
   ([$ct]) => {
     return $ct?.duration ?? 0
   }
 )
-export const pitchOctaves = writable<number>(0)
+export const pitchOctaves = _pitchOctaves.store
 export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
 
 export interface AutoQueueFilters {
@@ -150,8 +160,6 @@ export const autoQueueFilters = writable<AutoQueueFilters>({
   maxLength: '',
   searchQuery: '',
 })
-
-export const loopMode = writable<LoopMode>('none')
 
 /** Set when the non-shuffle auto queue wrapped back to the top of the sort order. */
 export const queueWrapNotice = writable<boolean>(false)
@@ -237,18 +245,23 @@ export async function initStores(): Promise<void> {
   }
   metadataCache.set(map)
 
-  // Load and persist shuffle state
-  const savedShuffle = await getSetting<boolean>('shuffleEnabled')
-  if (savedShuffle !== undefined) {
-    shuffleEnabled.set(savedShuffle)
-  }
-  shuffleEnabled.subscribe((v) => { setSetting('shuffleEnabled', v) })
+  // Restore the engine-bound scalar settings (order-independent here — the
+  // playback manager applies them to the engine in snap-before-pitch order).
+  await Promise.all([
+    _playbackSpeed.restore(),
+    _pitchOctaves.restore(),
+    _tapeMode.restore(),
+    _snapTolerance.restore(),
+    _masterGain.restore(),
+    _shuffleEnabled.restore(),
+    _loopMode.restore(),
+  ])
 
   initialized = true
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'masterGain', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'tapeMode', 'snapTolerance', 'replayGainMode', 'playbackSpeed', 'pitchOctaves', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]
