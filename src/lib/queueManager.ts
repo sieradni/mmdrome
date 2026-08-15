@@ -35,15 +35,18 @@ class QueueManager {
     return [...q.userQueue, ...q.autoQueue]
   }
 
-  /** Snapshot of every store the fill plan reads — the thin-glue seam. */
+  /** Snapshot of every store the fill plan reads — the thin-glue seam. The
+   *  combined queue is derived from the SAME snapshot `q`, so `activeId` can
+   *  never disagree with the userQueue/autoQueue the plan is built against. */
   private _planState(): AutoQueuePlanState {
     const q = get(queue)
+    const combined = [...q.userQueue, ...q.autoQueue]
     return {
       library: get(library),
       userQueue: q.userQueue,
       autoQueue: q.autoQueue,
       recentTrackIds: q.recentTrackIds,
-      activeId: this.getCombinedQueue()[q.activeIndex],
+      activeId: combined[q.activeIndex],
       shuffle: get(shuffleEnabled),
       sort: get(libraryFilters),
       filters: get(autoQueueFilters),

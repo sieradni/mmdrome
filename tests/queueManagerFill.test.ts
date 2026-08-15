@@ -125,12 +125,25 @@ test('the no-op guards skip the Dexie write when nothing can change', () => {
   queueManager.replenishAutoQueue()
   assert.equal(playQueueWrites.length, writes, 'an unchanged queue must not re-write')
 
-  // Queue already full of matching tracks → first no-op guard → NO write.
+  // Queue unchanged and nothing addable again (defaults restored) → the
+  // second no-op guard fires again → NO write.
   const writes2 = playQueueWrites.length
   autoQueueFilterFields.set({ ...FIELDS })
   queueManager.replenishAutoQueue()
-  assert.equal(playQueueWrites.length, writes2, 'a full queue must not re-write')
+  assert.equal(playQueueWrites.length, writes2, 'an unchanged queue must not re-write')
   assert.equal(get(queue).autoQueue.length, 1)
+})
+
+test('a queue already full of matching tracks takes the first no-op guard (needed === 0)', () => {
+  reset()
+  library.set(Array.from({ length: 60 }, (_, i) => track(`t${i + 1}`)))
+  setQueue({ autoQueue: Array.from({ length: 50 }, (_, i) => `t${i + 1}`), activeIndex: -1 })
+
+  queueManager.replenishAutoQueue()
+
+  assert.equal(playQueueWrites.length, 0, 'needed === 0 → no write')
+  assert.equal(get(autoQueueEmptyNotice), false, 'a full queue is not an empty-fill')
+  assert.equal(get(queue).autoQueue.length, 50)
 })
 
 test('a sort change rebuilds the whole auto queue in the shared-sort order (B7)', () => {

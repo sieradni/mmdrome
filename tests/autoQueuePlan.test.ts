@@ -225,12 +225,15 @@ test('kept is pruned when filters tighten, and the queue-full early return skips
   assert.deepEqual(tight.kept, ['t2'])
   assert.deepEqual(tight.pool, [])
   assert.equal(tight.wrapNotice, false, 'empty pool never carries a wrap hint')
-  // Queue already full of matching tracks: early return, no pool scan.
-  const full = planAutoQueueFill(state({ library: ts, autoQueue: Array.from({ length: 50 }, (_, i) => `a${i}`), filters: filters({ searchQuery: 'nomatch' }) }), 50, { keepAuto: true })
-  // The queued ids are NOT in the library, so nothing is kept — but a 50-long
-  // queue still short-circuits BEFORE any library work regardless.
-  assert.deepEqual(full.kept, [])
-  assert.deepEqual(full.pool, [])
+  // Queue already full of MATCHING tracks (50 kept of a 60-track library):
+  // the kept.length >= needed early return — no pool scan, no wrap hint.
+  // (The queued ids must exist in the library and match, or kept would be
+  // empty and this would silently test the empty-pool path instead.)
+  const many = lib(Array.from({ length: 60 }, (_, i) => track(`t${i + 1}`)))
+  const full = planAutoQueueFill(state({ library: many, autoQueue: Array.from({ length: 50 }, (_, i) => `t${i + 1}`) }), 50, { keepAuto: true })
+  assert.equal(full.kept.length, 50, 'all 50 queued tracks still match — kept intact')
+  assert.deepEqual(full.pool, [], 'a full queue short-circuits before any pool scan')
+  assert.equal(full.wrapNotice, false)
 })
 
 test('searchQuery is a persisted filter: it constrains the pool like any other field', () => {
