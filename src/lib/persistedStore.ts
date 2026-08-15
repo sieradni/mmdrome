@@ -12,6 +12,13 @@ export interface PersistedStore<T extends PersistedValue> {
   restore: () => Promise<void>
 }
 
+export interface PersistedOptions<T extends PersistedValue> {
+  /** Coerces the raw saved row into the store's shape — the seam for value-
+   *  format evolution (e.g. a key that older app versions stored as a JSON
+   *  string). Returning `undefined` keeps `initial`. */
+  decode?: (raw: PersistedValue | undefined) => T | undefined
+}
+
 /**
  * A writable store backed by a Dexie `userSettings` row. The store is the
  * single source of truth for the value; persistence is a store-layer concern
@@ -23,7 +30,7 @@ export interface PersistedStore<T extends PersistedValue> {
  * and without the `restored` flag that fire would persist the default over a
  * saved value.
  */
-export function persisted<T extends PersistedValue>(key: string, initial: T): PersistedStore<T> {
+export function persisted<T extends PersistedValue>(key: string, initial: T, opts?: PersistedOptions<T>): PersistedStore<T> {
   const store = writable(initial)
   let restored = false
   store.subscribe((v) => {
@@ -40,7 +47,8 @@ export function persisted<T extends PersistedValue>(key: string, initial: T): Pe
     async restore() {
       if (restored) return
       const saved = await getSetting<T>(key)
-      if (saved !== undefined) store.set(saved)
+      const value = opts?.decode ? opts.decode(saved) : saved
+      if (value !== undefined) store.set(value)
       restored = true
     },
   }

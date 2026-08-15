@@ -1,18 +1,21 @@
 import { writable, get } from 'svelte/store'
 import { db, getSetting, setSetting } from '../db'
+import { persisted } from '../persistedStore'
 import { BUILTIN_PRESETS } from './builtInPresets'
 import type { EqPreset } from './eqTypes'
 
 const USER_PRESET_PREFIX = 'eq_user_preset_'
 const ACTIVE_PRESET_KEY = 'active_eq_preset'
 const CURRENT_EQ_STATE_KEY = 'current_eq_state'
-const EQ_BYPASSED_KEY = 'eq_bypassed'
 
 export const activePresetId = writable<string>('flat')
 export const userPresets = writable<EqPreset[]>([])
 export const currentEqState = writable<EqPreset>(BUILTIN_PRESETS[0])
 export const draftState = writable<EqPreset>(BUILTIN_PRESETS[0])
-export const eqBypassed = writable<boolean>(false)
+// Bypass is an engine-bound scalar — store-layer persistence via `persisted`,
+// restored in `initEqStore` (the eq module owns its init).
+const _eqBypassed = persisted<boolean>('eq_bypassed', false)
+export const eqBypassed = _eqBypassed.store
 
 export async function initEqStore(): Promise<void> {
   // Load user presets from IndexedDB
@@ -46,19 +49,11 @@ export async function initEqStore(): Promise<void> {
 
     draftState.set(get(currentEqState))
 
-    // Load bypass state
-    const savedBypass = await getSetting<boolean>(EQ_BYPASSED_KEY)
-    if (savedBypass !== undefined) {
-      eqBypassed.set(savedBypass)
-    }
+    // Bypass is a `persisted` store — restore it (idempotent) before any write.
+    await _eqBypassed.restore()
   } catch (err) {
     console.error('Failed to initialize EQ store:', err)
   }
-}
-
-export async function persistEqBypass(bypassed: boolean): Promise<void> {
-  eqBypassed.set(bypassed)
-  await setSetting(EQ_BYPASSED_KEY, bypassed)
 }
 
 export function getAllPresets(): EqPreset[] {

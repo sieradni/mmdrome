@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { library, metadataCache, autoQueueFilters, currentTrack } from '../stores/appState'
+  import { library, metadataCache, autoQueueScope, currentTrack } from '../stores/appState'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import { libraryFilters, applyFilterSort, makeGroupAggregates } from '../lib/libraryFilters'
   import { playbackManager } from '../lib/playbackManager'
@@ -149,7 +149,7 @@
   })
 
   function handlePlayFromArtist(trackId: string) {
-    autoQueueFilters.update((f) => ({ ...f, artistScope: selectedArtist ?? undefined, albumScope: undefined }))
+    autoQueueScope.set({ artistScope: selectedArtist ?? undefined, albumScope: undefined })
     playbackManager.playTrackById(trackId)
   }
 
@@ -157,7 +157,7 @@
     const tracks = selectedTracks
     if (tracks.length === 0) return
     const trackIds = tracks.map((t) => t.trackId)
-    autoQueueFilters.update((f) => ({ ...f, artistScope: selectedArtist ?? undefined, albumScope: undefined }))
+    autoQueueScope.set({ artistScope: selectedArtist ?? undefined, albumScope: undefined })
     queueManager.playAll(trackIds)
     playbackManager.playTrackAt(0)
   }

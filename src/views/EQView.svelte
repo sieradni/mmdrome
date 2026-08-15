@@ -12,7 +12,6 @@ import {
     deleteUserPreset,
     applyPreset,
     saveAsCurrentPreset,
-    persistEqBypass,
     findPresetById,
   } from '../lib/eq/eqStore'
   import { parseEqText } from '../lib/eq/eqParser'
@@ -68,7 +67,8 @@ import {
   function toggleBypass() {
     const newVal = !$eqBypassed
     engine.setEqBypass(newVal)
-    persistEqBypass(newVal)
+    // The `persisted` store layer owns the Dexie write.
+    eqBypassed.set(newVal)
   }
 
   function onPreampChange() {

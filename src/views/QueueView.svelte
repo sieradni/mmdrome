@@ -9,9 +9,10 @@
     playbackSpeed,
     effectiveDuration,
     playbackState,
-    autoQueueFilters,
+    autoQueueFilterFields,
     queueWrapNotice,
     type Track,
+    type AutoQueueFilterFields,
   } from '../stores/appState'
   import { onMount, onDestroy, tick } from 'svelte'
   import { flip } from 'svelte/animate'
@@ -19,7 +20,6 @@
   import { queueManager } from '../lib/queueManager'
   import { distinctGenres } from '../lib/libraryFilters'
   import { audioManager } from '../lib/audioManager'
-  import { getSetting, setSetting } from '../lib/db'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
@@ -31,57 +31,24 @@
   let detailsTrack: Track | null = $state(null)
   let genres = $derived(distinctGenres($library))
 
-  // Filter settings state
-  let minRating = $state(0)
-  let maxRating = $state(100)
-  let lovedOnly = $state(false)
-  let genre = $state('')
-  let fromYear = $state<number | ''>('')
-  let toYear = $state<number | ''>('')
-  let minLength = $state<number | ''>('')
-  let maxLength = $state<number | ''>('')
-  let searchQuery = $state('')
+  // Filter fields live in the persisted `autoQueueFilterFields` store — the
+  // single source of truth. The store layer persists changes, and the
+  // playbackManager reaction replenishes the auto queue (trailing-debounced).
+  // No local mirrors, no debounce here (C1).
+  function setFilter<K extends keyof AutoQueueFilterFields>(field: K, value: AutoQueueFilterFields[K]): void {
+    autoQueueFilterFields.update((f) => ({ ...f, [field]: value }))
+  }
 
-  function norm(v: any): number | '' {
-    if (v === 0 || v === null || v === undefined || v === '') return ''
-    const num = Number(v)
-    return isNaN(num) ? '' : num
+  function numFilterField(v: string): number | '' {
+    return v === '' ? '' : Number(v)
   }
 
   onMount(async () => {
-    const saved = await getSetting<string>('autoQueueFilters')
-    if (saved) {
-      try {
-        const p = JSON.parse(saved)
-        if (p.minRating !== undefined) minRating = p.minRating
-        if (p.maxRating !== undefined) maxRating = p.maxRating
-        if (p.lovedOnly !== undefined) lovedOnly = p.lovedOnly
-        if (p.genre !== undefined) genre = p.genre || ''
-        if (p.fromYear !== undefined) fromYear = norm(p.fromYear)
-        if (p.toYear !== undefined) toYear = norm(p.toYear)
-        if (p.minLength !== undefined) minLength = norm(p.minLength)
-        if (p.maxLength !== undefined) maxLength = norm(p.maxLength)
-        if (p.searchQuery !== undefined) searchQuery = p.searchQuery || ''
-      } catch { /* ignore corrupt saved filter */ }
-    }
     const savedScroll = restoreViewState<{ scrollTop: number }>('queue')
     if (savedScroll && listContainerEl) {
       await tick()
       listContainerEl.scrollTop = savedScroll.scrollTop
     }
-  })
-
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null
-
-  $effect(() => {
-    autoQueueFilters.update((f) => ({ ...f, minRating, maxRating, lovedOnly, genre, fromYear, toYear, minLength, maxLength, searchQuery }))
-    setSetting('autoQueueFilters', JSON.stringify({ minRating, maxRating, lovedOnly, genre, fromYear, toYear, minLength, maxLength, searchQuery }))
-    if (debounceTimer) clearTimeout(debounceTimer)
-    debounceTimer = setTimeout(() => queueManager.replenishAutoQueue(), 300)
-  })
-
-  onDestroy(() => {
-    if (debounceTimer) clearTimeout(debounceTimer)
   })
 
   // Underlying track arrays
@@ -671,7 +638,8 @@ function seek(e: Event) {
               <input
                 type="search"
                 placeholder="Fuzzy search title, artist, album..."
-                bind:value={searchQuery}
+                value={$autoQueueFilterFields.searchQuery ?? ''}
+                oninput={(e) => setFilter('searchQuery', (e.target as HTMLInputElement).value)}
                 class="w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted outline-none focus:ring-white/20"
               />
             </div>
@@ -680,21 +648,21 @@ function seek(e: Event) {
           <div>
             <span class="text-sm font-medium text-muted">Rating range</span>
             <div class="mt-1 flex items-center gap-2">
-              <input type="range" min="0" max="100" bind:value={minRating} class="h-1 w-24 accent-yellow-500" />
-              <input type="number" min="0" max="100" bind:value={minRating} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
+              <input type="range" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24 accent-yellow-500" />
+              <input type="number" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', Number((e.target as HTMLInputElement).value) || 0)} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
               <span class="text-sm text-muted">–</span>
-              <input type="number" min="0" max="100" bind:value={maxRating} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
-              <input type="range" min="0" max="100" bind:value={maxRating} class="h-1 w-24 accent-yellow-500" />
+              <input type="number" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', Number((e.target as HTMLInputElement).value) || 0)} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
+              <input type="range" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24 accent-yellow-500" />
             </div>
           </div>
           <label class="flex cursor-pointer items-center gap-2 text-sm text-muted">
-            <input type="checkbox" bind:checked={lovedOnly} class="accent-yellow-500" />
+            <input type="checkbox" checked={$autoQueueFilterFields.lovedOnly} onchange={(e) => setFilter('lovedOnly', (e.target as HTMLInputElement).checked)} class="accent-yellow-500" />
             Loved tracks only
           </label>
           {#if genres.length > 0}
             <div>
               <span class="text-sm font-medium text-muted">Genre</span>
-              <select bind:value={genre} class="mt-1 block w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 outline-none">
+              <select value={$autoQueueFilterFields.genre ?? ''} onchange={(e) => setFilter('genre', (e.target as HTMLSelectElement).value)} class="mt-1 block w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 outline-none">
                 <option value="">All genres</option>
                 {#each genres as g}
                   <option value={g}>{g}</option>
@@ -705,17 +673,17 @@ function seek(e: Event) {
           <div>
             <span class="text-sm font-medium text-muted">Year</span>
             <div class="mt-1 flex items-center gap-2">
-              <input type="number" placeholder="From" bind:value={fromYear} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
+              <input type="number" placeholder="From" value={$autoQueueFilterFields.fromYear} oninput={(e) => setFilter('fromYear', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
               <span class="text-sm text-muted">to</span>
-              <input type="number" placeholder="To" bind:value={toYear} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
+              <input type="number" placeholder="To" value={$autoQueueFilterFields.toYear} oninput={(e) => setFilter('toYear', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
             </div>
           </div>
           <div>
             <span class="text-sm font-medium text-muted">Length (seconds)</span>
             <div class="mt-1 flex items-center gap-2">
-              <input type="number" placeholder="Min" bind:value={minLength} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
+              <input type="number" placeholder="Min" value={$autoQueueFilterFields.minLength} oninput={(e) => setFilter('minLength', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
               <span class="text-sm text-muted">to</span>
-              <input type="number" placeholder="Max" bind:value={maxLength} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
+              <input type="number" placeholder="Max" value={$autoQueueFilterFields.maxLength} oninput={(e) => setFilter('maxLength', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
             </div>
           </div>
         </div>

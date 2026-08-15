@@ -58,6 +58,9 @@ export class PlaybackManager {
    *  'reload' decision loads this (an exit-race re-routes it to the fg path). */
   private _pendingBgTrack: Track | null = null
   private _lastSortKey = ''
+  /** Trailing debounce for the auto-queue replenish reaction (filter edits /
+   *  scope changes), owned here and cleared by `destroy()`. */
+  private _replenishTimer: ReturnType<typeof setTimeout> | null = null
   /** Subscription teardown handles collected from `_subscribeShared` and the
    *  native-only `loopMode` wiring, released by `destroy()`. */
   private _unsubscribers: Array<() => void> = []
@@ -355,9 +358,15 @@ export class PlaybackManager {
     }))
 
     unsubs.push(autoQueueFilters.subscribe(() => {
-      if (this._initialized) {
+      if (!this._initialized) return
+      // Filter edits / scope changes re-rank the auto queue — trailing-
+      // debounced so typing in the search box doesn't re-rank per keystroke.
+      // The reaction layer owns the timer (cleared by destroy()).
+      if (this._replenishTimer) clearTimeout(this._replenishTimer)
+      this._replenishTimer = setTimeout(() => {
+        this._replenishTimer = null
         this._qm.replenishAutoQueue()
-      }
+      }, 250)
     }))
 
     // Rebuild the auto queue when the shared sort changes so it follows the
@@ -1239,6 +1248,10 @@ export class PlaybackManager {
   }
 
   destroy(): void {
+    if (this._replenishTimer) {
+      clearTimeout(this._replenishTimer)
+      this._replenishTimer = null
+    }
     for (const unsubscribe of this._unsubscribers) unsubscribe()
     this._unsubscribers = []
     if (this.isNative()) {

@@ -62,3 +62,38 @@ test('restore is idempotent', async () => {
   await p.restore()
   assert.equal(get(p.store), 6, 'a second restore must not clobber a live change')
 })
+
+test('decode migrates a legacy string row and replaces it with the object on the next write', async () => {
+  rows.set('k-legacy', JSON.stringify({ a: 1, b: 'x' }))
+  const p = persisted<{ a: number; b: string }>('k-legacy', { a: 0, b: '' }, {
+    decode: (raw) => {
+      if (raw === undefined) return undefined
+      if (typeof raw === 'string') {
+        try {
+          return JSON.parse(raw) as { a: number; b: string }
+        } catch {
+          return undefined
+        }
+      }
+      return raw as { a: number; b: string }
+    },
+  })
+  await p.restore()
+  assert.deepEqual(get(p.store), { a: 1, b: 'x' })
+  p.store.set({ a: 2, b: 'y' })
+  assert.deepEqual(rows.get('k-legacy'), { a: 2, b: 'y' }, 'the object format replaces the legacy string on the first write')
+})
+
+test('decode returning undefined keeps the initial (corrupt legacy value)', async () => {
+  rows.set('k-corrupt', 'not json{')
+  const p = persisted<number>('k-corrupt', 5, { decode: () => undefined })
+  await p.restore()
+  assert.equal(get(p.store), 5, 'corrupt input falls back to the initial')
+})
+
+test('decode receives an object row unchanged when no legacy format is involved', async () => {
+  rows.set('k-obj', { a: 7 })
+  const p = persisted<{ a: number }>('k-obj', { a: 0 }, { decode: (raw) => (typeof raw === 'object' ? (raw as { a: number }) : undefined) })
+  await p.restore()
+  assert.deepEqual(get(p.store), { a: 7 })
+})

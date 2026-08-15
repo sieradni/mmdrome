@@ -1,7 +1,7 @@
 import { writable, get, derived } from 'svelte/store'
 import type { LocalMetadataStore } from '$lib/db'
 import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
-import { persisted } from '$lib/persistedStore'
+import { persisted, type PersistedValue } from '$lib/persistedStore'
 import { sanitizeRecent } from '$lib/recentWindow'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
@@ -64,8 +64,6 @@ export interface MetadataScanState {
 export interface SettingsMap {
   preloadTracks?: number
   crossfadeDuration?: number
-  activeEqProfile?: string
-  savedEqProfiles?: object
   webdavUrl?: string
   webdavUser?: string
   webdavToken?: string
@@ -116,7 +114,8 @@ export const effectiveDuration = derived(
 export const pitchOctaves = _pitchOctaves.store
 export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
 
-export interface AutoQueueFilters {
+/** Fields the user edits in the Queue filter panel — persisted via `persisted`. */
+export interface AutoQueueFilterFields {
   minRating: number
   maxRating: number
   lovedOnly: boolean
@@ -124,11 +123,17 @@ export interface AutoQueueFilters {
   toYear: number | ''
   minLength: number | ''
   maxLength: number | ''
+  genre?: string
   searchQuery?: string
+}
+
+/** Session-only auto-queue scoping (B5) — NEVER persisted. */
+export interface AutoQueueScope {
   albumScope?: string
   artistScope?: string
-  genre?: string
 }
+
+export type AutoQueueFilters = AutoQueueFilterFields & AutoQueueScope
 
 export type LoopMode = 'none' | 'one' | 'all'
 
@@ -150,7 +155,7 @@ export const sleepTimer = writable<SleepTimerState>({
   remainingSeconds: 0,
 })
 
-export const autoQueueFilters = writable<AutoQueueFilters>({
+const AUTO_QUEUE_FILTER_DEFAULTS: AutoQueueFilterFields = {
   minRating: 0,
   maxRating: 100,
   lovedOnly: false,
@@ -159,7 +164,60 @@ export const autoQueueFilters = writable<AutoQueueFilters>({
   minLength: '',
   maxLength: '',
   searchQuery: '',
+}
+
+function normNumber(v: unknown): number | '' {
+  if (v === 0 || v === null || v === undefined || v === '') return ''
+  const num = Number(v)
+  return isNaN(num) ? '' : num
+}
+
+/**
+ * Coerces a saved `autoQueueFilters` row into the fields shape. Older app
+ * versions stored a JSON string under the key; the persisted store now holds
+ * the object itself. Returns `undefined` (keep initial) on corrupt input.
+ */
+export function decodeAutoQueueFilters(raw: PersistedValue | undefined): AutoQueueFilterFields | undefined {
+  if (raw === undefined) return undefined
+  if (typeof raw !== 'object' && typeof raw !== 'string') return undefined
+  let p: Partial<AutoQueueFilterFields> | null = null
+  if (typeof raw === 'string') {
+    try {
+      p = JSON.parse(raw) as Partial<AutoQueueFilterFields>
+    } catch {
+      return undefined
+    }
+  } else {
+    p = raw as Partial<AutoQueueFilterFields>
+  }
+  return {
+    ...AUTO_QUEUE_FILTER_DEFAULTS,
+    ...p,
+    minRating: typeof p.minRating === 'number' ? p.minRating : AUTO_QUEUE_FILTER_DEFAULTS.minRating,
+    maxRating: typeof p.maxRating === 'number' ? p.maxRating : AUTO_QUEUE_FILTER_DEFAULTS.maxRating,
+    lovedOnly: typeof p.lovedOnly === 'boolean' ? p.lovedOnly : AUTO_QUEUE_FILTER_DEFAULTS.lovedOnly,
+    fromYear: normNumber(p.fromYear),
+    toYear: normNumber(p.toYear),
+    minLength: normNumber(p.minLength),
+    maxLength: normNumber(p.maxLength),
+    genre: typeof p.genre === 'string' ? p.genre : undefined,
+    searchQuery: typeof p.searchQuery === 'string' ? p.searchQuery : undefined,
+  }
+}
+
+const _autoQueueFilterFields = persisted<AutoQueueFilterFields>('autoQueueFilters', AUTO_QUEUE_FILTER_DEFAULTS, {
+  decode: decodeAutoQueueFilters,
 })
+
+export const autoQueueFilterFields = _autoQueueFilterFields.store
+
+/** Session-only auto-queue scoping (B5): set on play from album/artist views,
+ *  cleared on shuffle toggle / plain TrackRow play. By construction the scopes
+ *  live in their own writable, so they can never leak into the persisted row. */
+export const autoQueueScope = writable<AutoQueueScope>({})
+
+/** Combined view for queueManager / playbackManager (fields + session scope). */
+export const autoQueueFilters = derived([autoQueueFilterFields, autoQueueScope], ([f, s]) => ({ ...f, ...s }))
 
 /** Set when the non-shuffle auto queue wrapped back to the top of the sort order. */
 export const queueWrapNotice = writable<boolean>(false)
@@ -255,13 +313,14 @@ export async function initStores(): Promise<void> {
     _masterGain.restore(),
     _shuffleEnabled.restore(),
     _loopMode.restore(),
+    _autoQueueFilterFields.restore(),
   ])
 
   initialized = true
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'activeEqProfile', 'savedEqProfiles', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]
@@ -303,7 +362,7 @@ export function updateMetadata(meta: LocalMetadataStore): void {
 
 export function toggleShuffle(): void {
   shuffleEnabled.update((v) => !v)
-  autoQueueFilters.update((f) => ({ ...f, albumScope: undefined, artistScope: undefined }))
+  autoQueueScope.set({})
 }
 
 export function initMetadataForTracks(tracks: Track[]): void {
