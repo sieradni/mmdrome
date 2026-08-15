@@ -1,6 +1,7 @@
 import { get } from 'svelte/store'
 import { saveQueue } from './db'
-import { libraryFilters, trackMatchesGenre } from './libraryFilters'
+import { libraryFilters } from './libraryFilters'
+import { planAutoQueueFill, type AutoQueuePlanState } from './autoQueuePlan'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import * as queueMutation from './queueMutation'
 import {
@@ -12,15 +13,41 @@ import {
   queueWrapNotice,
   currentTrack,
 } from '../stores/appState'
-import type { Track, AutoQueueFilters, QueueState } from '../stores/appState'
-import type { LocalMetadataStore } from './db'
+import type { Track, QueueState } from '../stores/appState'
 
 const MAX_AUTO_QUEUE = 50
+
+/** Fisher–Yates in place. The fill plan returns `shuffle` as data; the
+ *  manager permutes the FULL pool here, BEFORE slicing — slicing a
+ *  pre-permuted pool is a uniform sample, slicing first is not (parity). */
+function shuffleInPlace<T>(arr: T[]): T[] {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+  }
+  return arr
+}
 
 class QueueManager {
   getCombinedQueue(): string[] {
     const q = get(queue)
     return [...q.userQueue, ...q.autoQueue]
+  }
+
+  /** Snapshot of every store the fill plan reads — the thin-glue seam. */
+  private _planState(): AutoQueuePlanState {
+    const q = get(queue)
+    return {
+      library: get(library),
+      userQueue: q.userQueue,
+      autoQueue: q.autoQueue,
+      recentTrackIds: q.recentTrackIds,
+      activeId: this.getCombinedQueue()[q.activeIndex],
+      shuffle: get(shuffleEnabled),
+      sort: get(libraryFilters),
+      filters: get(autoQueueFilters),
+      meta: get(metadataCache),
+    }
   }
 
   findTrack(trackId: string): Track | undefined {
@@ -263,95 +290,35 @@ class QueueManager {
   }
 
   /**
-   * Builds a mode-treated (shuffled or sort+anchor-rotated) pool of up to
-   * `needed` auto-fill candidates using three tiers:
-   *  1. fresh — filter-matching library tracks that are neither queued nor cooling down;
-   *  2. top-up — cooling-down tracks (recently heard/skipped/removed) that match the
-   *     filters, admitted when the fresh pool is short (recency relaxes before anything else);
-   *  3. rotation — every filter-matching track not already sitting in the auto queue and
-   *     not the actively playing one, admitted when the pool still can't be filled; the
-   *     session recycles instead of the queue silently dying.
-   * `keepAuto` marks a replenish (present auto tracks must never duplicate, since the
-   * kept prefix is re-appended) vs. a rebuild (the whole auto queue is replaced).
+   * Replenishes the auto queue (keepAuto): the plan keeps the still-matching
+   * queued prefix, fills up to MAX from its tiers, and reports the wrap hint.
+   * The two no-op guards (queue already full; nothing addable and nothing
+   * dropped) skip the Dexie write — the wrap hint is false for an empty pool,
+   * so the old explicit resets in those guards are subsumed by plan.wrapNotice.
    */
-  private _buildPool(needed: number, opts: { keepAuto: boolean }): Track[] {
-    const q = get(queue)
-    const lib = get(library)
-    const shuffle = get(shuffleEnabled)
-    const filters = get(autoQueueFilters)
-    const meta = get(metadataCache)
-
-    const inAuto = new Set(opts.keepAuto ? q.autoQueue : [])
-    const inUser = new Set(q.userQueue)
-    const recent = new Set(q.recentTrackIds)
-    const activeId = this.getCombinedQueue()[q.activeIndex]
-    const matches = (t: Track) => this._matchesAutoQueueFilters(t, filters, meta)
-
-    let pool = lib.filter((t) => matches(t) && !inUser.has(t.trackId) && !inAuto.has(t.trackId) && !recent.has(t.trackId))
-    if (pool.length < needed) {
-      pool = pool.concat(lib.filter((t) => matches(t) && !inUser.has(t.trackId) && !inAuto.has(t.trackId) && recent.has(t.trackId)))
-    }
-    if (pool.length < needed) {
-      const poolIds = new Set(pool.map((t) => t.trackId))
-      pool = pool.concat(lib.filter((t) => matches(t) && !inAuto.has(t.trackId) && t.trackId !== activeId && !poolIds.has(t.trackId)))
-    }
-
-    if (pool.length > 0) {
-      if (shuffle) {
-        queueWrapNotice.set(false)
-        for (let i = pool.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [pool[i], pool[j]] = [pool[j], pool[i]]
-        }
-      } else {
-        const orderRank = this._buildOrderRank(meta)
-        pool.sort((a, b) => (orderRank.get(a.trackId) ?? 0) - (orderRank.get(b.trackId) ?? 0))
-        pool = this._rotateAfterAnchor(pool, orderRank, q.userQueue[q.userQueue.length - 1])
-      }
-    } else {
-      // Nothing eligible: the wrap hint is meaningless for an empty fill — clear
-      // any `true` left by an earlier top-of-sort rotation (rebuild paths reach
-      // here with no _rotateAfterAnchor/shuffle-branch to reset it).
-      queueWrapNotice.set(false)
-    }
-    return pool
-  }
-
   replenishAutoQueue(): void {
-    const q = get(queue)
-    const lib = get(library)
-    const libById = new Map(lib.map((t) => [t.trackId, t]))
-    const filters = get(autoQueueFilters)
-    const meta = get(metadataCache)
-
-    const keptAuto = q.autoQueue.filter((id) => {
-      const t = libById.get(id)
-      return t && this._matchesAutoQueueFilters(t, filters, meta)
-    })
-
-    const needed = Math.max(0, MAX_AUTO_QUEUE - keptAuto.length)
-    if (needed === 0) {
-      queueWrapNotice.set(false)
-      return
-    }
-
-    const fill = this._buildPool(needed, { keepAuto: true }).slice(0, needed)
-    if (fill.length === 0 && keptAuto.length === q.autoQueue.length) {
-      queueWrapNotice.set(false)
-      return
-    }
-
+    const state = this._planState()
+    const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: true })
+    queueWrapNotice.set(plan.wrapNotice)
+    const needed = Math.max(0, MAX_AUTO_QUEUE - plan.kept.length)
+    if (needed === 0) return
+    const fill = (plan.shuffle ? shuffleInPlace(plan.pool) : plan.pool).slice(0, needed)
+    if (fill.length === 0 && plan.kept.length === state.autoQueue.length) return
     const fillIds = fill.map((t) => t.trackId)
     queue.update((q) => {
-      const updated = { ...q, autoQueue: [...keptAuto, ...fillIds] }
+      const updated = { ...q, autoQueue: [...plan.kept, ...fillIds] }
       saveQueue(updated)
       return updated
     })
   }
 
+  /** Rebuilds the whole auto queue (keepAuto: false — shuffle/sort flips). */
   rebuildAutoQueue(): void {
-    const pool = this._buildPool(MAX_AUTO_QUEUE, { keepAuto: false })
-    const fillIds = pool.slice(0, MAX_AUTO_QUEUE).map((t) => t.trackId)
+    const state = this._planState()
+    const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
+    queueWrapNotice.set(plan.wrapNotice)
+    const ordered = plan.shuffle ? shuffleInPlace(plan.pool) : plan.pool
+    const fillIds = ordered.slice(0, MAX_AUTO_QUEUE).map((t) => t.trackId)
 
     queue.update((q) => {
       const updated = { ...q, autoQueue: fillIds }
@@ -360,106 +327,6 @@ class QueueManager {
     })
   }
 
-  /**
-   * Builds a rank map for every library track using the shared library-filter
-   * sort ordering (the same order shown in the Songs view). When no sort is
-   * active, ranks equal the library index (library-order fallback, matching the
-   * pre-existing behavior). Tie values are broken by library index so the order
-   * is always total and the anchor rotation below is deterministic.
-   */
-  private _buildOrderRank(meta: Map<string, LocalMetadataStore>): Map<string, number> {
-    const lib = get(library)
-    const f = get(libraryFilters)
-    const base = lib.map((t, i) => [t, i] as const)
-    if (f.sortBy) {
-      base.sort((a, b) => {
-        let cmp = 0
-        switch (f.sortBy) {
-          case 'rating':
-            cmp = (meta.get(a[0].trackId)?.rating ?? 0) - (meta.get(b[0].trackId)?.rating ?? 0)
-            break
-          case 'loved':
-            cmp = Number(meta.get(a[0].trackId)?.loved ?? false) - Number(meta.get(b[0].trackId)?.loved ?? false)
-            break
-          case 'year':
-            cmp = (a[0].year ?? 0) - (b[0].year ?? 0)
-            break
-          case 'length':
-            cmp = a[0].duration - b[0].duration
-            break
-        }
-        if (cmp !== 0) return cmp * (f.sortAsc ? 1 : -1)
-        return a[1] - b[1]
-      })
-    }
-    return new Map(base.map(([t, i]) => [t.trackId, i]))
-  }
-
-  /**
-   * Rotates a library-position-sorted pool so the first track positioned AFTER the
-   * anchor (the last user-queue track) leads, with earlier tracks wrapping to the
-   * tail. If the anchor is missing from the library, the pool is left unchanged.
-   * When the anchor sits at the very end of the sorted order (nothing follows it),
-   * the pool regenerates from the top — the queueWrapNotice store is set so the UI
-   * can surface that wrap-around as intentional.
-   */
-  private _rotateAfterAnchor<T extends { trackId: string }>(pool: T[], libPos: Map<string, number>, anchorId?: string): T[] {
-    if (!anchorId) {
-      queueWrapNotice.set(false)
-      return pool
-    }
-    const anchorPos = libPos.get(anchorId)
-    if (anchorPos === undefined) {
-      queueWrapNotice.set(false)
-      return pool
-    }
-    const splitAt = pool.findIndex((t) => (libPos.get(t.trackId) ?? 0) > anchorPos)
-    if (splitAt > 0) {
-      queueWrapNotice.set(false)
-      return [...pool.slice(splitAt), ...pool.slice(0, splitAt)]
-    }
-    // splitAt === 0: the first candidate already follows the anchor — the pool
-    // is in natural order, nothing wrapped. splitAt < 0: no candidate ranks
-    // after the anchor — the queue regenerates from the top of the sort order.
-    queueWrapNotice.set(splitAt < 0 && pool.length > 0)
-    return pool
-  }
-
-  private _matchesAutoQueueFilters(track: Track, filters: AutoQueueFilters, meta: Map<string, LocalMetadataStore>): boolean {
-    const m = meta.get(track.trackId)
-    const r = m?.rating ?? 0
-    if (r < filters.minRating || r > filters.maxRating) return false
-    if (filters.lovedOnly && !m?.loved) return false
-
-    const fromYear = filters.fromYear !== null && filters.fromYear !== undefined && filters.fromYear !== '' ? Number(filters.fromYear) : null
-    const toYear = filters.toYear !== null && filters.toYear !== undefined && filters.toYear !== '' ? Number(filters.toYear) : null
-    const minLength = filters.minLength !== null && filters.minLength !== undefined && filters.minLength !== '' ? Number(filters.minLength) : null
-    const maxLength = filters.maxLength !== null && filters.maxLength !== undefined && filters.maxLength !== '' ? Number(filters.maxLength) : null
-
-    if (fromYear !== null && (track.year ?? 0) < fromYear) return false
-    if (toYear !== null && (track.year ?? 9999) > toYear) return false
-    if (minLength !== null && track.duration < minLength) return false
-    if (maxLength !== null && track.duration > maxLength) return false
-
-    if (filters.albumScope && track.album !== filters.albumScope) return false
-    if (filters.artistScope && track.artist !== filters.artistScope) return false
-
-    if (filters.genre && !trackMatchesGenre(track, filters.genre)) return false
-
-    if (filters.searchQuery) {
-      const sq = filters.searchQuery.trim().toLowerCase()
-      if (sq) {
-        const matches =
-          track.title.toLowerCase().includes(sq) ||
-          track.artist.toLowerCase().includes(sq) ||
-          track.album.toLowerCase().includes(sq) ||
-          (track.composer ?? '').toLowerCase().includes(sq)
-        if (!matches) return false
-      }
-    }
-
-    return true
-  }
 }
 
 export const queueManager = new QueueManager()
