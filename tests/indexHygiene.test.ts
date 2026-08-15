@@ -5,7 +5,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { slimIndexForPersistence, stripBasePath, computeIndexFingerprint } from '../src/lib/metadataReader'
+import { slimIndexForPersistence, computeIndexFingerprint } from '../src/lib/metadataCore'
+import { stripBasePath } from '../src/lib/webdavUtils'
 import type { WebdavFileEntry } from '../src/lib/db'
 
 function entry(over: Partial<WebdavFileEntry> = {}): WebdavFileEntry {

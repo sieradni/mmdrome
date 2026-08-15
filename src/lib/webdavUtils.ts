@@ -108,6 +108,31 @@ export function normalizeUrl(base: string): string {
 }
 
 /**
+ * Strips the PROPFIND base URL off a returned href, producing the relative
+ * path the index keys on. Absolute and path-form hrefs are both handled; a
+ * malformed href (e.g. a stray '%' that `decodeURIComponent` rejects) falls
+ * back to the raw value instead of aborting the whole index build (TODO 3.6d).
+ */
+export function stripBasePath(baseUrl: string, href: string): string {
+  let decoded = href
+  try {
+    decoded = decodeURIComponent(href)
+  } catch {
+    // A malformed href (e.g. a stray '%') must not abort the whole index
+    // build — fall back to the raw value and let the strip below proceed.
+  }
+  try {
+    const urlPath = new URL(normalizeUrl(baseUrl)).pathname.replace(/\/+$/, "")
+    if (urlPath && decoded.toLowerCase().startsWith(urlPath.toLowerCase())) {
+      return decoded.slice(urlPath.length).replace(/^\/+/, "")
+    }
+  } catch {}
+  const urlStr = normalizeUrl(baseUrl)
+  const escaped = urlStr.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return decoded.replace(new RegExp(`^${escaped}/?`, "i"), "")
+}
+
+/**
  * Server identity key for metadata stamping (TODO 3.5): the ONE derivation
  * used by both the scan's `webdavBase` stamp and Push's current-server check,
  * so stray whitespace can never make the two sides diverge and flag the whole

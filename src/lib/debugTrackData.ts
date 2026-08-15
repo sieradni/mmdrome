@@ -4,7 +4,8 @@ import type { Track } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
 import { getNavidromeSong, type NavidromeConfig, type NavidromeSong } from './navidromeApi'
 import { refreshIndex, getCurrentIndex } from './metadataScanner'
-import { matchTrackToWebdav, readMetadataChunk, extractRawTagProperties } from './metadataReader'
+import { matchTrackToWebdav } from './metadataCore'
+import { readMetadataChunk, extractRawTagProperties } from './metadataReader'
 
 export interface DebugTrackData {
   track: Track

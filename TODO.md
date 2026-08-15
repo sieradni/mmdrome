@@ -553,12 +553,28 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       scanner-glue, `[not test-pinned]`.
       `src/lib/metadataScanner.ts` `processItem`/`refreshIndex`/`rebuildIndex`,
       `src/lib/metadataReader.ts` `slimIndexForPersistence`/`stripBasePath` — LOW
-- [ ] **3.6t** **[TEST]** extract the pure matching/scoring core
-      (`matchTrackToWebdav`, candidates, evidence gate, fingerprint FNV,
-      mtime-epoch compare) into a DOM/Dexie-free module; port the empirical
-      scenarios as permanent suites — ambiguity ties, tag-led-uncertain rule,
-      size-only never auto-binds, CJK normalization (0.3), fingerprint
-      change-gating, POPM round-trip. Feeds 3.7's mtime tests. — LOW
+- [x] **3.6t** **[TEST]** pure matching/scoring core — closed 2026-08-15:
+      extracted into `src/lib/metadataCore.ts` (DOM/Dexie-free; only
+      `matchNormalize` + type imports): `matchTrackToWebdav` +
+      `matchTrackToWebdavCandidates` (scoring, evidence gate, ambiguity ties,
+      tag-led-uncertain), `verifyEntryAgainstTrack`, `computeIndexFingerprint`
+      (FNV), `slimIndexForPersistence`, `buildPathTimestamps`, and the mtime
+      diff (`findChangedTracks` via the new single comparison point
+      `mtimeChanged` — raw-string semantics preserved today; 3.7b normalizes
+      both sides to epoch INSIDE it, callers untouched). `metadataReader`
+      (network/taglib adapter) and `metadataScanner` (glue) import from the
+      core; `debugTrackData` too; `stripBasePath` moved to `webdavUtils` so
+      `indexHygiene.test.ts` is fully taglib-free. **Test**:
+      `tests/metadataCore.test.ts` (16 cases — exact-filename bind,
+      size-only-never-binds + picker near-miss + size-only-tie parity,
+      probe-contradiction suppression, duplicate-title ambiguity,
+      tag-led-uncertain in BOTH views, certain-tag bind, CJK match + CJK
+      never-near-matches-ASCII (0.3 in the scoring path), substring bind,
+      excludePaths, fingerprint order-stability/mtime-blindness/add-rename-
+      resize, mtimeChanged matrix, findChangedTracks split,
+      verifyEntryAgainstTrack matrix). POPM round-trip was ALREADY pinned by
+      `tests/tagWriter.test.ts` — no port needed. Feeds 3.7's mtime tests.
+      `src/lib/metadataCore.ts` — LOW
 - [ ] **3.7** Comments/mtime — (a) the webdav-mode scan writes file comments,
       wiping a cached comment when the file has none (file is authoritative by
       design, but preserve the cached value when the file lacks the tag);

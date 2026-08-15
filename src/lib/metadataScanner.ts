@@ -4,18 +4,17 @@ import { library, metadataCache, metadataScanState, settings, updateMetadata } f
 import type { Track } from "../stores/appState"
 import { saveWebdavFileIndex, getWebdavFileIndex, getFileTagsForBase, putFileTag } from "./db"
 import type { LocalMetadataStore, FileTagCacheEntry, FileTags } from "./db"
+import { buildWebdavFileIndex, readFileMetadata } from "./metadataReader"
 import {
-  buildWebdavFileIndex,
   matchTrackToWebdav,
   matchTrackToWebdavCandidates,
-  readFileMetadata,
   buildPathTimestamps,
   findChangedTracks,
   computeIndexFingerprint,
   slimIndexForPersistence,
   isAudioFilePath,
   verifyEntryAgainstTrack,
-} from "./metadataReader"
+} from "./metadataCore"
 import { filenameHintsTitle, normalizeForHint } from "./matchNormalize"
 import { webdavBaseKey } from "./webdavUtils"
 import type { FileMetadata } from "./metadataReader"
