@@ -14,6 +14,7 @@ import {
   slimIndexForPersistence,
   isAudioFilePath,
   verifyEntryAgainstTrack,
+  mergeFileComments,
 } from "./metadataCore"
 import { filenameHintsTitle, normalizeForHint } from "./matchNormalize"
 import { webdavBaseKey } from "./webdavUtils"
@@ -592,7 +593,7 @@ async function processItem(item: QueueItem): Promise<void> {
         webdavPath: boundPath,
         webdavLastModified: boundEntry?.lastModified ?? existing.webdavLastModified,
         webdavBase: currentIndexKey(),
-        comments: navidrome ? current?.comments : meta.comments,
+        comments: navidrome ? current?.comments : mergeFileComments(current?.comments, meta.comments),
         matchSource: 'manual',
         // The full-row replace must not drop a dismissal made before/during
         // the re-read (aligns with the auto-match branch, TODO 3.6b).
@@ -698,7 +699,7 @@ async function processItem(item: QueueItem): Promise<void> {
       webdavPath: match.entry.path,
       webdavLastModified: match.entry.lastModified,
       webdavBase: currentIndexKey(),
-      comments: navidromeAuthoritative ? current?.comments : meta.comments,
+      comments: navidromeAuthoritative ? current?.comments : mergeFileComments(current?.comments, meta.comments),
       matchSource: undefined,
     })
     scannedCount++
@@ -1052,7 +1053,7 @@ function writeReverified(current: LocalMetadataStore, meta: FileMetadata | undef
       ...current,
       rating: meta.rating,
       loved: meta.loved,
-      comments: meta.comments,
+      comments: mergeFileComments(current.comments, meta.comments),
       webdavPath: entry.path,
       webdavLastModified: entry.lastModified ?? current.webdavLastModified,
       webdavBase: baseKey,

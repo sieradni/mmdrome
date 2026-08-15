@@ -15,6 +15,8 @@ import {
   computeIndexFingerprint,
   findChangedTracks,
   mtimeChanged,
+  parseMtimeToEpoch,
+  mergeFileComments,
 } from '../src/lib/metadataCore'
 import type { Track } from '../src/stores/appState'
 import type { LocalMetadataStore, WebdavFileEntry } from '../src/lib/db'
@@ -199,12 +201,47 @@ test('fingerprint is order-stable and path+size-keyed; mtime is deliberately bli
 
 // ── mtime diff ───────────────────────────────────────────────────────────
 
-test('mtimeChanged: raw-string diff today (3.7b will normalize both sides to epoch)', () => {
+test('parseMtimeToEpoch: RFC1123 and ISO forms of the same instant normalize identically', () => {
+  const RFC1123 = 'Mon, 01 Jan 2024 00:00:00 GMT'
+  const ISO = '2024-01-01T00:00:00Z'
+  assert.equal(parseMtimeToEpoch(RFC1123), parseMtimeToEpoch(ISO), 'same instant → same epoch')
+  assert.equal(parseMtimeToEpoch(RFC1123), 1704067200000)
+  assert.equal(parseMtimeToEpoch('2024-01-01T00:00:00+00:00'), 1704067200000)
+  assert.equal(parseMtimeToEpoch(undefined), undefined)
+  assert.equal(parseMtimeToEpoch('not-a-date'), undefined, 'unparseable → undefined (raw fallback)')
+  assert.equal(parseMtimeToEpoch(''), undefined)
+})
+
+test('mtimeChanged compares EPOCHS, so format variance never mass-flags unchanged files (3.7b)', () => {
+  // The same instant stamped in different formats by a post-switch server:
+  // raw-string inequality would report changed and re-read every row.
+  assert.equal(mtimeChanged('Mon, 01 Jan 2024 00:00:00 GMT', '2024-01-01T00:00:00Z'), false)
+  assert.equal(mtimeChanged('2024-01-01T00:00:00Z', '2024-01-01T00:00:00+00:00'), false)
+  // Legacy 2-digit-year RFC1123 (some servers) normalizes to the same epoch
+  // as the 4-digit form — no mass-flag after a switch between the two.
+  assert.equal(mtimeChanged('Mon, 01 Jan 24 00:00:00 GMT', '2024-01-01T00:00:00Z'), false)
+  // Genuinely different instants are still changed, whatever the format mix.
+  assert.equal(mtimeChanged('Mon, 01 Jan 2024 00:00:00 GMT', '2024-01-02T00:00:00Z'), true)
+  assert.equal(mtimeChanged('2024-01-01T00:00:00Z', 'Mon, 02 Jan 2024 00:00:00 GMT'), true)
+})
+
+test('mtimeChanged: absent or unparseable sides fall back to the raw-string diff', () => {
   assert.equal(mtimeChanged(STAMP, STAMP), false, 'same stamp → unchanged')
-  assert.equal(mtimeChanged(STAMP, 'Tue, 02 Jan 2024 00:00:00 GMT'), true, 'different stamp → changed')
   assert.equal(mtimeChanged(STAMP, undefined), true, 'server omitting getlastmodified → changed (re-read)')
   assert.equal(mtimeChanged(undefined, undefined), false)
   assert.equal(mtimeChanged(undefined, STAMP), true)
+  assert.equal(mtimeChanged('garbage', 'garbage'), false, 'equal unparseable strings → unchanged (same raw value)')
+  assert.equal(mtimeChanged('garbage', STAMP), true, 'one unparseable side → raw diff wins')
+})
+
+test('mergeFileComments: the file wins when it HAS a comment; absence keeps the cached value (3.7a)', () => {
+  assert.equal(mergeFileComments('cached comment', 'file comment'), 'file comment', 'file authoritative')
+  assert.equal(mergeFileComments('cached comment', undefined), 'cached comment', 'file LACKS the tag → keep cached')
+  assert.equal(mergeFileComments(undefined, 'file comment'), 'file comment')
+  assert.equal(mergeFileComments(undefined, undefined), undefined)
+  // An empty file comment is mapped to undefined by extractMetadataFromBuffer,
+  // so "file has a comment" is exactly `fileComments !== undefined`.
+  assert.equal(mergeFileComments('cached comment', ''), 'cached comment')
 })
 
 test('findChangedTracks splits changed vs unmatched rows', () => {

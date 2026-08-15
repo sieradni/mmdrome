@@ -575,15 +575,24 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       verifyEntryAgainstTrack matrix). POPM round-trip was ALREADY pinned by
       `tests/tagWriter.test.ts` — no port needed. Feeds 3.7's mtime tests.
       `src/lib/metadataCore.ts` — LOW
-- [ ] **3.7** Comments/mtime — (a) the webdav-mode scan writes file comments,
-      wiping a cached comment when the file has none (file is authoritative by
-      design, but preserve the cached value when the file lacks the tag);
-      (b) mtime comparison is raw-string inequality — servers omitting
-      `getlastmodified` re-read every such row per scan, and format variance
-      after a server switch mass-flags unchanged files. Normalize both sides to
-      epoch. **Test**: mtime compare matrix (RFC1123/ISO/absent ×
-      changed/unchanged) via the 3.6t module.
-      `src/lib/metadataScanner.ts` `findChangedTracks`/`processItem` — LOW
+- [x] **3.7** Comments/mtime — closed 2026-08-15:
+      (a) comment preservation: pure `mergeFileComments(cached, fileComments)`
+      in `metadataCore` — the file is authoritative, but a file LACKING the
+      comment tag must not wipe a cached value (`fileComments || cached`; an
+      empty comment can never erase a real one). Wired into ALL THREE
+      webdav-mode comment imports: `processItem`'s manual-bind re-read, its
+      auto-match path, and `writeReverified` (the re-verify flows).
+      (b) mtime epoch normalization: pure `parseMtimeToEpoch` + `mtimeChanged`
+      now compare EPOCHS when both sides parse (RFC1123 vs ISO for the same
+      instant no longer mass-flags unchanged files after a server switch);
+      absent or unparseable sides fall back to the raw-string diff (a server
+      omitting `getlastmodified` still re-reads every scan — the safe
+      direction, false "changed" costs a re-read, never a skipped one).
+      **Test**: `tests/metadataCore.test.ts` — format-variance matrix
+      (RFC1123/ISO/+00:00 same-instant → unchanged; genuinely different →
+      changed), absent/unparseable fallback matrix, `parseMtimeToEpoch` cases,
+      `mergeFileComments` (file wins / absent keeps cached / empty keeps
+      cached). `src/lib/metadataCore.ts` `mtimeChanged`/`mergeFileComments` — LOW
 - [ ] **3.8** WebDAV write hardening — (a) orphan `.mmdrome-tmp` cleanup on
       startup (DELETE exists only on failure paths); (b) the push confirmation
       never surfaces missing-ETag ("blind overwrite"); (c) the dialog count

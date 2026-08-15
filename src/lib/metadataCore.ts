@@ -320,19 +320,54 @@ export function buildPathTimestamps(index: WebdavFileEntry[]): Map<string, strin
 }
 
 /**
- * The single mtime comparison point for scan diffs (TODO 3.6t): a row is
- * "changed" when the current index stamp differs from the cached one. Today
- * this is raw-string inequality — a server that omits `getlastmodified`
- * leaves `current` undefined, which never equals a cached stamp, so such rows
- * re-read on every scan (and format variance after a server switch mass-flags
- * unchanged files). TODO 3.7b normalizes both sides to epoch inside this one
- * function — callers and the diff semantics stay untouched.
+ * Normalizes an mtime string to epoch milliseconds, or `undefined` when
+ * absent or unparseable (Date.parse failures — non-standard formats fall
+ * back to the raw-string comparison in `mtimeChanged`, never a guess).
+ */
+export function parseMtimeToEpoch(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined
+  const t = Date.parse(value)
+  return Number.isNaN(t) ? undefined : t
+}
+
+/**
+ * The single mtime comparison point for scan diffs (TODO 3.6t/3.7b): a row is
+ * "changed" when the current index stamp differs from the cached one. Both
+ * sides are normalized to epoch FIRST — format variance after a server switch
+ * (RFC1123 `Mon, 01 Jan 2024 00:00:00 GMT` vs ISO `2024-01-01T00:00:00Z` for
+ * the same instant) must not mass-flag unchanged files. When either side is
+ * absent or unparseable there is no epoch to compare, so the diff falls back
+ * to raw-string inequality: a server that omits `getlastmodified` leaves
+ * `current` undefined, which never equals a cached stamp, so such rows
+ * re-read on every scan (safe direction — false "changed" costs a re-read,
+ * never a skipped one).
  */
 export function mtimeChanged(
   cached: string | undefined,
   current: string | undefined,
 ): boolean {
+  const c = parseMtimeToEpoch(cached)
+  const n = parseMtimeToEpoch(current)
+  if (c !== undefined && n !== undefined) {
+    return c !== n
+  }
   return current !== cached
+}
+
+/**
+ * Webdav-mode comment import (TODO 3.7a): the file is authoritative, but a
+ * file that LACKS the comment tag entirely must not wipe a cached value —
+ * the tag is absent, not empty, so the file says nothing about comments.
+ * `extractMetadataFromBuffer` maps an empty comment to `undefined`, so on the
+ * real paths "file has a comment" is `fileComments !== undefined`; the
+ * `||` also defends the boundary against a stray empty string — an empty
+ * comment can never erase a real cached one.
+ */
+export function mergeFileComments(
+  cached: string | undefined,
+  fileComments: string | undefined,
+): string | undefined {
+  return fileComments || cached
 }
 
 /**
