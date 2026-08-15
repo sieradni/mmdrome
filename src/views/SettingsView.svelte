@@ -11,6 +11,7 @@
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
+  import { getCachedConfig, setCachedConfig, cachedConfigMatches } from '../lib/navidromeApi'
   import { tick } from 'svelte'
   import type { SettingsMap } from '../stores/appState'
   import type { WebdavFileEntry } from '../lib/db'
@@ -138,6 +139,14 @@
       updateSetting(key, normalize(key, value))
     }
     await Promise.all(entries.map(([key, value]) => setSetting(key, normalize(key, value))))
+    // A committed url/user change — including clearing the fields — invalidates
+    // the in-memory Navidrome config cache, or stale stream/cover URLs keep
+    // pointing at the old server until restart (TODO 3.4).
+    const navUrl = normalize('navidromeUrl', s.navidromeUrl ?? '')
+    const navUser = normalize('navidromeUser', s.navidromeUser ?? '')
+    if (!cachedConfigMatches(getCachedConfig(), navUrl, navUser)) {
+      setCachedConfig(null)
+    }
   }
 
   async function testWebdav() {

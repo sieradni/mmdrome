@@ -479,15 +479,22 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       one page accumulated), fresh-pages cap (200 pages, 100k songs),
       partial-tail early stop.
       `src/lib/navidromeApi.ts` `paginateSearch3` — MED
-- [ ] **3.4** Stale cached config — `setCachedConfig` is never called with
-      `null`; clearing the Navidrome fields (there is no dedicated "disconnect"
-      — credentials are cleared by committing empty fields via
-      `commitCredentials`) leaves `_cachedConfig`/`coverConfig` serving stale
-      URLs until restart. Clear the cache when the Navidrome url/user no longer
-      match the cached config (in `commitCredentials` or `connectNavidrome`'s
-      auth-failure path).
-      `src/lib/navidromeApi.ts` `setCachedConfig`,
-      `src/views/SettingsView.svelte` `commitCredentials` — MED
+- [x] **3.4** Stale cached config — closed 2026-08-14: `setCachedConfig` was
+      never called with `null`; clearing the Navidrome fields (no dedicated
+      "disconnect" — credentials are cleared by committing empty fields via
+      `commitCredentials`) left `_cachedConfig`/`coverConfig` serving stale
+      URLs until restart. Fix: pure `cachedConfigMatches(cached, baseUrl,
+      username)` in `navidromeApi.ts` (identity = trimmed url + user; password
+      change is ignored); `commitCredentials` clears the cache when the
+      committed identity no longer matches, and `connectNavidrome` clears it
+      on the no-config (disconnect) path and on any identity mismatch before
+      the connect attempt (success re-sets it via `loadNavidromeSongs`, the
+      offline fallback re-sets it from the fresh config). **Test**:
+      `tests/navidromeApi.test.ts` (null/identity-match/url-swap/user-swap/
+      whitespace-normalization/password-change matrix).
+      `src/lib/navidromeApi.ts` `cachedConfigMatches`,
+      `src/views/SettingsView.svelte` `commitCredentials`,
+      `src/lib/syncEngine.ts` `connectNavidrome` — MED
 - [ ] **3.5** Normalize `webdavBase` keys — rows are stamped with the TRIMMED
       key, but Push compares the raw `getSetting("webdavUrl")` build → a
       trailing slash/whitespace flags the whole library "Server URL updated"

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { submitNowPlaying, submitScrobble, paginateSearch3, type NavidromeConfig } from '../src/lib/navidromeApi'
+import { submitNowPlaying, submitScrobble, paginateSearch3, cachedConfigMatches, type NavidromeConfig } from '../src/lib/navidromeApi'
 
 // The Subsonic/OpenSubsonic API has no `nowPlaying` endpoint: a "now playing"
 // notification is `scrobble?submission=false`, and a completed listen is
@@ -96,4 +96,34 @@ test('paginateSearch3 stops early when a page is short (partial tail)', async ()
   }))
   const songs = await paginateSearch3(async () => page)
   assert.equal(songs.length, 120, 'a page shorter than PAGE_SIZE ends the loop')
+})
+
+// TODO 3.4 — the cached config is keyed by server identity (baseUrl + username);
+// a cleared/swapped url or user must invalidate it or stale stream/cover URLs
+// keep pointing at the old server until restart.
+const cacheCfg = (over: Partial<NavidromeConfig> = {}): NavidromeConfig =>
+  ({ baseUrl: 'https://srv.example/', username: 'u', password: 'p', ...over })
+
+test('cachedConfigMatches: no cache is trivially matching (nothing to drop)', () => {
+  assert.equal(cachedConfigMatches(null, 'https://other/', 'u2'), true)
+})
+
+test('cachedConfigMatches: same server identity matches', () => {
+  assert.equal(cachedConfigMatches(cacheCfg(), 'https://srv.example/', 'u'), true)
+})
+
+test('cachedConfigMatches: a changed baseUrl is stale', () => {
+  assert.equal(cachedConfigMatches(cacheCfg(), 'https://other.example/', 'u'), false)
+})
+
+test('cachedConfigMatches: a changed username is stale', () => {
+  assert.equal(cachedConfigMatches(cacheCfg(), 'https://srv.example/', 'other'), false)
+})
+
+test('cachedConfigMatches: whitespace differences are normalized away', () => {
+  assert.equal(cachedConfigMatches(cacheCfg(), '  https://srv.example/  ', '  u  '), true)
+})
+
+test('cachedConfigMatches: a password change alone keeps the identity matching', () => {
+  assert.equal(cachedConfigMatches(cacheCfg({ password: 'new' }), 'https://srv.example/', 'u'), true)
 })

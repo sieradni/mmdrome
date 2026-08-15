@@ -12,7 +12,9 @@ import {
   triggerNavidromeScan as navidromeTriggerScan,
   testWebdavConnection as webdavTestConnection,
   getScanStatus as navidromeGetScanStatus,
+  getCachedConfig as navidromeGetCachedConfig,
   setCachedConfig as navidromeSetCachedConfig,
+  cachedConfigMatches,
   navidromeSongToTrack,
   type NavidromeConfig,
   type NavidromeConnectionStatus,
@@ -157,11 +159,22 @@ export async function triggerNavidromeScan(): Promise<void> {
 export async function connectNavidrome(forceRefresh = false): Promise<NavidromeConnectResult> {
   const config = await getNavidromeConfig()
   if (!config) {
+    // Disconnected (empty fields committed): drop the stale config so stream/
+    // cover URLs stop pointing at the old server mid-session (TODO 3.4).
+    navidromeSetCachedConfig(null)
     return {
       connection: { connected: false, error: "Navidrome credentials not configured" },
       songs: [],
       loadResult: { loaded: 0, failed: 0, error: "Navidrome credentials not configured" },
     }
+  }
+
+  // The cached config is keyed by server identity (baseUrl + username); a
+  // server swap or username change makes the old config's URLs dead, so drop
+  // it before any connect attempt (success re-sets it via loadNavidromeSongs;
+  // the offline fallback below re-sets it from this fresh config).
+  if (!cachedConfigMatches(navidromeGetCachedConfig(), config.baseUrl, config.username)) {
+    navidromeSetCachedConfig(null)
   }
 
   const baseKey = `${config.baseUrl}|${config.username}`

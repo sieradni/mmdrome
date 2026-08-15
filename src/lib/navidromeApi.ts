@@ -339,8 +339,20 @@ export function setCachedConfig(config: NavidromeConfig | null): void {
   coverConfig.set(config)
 }
 
+/**
+ * Pure D7 policy (TODO 3.4): is the cached config still for the same server
+ * identity? Identity = trimmed baseUrl + username (the password may be
+ * re-typed without changing server). There is no dedicated "disconnect" —
+ * credentials are cleared by committing empty fields — so without this check a
+ * cleared/swapped url or user leaves the old config serving stale stream/cover
+ * URLs until restart. A null cache is trivially "matching" (nothing to drop).
+ */
+export function cachedConfigMatches(cached: NavidromeConfig | null, baseUrl: string, username: string): boolean {
+  if (!cached) return true
+  return cached.baseUrl.trim() === baseUrl.trim() && cached.username.trim() === username.trim()
+}
+
 export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ songs: NavidromeSong[]; result: NavidromeLoadResult }> {
-  const songs: NavidromeSong[] = []
   let failed = 0
 
   try {
@@ -352,18 +364,16 @@ export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ son
     // Fetch all songs via search3 pagination (standard Subsonic endpoint).
     // The pure driver caps pages AND stops on a repeated first id, so a server
     // that ignores songOffset terminates instead of accumulating forever (3.3).
-    songs.push(
-      ...(await paginateSearch3(async (offset, count) => {
-        const resp = await callSubsonic(config, 'search3.view', {
-          query: '',
-          songCount: count,
-          songOffset: offset,
-          artistCount: 0,
-          albumCount: 0,
-        })
-        return resp.searchResult3?.song ?? []
-      })),
-    )
+    const songs = await paginateSearch3(async (offset, count) => {
+      const resp = await callSubsonic(config, 'search3.view', {
+        query: '',
+        songCount: count,
+        songOffset: offset,
+        artistCount: 0,
+        albumCount: 0,
+      })
+      return resp.searchResult3?.song ?? []
+    })
 
     return { songs, result: { loaded: songs.length, failed } }
   } catch (err) {
