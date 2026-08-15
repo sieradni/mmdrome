@@ -38,8 +38,16 @@
   let reconcileResult = $state('')
   let indexing = $state(false)
   let scrollContainer: HTMLDivElement | null = null
+  // TODO 4.2: the save effect's first run can see scrollTop 0 before the
+  // restore below has applied — writing it over the restored `scrollTops[tab]`
+  // would defeat the restore AND persist the corruption. Ordering-defense: it
+  // does not reproduce on Svelte 5.56.7 (the restore lands first), but effect
+  // scheduling has shifted across 5.x releases. Skip saves until the restore
+  // has run; the effect re-runs when `restored` flips and saves the true value.
+  let restored = $state(false)
 
   $effect(() => {
+    if (!restored) return
     const st = scrollContainer?.scrollTop ?? 0
     if (scrollTops[tab] !== st) scrollTops[tab] = st
     saveViewStateSession('settings', { tab, scrollTops })
@@ -48,6 +56,7 @@
   onMount(async () => {
     await tick()
     if (scrollContainer) scrollContainer.scrollTop = scrollTops[tab]
+    restored = true
   })
 
   function switchTab(t: SettingsTab) {
@@ -516,7 +525,7 @@
       {/each}
     </div>
   </div>
-  <div class="flex-1 overflow-y-auto pb-24" bind:this={scrollContainer}
+  <div class="flex-1 overflow-y-auto pb-24" bind:this={scrollContainer} data-testid="settings-scroll"
        onscroll={() => { if (scrollContainer) scrollTops[tab] = scrollContainer.scrollTop }}>
     <div class="divide-y divide-white/10">
       {#if tab === 'sources'}

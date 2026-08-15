@@ -29,8 +29,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setCrossfade", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSleepTimer", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setEq", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "updateNowPlaying", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise)
     ]
 
     private let engine = NativeAudioEngine()
@@ -236,11 +235,6 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             "playing": state.playing,
             "speed": state.speed
         ])
-    }
-
-    @objc func updateNowPlaying(_ call: CAPPluginCall) {
-        refreshNowPlaying()
-        call.resolve()
     }
 
     // MARK: - Now Playing

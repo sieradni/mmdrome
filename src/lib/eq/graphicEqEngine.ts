@@ -223,14 +223,3 @@ export function createGraphicEqAudioBuffer(
   buffer.getChannelData(1).set(irData)
   return buffer
 }
-
-/**
- * Convenience wrapper for a single curve group.
- */
-export function createSingleCurveEqAudioBuffer(
-  ctx: AudioContext,
-  points: EqPoint[],
-  fftSize = 4096
-): AudioBuffer {
-  return createGraphicEqAudioBuffer(ctx, [points], fftSize)
-}

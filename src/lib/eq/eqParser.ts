@@ -131,33 +131,3 @@ export function parseEqText(text: string): ParseEqResult {
   }
 }
 
-/**
- * Formats a list of filters and preamp gain into EqualizerAPO / AutoEQ text format.
- */
-export function formatEqText(preampDb: number, filters: EqFilterConfig[]): string {
-  const lines: string[] = []
-  if (preampDb !== 0) {
-    lines.push(`Preamp: ${preampDb > 0 ? '+' : ''}${preampDb.toFixed(1)} dB`)
-  }
-
-  const typeReverseMap: Record<EqFilterType, string> = {
-    peaking: 'PK',
-    lowshelf: 'LSC',
-    highshelf: 'HSC',
-    lowpass: 'LP',
-    highpass: 'HP',
-    bandpass: 'BP',
-    notch: 'NO',
-  }
-
-  filters.forEach((f, index) => {
-    const status = f.enabled ? 'ON' : 'OFF'
-    const typeStr = typeReverseMap[f.type] || 'PK'
-    const freqStr = f.frequency >= 1000 ? `${(f.frequency / 1000).toFixed(1)}k` : `${Math.round(f.frequency)}`
-    lines.push(
-      `Filter ${index + 1}: ${status} ${typeStr} Fc ${freqStr} Hz Gain ${f.gain >= 0 ? '+' : ''}${f.gain.toFixed(1)} dB Q ${f.q.toFixed(2)}`
-    )
-  })
-
-  return lines.join('\n')
-}

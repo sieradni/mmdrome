@@ -665,35 +665,56 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       `commitCredentials` guarantees persistence before network calls —
       strictly better than the proposed per-field debounce; do not re-open;
       the AGENTS.md §4 C1 "never reintroduce a mirror" gotcha stands). — MED
-- [ ] **4.2** SettingsView mount-time scroll restore — CONFIRMED: the save
-      `$effect`'s first run sees scrollTop 0, writes `scrollTops[tab] = 0` to
-      sessionStorage before `onMount`'s `await tick()` applies the restore →
-      restore defeated AND the session corrupted. Guard the first save (skip
-      writes until after the onMount restore). (Component-level — manual
-      verification + `npm run check`; too DOM-bound for the node suite.)
-      `src/views/SettingsView.svelte` — MED
-- [ ] **4.3** Dead code removal — `readFileMetadataWithIndex`, `clearCoverCache`,
-      `formatEqText`, `getAllPresets`, `createSingleCurveEqAudioBuffer`,
-      LazyThumb `size` prop, `updateNowPlaying` (TS interface + Swift
-      registration/handler — remove in lockstep), `destroy()` (3 impls, zero
-      callers; note sleepTimer's listener cleanup if teardown is ever needed).
-      Confidence via seeded suites + grep; `npm run check` catches dangling
-      references. — LOW
-- [ ] **4.4** Native lock-screen artwork race — `fetchArtwork`'s completion
-      unconditionally re-applies art; an out-of-order completion (older fetch
-      finishing last) stamps stale art over the current track. Guard against
-      the current trackId (needs a "last updated trackId" field — doesn't exist
-      yet). **Test**: artwork-cache decision as a pure struct (request/
-      completion ordering × current-trackId) + XCTest.
-      `NowPlayingController.swift` `fetchArtwork` — LOW
-- [ ] **4.5** Native resource polish — (a) cache filenames via `String.hashValue`
-      (process-seeded → full re-download per launch + orphaned files) → FNV /
-      sanitized id; (b) `state()` opens `AVAudioFile` for zero-duration tracks
-      even while stopped (the 250 ms poll + `refreshNowPlaying`); (c)
-      SessionController's block-observer tokens are discarded → registrations
-      unremovable. (CapacitorHttp `status:-1` REFUTED for the v8 iOS stack —
-      network errors reject, never resolve with −1; dropped.)
-      `AudioEngine.swift` `destinationURL`/`state()`, `SessionController.swift` — LOW
+- [x] **4.2** SettingsView mount-time scroll restore — closed 2026-08-15: the
+      save `$effect` is gated on a `restored` flag flipped right after
+      `onMount`'s restore, so the first save run can never write `scrollTop 0`
+      over the restored value. **Empirical note (probe 2026-08-15)**: the
+      described mount-order race does NOT reproduce on Svelte 5.56.7 — with
+      the gate removed, the reloaded session still restores the saved position
+      and the session store stays intact (the restore lands before the
+      effect's first read; the audit's "CONFIRMED" was code-reading). The gate
+      is retained as ordering-defense (Svelte 5's effect scheduling has
+      shifted across 5.x releases — this race is exactly version-sensitive)
+      with zero current-behavior change. The END-TO-END contract is pinned by
+      `tests/e2e/viewstate.spec.ts` (scroll the Settings container, reload,
+      assert the position returns — bundle-level; fails if the restore breaks
+      or the save path stops persisting). `src/views/SettingsView.svelte` — MED
+- [ ] **4.3** Dead code removal — JS half CLOSED 2026-08-15: removed
+      `readFileMetadataWithIndex` (metadataReader — with it, the
+      `matchTrackToWebdav`/`Track` imports die and the reader's core edge
+      disappears entirely), `clearCoverCache` (coverArtCache),
+      `formatEqText` (eqParser), `getAllPresets` (eqStore),
+      `createSingleCurveEqAudioBuffer` (graphicEqEngine), and the LazyThumb
+      `size` prop (no caller passed it; `getCoverUrl` size is optional).
+      **`destroy()` — RE-SCOPED, do NOT remove**: the audit's "3 impls, zero
+      callers" missed the TEST callers — `nativeTransport.test.ts` (3×),
+      `webTransport.test.ts`, and `sleepTimerWeb.test.ts` use the transport
+      destroys as test teardown, and the impls do real work (engagement
+      settle, listener/poll removal, retry reset). Only
+      `playbackManager.destroy()` is production-uncalled, but it composes the
+      tested machinery (`teardownPreloader`, `_bgTransport.teardown`) —
+      removing the chain would break the DI suites and delete the designed
+      lifecycle. Keep it. `updateNowPlaying` removed 2026-08-15 (TS interface
+      + Swift registration/handler, one lockstep commit with 4.4/4.5 — the
+      plugin method was dead on both sides). — LOW
+- [x] **4.4** Native lock-screen artwork race — closed 2026-08-15:
+      `ArtworkRequestGuard` (pure core) models request/completion ordering ×
+      current-trackId; the controller records the latest request, and the
+      completion applies only when it answers that request AND the track is
+      still current (covers the "new track has no cover → no superseding
+      request" case). XCTest matrix pins the full ordering table.
+- [x] **4.5** Native resource polish — closed 2026-08-15: (a) cache filenames
+      now derive from `StableID.fnv1a64` (deterministic FNV-1a over UTF-8 —
+      survives launches, never traps on `abs(Int.min)`; XCTest pins the
+      reference vectors); (b) `effectiveDuration` memoizes positive computed
+      durations per trackId, so the 250 ms poll / `refreshNowPlaying` no longer
+      re-open `AVAudioFile` for zero-duration tracks while stopped (0 never
+      cached — a not-yet-downloaded file re-probes until it lands); (c)
+      SessionController retains its block-observer tokens and removes them in
+      `deinit` — registrations are no longer unremovable. (CapacitorHttp
+      `status:-1` REFUTED for the v8 iOS stack — network errors reject, never
+      resolve with −1; dropped.)
+      Verified by ios.yml on push (no local Swift toolchain).
 - [x] **4.6** **[TEST]** eqStore suite — closed 2026-08-15:
       `tests/eqStore.test.ts` pins `initEqStore` restore (saved-state preset
       fallback, bypass via `persisted`), `saveUserPreset`'s builtin-name →

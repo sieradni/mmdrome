@@ -9,6 +9,9 @@ final class SessionController {
     private var onResume: (() -> Void)?
     private var isPlaying: () -> Bool = { false }
     private var wasPlayingBeforeInterruption = false
+    /// Block-observer tokens (TODO 4.5c) — block-based `addObserver` returns a
+    /// token that must be retained or the registration can never be removed.
+    private var observerTokens: [NSObjectProtocol] = []
 
     func configure(onPause: @escaping () -> Void, onResume: @escaping () -> Void, isPlaying: @escaping () -> Bool) {
         self.onPause = onPause
@@ -23,21 +26,25 @@ final class SessionController {
             // Non-fatal: playback will work in foreground, background may be suspended.
         }
 
-        NotificationCenter.default.addObserver(
+        observerTokens.append(NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: session,
             queue: .main
         ) { [weak self] note in
             self?.handleInterruption(note)
-        }
+        })
 
-        NotificationCenter.default.addObserver(
+        observerTokens.append(NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
             object: session,
             queue: .main
         ) { [weak self] note in
             self?.handleRouteChange(note)
-        }
+        })
+    }
+
+    deinit {
+        observerTokens.forEach { NotificationCenter.default.removeObserver($0) }
     }
 
     private func handleInterruption(_ note: Notification) {

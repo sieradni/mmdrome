@@ -56,10 +56,6 @@ export async function initEqStore(): Promise<void> {
   }
 }
 
-export function getAllPresets(): EqPreset[] {
-  return [...BUILTIN_PRESETS, ...get(userPresets)]
-}
-
 export function findPresetById(id: string, customPresets?: EqPreset[]): EqPreset | undefined {
   const custom = customPresets ?? get(userPresets)
   return BUILTIN_PRESETS.find((p) => p.id === id) || custom.find((p) => p.id === id)

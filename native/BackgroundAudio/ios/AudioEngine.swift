@@ -187,7 +187,10 @@ final class TrackFileLoader {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("mmdrome-tracks", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let hash = abs(track.trackId.hashValue).description
+        // Stable FNV (not String.hashValue, which is process-seeded): cache files
+        // must survive across launches or every launch re-downloads the whole
+        // queue and orphans the previous launch's files (TODO 4.5a).
+        let hash = StableID.fnv1a64(track.trackId).description
         let ext = track.url.pathExtension
         let name = ext.isEmpty ? "\(hash)" : "\(hash).\(ext)"
         return dir.appendingPathComponent(name)
@@ -226,6 +229,12 @@ public final class NativeAudioEngine: NSObject {
 
     private let loader = TrackFileLoader()
     private var tracks: [NativeTrack] = []
+    /// Memoized effective durations for tracks with `duration == 0` (TODO 4.5b):
+    /// without this, `state()` (driven by the 250 ms poll and `refreshNowPlaying`)
+    /// re-opens an AVAudioFile for every zero-duration track on every call, even
+    /// while stopped. Only positive values are cached — a 0 means "file not
+    /// downloaded yet", which must be re-probed once the file lands.
+    private var computedDurations: [String: Double] = [:]
     private var loopMode: NativeLoopMode = .none
 
     private var activeIndex: Int = 0
@@ -702,11 +711,14 @@ public final class NativeAudioEngine: NSObject {
 
     private func effectiveDuration(of track: NativeTrack) -> Double {
         if track.duration > 0 { return track.duration }
+        if let cached = computedDurations[track.trackId] { return cached }
+        var duration = 0.0
         if let url = loader.localURL(for: track),
            let file = try? AVAudioFile(forReading: url) {
-            return Double(file.length) / file.processingFormat.sampleRate
+            duration = Double(file.length) / file.processingFormat.sampleRate
         }
-        return 0
+        if duration > 0 { computedDurations[track.trackId] = duration }
+        return duration
     }
 
     private func loadAndStart(currentIndex index: Int, autoPlay: Bool) {

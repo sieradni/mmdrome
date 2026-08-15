@@ -5,7 +5,7 @@
   import { requestThumb, cancelThumb } from '../lib/thumbLoader'
   import type { Track } from '../stores/appState'
 
-  let { track, wrapperClass = '', size }: { track: Track; wrapperClass?: string; size?: number } = $props()
+  let { track, wrapperClass = '' }: { track: Track; wrapperClass?: string } = $props()
 
   let visible = $state(false)
   let failed = $state(false)
@@ -33,7 +33,7 @@
 <div bind:this={container} class="{wrapperClass} overflow-hidden bg-surface-hover">
   {#if visible && $coverConfig && !failed}
     <img
-      src={getCoverUrl(track, $coverConfig, size)}
+      src={getCoverUrl(track, $coverConfig)}
       alt=""
       class="h-full w-full object-cover"
       loading="lazy"

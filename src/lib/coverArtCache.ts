@@ -18,6 +18,3 @@ export function getCoverUrl(track: Track, config: NavidromeConfig, size?: number
   return url
 }
 
-export function clearCoverCache(): void {
-  urlCache.clear()
-}

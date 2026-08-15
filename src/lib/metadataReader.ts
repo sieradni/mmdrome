@@ -1,8 +1,6 @@
 import { webdavFetch, authHeaders, buildWebdavUrl, stripBasePath } from "./webdavUtils"
 import { getTagLib } from "./taglibSingleton"
 import { popmToLocalRating } from "./tagWriter"
-import { matchTrackToWebdav } from "./metadataCore"
-import type { Track } from "../stores/appState"
 import type { WebdavFileEntry } from "./db"
 
 const METADATA_FETCH_TIMEOUT = 30000
@@ -309,20 +307,6 @@ export async function readFileMetadata(
       chunkSize *= 2
     }
   }
-}
-
-export async function readFileMetadataWithIndex(
-  track: Track,
-  baseUrl: string,
-  user: string,
-  token: string,
-  index: WebdavFileEntry[],
-): Promise<FileMetadata & { webdavPath?: string }> {
-  const match = matchTrackToWebdav(track, index)
-  if (!match.entry || match.ambiguous) return { rating: 0, loved: false }
-
-  const meta = await readFileMetadata(baseUrl, match.entry.path, user, token, track.fileType)
-  return { ...meta, webdavPath: match.entry.path }
 }
 
 export async function extractRawTagProperties(buffer: ArrayBuffer): Promise<Record<string, unknown>> {
