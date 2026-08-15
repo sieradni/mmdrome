@@ -6,6 +6,7 @@
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, testNavidromeConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
+  import { webdavBaseKey } from '../lib/webdavUtils'
   import { getPendingSyncMetadata } from '../lib/db'
   import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, ensureTagProbe, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
@@ -249,8 +250,14 @@
   async function pushChanges() {
     await commitCredentials()
     const pending = await getPendingSyncMetadata()
-    const safeCount = pending.filter((r) => r.webdavPath && r.webdavBase === `${$settings.webdavUrl}|${$settings.webdavUser}`).length
-    const unsafeCount = pending.length - safeCount
+    // Ignored rows are never pushed (D5) — they must not inflate the
+    // confirmation count or the unsafe bucket (TODO 3.8c).
+    const pushable = pending.filter((r) => !r.ignored)
+    // The same derivation the scan stamp and Push use (webdavBaseKey) — a raw
+    // template here would misclassify every row on stray whitespace and could
+    // skip the confirmation dialog entirely (TODO 3.5 convention).
+    const currentBaseKey = webdavBaseKey($settings.webdavUrl ?? '', $settings.webdavUser ?? '')
+    const safeCount = pushable.filter((r) => r.webdavPath && r.webdavBase === currentBaseKey).length
     if (safeCount > 0) {
       pendingPushCount = safeCount
       confirmPush = true
@@ -269,8 +276,9 @@
     try {
       const result = await runManualWebDAVSync()
       const parts = [`Pushed ${result.synced} track(s)`, result.failed ? `${result.failed} failed` : '']
-      if (result.skipped) parts.push(`${result.skipped} skipped (no matching WebDAV file)`)
+      if (result.skipped) parts.push(`${result.skipped} skipped (no pushable WebDAV file)`)
       if (result.wrongServer) parts.push(`${result.wrongServer} on a different server`)
+      if (result.blindOverwrite) parts.push(`${result.blindOverwrite} written without ETag protection (server sent no ETag)`)
       syncResult = parts.filter(Boolean).join(', ')
     } catch (err) {
       syncResult = `Push failed: ${err instanceof Error ? err.message : String(err)}`

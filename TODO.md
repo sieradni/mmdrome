@@ -593,12 +593,36 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       changed), absent/unparseable fallback matrix, `parseMtimeToEpoch` cases,
       `mergeFileComments` (file wins / absent keeps cached / empty keeps
       cached). `src/lib/metadataCore.ts` `mtimeChanged`/`mergeFileComments` — LOW
-- [ ] **3.8** WebDAV write hardening — (a) orphan `.mmdrome-tmp` cleanup on
-      startup (DELETE exists only on failure paths); (b) the push confirmation
-      never surfaces missing-ETag ("blind overwrite"); (c) the dialog count
-      includes `ignored` rows that Push skips → overstated count.
-      `src/lib/syncEngine.ts` `webdavPutAtomic`,
-      `src/views/SettingsView.svelte` `safeCount` — LOW
+- [x] **3.8** WebDAV write hardening — closed 2026-08-15:
+      (a) orphan temp cleanup: the `.mmdrome-tmp` naming is single-sourced in
+      `webdavUtils` (`MMDROME_TMP_SUFFIX`/`webdavTempPath`/`isTempFile`) — the
+      writer (`webdavPutAtomic`) and the cleaner share it by construction (a
+      drifted suffix would strand old orphans forever). New
+      `metadataScanner.cleanupOrphanTempFiles` deletes temp-named index
+      entries after EVERY fresh probe (`refreshIndex` + `rebuildIndex` —
+      covers the startup connect-time build); best-effort per file, a failing
+      DELETE never fails the probe. Zero cost when clean (no temp-named
+      entries → no requests). **Test**: `tests/webdavTempFile.test.ts` (path
+      append + detection terminality + single-constant identity).
+      (b) blind overwrite surfaced: `runManualWebDAVSync`'s result gains
+      `blindOverwrite` — counted after each successful PUT whose server sent
+      NO ETag (the MOVE then runs without `If-Match`), including the
+      conflict-retry re-read; the SettingsView result line reports "N written
+      without ETag protection". Honest scope note: ETags are only known at
+      push time (each file is GETed then), so the surface is the post-push
+      result line — the pre-push confirmation dialog cannot know them without
+      probing every file.
+      (c) confirmation count truth: `pushChanges` excludes `ignored` rows
+      (Push skips them — D5 — so counting them overstated the dialog), and
+      the base-key comparison now uses the shared `webdavBaseKey` derivation
+      instead of a raw `${url}|${user}` template — stray whitespace there
+      could misclassify every row and even skip the confirmation dialog
+      entirely (same class as TODO 3.5). Removed the dead `unsafeCount`
+      (computed, never displayed). `src/lib/webdavUtils.ts`
+      `MMDROME_TMP_SUFFIX`, `src/lib/metadataScanner.ts`
+      `cleanupOrphanTempFiles`, `src/lib/syncEngine.ts`
+      `webdavPutAtomic`/`runManualWebDAVSync`, `src/views/SettingsView.svelte`
+      `pushChanges` — LOW
 - [x] **3.9** Pre-PUT live-row re-validation — closed 2026-08-15: pure
       `shouldSkipBeforePut(stale, live, currentBaseKey)` in `pushReconcile.ts`
       (skip when `!live.webdavPath || live.ignored || live.webdavPath !==

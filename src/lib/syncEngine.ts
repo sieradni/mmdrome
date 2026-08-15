@@ -1,5 +1,5 @@
 import { get } from "svelte/store"
-import { webdavFetch, authHeaders, buildWebdavUrl, webdavBaseKey } from "./webdavUtils"
+import { webdavFetch, authHeaders, buildWebdavUrl, webdavBaseKey, webdavTempPath } from "./webdavUtils"
 import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache, saveSongLibraryCache } from "$lib/db"
 import { modifyMetadataBuffer } from "$lib/tagWriter"
 import { metadataCache, settings, library, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
@@ -67,7 +67,7 @@ async function webdavPutAtomic(
   token: string,
   etag?: string,
 ): Promise<void> {
-  const tempPath = `${filePath}.mmdrome-tmp`
+  const tempPath = webdavTempPath(filePath)
   const headers = authHeaders(user, token)
 
   // Write to temp file first — original untouched if this fails
@@ -297,7 +297,7 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   return result
 }
 
-export async function runManualWebDAVSync(): Promise<{ synced: number; failed: number; skipped: number; wrongServer: number }> {
+export async function runManualWebDAVSync(): Promise<{ synced: number; failed: number; skipped: number; wrongServer: number; blindOverwrite: number }> {
   const webdavUrl = await getSetting<string>("webdavUrl")
   const webdavUser = await getSetting<string>("webdavUser")
   const webdavToken = await getSetting<string>("webdavToken")
@@ -307,7 +307,7 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   }
 
   const pending = await getPendingSyncMetadata()
-  if (pending.length === 0) return { synced: 0, failed: 0, skipped: 0, wrongServer: 0 }
+  if (pending.length === 0) return { synced: 0, failed: 0, skipped: 0, wrongServer: 0, blindOverwrite: 0 }
 
   // Same derivation as the scan's stamp (webdavUtils.webdavBaseKey) — a raw
   // template here used to diverge on stray whitespace and flag every row
@@ -322,6 +322,7 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   let failed = 0
   let skipped = 0
   let wrongServer = 0
+  let blindOverwrite = 0
   const pushedPaths = new Set<string>()
 
   for (const track of pending) {
@@ -373,9 +374,12 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
         skipped++
         continue
       }
-      // GET with ETag for concurrency detection
+      // GET with ETag for concurrency detection. A server that sends no ETag
+      // leaves the MOVE a blind overwrite (no If-Match) — count it so the
+      // result line surfaces the loss of concurrency protection (TODO 3.8b).
       const { data: raw, etag } = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)
       const modified = await modifyMetadataBuffer(raw, track.rating, track.loved, fileTypeOf(track.trackId, track.fileType))
+      let blind = !etag
 
       try {
         await webdavPutAtomic(webdavUrl, davPath, modified, webdavUser, webdavToken, etag)
@@ -396,11 +400,13 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
           const reModified = await modifyMetadataBuffer(
             refreshed, track.rating, track.loved, fileTypeOf(track.trackId, track.fileType),
           )
+          blind = !newEtag
           await webdavPutAtomic(webdavUrl, davPath, reModified, webdavUser, webdavToken, newEtag)
         } else {
           throw err
         }
       }
+      if (blind) blindOverwrite++
 
       // The user may have re-edited rating/loved (or re-bound the row / had a
       // comment land) while the GET→PUT was in flight: the pushed snapshot is
@@ -443,5 +449,5 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
     }
   }
 
-  return { synced, failed, skipped, wrongServer }
+  return { synced, failed, skipped, wrongServer, blindOverwrite }
 }

@@ -17,11 +17,13 @@ import {
   mergeFileComments,
 } from "./metadataCore"
 import { filenameHintsTitle, normalizeForHint } from "./matchNormalize"
-import { webdavBaseKey } from "./webdavUtils"
+import { webdavBaseKey, webdavFetch, authHeaders, buildWebdavUrl, isTempFile } from "./webdavUtils"
 import type { FileMetadata } from "./metadataReader"
 import type { WebdavFileEntry } from "./db"
 
 const CONCURRENCY = 6
+
+const ORPHAN_DELETE_TIMEOUT = 30000
 
 /** Failure strings lead with the source so a post-connect WebDAV scan error
  *  can never be misread as the Navidrome connection failing. */
@@ -152,9 +154,28 @@ export async function refreshIndex(): Promise<boolean> {
     indexBuilt = true
     await applyCachedTags()
     await saveWebdavFileIndex({ entries: slimIndexForPersistence(index), buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey, fingerprint: computeIndexFingerprint(index) })
+    await cleanupOrphanTempFiles()
     return true
   } catch {
     return false
+  }
+}
+
+/** Deletes `.mmdrome-tmp` files left on the server by a crashed prior write
+ *  (PUT completed, MOVE never ran — `webdavPutAtomic`'s DELETE only fires on
+ *  failure paths; TODO 3.8a). Runs after every FRESH probe
+ *  (`refreshIndex`/`rebuildIndex`): the index IS the live server state, so any
+ *  temp-named entry is an orphan — no write can be in flight between this
+ *  session's probe and the cleanup (scans never write; push is a separate user
+ *  action). Best-effort per file: a failing DELETE must never fail the probe. */
+async function cleanupOrphanTempFiles(): Promise<void> {
+  const headers = authHeaders(webdavUser, webdavToken)
+  for (const e of index) {
+    if (!isTempFile(e.filename)) continue
+    await webdavFetch(buildWebdavUrl(webdavUrl, e.path), {
+      method: "DELETE",
+      headers,
+    }, ORPHAN_DELETE_TIMEOUT).catch(() => {})
   }
 }
 
@@ -170,6 +191,7 @@ export async function rebuildIndex(): Promise<void> {
   indexBuilt = true
   await applyCachedTags()
   await saveWebdavFileIndex({ entries: slimIndexForPersistence(index), buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey, fingerprint: computeIndexFingerprint(index) })
+  await cleanupOrphanTempFiles()
 }
 
 // ── In-file identity tags (content probing) ─────────────────────────────
