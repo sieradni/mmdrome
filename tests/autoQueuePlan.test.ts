@@ -11,9 +11,10 @@ import {
   buildOrderRank,
   rotateAfterAnchor,
   planAutoQueueFill,
+  filterRangesValid,
   type AutoQueuePlanState,
 } from '../src/lib/autoQueuePlan'
-import type { AutoQueueFilters, Track } from '../src/stores/appState'
+import type { AutoQueueFilters, AutoQueueFilterFields, Track } from '../src/stores/appState'
 import type { LocalMetadataStore } from '../src/lib/db'
 
 const track = (id: string, over: Partial<Track> = {}): Track => ({
@@ -107,6 +108,24 @@ test('searchQuery matches title/artist/album/composer substrings, case- and trim
   assert.equal(matchesAutoQueueFilters(track('t5', { title: 'Hey Jude' }), filters({ searchQuery: 'strawberry' }), meta), false)
   assert.equal(matchesAutoQueueFilters(track('t6'), filters({ searchQuery: '' }), meta), true, 'empty search passes')
   assert.equal(matchesAutoQueueFilters(track('t6'), filters({ searchQuery: undefined }), meta), true)
+})
+
+// ── filterRangesValid ──────────────────────────────────────────────────
+
+test('filterRangesValid: inverted ranges are invalid; one-sided bounds are fine', () => {
+  // `Record<string, unknown>` widens the string-numeral overrides (same
+  // reason as the filters() helper above).
+  const range = (over: Record<string, unknown> = {}): Pick<AutoQueueFilterFields, 'minRating' | 'maxRating' | 'fromYear' | 'toYear' | 'minLength' | 'maxLength'> => ({
+    minRating: 0, maxRating: 100, fromYear: '', toYear: '', minLength: '', maxLength: '', ...over,
+  }) as Pick<AutoQueueFilterFields, 'minRating' | 'maxRating' | 'fromYear' | 'toYear' | 'minLength' | 'maxLength'>
+  assert.equal(filterRangesValid(range()), true, 'defaults are valid')
+  assert.equal(filterRangesValid(range({ minRating: 90, maxRating: 10 })), false, 'minRating > maxRating')
+  assert.equal(filterRangesValid(range({ fromYear: '2000', toYear: '1990' })), false, 'fromYear > toYear')
+  assert.equal(filterRangesValid(range({ fromYear: '1990', toYear: '2000' })), true)
+  assert.equal(filterRangesValid(range({ minLength: '300', maxLength: '100' })), false, 'minLength > maxLength')
+  assert.equal(filterRangesValid(range({ minLength: '100', maxLength: '300' })), true)
+  assert.equal(filterRangesValid(range({ fromYear: '1990' })), true, 'one-sided bound is fine')
+  assert.equal(filterRangesValid(range({ maxRating: 50 })), true)
 })
 
 // ── buildOrderRank ─────────────────────────────────────────────────────

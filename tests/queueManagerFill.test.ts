@@ -18,6 +18,7 @@ import {
   queueWrapNotice,
   autoQueueFilterFields,
   autoQueueScope,
+  autoQueueEmptyNotice,
 } from '../src/stores/appState'
 import type { Track, AutoQueueFilterFields, QueueState } from '../src/stores/appState'
 import type { LocalMetadataStore } from '../src/lib/db'
@@ -72,6 +73,7 @@ function reset(): void {
     genre: '', fromYear: '', toYear: '', minLength: '', maxLength: '', sortBy: null, sortAsc: true,
   })
   queueWrapNotice.set(false)
+  autoQueueEmptyNotice.set(false)
 }
 
 function lastWrite(): QueueState & { id: string } {
@@ -160,6 +162,34 @@ test('shuffle mode permutes the pool (set-preserving) and clears the wrap notice
   const auto = get(queue).autoQueue
   assert.deepEqual([...auto].sort(), [...ids].sort(), 'shuffle keeps the same members')
   assert.equal(get(queueWrapNotice), false, 'shuffle clears the wrap hint')
+})
+
+test('the empty-fill notice fires when nothing can be added and clears on a successful fill', () => {
+  reset()
+  library.set(['t1', 't2', 't3', 't4'].map((id) => track(id)))
+  metadataCache.set(metaOf([['t2', 80]]))
+  setQueue({ userQueue: ['t1'], activeIndex: 0 })
+  queueManager.replenishAutoQueue()
+  assert.equal(get(autoQueueEmptyNotice), false, 'a successful fill keeps the notice off')
+
+  // Tighten to minRating 80: t2 still matches (and is already queued), nothing
+  // new can be added, nothing is dropped → the no-op guard fires the notice.
+  autoQueueFilterFields.set({ ...FIELDS, minRating: 80 })
+  queueManager.replenishAutoQueue()
+  assert.equal(get(autoQueueEmptyNotice), true, 'nothing addable → notice')
+
+  // Tighten further to 90: t2 no longer matches → kept drops, the queue is
+  // pruned to empty, and the notice stays (the fill added nothing).
+  autoQueueFilterFields.set({ ...FIELDS, minRating: 90 })
+  queueManager.replenishAutoQueue()
+  assert.equal(get(autoQueueEmptyNotice), true)
+  assert.deepEqual(get(queue).autoQueue, [])
+
+  // Loosen again: a successful fill clears the notice.
+  autoQueueFilterFields.set({ ...FIELDS })
+  queueManager.replenishAutoQueue()
+  assert.equal(get(autoQueueEmptyNotice), false, 'a successful fill clears the notice')
+  assert.deepEqual(get(queue).autoQueue, ['t2', 't3', 't4'])
 })
 
 test('searchQuery persists as a filter through the real manager', () => {

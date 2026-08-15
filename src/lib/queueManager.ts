@@ -11,6 +11,7 @@ import {
   autoQueueFilters,
   metadataCache,
   queueWrapNotice,
+  autoQueueEmptyNotice,
   currentTrack,
 } from '../stores/appState'
 import type { Track, QueueState } from '../stores/appState'
@@ -301,9 +302,16 @@ class QueueManager {
     const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: true })
     queueWrapNotice.set(plan.wrapNotice)
     const needed = Math.max(0, MAX_AUTO_QUEUE - plan.kept.length)
-    if (needed === 0) return
+    if (needed === 0) {
+      autoQueueEmptyNotice.set(false)
+      return
+    }
     const fill = (plan.shuffle ? shuffleInPlace(plan.pool) : plan.pool).slice(0, needed)
-    if (fill.length === 0 && plan.kept.length === state.autoQueue.length) return
+    if (fill.length === 0 && plan.kept.length === state.autoQueue.length) {
+      autoQueueEmptyNotice.set(true)
+      return
+    }
+    autoQueueEmptyNotice.set(fill.length === 0)
     const fillIds = fill.map((t) => t.trackId)
     queue.update((q) => {
       const updated = { ...q, autoQueue: [...plan.kept, ...fillIds] }
@@ -317,6 +325,7 @@ class QueueManager {
     const state = this._planState()
     const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
     queueWrapNotice.set(plan.wrapNotice)
+    autoQueueEmptyNotice.set(plan.pool.length === 0)
     const ordered = plan.shuffle ? shuffleInPlace(plan.pool) : plan.pool
     const fillIds = ordered.slice(0, MAX_AUTO_QUEUE).map((t) => t.trackId)
 

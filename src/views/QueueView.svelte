@@ -12,9 +12,11 @@
     autoQueueFilterFields,
     ratingBound,
     queueWrapNotice,
+    autoQueueEmptyNotice,
     type Track,
     type AutoQueueFilterFields,
   } from '../stores/appState'
+  import { filterRangesValid } from '../lib/autoQueuePlan'
   import { onMount, onDestroy, tick } from 'svelte'
   import { flip } from 'svelte/animate'
   import { playbackManager } from '../lib/playbackManager'
@@ -630,6 +632,10 @@ function seek(e: Event) {
       <p class="mx-4 mb-1 text-center text-[11px] text-muted/60">Continuing from the top of the sort order</p>
     {/if}
 
+    {#if $autoQueueEmptyNotice}
+      <p class="mx-4 mb-1 text-center text-[11px] text-yellow-500/80">Auto queue is empty — nothing left to add from the current filters</p>
+    {/if}
+
     {#if filterOpen}
       <div class="mx-4 mb-2 rounded-lg border border-white/10 bg-surface/50 px-3 py-3">
         <div class="space-y-3">
@@ -687,6 +693,9 @@ function seek(e: Event) {
               <input type="number" placeholder="Max" value={$autoQueueFilterFields.maxLength} oninput={(e) => setFilter('maxLength', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
             </div>
           </div>
+          {#if !filterRangesValid($autoQueueFilterFields)}
+            <p class="text-[11px] text-yellow-500/80">Ranges are inverted — no track can match both bounds</p>
+          {/if}
         </div>
       </div>
     {/if}

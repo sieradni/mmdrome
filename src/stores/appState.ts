@@ -236,6 +236,11 @@ export const autoQueueFilters = derived([autoQueueFilterFields, autoQueueScope],
 /** Set when the non-shuffle auto queue wrapped back to the top of the sort order. */
 export const queueWrapNotice = writable<boolean>(false)
 
+/** Set when a fill could not add anything (filters exhausted or inverted) —
+ *  cleared by any successful fill. Session-only; the queue view explains why
+ *  the auto queue is empty instead of showing nothing at all. */
+export const autoQueueEmptyNotice = writable<boolean>(false)
+
 export function setLibrary(tracks: Track[], complete = true): void {
   // A full (error-free) library load replaces the source of truth — reconcile
   // the queue and metadata cache against it so stale ids can't stall playback

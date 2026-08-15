@@ -1,5 +1,5 @@
 import { trackMatchesGenre, type LibraryFilterState } from './libraryFilters'
-import type { Track, AutoQueueFilters } from '../stores/appState'
+import type { Track, AutoQueueFilters, AutoQueueFilterFields } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
 
 /**
@@ -154,6 +154,19 @@ export function rotateAfterAnchor<T extends { trackId: string }>(
     return { pool: [...pool.slice(splitAt), ...pool.slice(0, splitAt)], wrapNotice: false }
   }
   return { pool, wrapNotice: splitAt < 0 && pool.length > 0 }
+}
+
+/**
+ * Input validation for the filter panel: inverted ranges can never match a
+ * track (min > max fails every candidate), so surface them instead of letting
+ * the auto queue silently go empty. One-sided bounds are fine; only a
+ * min-over-max pair is invalid.
+ */
+export function filterRangesValid(f: Pick<AutoQueueFilterFields, 'minRating' | 'maxRating' | 'fromYear' | 'toYear' | 'minLength' | 'maxLength'>): boolean {
+  if (f.minRating > f.maxRating) return false
+  if (f.fromYear !== '' && f.toYear !== '' && Number(f.fromYear) > Number(f.toYear)) return false
+  if (f.minLength !== '' && f.maxLength !== '' && Number(f.minLength) > Number(f.maxLength)) return false
+  return true
 }
 
 /**
