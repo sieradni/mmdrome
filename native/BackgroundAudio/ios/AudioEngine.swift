@@ -711,7 +711,15 @@ public final class NativeAudioEngine: NSObject {
 
     private func effectiveDuration(of track: NativeTrack) -> Double {
         if track.duration > 0 { return track.duration }
-        if let cached = computedDurations[track.trackId] { return cached }
+        // Memo hit requires the file to still be in the loader cache: an
+        // evicted file (cleanup radius, corrupt re-download) must re-probe once
+        // it lands again, or a re-downloaded file with a different length keeps
+        // a stale duration forever. `localURL` is a cache lookup (no file I/O),
+        // so this guard keeps the memo fresh at ~zero cost.
+        if let cached = computedDurations[track.trackId],
+           loader.localURL(for: track) != nil {
+            return cached
+        }
         var duration = 0.0
         if let url = loader.localURL(for: track),
            let file = try? AVAudioFile(forReading: url) {
