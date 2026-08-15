@@ -12,6 +12,7 @@ import {
   buildPathTimestamps,
   findChangedTracks,
   computeIndexFingerprint,
+  slimIndexForPersistence,
   isAudioFilePath,
   verifyEntryAgainstTrack,
 } from "./metadataReader"
@@ -139,7 +140,7 @@ export async function refreshIndex(): Promise<boolean> {
     indexBaseKey = baseKey
     indexBuilt = true
     await applyCachedTags()
-    await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey, fingerprint: computeIndexFingerprint(index) })
+    await saveWebdavFileIndex({ entries: slimIndexForPersistence(index), buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey, fingerprint: computeIndexFingerprint(index) })
     return true
   } catch {
     return false
@@ -157,7 +158,7 @@ export async function rebuildIndex(): Promise<void> {
   indexBaseKey = baseKey
   indexBuilt = true
   await applyCachedTags()
-  await saveWebdavFileIndex({ entries: index, buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey, fingerprint: computeIndexFingerprint(index) })
+  await saveWebdavFileIndex({ entries: slimIndexForPersistence(index), buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey, fingerprint: computeIndexFingerprint(index) })
 }
 
 // ── In-file identity tags (content probing) ─────────────────────────────
@@ -438,7 +439,7 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
     const cache = get(metadataCache)
 
     const timestamps = buildPathTimestamps(index)
-    const { changed, unmatched } = findChangedTracks(tracks, cache, index, timestamps)
+    const { changed, unmatched } = findChangedTracks(tracks, cache, timestamps)
 
     for (const t of changed) queue.push({ trackId: t.trackId })
 
@@ -500,7 +501,16 @@ async function processItem(item: QueueItem): Promise<void> {
   const startedGen = scanGen
   const tracks = get(library)
   const track = tracks.find((t) => t.trackId === item.trackId)
-  if (!track || scanGen !== startedGen) return
+  if (scanGen !== startedGen) return
+  if (!track) {
+    // Mid-scan library replacement: the queued track no longer exists in the
+    // new library. Count it scanned so the drain loop can still reach
+    // done === total and complete — otherwise the progress bar stalls at
+    // "Scanning X/Y" forever (TODO 3.6c).
+    scannedCount++
+    updateScanProgress()
+    return
+  }
 
   const existing = get(metadataCache).get(track.trackId)
   if (existing && (existing.syncStatus === 'pending_sync' || existing.ignored)) {
@@ -549,10 +559,11 @@ async function processItem(item: QueueItem): Promise<void> {
       )
       if (scanGen !== myGen) return
 
-      // The user may have edited rating/loved while the fetch was in flight —
-      // don't clobber the newer pending edit with stale file tags.
+      // The user may have edited rating/loved (or dismissed the row) while the
+      // fetch was in flight — don't clobber the newer pending edit or a
+      // dismissal with stale file tags.
       const current = get(metadataCache).get(track.trackId)
-      if (current && current.syncStatus === 'pending_sync') {
+      if (current && (current.syncStatus === 'pending_sync' || current.ignored)) {
         scannedCount++
         updateScanProgress()
         return
@@ -573,6 +584,9 @@ async function processItem(item: QueueItem): Promise<void> {
         webdavBase: currentIndexKey(),
         comments: navidrome ? current?.comments : meta.comments,
         matchSource: 'manual',
+        // The full-row replace must not drop a dismissal made before/during
+        // the re-read (aligns with the auto-match branch, TODO 3.6b).
+        ignored: current?.ignored,
       })
       scannedCount++
     } catch {

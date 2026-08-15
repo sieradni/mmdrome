@@ -19,8 +19,14 @@ function getChildText(parent: Element, tag: string, ns: string): string {
   return el?.textContent ?? ""
 }
 
-function stripBasePath(baseUrl: string, href: string): string {
-  const decoded = decodeURIComponent(href)
+export function stripBasePath(baseUrl: string, href: string): string {
+  let decoded = href
+  try {
+    decoded = decodeURIComponent(href)
+  } catch {
+    // A malformed href (e.g. a stray '%') must not abort the whole index
+    // build — fall back to the raw value and let the strip below proceed.
+  }
   try {
     const urlPath = new URL(normalizeUrl(baseUrl)).pathname.replace(/\/+$/, "")
     if (urlPath && decoded.toLowerCase().startsWith(urlPath.toLowerCase())) {
@@ -195,13 +201,29 @@ export function computeIndexFingerprint(index: WebdavFileEntry[]): string {
 }
 
 /**
+ * Slims the in-memory (tagged) index down to the fields the PERSISTED snapshot
+ * actually needs (TODO 3.6a). The content-probe `tags` live in their own
+ * `webdavFileTags` cache and bloat every persisted index row; the fingerprint
+ * diff hashes only `path`+`size`, and the debug fallback reads path/filename/
+ * size. Drops `tags` so the snapshot stays small — but the index is still
+ * persisted (the prior-fingerprint diff depends on it).
+ */
+export function slimIndexForPersistence(index: WebdavFileEntry[]): WebdavFileEntry[] {
+  return index.map((e) => ({
+    path: e.path,
+    filename: e.filename,
+    size: e.size,
+    lastModified: e.lastModified,
+  }))
+}
+
+/**
  * Given the current PROPFIND index and cached metadata, return the set of
  * tracks whose file has been modified (or that need matching for the first time).
  */
 export function findChangedTracks(
   tracks: Track[],
   metadata: Map<string, LocalMetadataStore>,
-  newIndex: WebdavFileEntry[],
   pathTimestamps: Map<string, string>,
 ): { changed: Track[]; unmatched: Track[] } {
   const changed: Track[] = []

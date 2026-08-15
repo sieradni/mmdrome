@@ -528,17 +528,31 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       `src/lib/webdavUtils.ts` `webdavBaseKey`,
       `src/lib/metadataScanner.ts` `currentIndexKey`,
       `src/lib/syncEngine.ts` `runManualWebDAVSync` — MED
-- [ ] **3.6** Index/probe hygiene — (a) `refreshIndex`/`rebuildIndex` persist
-      the full TAGGED index to Dexie on every probe (the prior-fingerprint diff
-      depends on it — slim the persisted shape, don't stop persisting);
-      (b) the manual-bind fetch path re-checks `pending_sync` but NOT `ignored`,
-      and the `updateMetadata` full-row replace DROPS the ignored flag (the
-      auto-match branch re-checks it — align both); (c) `processItem`'s mid-scan
-      library-replacement guard returns without `scannedCount++` → progress
-      stalls forever (count, don't stall); (d) `stripBasePath`'s
-      `decodeURIComponent` sits outside the try/catch — one malformed href
-      aborts the whole index. `src/lib/metadataScanner.ts` `processItem`,
-      `src/lib/metadataReader.ts` `stripBasePath` — LOW
+- [x] **3.6** Index/probe hygiene — closed 2026-08-14:
+      (a) the persisted index snapshot now goes through pure
+      `slimIndexForPersistence` (content-probe `tags` dropped — they live in
+      the `webdavFileTags` cache; `path`/`filename`/`size`/`lastModified` kept;
+      the fingerprint still hashes `path|size`, so the prior-fingerprint diff
+      is unaffected) in both `refreshIndex` and `rebuildIndex`;
+      (b) the manual-bind re-READ (`processItem`'s manual path) now re-checks
+      `pending_sync` AND `ignored` after its fetch and carries `ignored`
+      through the `updateMetadata` full-row replace — a mid-fetch dismissal is
+      no longer dropped (aligned with the auto-match branch);
+      (c) `processItem`'s `!track` guard (mid-scan library replacement) now
+      counts `scannedCount++` + `updateScanProgress()` instead of returning
+      silently, so the drain loop can still reach `done === total` and complete
+      instead of stalling at "Scanning X/Y";
+      (d) `stripBasePath` now falls back to the raw href when
+      `decodeURIComponent` throws, so one malformed PROPFIND href can't abort
+      the whole index build.
+      Also removed the dead `newIndex` parameter from `findChangedTracks`
+      (surfaced once the new suite type-checked `metadataReader` under the
+      strict test tsconfig). **Test**: `tests/indexHygiene.test.ts` (slim keeps
+      fields/drops tags/doesn't mutate/keeps the fingerprint; stripBasePath
+      path + full-URL strip + malformed-href survival). (b)/(c) are
+      scanner-glue, `[not test-pinned]`.
+      `src/lib/metadataScanner.ts` `processItem`/`refreshIndex`/`rebuildIndex`,
+      `src/lib/metadataReader.ts` `slimIndexForPersistence`/`stripBasePath` — LOW
 - [ ] **3.6t** **[TEST]** extract the pure matching/scoring core
       (`matchTrackToWebdav`, candidates, evidence gate, fingerprint FNV,
       mtime-epoch compare) into a DOM/Dexie-free module; port the empirical
