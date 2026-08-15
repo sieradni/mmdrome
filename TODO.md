@@ -679,7 +679,7 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       `tests/e2e/viewstate.spec.ts` (scroll the Settings container, reload,
       assert the position returns — bundle-level; fails if the restore breaks
       or the save path stops persisting). `src/views/SettingsView.svelte` — MED
-- [ ] **4.3** Dead code removal — JS half CLOSED 2026-08-15: removed
+- [x] **4.3** Dead code removal — closed 2026-08-15: removed
       `readFileMetadataWithIndex` (metadataReader — with it, the
       `matchTrackToWebdav`/`Track` imports die and the reader's core edge
       disappears entirely), `clearCoverCache` (coverArtCache),
@@ -696,7 +696,8 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       removing the chain would break the DI suites and delete the designed
       lifecycle. Keep it. `updateNowPlaying` removed 2026-08-15 (TS interface
       + Swift registration/handler, one lockstep commit with 4.4/4.5 — the
-      plugin method was dead on both sides). — LOW
+      plugin method was dead on both sides; Swift half CI-verified, ios.yml
+      run 73 green). — LOW
 - [x] **4.4** Native lock-screen artwork race — closed 2026-08-15:
       `ArtworkRequestGuard` (pure core) models request/completion ordering ×
       current-trackId; the controller records the latest request, and the
@@ -709,7 +710,9 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       reference vectors); (b) `effectiveDuration` memoizes positive computed
       durations per trackId, so the 250 ms poll / `refreshNowPlaying` no longer
       re-open `AVAudioFile` for zero-duration tracks while stopped (0 never
-      cached — a not-yet-downloaded file re-probes until it lands); (c)
+      cached — a not-yet-downloaded file re-probes until it lands; the memo
+      hit also requires the file to still be in the loader cache, so an
+      evict + re-download re-probes — `a4a45f7`); (c)
       SessionController retains its block-observer tokens and removes them in
       `deinit` — registrations are no longer unremovable. (CapacitorHttp
       `status:-1` REFUTED for the v8 iOS stack — network errors reject, never
@@ -731,24 +734,19 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
 
 ## Phase 5 — Documentation & knowledge base
 
-- [ ] **5.1** AGENTS.md corrections — `_bgTrackEndHandled` does not exist (§3;
-      actual: `_handlingEnd` + sleep-park trackId + `_enterBgSeq`);
-      `effectiveDuration` is still exported and used; the CJK fix was applied
-      only to `normalizeForMatch`, not `normalizeForHint`; "prompt arrays kept
-      only for capped rows" is false (retained on every row; the cap is
-      client-side — the function's own docstring repeated the falsehood, fixed
-      2026-08-11); "`deriveFileType` in `navidrome.ts`" → `navidromeApi.ts`;
-      the "native setSpeed doesn't echo to the store" note is stale
-      (`engineFacade.ts:51/61` write stores since 2026-08-05). All sub-claims
-      re-verified; corrections applied in the docs/DEVLOG.md 2026-08-11 entry.
-- [ ] **5.2** Document the decided invariants: sleep-timer lifetime vs queue
-      resets (0.2), webview-reload behavior (1.5), `refreshQueue` divergence
-      policy (1.4), the PlaybackCore transport contract + bg state machine
-      (1.0), queue semantics (2.4 option b, 2.5 unbounded), and the test
-      harness (0.5) conventions — where suites live, the purity rule.
-- [ ] **5.3** Add a "Verification" note to AGENTS.md (`npm run check` + `npm
-      test` + `ios.yml` as the only native compile gate) and reference this
-      TODO file. — applied 2026-08-11 (§5 of AGENTS.md now carries the gates).
+- [x] **5.1** AGENTS.md corrections — closed: all sub-claims re-verified and
+      applied (2026-08-11 DEVLOG entry); re-verified 2026-08-15 close-out —
+      `_bgTrackEndHandled` has zero refs, `_enterBgSeq` appears only in
+      negation/history comments, `normalizeForHint` is the CJK-safe alias of
+      `normalizeForMatch` (matchNormalize.ts:21), `effectiveDuration` is
+      exported (appState.ts:108), `deriveFileType` lives in `navidromeApi.ts`.
+- [x] **5.2** Document the decided invariants — closed: applied incrementally
+      as each decision landed — sleep-timer lifetime E8, webview-reload
+      reconcile E10, `refreshQueue` divergence §3.4/E7, PlaybackCore transport
+      contract + bg machine §2.3/A4/A5/A6, queue semantics B1/B2, test harness
+      F3. Re-verified 2026-08-15 close-out.
+- [x] **5.3** Add a "Verification" note to AGENTS.md — closed 2026-08-11
+      (§5 of AGENTS.md carries the gates); re-verified 2026-08-15 close-out.
 
 ---
 
