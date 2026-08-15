@@ -70,3 +70,21 @@ export function shouldKeepPushPending(stale: PushRowSnapshot, live: PushRowSnaps
     live.ignored !== stale.ignored
   )
 }
+
+/**
+ * Pure pre-PUT re-check (TODO 3.9). `runManualWebDAVSync` loops over a
+ * START-of-loop snapshot; between that snapshot and the GET→PUT the user may
+ * re-bind the row (new `webdavPath`), dismiss it (`ignored`), clear its path,
+ * or swap credentials (new `currentBaseKey`) — writing tags to the OLD target
+ * would be wrong, and the POST-PUT re-pend (3.1) cannot undo the write. True =
+ * abort this row's PUT (the caller un-marks its path and skips, without
+ * counting synced). `undefined` live row = no live edit, proceed.
+ */
+export function shouldSkipBeforePut(stale: PushRowSnapshot, live: PushRowSnapshot | undefined, currentBaseKey: string): boolean {
+  if (!live) return false
+  if (!live.webdavPath) return true
+  if (live.ignored) return true
+  if (live.webdavPath !== stale.webdavPath) return true
+  if (live.webdavBase !== currentBaseKey) return true
+  return false
+}

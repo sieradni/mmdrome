@@ -1,5 +1,5 @@
 import { get } from 'svelte/store'
-import { sleepTimer } from '../stores/appState'
+import { sleepTimer, type SleepTimerState } from '../stores/appState'
 import { Capacitor } from '@capacitor/core'
 import { BackgroundAudio } from './nativePlugin'
 import { rearmDecision } from './sleepTimerMirror'
@@ -17,6 +17,18 @@ import { audioManager } from './audioManager'
  */
 
 const TICK_MS = 1000
+
+/**
+ * Pure web-countdown step: given the store state and `now`, the next remaining
+ * seconds and whether the timer expired. The manager's interval drives this;
+ * exported pure so the web timer policy is pinned without timers (TODO 3.12).
+ */
+export function webCountdownStep(t: SleepTimerState, now: number): { expired: boolean; remainingSeconds?: number } {
+  if (!t.active || t.mode !== 'minutes') return { expired: false }
+  const remaining = Math.max(0, t.endsAt - now)
+  if (remaining <= 0) return { expired: true }
+  return { expired: false, remainingSeconds: remaining / 1000 }
+}
 
 class SleepTimerController {
   private timer: ReturnType<typeof setInterval> | null = null
@@ -167,14 +179,15 @@ class SleepTimerController {
   private startCountdown(): void {
     const native = this.isNative()
     this.timer = setInterval(() => {
-      const t = get(sleepTimer)
-      if (!t.active || t.mode !== 'minutes') return
-      const remaining = Math.max(0, t.endsAt - Date.now())
-      if (remaining <= 0) {
+      const step = webCountdownStep(get(sleepTimer), Date.now())
+      if (step.expired) {
         this.clearLocal(!native)
         return
       }
-      sleepTimer.update((s) => (s.active ? { ...s, remainingSeconds: remaining / 1000 } : s))
+      if (step.remainingSeconds !== undefined) {
+        const remaining = step.remainingSeconds
+        sleepTimer.update((s) => (s.active ? { ...s, remainingSeconds: remaining } : s))
+      }
     }, TICK_MS)
   }
 

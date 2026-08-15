@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { submitNowPlaying, submitScrobble, type NavidromeConfig } from '../src/lib/navidromeApi'
+import { submitNowPlaying, submitScrobble, loadNavidromeSongs, type NavidromeConfig } from '../src/lib/navidromeApi'
 
 // The Subsonic/OpenSubsonic API has no `nowPlaying` endpoint: a "now playing"
 // notification is `scrobble?submission=false`, and a completed listen is
@@ -57,4 +57,39 @@ test('submitScrobble posts to scrobble with submission=true and a millisecond ti
   assert.equal(url.searchParams.get('id'), 'song-2')
   assert.equal(url.searchParams.get('submission'), 'true')
   assert.equal(url.searchParams.get('time'), '1784102400123')
+})
+
+test('loadNavidromeSongs caps pagination so an offset-ignoring server terminates (3.3)', async (t) => {
+  // A misbehaving server that ignores songOffset repeats the same full page
+  // forever; without the cap the loop accumulates unboundedly. The cap is
+  // 200 pages × 500 = 100k songs.
+  const page = Array.from({ length: 500 }, (_, i) => ({
+    id: `s-${i}`, title: `T${i}`, artist: 'A', album: 'B', duration: 100,
+  }))
+  const body = JSON.stringify({ 'subsonic-response': { status: 'ok', version: '1.16.1', searchResult3: { song: page } } })
+  const original = globalThis.fetch
+  globalThis.fetch = (async () => new Response(body, {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })) as typeof fetch
+  t.after(() => { globalThis.fetch = original })
+
+  const { songs } = await loadNavidromeSongs(config)
+  assert.equal(songs.length, 100_000, 'the loop terminates at the page cap')
+})
+
+test('loadNavidromeSongs stops early when a page is short (partial tail)', async (t) => {
+  const page = Array.from({ length: 120 }, (_, i) => ({
+    id: `t-${i}`, title: `T${i}`, artist: 'A', album: 'B', duration: 100,
+  }))
+  const body = JSON.stringify({ 'subsonic-response': { status: 'ok', version: '1.16.1', searchResult3: { song: page } } })
+  const original = globalThis.fetch
+  globalThis.fetch = (async () => new Response(body, {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })) as typeof fetch
+  t.after(() => { globalThis.fetch = original })
+
+  const { songs } = await loadNavidromeSongs(config)
+  assert.equal(songs.length, 120, 'a page shorter than PAGE_SIZE ends the loop')
 })

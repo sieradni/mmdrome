@@ -4,7 +4,8 @@ import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache
 import { modifyMetadataBuffer } from "$lib/tagWriter"
 import { metadataCache, settings, library, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
 import { setWebdavCredentials, scanAll, setServerLastScan } from "./metadataScanner"
-import { shouldKeepPushPending } from "./pushReconcile"
+import { shouldKeepPushPending, shouldSkipBeforePut } from "./pushReconcile"
+import { cachedLibraryUsable } from "./syncCachePolicy"
 import {
   testNavidromeConnection as navidromeTestConnection,
   loadNavidromeSongs as navidromeLoadSongs,
@@ -173,7 +174,7 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
     // stays on both the connection and loadResult so the UI reports the
     // stale-but-present source instead of silently passing off cache as live.
     const cached = await getSongLibraryCache()
-    if (cached && cached.baseKey === baseKey && cached.tracks.length > 0) {
+    if (cached && cachedLibraryUsable(cached, baseKey)) {
       navidromeSetCachedConfig(config)
       return {
         connection,
@@ -200,17 +201,14 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
   // lastScan was required for BOTH checking and saving the cache, so servers
   // whose getScanStatus is empty/failing re-paginated the whole catalog on
   // every launch.
-  if (!forceRefresh) {
-    const cached = await getSongLibraryCache()
-    if (cached && cached.baseKey === baseKey && cached.tracks.length > 0
-        && (lastScan ? cached.lastScan === lastScan : true)) {
-      navidromeSetCachedConfig(config)
-      return {
-        connection,
-        songs: cached.tracks,
-        loadResult: { loaded: cached.tracks.length, failed: 0, cached: true },
-        lastScan,
-      }
+  const cached = await getSongLibraryCache()
+  if (cached && cachedLibraryUsable(cached, baseKey, { forceRefresh, lastScan, requireFreshScan: true })) {
+    navidromeSetCachedConfig(config)
+    return {
+      connection,
+      songs: cached.tracks,
+      loadResult: { loaded: cached.tracks.length, failed: 0, cached: true },
+      lastScan,
     }
   }
 
@@ -222,7 +220,7 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
   // The error stays on loadResult so the UI can report it.
   if (result.error && songs.length === 0) {
     const cached = await getSongLibraryCache()
-    if (cached && cached.baseKey === baseKey && cached.tracks.length > 0) {
+    if (cached && cachedLibraryUsable(cached, baseKey)) {
       navidromeSetCachedConfig(config)
       return {
         connection,
@@ -345,6 +343,16 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
     pushedPaths.add(davPath)
 
     try {
+      // The loop-start snapshot may be stale: a mid-push re-bind (new path),
+      // dismissal, path clear, or credential swap must not write tags to the
+      // OLD file — the POST-PUT re-pend cannot undo the write (3.9). Re-check
+      // the LIVE row before the PUT and skip (un-marking the path) instead.
+      const liveBefore = get(metadataCache).get(track.trackId)
+      if (shouldSkipBeforePut(track, liveBefore, currentBaseKey)) {
+        pushedPaths.delete(davPath)
+        skipped++
+        continue
+      }
       // GET with ETag for concurrency detection
       const { data: raw, etag } = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)
       const modified = await modifyMetadataBuffer(raw, track.rating, track.loved, fileTypeOf(track.trackId, track.fileType))
@@ -353,6 +361,14 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
         await webdavPutAtomic(webdavUrl, davPath, modified, webdavUser, webdavToken, etag)
       } catch (err) {
         if (err instanceof ConflictError) {
+          // Re-check the live row once more — the retry's re-PUT has the same
+          // stale-snapshot hazard as the first attempt.
+          const liveRetry = get(metadataCache).get(track.trackId)
+          if (shouldSkipBeforePut(track, liveRetry, currentBaseKey)) {
+            pushedPaths.delete(davPath)
+            skipped++
+            continue
+          }
           // File changed since we read it — re-read, re-apply, retry once
           const { data: refreshed, etag: newEtag } = await webdavGet(
             webdavUrl, davPath, webdavUser, webdavToken,

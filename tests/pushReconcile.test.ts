@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { shouldKeepPushPending, type PushRowSnapshot } from '../src/lib/pushReconcile'
+import { shouldKeepPushPending, shouldSkipBeforePut, type PushRowSnapshot } from '../src/lib/pushReconcile'
 
 function row(over: Partial<PushRowSnapshot> = {}): PushRowSnapshot {
   return { rating: 70, loved: true, syncStatus: 'pending_sync', webdavPath: '/m/a.mp3', webdavBase: 'u|user', comments: 'c', ...over }
@@ -64,4 +64,26 @@ test('matchSource diverges (manual bind made/revoked) → keep pending', () => {
 test('ignored diverges (mid-push dismissal) → keep pending', () => {
   assert.equal(shouldKeepPushPending(row(), row({ ignored: true })), true)
   assert.equal(shouldKeepPushPending(row({ ignored: true }), row({ ignored: false })), true)
+})
+
+test('shouldSkipBeforePut: no live edit → proceed with the snapshot', () => {
+  assert.equal(shouldSkipBeforePut(row(), undefined, 'u|user'), false)
+  assert.equal(shouldSkipBeforePut(row(), row(), 'u|user'), false)
+  assert.equal(shouldSkipBeforePut(row(), row({ rating: 90, loved: false, comments: 'x' }), 'u|user'), false, 'rating/loved/comments edits do not abort the PUT (the POST re-pend covers them)')
+})
+
+test('shouldSkipBeforePut: live path cleared mid-push → abort', () => {
+  assert.equal(shouldSkipBeforePut(row(), row({ webdavPath: undefined }), 'u|user'), true)
+})
+
+test('shouldSkipBeforePut: live dismissal mid-push → abort', () => {
+  assert.equal(shouldSkipBeforePut(row(), row({ ignored: true }), 'u|user'), true)
+})
+
+test('shouldSkipBeforePut: live re-bind (new path) → abort', () => {
+  assert.equal(shouldSkipBeforePut(row(), row({ webdavPath: '/m/b.mp3' }), 'u|user'), true)
+})
+
+test('shouldSkipBeforePut: live baseKey differs from the current server → abort', () => {
+  assert.equal(shouldSkipBeforePut(row(), row({ webdavBase: 'v|user' }), 'u|user'), true)
 })

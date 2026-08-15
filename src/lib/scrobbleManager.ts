@@ -27,6 +27,32 @@ interface Playhead {
   startedAt: number
 }
 
+export interface PlayheadStep {
+  played: number
+  lastPos: number
+}
+
+/**
+ * Pure A9 accrual step. Position deltas above `MAX_SEEK_DELTA` are manual
+ * seeks: a forward jump re-anchors without crediting the skipped span (it was
+ * never listened to), a backward jump resets `played` (the audio is being
+ * re-listened). Normal playback accrues positive deltas, and `played` never
+ * exceeds the track duration (poll-glitch guard). Exported pure so the seek
+ * policy is pinned without the store/DOM machinery (TODO 3.10).
+ */
+export function advancePlayhead(played: number, lastPos: number, pos: number, duration: number): PlayheadStep {
+  const delta = pos - lastPos
+  if (delta > MAX_SEEK_DELTA) {
+    return { played, lastPos: pos }
+  }
+  if (delta < -MAX_SEEK_DELTA) {
+    return { played: 0, lastPos: pos }
+  }
+  const nextPlayed = delta > 0 ? played + delta : played
+  const clamped = duration > 0 && nextPlayed > duration ? duration : nextPlayed
+  return { played: clamped, lastPos: pos }
+}
+
 class ScrobbleManager {
   private enabled = false
   private playhead: Playhead | null = null
@@ -64,26 +90,9 @@ class ScrobbleManager {
   private onTick(pos: number): void {
     const ph = this.playhead
     if (!ph) return
-    const delta = pos - ph.lastPos
-    if (delta > MAX_SEEK_DELTA) {
-      // Manual forward seek: the skipped span was not listened to — do not
-      // credit it as play time, but anchor the playhead at the new position.
-      ph.lastPos = pos
-      return
-    }
-    if (delta < -MAX_SEEK_DELTA) {
-      // Manual backward seek: the audio from here on is being re-listened —
-      // restart the listening credit at the new position.
-      ph.played = 0
-      ph.lastPos = pos
-      return
-    }
-    if (delta > 0) ph.played += delta
-    ph.lastPos = pos
-    // A track can never accrue more listening time than its own length
-    // (guard against poll glitches inflating the count).
-    const dur = ph.track.duration
-    if (dur > 0 && ph.played > dur) ph.played = dur
+    const step = advancePlayhead(ph.played, ph.lastPos, pos, ph.track.duration)
+    ph.played = step.played
+    ph.lastPos = step.lastPos
   }
 
   private onTrackChange(track: Track | null): void {
@@ -132,7 +141,8 @@ class ScrobbleManager {
   }
 }
 
-function canScrobble(duration: number, played: number): boolean {
+/** Last.fm-style listen threshold: ≥ 50 % of a short track, ≥ 4 min of a long one. */
+export function canScrobble(duration: number, played: number): boolean {
   if (!duration || duration <= 0 || played <= 0) return false
   if (duration >= MIN_LISTEN_SECONDS) return played >= MIN_LISTEN_SECONDS
   return played >= duration * SCROBBLE_RATIO

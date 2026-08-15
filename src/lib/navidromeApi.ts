@@ -349,10 +349,14 @@ export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ son
     // (empty library → fresh-load path never called setCachedConfig before).
     setCachedConfig(config)
 
-    // Fetch all songs via search3 pagination (standard Subsonic endpoint)
+    // Fetch all songs via search3 pagination (standard Subsonic endpoint).
+    // The loop is capped so a server that ignores songOffset (repeating the
+    // same page) terminates instead of accumulating forever (3.3).
     const PAGE_SIZE = 500
+    const MAX_PAGES = 200 // 100k songs at 500/page — a sane ceiling
     let offset = 0
-    while (true) {
+    let pages = 0
+    while (pages < MAX_PAGES) {
       const resp = await callSubsonic(config, 'search3.view', {
         query: '',
         songCount: PAGE_SIZE,
@@ -364,6 +368,7 @@ export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ son
       if (!Array.isArray(page) || page.length === 0) break
       songs.push(...page)
       offset += page.length
+      pages++
       if (page.length < PAGE_SIZE) break
     }
 

@@ -516,22 +516,40 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       includes `ignored` rows that Push skips → overstated count.
       `src/lib/syncEngine.ts` `webdavPutAtomic`,
       `src/views/SettingsView.svelte` `safeCount` — LOW
-- [ ] **3.9** Pre-PUT live-row re-validation — 3.1 widened the POST-PUT re-pend
-      so a mid-push dismissal/re-bind is not flattened away, but the loop still
-      PUTs against the START-of-loop snapshot: a track dismissed (`ignored`) or
-      re-bound (new `webdavPath`) during the GET→modify→PUT window still gets
-      tags written to the OLD/rejected file (the re-pend preserves the flag but
-      cannot undo the write). Re-check the LIVE row immediately before the PUT
-      (and the conflict retry's re-PUT) against the SAME loop-start
-      `currentBaseKey` and skip without counting synced:
-      `!live.webdavPath || live.ignored || live.webdavPath !== stale.webdavPath
-      || live.webdavBase !== currentBaseKey`. Mind the `pushedPaths` dedupe (a
-      skipped row must un-mark its path so a later same-path row can still
-      push). OUT OF SCOPE: a full mid-push credential swap that has not yet
-      re-stamped rows (would need re-reading url/user/token, not just baseKey;
-      it self-heals via 3.1's `webdavBase` diff on the next scan). **Test**:
-      re-check decision as a pure function (stale snapshot × live row × baseKey).
-      `src/lib/syncEngine.ts` `runManualWebDAVSync` — MED
+- [x] **3.9** Pre-PUT live-row re-validation — closed 2026-08-15: pure
+      `shouldSkipBeforePut(stale, live, currentBaseKey)` in `pushReconcile.ts`
+      (skip when `!live.webdavPath || live.ignored || live.webdavPath !==
+      stale.webdavPath || live.webdavBase !== currentBaseKey`), re-checked
+      before BOTH the initial PUT and the conflict retry's re-PUT in
+      `runManualWebDAVSync` — a skipped row un-marks its `pushedPaths` entry
+      (so a later same-path row can still push) and counts skipped, never
+      synced. Pinned in `tests/pushReconcile.test.ts`. OUT OF SCOPE kept: a
+      full mid-push credential swap that has not yet re-stamped rows (would
+      need re-reading url/user/token, not just baseKey; self-heals via 3.1's
+      `webdavBase` diff on the next scan). `src/lib/syncEngine.ts`
+      `runManualWebDAVSync` — MED
+- [x] **3.10** **[TEST]** scrobble accrual policy suite — closed 2026-08-15:
+      pure `advancePlayhead(played, lastPos, pos, duration)` + exported
+      `canScrobble` in `scrobbleManager.ts` (manager's `onTick` now consumes
+      the step), pinned by `tests/scrobbleAccrual.test.ts` — forward seeks ≥
+      5 s never credited, backward ≥ 5 s resets `played`, positive deltas
+      accrue, clamp to duration, 50 % / 4-min listen rule. A9 tag updated to
+      `[test-enforced: tests/scrobbleAccrual.test.ts]`. — HIGH
+- [x] **3.11** **[TEST]** syncEngine connect/load policy extraction — closed
+      2026-08-15: pure `cachedLibraryUsable(cached, baseKey, opts)` in the new
+      `src/lib/syncCachePolicy.ts` (baseKey validation, non-empty, fresh-path
+      forceRefresh + scan-freshness gating, offline fallback deliberately NOT
+      gated by forceRefresh — matches the original semantics exactly), wired
+      into `connectNavidrome`'s fresh/offline paths, pinned by
+      `tests/syncCachePolicy.test.ts`. D14 tag updated to
+      `[test-enforced: tests/syncCachePolicy.test.ts]`. `src/lib/syncEngine.ts`
+      `connectNavidrome` — MED
+- [x] **3.12** **[TEST]** web `sleepTimerManager` suite — closed 2026-08-15:
+      pure `webCountdownStep` in `src/lib/sleepTimer.ts` (tick/expire/stop
+      transitions; manager's `tick`/`stop` now consume it), pinned by
+      `tests/sleepTimerWeb.test.ts` — countdown expiry → pause via the
+      registered handler, `parkAtEnd`/`isParkedAtEnd`/`parkedTrackId` carry,
+      `consumePendingStop`/`clearPendingStop`. `src/lib/sleepTimer.ts` — MED
 
 ## Phase 4 — UI & state layer
 
@@ -569,6 +587,19 @@ symptom. Replace with a transport abstraction, **test-first at every step**:
       unremovable. (CapacitorHttp `status:-1` REFUTED for the v8 iOS stack —
       network errors reject, never resolve with −1; dropped.)
       `AudioEngine.swift` `destinationURL`/`state()`, `SessionController.swift` — LOW
+- [x] **4.6** **[TEST]** eqStore suite — closed 2026-08-15:
+      `tests/eqStore.test.ts` pins `initEqStore` restore (saved-state preset
+      fallback, bypass via `persisted`), `saveUserPreset`'s builtin-name →
+      `custom_` re-id, `deleteUserPreset`'s active-preset fallback to flat,
+      `saveAsCurrentPreset` branching — row-shaped Dexie stubs per F3 (filter
+      + get/put on ONE shared Table prototype). `src/lib/eq/eqStore.ts` — MED
+- [x] **4.7** **[TEST]** e2e depth — closed 2026-08-15: `tests/e2e/persistence.spec.ts`
+      (a) QueueView filter panel: clear maxRating/minRating, assert the inputs
+      snap to 100/0 (pins the 2026-08-15 rating-clear fix in the real bundle);
+      (b) round-trips: minRating set to 40 and the shuffle toggle both survive
+      a reload (persisted-store restore in the bundle; the loop toggle sits in
+      a currentTrack-only region and was swapped for shuffle — the Controls-row
+      toggle reachable on the empty app). No library/server needed. — LOW
 
 ## Phase 5 — Documentation & knowledge base
 
