@@ -2,7 +2,7 @@ import { get } from "svelte/store"
 import { writable } from "svelte/store"
 import { library, metadataCache, metadataScanState, settings, updateMetadata } from "../stores/appState"
 import type { Track } from "../stores/appState"
-import { saveWebdavFileIndex, getWebdavFileIndex, getFileTagsForBase, putFileTag } from "./db"
+import { saveWebdavFileIndex, clearWebdavFileIndex, getWebdavFileIndex, getFileTagsForBase, putFileTag } from "./db"
 import type { LocalMetadataStore, FileTagCacheEntry } from "./db"
 import { buildWebdavFileIndex, readFileMetadata } from "./metadataReader"
 import {
@@ -18,6 +18,8 @@ import {
 } from "./metadataCore"
 import { filenameHintsTitle, normalizeForHint } from "./matchNormalize"
 import { webdavBaseKey, webdavFetch, authHeaders, buildWebdavUrl, isTempFile } from "./webdavUtils"
+import { normalizeWebdavCredentials, sameWebdavCredentials, isCurrentWebdavSession } from "./webdavSession"
+import type { WebdavCredentials, WebdavSession } from "./webdavSession"
 import type { FileMetadata } from "./metadataReader"
 import type { WebdavFileEntry } from "./db"
 
@@ -40,6 +42,11 @@ interface QueueItem {
 
 let queue: QueueItem[] = []
 let activeCount = 0
+let activeDrain: Promise<void> | null = null
+/** Serializes index persistence and credential-change invalidation. A stale
+ * request that was already writing must finish before the invalidation delete,
+ * so it cannot resurrect an old server snapshot after a credential swap. */
+let indexPersistence: Promise<void> = Promise.resolve()
 let cancelled = false
 let scanGen = 0
 /** Paths claimed by in-flight items of the CURRENT scan run. JS runs to
@@ -76,6 +83,44 @@ function currentIndexKey(): string {
   return webdavBaseKey(webdavUrl, webdavUser)
 }
 
+function captureSession(): WebdavSession | null {
+  if (!webdavUrl || !webdavUser || !webdavToken) return null
+  return {
+    url: webdavUrl,
+    user: webdavUser,
+    token: webdavToken,
+    baseKey: currentIndexKey(),
+    generation: scanGen,
+  }
+}
+
+function currentCredentials(): WebdavCredentials {
+  return { url: webdavUrl, user: webdavUser, token: webdavToken }
+}
+
+function isCurrentSession(session: WebdavSession): boolean {
+  return isCurrentWebdavSession(session, currentCredentials(), scanGen)
+}
+
+function queueIndexWrite(session: WebdavSession, entries: WebdavFileEntry[], lastScan: string): Promise<boolean> {
+  const slim = slimIndexForPersistence(entries)
+  const fingerprint = computeIndexFingerprint(entries)
+  let result = false
+  const write = indexPersistence.then(async () => {
+    if (!isCurrentSession(session)) return
+    await saveWebdavFileIndex({
+      entries: slim,
+      buildTimestamp: Date.now(),
+      lastScan,
+      baseKey: session.baseKey,
+      fingerprint,
+    })
+    result = isCurrentSession(session)
+  })
+  indexPersistence = write.catch(() => {})
+  return write.then(() => result)
+}
+
 /**
  * The live in-memory PROPFIND index (with content-probe tags applied), for
  * callers that need full-fidelity matching after a fresh `refreshIndex()`. The
@@ -88,13 +133,16 @@ export function getCurrentIndex(): WebdavFileEntry[] {
 }
 
 export function setWebdavCredentials(url: string, user: string, token: string): void {
-  // Normalize through the SAME derivation currentIndexKey() uses (TODO 3.5):
-  // trim-only, so a whitespace-only edit never clears the index/tag cache
-  // (legacy persisted settings may carry stray whitespace).
-  const davUrl = url.trim()
-  const davUser = user.trim()
-  const davKey = webdavBaseKey(url, user)
-  if (davKey !== indexBaseKey) {
+  // Normalize through the SAME derivation currentIndexKey() uses (TODO 3.5).
+  // Credential configuration is idempotent: reopening File Matching or
+  // starting a read-only operation with the same session must never cancel a
+  // scan that is already in flight.
+  const next = normalizeWebdavCredentials(url, user, token)
+  if (sameWebdavCredentials(next, currentCredentials())) return
+
+  const davKey = webdavBaseKey(next.url, next.user)
+  const baseChanged = davKey !== indexBaseKey
+  if (baseChanged) {
     // The index (in-memory or cached) belongs to a different server/user —
     // never reuse it against the new credentials.
     index = []
@@ -106,16 +154,18 @@ export function setWebdavCredentials(url: string, user: string, token: string): 
     tagCacheLoaded = false
     tagCacheBaseKey = ""
   }
-  // Credentials changed mid-scan: in-flight processItems must abort at their
-  // next `scanGen` guard, or the cleared (empty) index above would send them
-  // down the vanished-clear branch against an EMPTY index and mass-clear
-  // every binding. The `cancelled` flag stops the drain loop from
-  // re-dispatching the rest of the old run's queue. The aborted items never
-  // increment counters — surface the cancellation as an error state so the
-  // status line can't sit at "Scanning X/Y" forever (only when a scan is
-  // actually badged as running; idle/complete/error are left alone).
+
+  // Credentials changed mid-scan: in-flight work must abort at its next
+  // generation guard. The invalidation is queued behind any index write that
+  // is already in progress, so a stale write cannot resurrect old state after
+  // this delete runs.
   cancelled = true
   scanGen++
+  tagProbeGen++
+  indexPersistence = indexPersistence
+    .then(() => clearWebdavFileIndex())
+    .catch(() => {})
+
   if (get(metadataScanState).status === 'scanning') {
     metadataScanState.set({
       status: 'error',
@@ -123,12 +173,10 @@ export function setWebdavCredentials(url: string, user: string, token: string): 
       error: 'WebDAV credentials changed — scan cancelled',
     })
   }
-  // Cancel any running tag probe too — results must never be fetched under
-  // one server and cached under another.
-  tagProbeGen++
-  webdavUrl = davUrl
-  webdavUser = davUser
-  webdavToken = token
+
+  webdavUrl = next.url
+  webdavUser = next.user
+  webdavToken = next.token
 }
 
 export function setServerLastScan(scan: string): void {
@@ -143,18 +191,36 @@ export function setServerLastScan(scan: string): void {
  * auth error) so the caller can abort instead of scanning a stale snapshot.
  */
 export async function refreshIndex(): Promise<boolean> {
-  if (!webdavUrl || !webdavUser || !webdavToken) return false
+  const session = captureSession()
+  if (!session) return false
   try {
-    // Capture the base key BEFORE the probe: a mid-probe credential swap must
-    // not stamp an index built under the OLD server with the NEW baseKey (the
-    // stamped key lands both in-memory AND in the persisted Dexie snapshot).
-    const baseKey = currentIndexKey()
-    index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
-    indexBaseKey = baseKey
+    // Keep the fetched index local until every asynchronous enrichment step
+    // has completed and the session is still current. A stale probe must never
+    // publish old rows into the new server's live index.
+    const freshIndex = await buildWebdavFileIndex(session.url, session.user, session.token)
+    if (!isCurrentSession(session)) return false
+
+    const cached = await loadTagCacheFor(session.baseKey)
+    for (const entry of freshIndex) {
+      const tag = cached.get(entry.path)
+      if (tag && tag.size === entry.size && tag.status === 'ok' && tag.tags) {
+        entry.tags = tag.tags
+      }
+    }
+    if (!isCurrentSession(session)) return false
+
+    const committed = await queueIndexWrite(session, freshIndex, serverLastScan)
+    if (!committed || !isCurrentSession(session)) return false
+
+    await cleanupOrphanTempFiles(session, freshIndex)
+    if (!isCurrentSession(session)) return false
+
+    index = freshIndex
+    indexBaseKey = session.baseKey
     indexBuilt = true
-    await applyCachedTags()
-    await saveWebdavFileIndex({ entries: slimIndexForPersistence(index), buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey, fingerprint: computeIndexFingerprint(index) })
-    await cleanupOrphanTempFiles()
+    tagCache = cached
+    tagCacheBaseKey = session.baseKey
+    tagCacheLoaded = true
     return true
   } catch {
     return false
@@ -168,30 +234,44 @@ export async function refreshIndex(): Promise<boolean> {
  *  temp-named entry is an orphan — no write can be in flight between this
  *  session's probe and the cleanup (scans never write; push is a separate user
  *  action). Best-effort per file: a failing DELETE must never fail the probe. */
-async function cleanupOrphanTempFiles(): Promise<void> {
-  const headers = authHeaders(webdavUser, webdavToken)
-  for (const e of index) {
+async function cleanupOrphanTempFiles(session: WebdavSession, entries: WebdavFileEntry[]): Promise<void> {
+  const headers = authHeaders(session.user, session.token)
+  for (const e of entries) {
+    if (!isCurrentSession(session)) return
     if (!isTempFile(e.filename)) continue
-    await webdavFetch(buildWebdavUrl(webdavUrl, e.path), {
+    await webdavFetch(buildWebdavUrl(session.url, e.path), {
       method: "DELETE",
       headers,
     }, ORPHAN_DELETE_TIMEOUT).catch(() => {})
   }
 }
 
-export async function rebuildIndex(): Promise<void> {
-  if (!webdavUrl || !webdavUser || !webdavToken) {
-    throw new Error(CREDENTIALS_MISSING)
-  }
+export async function rebuildIndex(): Promise<boolean> {
+  const session = captureSession()
+  if (!session) throw new Error(CREDENTIALS_MISSING)
 
-  // Capture the base key BEFORE the probe — see refreshIndex.
-  const baseKey = currentIndexKey()
-  index = await buildWebdavFileIndex(webdavUrl, webdavUser, webdavToken)
-  indexBaseKey = baseKey
+  const freshIndex = await buildWebdavFileIndex(session.url, session.user, session.token)
+  if (!isCurrentSession(session)) return false
+  const cached = await loadTagCacheFor(session.baseKey)
+  for (const entry of freshIndex) {
+    const tag = cached.get(entry.path)
+    if (tag && tag.size === entry.size && tag.status === 'ok' && tag.tags) {
+      entry.tags = tag.tags
+    }
+  }
+  if (!isCurrentSession(session)) return false
+
+  const committed = await queueIndexWrite(session, freshIndex, serverLastScan)
+  if (!committed || !isCurrentSession(session)) return false
+  await cleanupOrphanTempFiles(session, freshIndex)
+  if (!isCurrentSession(session)) return false
+  index = freshIndex
+  indexBaseKey = session.baseKey
   indexBuilt = true
-  await applyCachedTags()
-  await saveWebdavFileIndex({ entries: slimIndexForPersistence(index), buildTimestamp: Date.now(), lastScan: serverLastScan, baseKey, fingerprint: computeIndexFingerprint(index) })
-  await cleanupOrphanTempFiles()
+  tagCache = cached
+  tagCacheBaseKey = session.baseKey
+  tagCacheLoaded = true
+  return true
 }
 
 // ── In-file identity tags (content probing) ─────────────────────────────
@@ -228,27 +308,37 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-/** Load cached probe results for the current server into a path-keyed map. */
-async function loadTagCache(): Promise<void> {
-  const key = currentIndexKey()
-  if (tagCacheBaseKey === key && tagCacheLoaded) return
+/** Load cached probe results for a server identity into a path-keyed map. */
+async function loadTagCacheFor(key: string): Promise<Map<string, FileTagCacheEntry>> {
   const entries = await getFileTagsForBase(key)
-  tagCache = new Map(entries.map((e) => [e.path, e]))
-  tagCacheBaseKey = key
-  tagCacheLoaded = true
+  return new Map(entries.map((e) => [e.path, e]))
 }
 
-/** Stamp `entry.tags` from the cache when size matches (a size change means
- *  the file was rewritten — the cached identity is stale). Unknown/poisoned
- *  entries keep their index entry tag-less so scoring falls back to names. */
-async function applyCachedTags(): Promise<void> {
-  await loadTagCache()
+/** Load cached probe results for the current server into the shared probe cache. */
+async function loadTagCache(): Promise<boolean> {
+  const session = captureSession()
+  if (!session) return false
+  if (tagCacheBaseKey === session.baseKey && tagCacheLoaded) return isCurrentSession(session)
+  const loaded = await loadTagCacheFor(session.baseKey)
+  if (!isCurrentSession(session)) return false
+  tagCache = loaded
+  tagCacheBaseKey = session.baseKey
+  tagCacheLoaded = true
+  return true
+}
+
+/** Stamp `entry.tags` from the cache when a size-matching probe exists. */
+async function applyCachedTags(): Promise<boolean> {
+  if (!await loadTagCache()) return false
+  const session = captureSession()
+  if (!session) return false
   for (const e of index) {
     const cached = tagCache.get(e.path)
     if (cached && cached.size === e.size && cached.status === 'ok' && cached.tags) {
       e.tags = cached.tags
     }
   }
+  return isCurrentSession(session)
 }
 
 /**
@@ -287,7 +377,13 @@ export async function ensureTagProbe(): Promise<void> {
 }
 
 async function runTagProbe(gen: number): Promise<void> {
-  await loadTagCache()
+  const session = captureSession()
+  if (!session || !isCurrentWebdavSession(session, currentCredentials(), scanGen)) return
+  const loadedCache = await loadTagCacheFor(session.baseKey)
+  if (tagProbeGen !== gen || !isCurrentSession(session)) return
+  tagCache = loadedCache
+  tagCacheBaseKey = session.baseKey
+  tagCacheLoaded = true
   const cache = get(metadataCache)
 
   // Unclaimed tracks (no staged auto target) give the hint sets.
@@ -330,26 +426,26 @@ async function runTagProbe(gen: number): Promise<void> {
   const hinted = pool.filter((e) => rank.has(e.path))
   hinted.sort((a, b) => (rank.get(b.path) ?? 0) - (rank.get(a.path) ?? 0) || a.path.localeCompare(b.path))
 
-  const baseKey = currentIndexKey()
+  const baseKey = session.baseKey
   let done = 0
 
   for (let i = 0; i < hinted.length; i += TAG_PROBE_CONCURRENCY) {
     // Coalesce behind any running scan: probe batches wait for the scan
     // queue to drain instead of competing for the same connection.
-    if (tagProbeGen !== gen) return
+    if (tagProbeGen !== gen || !isCurrentSession(session)) return
     while (queue.length > 0 || activeCount > 0) {
       await sleep(TAG_PROBE_RETRY_MS)
-      if (tagProbeGen !== gen) return
+      if (tagProbeGen !== gen || !isCurrentSession(session)) return
     }
     const batch = hinted.slice(i, i + TAG_PROBE_CONCURRENCY)
     await Promise.all(batch.map(async (entry) => {
-      if (tagProbeGen !== gen) return
+      if (tagProbeGen !== gen || !isCurrentSession(session)) return
       const id = fileTagId(baseKey, entry.path)
       try {
         const meta = await readFileMetadata(
-          webdavUrl, entry.path, webdavUser, webdavToken, fileTypeOf(entry.filename),
+          session.url, entry.path, session.user, session.token, fileTypeOf(entry.filename),
         )
-        if (tagProbeGen !== gen) return
+        if (tagProbeGen !== gen || !isCurrentSession(session)) return
         const hasIdentity = !!(meta.title || meta.artist || meta.album)
         const next: FileTagCacheEntry = {
           id,
@@ -361,24 +457,27 @@ async function runTagProbe(gen: number): Promise<void> {
           probedAt: Date.now(),
         }
         await putFileTag(next)
+        if (tagProbeGen !== gen || !isCurrentSession(session)) return
         tagCache.set(entry.path, next)
         if (hasIdentity) entry.tags = next.tags
       } catch {
-        if (tagProbeGen !== gen) return
+        if (tagProbeGen !== gen || !isCurrentSession(session)) return
         const next: FileTagCacheEntry = {
           id, baseKey, path: entry.path, size: entry.size,
           status: 'unreadable', probedAt: Date.now(),
         }
         await putFileTag(next)
+        if (tagProbeGen !== gen || !isCurrentSession(session)) return
         tagCache.set(entry.path, next)
       }
+      if (tagProbeGen !== gen || !isCurrentSession(session)) return
       done++
       const remaining = Math.max(0, hinted.length - (i + batch.length))
       tagProbeState.set({ active: true, done, remaining })
     }))
   }
 
-  if (tagProbeGen === gen) {
+  if (tagProbeGen === gen && isCurrentSession(session)) {
     tagProbeState.set({ active: false, done, remaining: 0 })
   }
 }
@@ -401,13 +500,22 @@ async function runTagProbe(gen: number): Promise<void> {
  *  tracks remain unclaimed, in-file tag identity is harvested in the
  *  background (guarded internally — a no-op while a probe is already active). */
 export async function scanAll(shape_: ScanShape = "modified"): Promise<void> {
-  await scanAllInternal(shape_)
-  void ensureTagProbe()
+  const completed = await scanAllInternal(shape_)
+  if (!completed) return
+  // Content probing is deliberately a second phase: it must not compete with
+  // the metadata workers, and a cancelled scan must not start work for its
+  // stale session. Detached callers still receive a logged failure instead of
+  // an unhandled rejection.
+  void ensureTagProbe().catch((err) => {
+    console.warn('[metadata] tag probe failed:', err)
+  })
 }
 
-async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
+async function scanAllInternal(shape_: ScanShape = "modified"): Promise<boolean> {
+  const previousDrain = activeDrain
   cancelled = true
   const myGen = ++scanGen
+  tagProbeGen++
   claimedInScan = new Set<string>()
   queue = []
   scannedCount = 0
@@ -418,54 +526,75 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
   shape = shape_
   activeAnnotation = annotationFor(shape)
 
+  // A cancelled scan may still have in-flight metadata reads. Wait for those
+  // workers to release their ownership before starting a replacement run; the
+  // reads themselves cannot be aborted by every WebDAV adapter, but their
+  // completions are generation-guarded and must not overlap a new worker pool.
+  if (previousDrain) await previousDrain
+  if (scanGen !== myGen) return false
+
   // Creds check AFTER the gen guard: a creds-less second call must not stomp
   // the scanning state of a newer in-flight scan. With no await between the
   // guard and the state set below, this error write is gen-safe by ordering.
-  if (scanGen !== myGen) return
+  if (scanGen !== myGen) return false
   if (!webdavUrl || !webdavUser || !webdavToken) {
     metadataScanState.set({
       status: "error",
       progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
       error: CREDENTIALS_MISSING,
     })
-    return
+    return false
   }
 
   metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation } })
 
   if (shape === "force") {
     try {
-      await rebuildIndex()
+      const rebuilt = await rebuildIndex()
+      if (!rebuilt || scanGen !== myGen) return false
     } catch {
-      if (scanGen !== myGen) return
+      if (scanGen !== myGen) return false
       metadataScanState.set({
         status: "error",
         progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
         error: INDEX_REFRESH_FAILED,
       })
-      return
+      return false
     }
   } else {
     // Fingerprint of the index stored by the LAST probe. Read before the probe
     // below — refreshIndex overwrites the stored snapshot with the fresh one.
-    const priorSnapshot = await getWebdavFileIndex()
+    let priorSnapshot: Awaited<ReturnType<typeof getWebdavFileIndex>>
+    try {
+      priorSnapshot = await getWebdavFileIndex()
+    } catch {
+      // A missing/corrupt local snapshot must not prevent a fresh PROPFIND.
+      priorSnapshot = undefined
+    }
+    if (scanGen !== myGen) return false
+    const sessionBaseKey = currentIndexKey()
+
+    // A persisted index from another WebDAV server cannot participate in the
+    // current server's fingerprint decision, even if both servers happen to
+    // contain the same path/size set.
+    const priorForThisSession = priorSnapshot?.baseKey === sessionBaseKey ? priorSnapshot : undefined
 
     // Always probe the server: the whole point of "Check Modified Ratings" is
     // freshness. A stale snapshot can never detect remote edits; abort loudly
     // on probe failure instead of scanning against one.
     const ok = await refreshIndex()
-    if (!ok) {
-      if (scanGen !== myGen) return
+    if (!ok || scanGen !== myGen) {
+      if (scanGen !== myGen) return false
       metadataScanState.set({
         status: "error",
         progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
         error: INDEX_REFRESH_FAILED,
       })
-      return
+      return false
     }
     if (index.length === 0) {
       metadataScanState.set({ status: "complete", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation } })
-      return
+      return true
     }
 
     const tracks = get(library)
@@ -481,8 +610,8 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
     // renamed/resized file to match against), so retrying them would only burn
     // CPU. Matched rows still re-diff on their mtime above. A missing stored
     // fingerprint (first scan after the upgrade) treats the set as changed.
-    const setUnchanged = priorSnapshot?.fingerprint !== undefined
-      && computeIndexFingerprint(index) === priorSnapshot.fingerprint
+    const setUnchanged = priorForThisSession?.fingerprint !== undefined
+      && computeIndexFingerprint(index) === priorForThisSession.fingerprint
     if (!setUnchanged) {
       for (const t of unmatched) queue.push({ trackId: t.trackId })
     }
@@ -494,7 +623,7 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
   }
 
   totalTracks = queue.length
-  if (scanGen !== myGen) return
+  if (scanGen !== myGen) return false
   cancelled = false
 
   if (totalTracks === 0) {
@@ -505,7 +634,7 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
       progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
       error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
     })
-    return
+    return true
   }
 
   metadataScanState.set({
@@ -513,25 +642,42 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<void> {
     progress: { scanned: 0, total: totalTracks, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
   })
 
-  drain()
-}
-
-async function drain(): Promise<void> {
-  if (cancelled) return
-
-  while (activeCount < CONCURRENCY && queue.length > 0) {
-    const item = queue.shift()
-    if (!item) break
-    activeCount++
-    processItem(item).finally(() => {
-      activeCount--
-      drain()
-    })
+  const drainPromise = drain(myGen)
+  activeDrain = drainPromise
+  try {
+    await drainPromise
+  } finally {
+    if (activeDrain === drainPromise) activeDrain = null
   }
+  return scanGen === myGen && !cancelled
 }
 
-async function processItem(item: QueueItem): Promise<void> {
-  const startedGen = scanGen
+async function drain(runGen: number): Promise<void> {
+  const worker = async (): Promise<void> => {
+    while (!cancelled && scanGen === runGen) {
+      const item = queue.shift()
+      if (!item) return
+      activeCount++
+      try {
+        await processItem(item, runGen)
+      } catch {
+        // processItem handles expected read failures. An unexpected adapter
+        // failure still must consume this row and let the scan finish.
+        if (scanGen === runGen) {
+          failedCount++
+          updateScanProgress()
+        }
+      } finally {
+        activeCount--
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
+}
+
+async function processItem(item: QueueItem, runGen: number): Promise<void> {
+  const startedGen = runGen
   const tracks = get(library)
   const track = tracks.find((t) => t.trackId === item.trackId)
   if (scanGen !== startedGen) return
@@ -819,9 +965,11 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
   // Re-stamp cached probe results onto the in-memory index so candidate
   // pickers show file identity (and scoring sees tags) even when this view
   // opened after the index was built.
-  await applyCachedTags()
+  if (!await applyCachedTags()) throw new Error("WebDAV session changed while loading the index")
+  const session = captureSession()
+  if (!session) throw new Error(CREDENTIALS_MISSING)
 
-  const baseKey = currentIndexKey()
+  const baseKey = session.baseKey
   const indexPaths = new Set(index.map((i) => i.path))
   // Every bound path across the library — candidates must never include a
   // file another row already targets (an unclaimed file scores once).

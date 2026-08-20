@@ -182,9 +182,11 @@
   }
 
   async function buildIndex() {
+    if (get(metadataScanState).status === 'scanning') return
     indexing = true
     try {
       await commitCredentials()
+      if (get(metadataScanState).status === 'scanning') return
       const s = $settings
       if (s.webdavUrl && s.webdavUser && s.webdavToken) {
         setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
@@ -356,12 +358,17 @@
   const visibleRows = $derived(filterVisible.slice(0, matchCap))
 
   async function refreshUnresolved() {
+    // File Matching reads the live index; it must not invalidate or race the
+    // metadata scan that is currently building that index. The reactive
+    // caller retries automatically when the scan state changes.
+    if (get(metadataScanState).status === 'scanning') return
     const prevTop = scrollContainer?.scrollTop ?? 0
     unresolvedLoading = true
     unresolvedError = ''
     bindError = null
     try {
       await commitCredentials()
+      if (get(metadataScanState).status === 'scanning') return
       const s = $settings
       if (s.webdavUrl && s.webdavUser && s.webdavToken) {
         setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
@@ -375,7 +382,9 @@
       unresolvedCounts = rows.counts
       blockedCount = rows.pendingBlocked
       unresolvedLoaded = true
-      void ensureTagProbe()
+      void ensureTagProbe().catch((err) => {
+        console.warn('[metadata] tag probe failed:', err)
+      })
     } catch (err) {
       unresolvedError = err instanceof Error ? err.message : String(err)
     } finally {
@@ -386,8 +395,9 @@
   }
 
   $effect(() => {
-    if (tab !== 'library' || unresolvedLoaded) return
-    refreshUnresolved()
+    const scanStatus = $metadataScanState.status
+    if (tab !== 'library' || unresolvedLoaded || scanStatus === 'scanning') return
+    void refreshUnresolved()
   })
 
   function openPicker(trackId: string) {
@@ -887,7 +897,7 @@
             </button>
             <button
               onclick={buildIndex}
-              disabled={indexing}
+              disabled={indexing || $metadataScanState.status === 'scanning'}
               class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-3 text-base font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
             >
               {#if indexing}

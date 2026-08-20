@@ -28,3 +28,20 @@ public func queueDivergence(snapshotActiveId: String, engineCurrentId: String) -
         return .divergent
     }
 }
+
+/// Returns the active index that may be installed during a synchronized queue
+/// refresh. The index is deliberately rejected when out of range instead of
+/// being clamped: an invalid snapshot is a divergence and must take the full
+/// reset/ended path in the engine.
+public func synchronizedQueueActiveIndex(
+    snapshotActiveId: String,
+    engineCurrentId: String,
+    requestedIndex: Int,
+    trackCount: Int
+) -> Int? {
+    guard requestedIndex >= 0, requestedIndex < trackCount else { return nil }
+    guard queueDivergence(snapshotActiveId: snapshotActiveId, engineCurrentId: engineCurrentId) == .synced else {
+        return nil
+    }
+    return requestedIndex
+}

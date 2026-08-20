@@ -179,6 +179,10 @@ export async function saveWebdavFileIndex(index: Omit<WebdavFileIndex, 'id'>): P
   await db.webdavFileIndex.put({ id: 'main', ...index })
 }
 
+export async function clearWebdavFileIndex(): Promise<void> {
+  await db.webdavFileIndex.delete('main')
+}
+
 export async function getSongLibraryCache(): Promise<SongLibraryCache | undefined> {
   return db.songLibraryCache.get('main')
 }

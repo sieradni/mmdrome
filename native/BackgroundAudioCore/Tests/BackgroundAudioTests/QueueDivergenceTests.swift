@@ -24,4 +24,38 @@ final class QueueDivergenceTests: XCTestCase {
     func testBothEmptyIsSynced() {
         XCTAssertEqual(queueDivergence(snapshotActiveId: "", engineCurrentId: ""), .synced)
     }
+
+    func testSynchronizedRefreshReanchorsMovedActiveIndex() {
+        XCTAssertEqual(
+            synchronizedQueueActiveIndex(
+                snapshotActiveId: "t1",
+                engineCurrentId: "t1",
+                requestedIndex: 1,
+                trackCount: 3
+            ),
+            1
+        )
+    }
+
+    func testSynchronizedRefreshRejectsOutOfRangeIndex() {
+        XCTAssertNil(
+            synchronizedQueueActiveIndex(
+                snapshotActiveId: "t1",
+                engineCurrentId: "t1",
+                requestedIndex: 2,
+                trackCount: 2
+            )
+        )
+    }
+
+    func testSynchronizedRefreshRejectsMismatchedTrack() {
+        XCTAssertNil(
+            synchronizedQueueActiveIndex(
+                snapshotActiveId: "t1",
+                engineCurrentId: "t2",
+                requestedIndex: 0,
+                trackCount: 2
+            )
+        )
+    }
 }

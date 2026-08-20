@@ -272,6 +272,13 @@ export class NativeTransport {
       await this._client.plugin().playTrackAt({ index: request.activeIndex, autoPlay: true })
     } catch (err) {
       console.error('[native] failed to start playback:', err)
+      // A replacement engage may have stopped the previously active native
+      // queue before failing. Do not leave the adapter claiming that stale
+      // queue is live: clear polling/retry identity and best-effort pause any
+      // audio left behind by a partially-applied bridge command. This is an
+      // internal reset rather than `disengage()`, so a pending-latest engage
+      // can still run in the same serialized cycle.
+      await this._markEngagementFailed()
       request.resolve(false)
       return false
     }
@@ -293,6 +300,25 @@ export class NativeTransport {
     }
     request.resolve(true)
     return true
+  }
+
+  /** Clears transport state after a bridge command failed during an engage.
+   *  Unlike `disengage()`, this does not bump the engagement generation or drop
+   *  a pending-latest request; the current engage cycle may still hand off to
+   *  that newer request. The best-effort pause is awaited so it cannot land
+   *  after a newer engage's play command. When a newer request is already
+   *  queued, its setQueue replaces the partial state and avoiding pause also
+   *  prevents an old pause from racing that handoff. */
+  private async _markEngagementFailed(): Promise<void> {
+    this._engaged = false
+    this._syncFactory = null
+    this._lastTrackId = null
+    this._seekMemory = null
+    this._resetRetry()
+    this._client.setPositionPolling(false, () => {})
+    if (this._pendingEngage === null) {
+      await this._client.plugin().pause().catch(() => {})
+    }
   }
 
   /** Marks the engine idle: poll stops, retry/seek state dropped, later

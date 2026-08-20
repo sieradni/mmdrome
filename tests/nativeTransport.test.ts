@@ -22,13 +22,17 @@ class FakePlugin implements NativePluginClient {
   /** Interleaved call order across setQueue/playTrackAt/seek/refreshQueue. */
   order: string[] = []
   failSetQueue = false
+  failSetQueueOnce = false
   failPlayTrackAt = false
   setQueueGate: Promise<void> | null = null
 
   async setQueue(options: { tracks: NativeSnapshotTrack[]; activeIndex: number; loopMode: NativeLoopMode }): Promise<void> {
     this.setQueueCalls.push(options)
     this.order.push(`setQueue:${options.activeIndex}`)
-    if (this.failSetQueue) throw new Error('setQueue rejected')
+    if (this.failSetQueue || this.failSetQueueOnce) {
+      this.failSetQueueOnce = false
+      throw new Error('setQueue rejected')
+    }
     if (this.setQueueGate) await this.setQueueGate
   }
 
@@ -212,6 +216,47 @@ test('engage rejection (playTrackAt) returns false and stays disengaged', async 
   const ok = await transport.engage(tracks, 0, 'none')
   assert.equal(ok, false)
   assert.equal(transport.engaged, false)
+})
+
+test('a failed replacement setQueue resets the existing engagement and poll', async () => {
+  const { transport, client, plugin } = setup()
+  assert.equal(await transport.engage(tracks, 0, 'none'), true)
+  plugin.failSetQueue = true
+
+  assert.equal(await transport.engage(tracks3, 1, 'none'), false)
+  assert.equal(transport.engaged, false)
+  assert.equal(client.polling.at(-1)?.enabled, false)
+  assert.equal(plugin.commands.includes('pause'), true)
+
+  plugin.failSetQueue = false
+  assert.equal(await transport.engage(tracks3, 2, 'none'), true)
+  assert.equal(transport.engaged, true)
+})
+
+test('a failed replacement playTrackAt resets the existing engagement and poll', async () => {
+  const { transport, client, plugin } = setup()
+  assert.equal(await transport.engage(tracks, 0, 'none'), true)
+  plugin.failPlayTrackAt = true
+
+  assert.equal(await transport.engage(tracks3, 1, 'none'), false)
+  assert.equal(transport.engaged, false)
+  assert.equal(client.polling.at(-1)?.enabled, false)
+  assert.equal(plugin.commands.includes('pause'), true)
+})
+
+test('a failed engage with a pending latest request does not race an old pause into the replacement', async () => {
+  const { transport, plugin } = setup()
+  assert.equal(await transport.engage(tracks, 0, 'none'), true)
+  await tick()
+  plugin.failSetQueueOnce = true
+
+  const failed = transport.engage(tracks3, 1, 'none')
+  const latest = transport.engage(tracks3, 2, 'none')
+
+  assert.equal(await failed, false)
+  assert.equal(await latest, true)
+  assert.equal(plugin.commands.includes('pause'), false)
+  assert.equal(transport.engaged, true)
 })
 
 test('disengage drops the engaged flag and stops the poll', async () => {

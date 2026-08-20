@@ -371,7 +371,12 @@ public final class NativeAudioEngine: NSObject {
     public func refreshQueue(tracks: [NativeTrack], activeIndex: Int) {
         guard !tracks.isEmpty else { return }
         let snapshotActiveId = tracks.indices.contains(activeIndex) ? tracks[activeIndex].trackId : ""
-        guard queueDivergence(snapshotActiveId: snapshotActiveId, engineCurrentId: currentTrackId) == .synced else {
+        guard let synchronizedIndex = synchronizedQueueActiveIndex(
+            snapshotActiveId: snapshotActiveId,
+            engineCurrentId: currentTrackId,
+            requestedIndex: activeIndex,
+            trackCount: tracks.count
+        ) else {
             // Divergent queue — fall back to a full reset and report ENDED (1.4,
             // mirroring handleTrackEnd): the honest signal that JS navigates the
             // stale index. On `ended` JS re-snapshots from its own authoritative
@@ -383,6 +388,10 @@ public final class NativeAudioEngine: NSObject {
             return
         }
         self.tracks = tracks
+        // The active track ID stayed the same, but its position may have moved
+        // after a queue mutation. Keep the native clock attached to that ID by
+        // re-anchoring the index before rebuilding any crossfade tail.
+        self.activeIndex = synchronizedIndex
         // Tear down any armed crossfade targeting the OLD tail; the monitor re-arms
         // from the new list on its next tick. Only invalidate the standby completion
         // while a crossfade is armed/in-flight — after finalizeCrossfadeSwitch the
