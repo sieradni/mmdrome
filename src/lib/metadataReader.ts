@@ -52,6 +52,13 @@ async function propfindDir(
   if (!res.ok) throw new PropfindError(res.status, `PROPFIND ${path} failed: ${res.status}`)
   const xml = await res.text()
   const doc = parseXml(xml)
+  // DOMParser reports malformed XML through <parsererror> instead of throwing.
+  // Treat it as a failed fresh index; publishing an empty index would otherwise
+  // make the caller believe every server file vanished and could prune cache
+  // evidence on a later complete-looking response.
+  if (doc.getElementsByTagName('parsererror').length > 0) {
+    throw new Error(`Invalid WebDAV XML for ${path}`)
+  }
   const responses = doc.getElementsByTagNameNS(DAV_NS, "response")
 
   const entries: WebdavFileEntry[] = []
@@ -86,18 +93,27 @@ async function propfindDir(
 
 /** Fallback for servers that refuse `Depth: infinity`: breadth-first crawl of
  *  every directory with `Depth: 1` requests. Produces the same relative-path
- *  entries as the flat probe, so matching/scoring are unaffected. A directory
- *  that fails mid-crawl is skipped with a warning — a partial index degrades
- *  to "more no-match rows", never to stale Push targets; only a total failure
- *  (root probe included) propagates. */
+ *  entries as the flat probe, so candidate display remains useful. A directory
+ *  that fails mid-crawl is skipped with a warning and `complete` is false —
+ *  scanner auto-binding must refuse to treat the partial set as authoritative
+ *  (an unseen duplicate could win), while cache pruning and vanished-path
+ *  clearing remain disabled. Only a total failure (root probe included)
+ *  propagates. */
+export interface WebdavIndexBuildResult {
+  entries: WebdavFileEntry[]
+  /** False when the Depth:1 fallback had to skip a directory. */
+  complete: boolean
+}
+
 async function crawlIndex(
   baseUrl: string,
   user: string,
   token: string,
-): Promise<WebdavFileEntry[]> {
+): Promise<WebdavIndexBuildResult> {
   const entries: WebdavFileEntry[] = []
   const seen = new Set<string>()
   const pending: string[] = []
+  let complete = true
 
   const root = await propfindDir(baseUrl, user, token, "/", "1")
   entries.push(...root.entries)
@@ -114,6 +130,7 @@ async function crawlIndex(
       try {
         return { ok: true as const, result: await propfindDir(baseUrl, user, token, dir, "1") }
       } catch (err) {
+        complete = false
         console.warn(`mmdrome WebDAV crawl: skipping unreadable directory "${dir}"`, err)
         return { ok: false as const, result: undefined }
       }
@@ -130,22 +147,31 @@ async function crawlIndex(
     }
   }
 
-  return entries
+  return { entries, complete }
 }
 
-export async function buildWebdavFileIndex(
+export async function buildWebdavFileIndexDetailed(
   baseUrl: string,
   user: string,
   token: string,
-): Promise<WebdavFileEntry[]> {
+): Promise<WebdavIndexBuildResult> {
   try {
-    return (await propfindDir(baseUrl, user, token, "/", "infinity")).entries
+    return { entries: (await propfindDir(baseUrl, user, token, "/", "infinity")).entries, complete: true }
   } catch (err) {
     if (err instanceof PropfindError && DEPTH_FALLBACK_STATUSES.has(err.status)) {
       return crawlIndex(baseUrl, user, token)
     }
     throw err
   }
+}
+
+/** Compatibility wrapper for callers that only need the file list. */
+export async function buildWebdavFileIndex(
+  baseUrl: string,
+  user: string,
+  token: string,
+): Promise<WebdavFileEntry[]> {
+  return (await buildWebdavFileIndexDetailed(baseUrl, user, token)).entries
 }
 
 function getMetadataChunkSize(fileType: string): number {
@@ -175,22 +201,54 @@ export async function readMetadataChunk(
 ): Promise<ArrayBuffer> {
   const url = buildWebdavUrl(baseUrl, filePath)
   const size = chunkSize ?? getMetadataChunkSize(fileType)
-  const res = await webdavFetch(url, {
-    method: "GET",
-    headers: {
-      ...authHeaders(user, token),
-      Range: `bytes=0-${size - 1}`,
-    },
-  }, METADATA_FETCH_TIMEOUT)
+  let res: Awaited<ReturnType<typeof webdavFetch>>
+  try {
+    res = await webdavFetch(url, {
+      method: "GET",
+      headers: {
+        ...authHeaders(user, token),
+        Range: `bytes=0-${size - 1}`,
+      },
+    }, METADATA_FETCH_TIMEOUT)
+  } catch (err) {
+    throw new FileMetadataError('network', `Range GET ${filePath} failed`, err)
+  }
   if (!res.ok) {
     if (res.status === 416) {
-      const fullRes = await webdavFetch(url, { headers: authHeaders(user, token) }, METADATA_FETCH_TIMEOUT)
-      if (!fullRes.ok) throw new Error(`GET ${filePath} failed: ${fullRes.status}`)
-      return fullRes.arrayBuffer()
+      let fullRes: Awaited<ReturnType<typeof webdavFetch>>
+      try {
+        fullRes = await webdavFetch(url, { headers: authHeaders(user, token) }, METADATA_FETCH_TIMEOUT)
+      } catch (err) {
+        throw new FileMetadataError('network', `GET ${filePath} failed`, err)
+      }
+      if (!fullRes.ok) throw new FileMetadataError('network', `GET ${filePath} failed: ${fullRes.status}`)
+      try {
+        return await fullRes.arrayBuffer()
+      } catch (err) {
+        throw new FileMetadataError('network', `Reading GET ${filePath} failed`, err)
+      }
     }
-    throw new Error(`Range GET ${filePath} failed: ${res.status}`)
+    throw new FileMetadataError('network', `Range GET ${filePath} failed: ${res.status}`)
   }
-  return res.arrayBuffer()
+  try {
+    return await res.arrayBuffer()
+  } catch (err) {
+    throw new FileMetadataError('network', `Reading GET ${filePath} failed`, err)
+  }
+}
+
+export type FileMetadataFailureKind = 'network' | 'parse'
+
+/** A typed boundary between WebDAV transport failures and tag parsing failures.
+ * The probe uses this to choose a retry TTL without treating a temporary
+ * outage as a permanently unreadable file. */
+export class FileMetadataError extends Error {
+  readonly kind: FileMetadataFailureKind
+  constructor(kind: FileMetadataFailureKind, message: string, cause?: unknown) {
+    super(message, { cause })
+    this.name = 'FileMetadataError'
+    this.kind = kind
+  }
 }
 
 export interface FileMetadata {
@@ -202,6 +260,10 @@ export interface FileMetadata {
   artist?: string
   album?: string
   trackNumber?: number
+  /** Release year from DATE/YEAR, when present. */
+  year?: number
+  /** Audio duration in seconds; absent means taglib had no usable duration. */
+  duration?: number
 }
 
 function firstPropValue(value: unknown): string | undefined {
@@ -228,6 +290,8 @@ export async function extractMetadataFromBuffer(
   let artist: string | undefined
   let album: string | undefined
   let trackNumber: number | undefined
+  let year: number | undefined
+  let duration: number | undefined
 
   const taglib = await getTagLib()
   const file = await taglib.open(new Uint8Array(buffer))
@@ -275,7 +339,22 @@ export async function extractMetadataFromBuffer(
     album = firstPropValue(props['ALBUM'])
     trackNumber = parseTrackNumber(props['TRACKNUMBER'])
 
-    return { rating, loved, comments: comments || undefined, title, artist, album, trackNumber }
+    const rawYear = firstPropValue(props['DATE']) ?? firstPropValue(props['YEAR'])
+    if (rawYear) {
+      const parsedYear = parseInt(rawYear.slice(0, 4), 10)
+      if (Number.isFinite(parsedYear) && parsedYear > 0) year = parsedYear
+    }
+
+    // Audio properties are returned by the same open handle, so duration adds
+    // no network read. Some short/partially fetched formats return null or 0;
+    // preserve that as absent so matching treats it as no signal.
+    const audioProperties = file.audioProperties()
+    const parsedDuration = audioProperties?.duration
+    if (parsedDuration !== undefined && Number.isFinite(parsedDuration) && parsedDuration > 0) {
+      duration = parsedDuration
+    }
+
+    return { rating, loved, comments: comments || undefined, title, artist, album, trackNumber, year, duration }
   } finally {
     // Never leak the WASM handle: an exception mid-parse must not skip
     // dispose(), and a dispose failure must never mask the read error.
@@ -303,7 +382,10 @@ export async function readFileMetadata(
     try {
       return await extractMetadataFromBuffer(buffer, fileType)
     } catch (err) {
-      if (chunkSize >= maxChunkSize || gotFullFile) throw err
+      if (chunkSize >= maxChunkSize || gotFullFile) {
+        if (err instanceof FileMetadataError) throw err
+        throw new FileMetadataError('parse', `Could not parse metadata for ${filePath}`, err)
+      }
       chunkSize *= 2
     }
   }

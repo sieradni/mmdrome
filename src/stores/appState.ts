@@ -47,6 +47,8 @@ export interface MetadataScanProgress {
   scanned: number
   total: number
   failed: number
+  /** Rows with no confident WebDAV candidate after matching. */
+  notFound: number
   /** Rows whose previously-matched WebDAV file vanished (path cleared, re-matchable). */
   missing: number
   /** Rows with multiple equally-scored candidates — left untouched. */
@@ -112,7 +114,7 @@ export const effectiveDuration = derived(
   }
 )
 export const pitchOctaves = _pitchOctaves.store
-export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 } })
+export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0 } })
 
 /** Fields the user edits in the Queue filter panel — persisted via `persisted`. */
 export interface AutoQueueFilterFields {

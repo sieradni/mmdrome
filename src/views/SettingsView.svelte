@@ -8,7 +8,7 @@
   import { runManualWebDAVSync, testWebdavConn, testNavidromeConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
   import { webdavBaseKey } from '../lib/webdavUtils'
   import { getPendingSyncMetadata } from '../lib/db'
-  import { setWebdavCredentials, rebuildIndex, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, ensureTagProbe, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
@@ -195,7 +195,7 @@
     } catch (err) {
       metadataScanState.set({
         status: 'error',
-        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0 },
+        progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0 },
         error: err instanceof Error && err.message === 'WebDAV credentials not configured'
           ? err.message
           : 'WebDAV index refresh failed — is the WebDAV server reachable?',
@@ -302,7 +302,7 @@
 
   const kindBadges: Record<UnresolvedTrack['kind'], { label: string; cls: string }> = {
     'ambiguous': { label: 'Multiple matches', cls: 'bg-yellow-500/20 text-yellow-300 ring-yellow-500/30' },
-    'no-match': { label: 'File not found', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
+    'no-match': { label: 'No safe match', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
     'vanished': { label: 'Removed from server', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
     'stale-base': { label: 'Server URL updated', cls: 'bg-orange-500/20 text-orange-300 ring-orange-500/30' },
     'ignored': { label: 'Ignored', cls: 'bg-white/10 text-muted ring-white/20' },
@@ -313,7 +313,10 @@
   let unresolvedLoading = $state(false)
   let unresolvedError = $state('')
   let unresolvedLoaded = $state(false)
+  let unresolvedIndexComplete = $state(true)
   let pickerTrackId = $state<string | null>(null)
+  let lastRenderedProbeRevision = 0
+  let deferredProbeRefresh = false
   let searchQuery = $state('')
   let searchResults = $state<WebdavFileEntry[]>([])
   let searching = $state(false)
@@ -334,7 +337,7 @@
   function countLine(): string {
     const c = unresolvedCounts
     const bits: string[] = []
-    if (c['no-match']) bits.push(`${c['no-match']} file not found`)
+    if (c['no-match']) bits.push(`${c['no-match']} no safe match`)
     if (c.ambiguous) bits.push(`${c.ambiguous} multiple matches`)
     if (c.vanished) bits.push(`${c.vanished} removed from server`)
     if (c['stale-base']) bits.push(`${c['stale-base']} server changed`)
@@ -357,18 +360,27 @@
   )
   const visibleRows = $derived(filterVisible.slice(0, matchCap))
 
-  async function refreshUnresolved() {
+  async function refreshUnresolved(probe = false) {
     // File Matching reads the live index; it must not invalidate or race the
-    // metadata scan that is currently building that index. The reactive
-    // caller retries automatically when the scan state changes.
-    if (get(metadataScanState).status === 'scanning') return
+    // metadata scan that is currently building that index. Mark a deferred
+    // request when a scan wins the race; the reactive effects consume it after
+    // the scan settles instead of silently dropping the refresh.
+    if (get(metadataScanState).status === 'scanning') {
+      deferredProbeRefresh = true
+      return
+    }
     const prevTop = scrollContainer?.scrollTop ?? 0
+    const probeRevisionAtStart = get(tagProbeState).revision
+    let loaded = false
     unresolvedLoading = true
     unresolvedError = ''
     bindError = null
     try {
       await commitCredentials()
-      if (get(metadataScanState).status === 'scanning') return
+      if (get(metadataScanState).status === 'scanning') {
+        deferredProbeRefresh = true
+        return
+      }
       const s = $settings
       if (s.webdavUrl && s.webdavUser && s.webdavToken) {
         setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
@@ -377,17 +389,31 @@
         unresolvedRows = []
         return
       }
+      if (probe) {
+        // An explicit refresh is the one view action allowed to refresh both
+        // the PROPFIND mtime view and the tag evidence. The scanner helper
+        // serializes this against an already-running probe.
+        const refreshed = await refreshIndexAndProbe()
+        if (!refreshed) throw new Error('Index refresh failed — is the WebDAV server reachable?')
+      }
       const rows = await listUnresolvedMatches()
       unresolvedRows = rows.rows
       unresolvedCounts = rows.counts
+      unresolvedIndexComplete = rows.indexComplete
       blockedCount = rows.pendingBlocked
       unresolvedLoaded = true
-      void ensureTagProbe().catch((err) => {
-        console.warn('[metadata] tag probe failed:', err)
-      })
+      loaded = true
     } catch (err) {
       unresolvedError = err instanceof Error ? err.message : String(err)
     } finally {
+      // A probe can finish while this list is scoring. If so, keep the
+      // completion request pending for one follow-up list; otherwise a
+      // transient timing edge can leave the view showing the pre-probe rows.
+      if (get(tagProbeState).revision !== probeRevisionAtStart) {
+        deferredProbeRefresh = true
+      } else if (loaded) {
+        deferredProbeRefresh = false
+      }
       unresolvedLoading = false
       await tick()
       if (scrollContainer && prevTop > 0) scrollContainer.scrollTop = prevTop
@@ -397,6 +423,24 @@
   $effect(() => {
     const scanStatus = $metadataScanState.status
     if (tab !== 'library' || unresolvedLoaded || scanStatus === 'scanning') return
+    void refreshUnresolved()
+  })
+
+  // Probe results can auto-bind rows and change candidate classifications. The
+  // view observes the monotonic completion revision instead of relying on an
+  // active→inactive edge that can be missed while the first list is loading.
+  // A deferred refresh is consumed when scanning/loading/picker interaction no
+  // longer blocks it, so completed evidence cannot leave the view stale.
+  $effect(() => {
+    const revision = $tagProbeState.revision
+    const scanStatus = $metadataScanState.status
+    if (revision !== lastRenderedProbeRevision) {
+      lastRenderedProbeRevision = revision
+      deferredProbeRefresh = true
+    }
+    if (tab !== 'library' || !unresolvedLoaded || unresolvedLoading
+        || pickerTrackId !== null || scanStatus === 'scanning' || !deferredProbeRefresh) return
+    deferredProbeRefresh = false
     void refreshUnresolved()
   })
 
@@ -670,7 +714,7 @@
             </div>
             <button
               onclick={rescanAllMetadata}
-              disabled={$metadataScanState.status === 'scanning'}
+              disabled={$metadataScanState.status === 'scanning' || $tagProbeState.active}
               class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
             >
               {#if $metadataScanState.status === 'scanning'}
@@ -691,7 +735,10 @@
               {#if $metadataScanState.error}
                 <p class="text-sm text-red-400">{$metadataScanState.error}</p>
               {:else}
-                <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
+                <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
+                {#if $tagProbeState.active}
+                  <p class="text-sm text-muted">Tag matching continues in the background while file tags are read…</p>
+                {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
               <p class="text-sm text-muted">{$metadataScanState.progress.annotation ?? 'Scanning files'} — {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
@@ -861,11 +908,11 @@
         <!-- Metadata Scan -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Metadata Scan</h3>
-          <p class="mb-2 text-sm text-muted">Read ratings and loved status from file tags via WebDAV. Runs incremental check on library load (1 request, only reads changed files).</p>
+          <p class="mb-2 text-sm text-muted">Read identity, ratings, loved status, comments, and audio metadata from file tags via WebDAV. Cached probes are reused; modified files and unresolved candidates are refreshed as needed.</p>
           <div class="space-y-3">
             <button
               onclick={startMetadataScan}
-              disabled={$metadataScanState.status === 'scanning'}
+              disabled={$metadataScanState.status === 'scanning' || $tagProbeState.active}
               class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
             >
               {#if $metadataScanState.status === 'scanning'}
@@ -881,7 +928,7 @@
             </button>
             <button
               onclick={rescanAllMetadata}
-              disabled={$metadataScanState.status === 'scanning'}
+              disabled={$metadataScanState.status === 'scanning' || $tagProbeState.active}
               class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-3 text-base font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
             >
               {#if $metadataScanState.status === 'scanning'}
@@ -910,7 +957,10 @@
               {#if $metadataScanState.error}
                 <p class="text-sm text-red-400">{$metadataScanState.error}</p>
               {:else}
-                <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
+                <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
+                {#if $tagProbeState.active}
+                  <p class="text-sm text-muted">Tag matching continues in the background while file tags are read…</p>
+                {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
               <p class="text-sm text-muted">{$metadataScanState.progress.annotation ?? 'Scanning files'} — {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
@@ -925,14 +975,17 @@
           <div class="mb-1 flex items-center justify-between">
             <h3 class="text-base font-medium text-primary">File Matching</h3>
             <button
-              onclick={refreshUnresolved}
-              disabled={unresolvedLoading || $metadataScanState.status === 'scanning'}
+              onclick={() => refreshUnresolved(true)}
+              disabled={unresolvedLoading || $metadataScanState.status === 'scanning' || $tagProbeState.active}
               class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
             >Refresh</button>
           </div>
           <p class="mb-2 text-sm text-muted">
             Shows songs the scanner could not safely link to a file on your WebDAV server. Link them manually so Push Changes can write their ratings, or mark them as not on this server.
           </p>
+          {#if unresolvedLoaded && !unresolvedIndexComplete}
+            <p class="mb-2 text-sm text-yellow-300">The WebDAV index is incomplete because one or more directories could not be read. These suggestions are partial; automatic matching and removed-file decisions are paused until the index can be rebuilt completely.</p>
+          {/if}
           {#if $tagProbeState.active}
             <p class="mb-2 text-sm text-muted">
               Reading tags from {tagProbeText()} to match files by their contents…

@@ -1,6 +1,6 @@
 import { normalizeForMatch } from "./matchNormalize"
 import type { Track } from "../stores/appState"
-import type { WebdavFileEntry, LocalMetadataStore } from "./db"
+import type { WebdavFileEntry, LocalMetadataStore, FileTagCacheEntry } from "./db"
 
 /**
  * Pure matching/scoring core for WebDAV file binding (TODO 3.6t): every
@@ -45,22 +45,40 @@ interface ScoredEntry {
   tagScore: number
   /** Best of both, plus the equal-size bonus. */
   score: number
-  /** True when a confident tag match: exact title AND exact artist. */
+  /** True when a confident tag match: exact title AND exact artist AND no
+   *  duration conflict (6.4). */
   tagCertain: boolean
+  /** Exact normalized-title tag match — the primary identity signal (6.5a). */
+  tagTitleExact: boolean
+  /** Both sides carry a duration and they differ beyond ±2 s (6.4 demotion). */
+  tagDurationConflict: boolean
+}
+
+interface TagScore {
+  score: number
+  /** Exact title AND exact artist AND no duration conflict — the strongest
+   *  verdict (the one the scanner auto-binds on). */
+  certain: boolean
+  /** Exact normalized-title match (the primary identity signal, 6.5a). */
+  titleExact: boolean
+  /** Both sides carry a duration and they differ beyond ±2 s (6.4). */
+  durationConflict: boolean
 }
 
 /** In-file identity scoring: title is the strong signal; artist/album/track
- *  corroborate; equal byte size adds a small bonus. `certain` = exact title
- *  AND exact artist (the only verdict the scanner auto-binds on). */
+ *  corroborate; equal byte size, year, and duration add corroboration. Year
+ *  is corroboration only (a mismatch never demotes — reissues); duration
+ *  beyond ±2 s DEMOTES certainty (a different-length file is a different
+ *  version), while an absent/null duration on either side is no signal. */
 function scoreAgainstTags(
   track: Track,
   entry: WebdavFileEntry,
   navSize: number | undefined,
-): { score: number; certain: boolean } {
-  if (!entry.tags) return { score: 0, certain: false }
+): TagScore {
+  if (!entry.tags) return { score: 0, certain: false, titleExact: false, durationConflict: false }
   const tags = entry.tags
   const fileTitle = normalizeForMatch(tags.title ?? '')
-  if (!fileTitle) return { score: 0, certain: false }
+  if (!fileTitle) return { score: 0, certain: false, titleExact: false, durationConflict: false }
 
   const navTitle = normalizeForMatch(track.title)
   const fileArtist = normalizeForMatch(tags?.artist ?? '')
@@ -75,7 +93,7 @@ function scoreAgainstTags(
   } else if (fileTitle.includes(navTitle) || navTitle.includes(fileTitle)) {
     score = 78 - Math.abs(fileTitle.length - navTitle.length)
   } else {
-    return { score: 0, certain: false }
+    return { score: 0, certain: false, titleExact: false, durationConflict: false }
   }
 
   const artistExact = fileArtist !== '' && navArtist !== '' && fileArtist === navArtist
@@ -92,15 +110,43 @@ function scoreAgainstTags(
     score += 5
   }
 
-  return { score, certain: titleExact && artistExact }
+  // Year corroboration (6.4): +5 when both sides agree within ±1 (reissues).
+  // Absent on either side = no signal; a larger mismatch never demotes — the
+  // title/artist are the identity, the year is only a tiebreaker.
+  if (tags.year !== undefined && track.year !== undefined && Math.abs(tags.year - track.year) <= 1) {
+    score += 5
+  }
+
+  // Duration corroboration (6.4): +10 within ±2 s. Absent/null on either side
+  // (0, `getAudioProperties()` null for short/unparseable buffers) = no signal.
+  // A genuine mismatch beyond ±2 s DEMOTES certainty — never a hard block.
+  const fileDuration = tags.duration
+  const navDuration = track.duration
+  let durationConflict = false
+  if (fileDuration !== undefined && fileDuration > 0 && navDuration > 0) {
+    if (Math.abs(fileDuration - navDuration) <= 2) {
+      score += 10
+    } else {
+      durationConflict = true
+    }
+  }
+
+  return { score, certain: titleExact && artistExact && !durationConflict, titleExact, durationConflict }
 }
 
-/** The size-only fallback is suppressed when the file's PROBED tags
- *  contradict the track (a coincidental same-size file must not auto-bind). */
-function tagsContradictSize(track: Track, entry: WebdavFileEntry): boolean {
-  const fileTitle = entry.tags?.title
+/** A file's probed identity tags CONTRADICT a track when the file has a
+ *  non-empty title that is not an exact (normalized) match for the track's
+ *  title. Contradicting tags suppress BOTH the filename evidence and the
+ *  byte-size fallback (6.0a/6.5b) — in-file identity outranks a filename. A
+ *  file with NO identity title is not a contradiction (it still binds on
+ *  filename/size). */
+function tagsContradictTrack(track: Track, entry: WebdavFileEntry): boolean {
+  const fileTitle = normalizeForMatch(entry.tags?.title ?? '')
+  // Whitespace/punctuation-only title values carry no identity signal; treat
+  // them like an absent title rather than suppressing a valid filename/size
+  // fallback.
   if (!fileTitle) return false
-  return normalizeForMatch(fileTitle) !== normalizeForMatch(track.title)
+  return fileTitle !== normalizeForMatch(track.title)
 }
 
 /** Re-verification verdict for an EXISTING binding judged against the file
@@ -141,19 +187,25 @@ function scoreTrackMatches(
     if (!entry.filename.toLowerCase().endsWith(`.${track.fileType}`)) continue
 
     const cleanedFilename = normalizeForMatch(extractTitleFromFilename(entry.filename))
+    // 6.5b: probed identity tags that contradict the track suppress ALL
+    // filename/size evidence — the file's own tags outrank its name.
+    const contradicts = tagsContradictTrack(track, entry)
 
     let nameScore = 0
-    if (cleanedFilename === navTitle) {
-      nameScore = 100
-    } else if (cleanedFilename.includes(navTitle)) {
-      nameScore = 80 - Math.abs(cleanedFilename.length - navTitle.length)
-    } else if (navTitle.includes(cleanedFilename)) {
-      nameScore = 60 - Math.abs(cleanedFilename.length - navTitle.length)
-    }
+    if (!contradicts) {
+      if (cleanedFilename === navTitle) {
+        nameScore = 100
+      } else if (cleanedFilename.includes(navTitle)) {
+        nameScore = 80 - Math.abs(cleanedFilename.length - navTitle.length)
+      } else if (navTitle.includes(cleanedFilename)) {
+        nameScore = 60 - Math.abs(cleanedFilename.length - navTitle.length)
+      }
 
-    // Size-only guess — suppressed when probed tags contradict the track.
-    if (navSize && entry.size === navSize && nameScore === 0 && !tagsContradictSize(track, entry)) {
-      nameScore = 40
+      // Size-only guess — weak, never binds alone (D8), suppressed when the
+      // probed tags contradict the track.
+      if (navSize && entry.size === navSize && nameScore === 0) {
+        nameScore = 40
+      }
     }
 
     const tag = scoreAgainstTags(track, entry, navSize)
@@ -175,11 +227,52 @@ function scoreTrackMatches(
       tagScore: tag.score,
       score,
       tagCertain: tag.certain,
+      tagTitleExact: tag.titleExact,
+      tagDurationConflict: tag.durationConflict,
     })
   }
 
   scored.sort((a, b) => b.score - a.score)
   return scored
+}
+
+/** The single track→file verdict both views share: whether a scored lead
+ *  auto-binds, stays ambiguous (user confirms), or has no evidence. */
+type TrackMatchVerdict = 'bind' | 'ambiguous' | 'none'
+
+function classifyScoredTrackMatch(scored: ScoredEntry[]): TrackMatchVerdict {
+  if (scored.length === 0) return 'none'
+  const top = scored[0]
+
+  // Evidence gate (D8): auto-binding requires filename or tag evidence —
+  // `nameScore === 40` is exactly the byte-size heuristic, and a size
+  // coincidence is not proof a file IS the song (same-encode albums
+  // historically auto-bound whole albums to one wrong file). Size-only
+  // matches remain visible in the picker as suggestions — never an automatic
+  // bind.
+  if (top.score < 40 || (top.nameScore <= 40 && top.tagScore === 0)) return 'none'
+
+  // A duration conflict attached to an exact title is explicit contradictory
+  // evidence even when the filename and tag scores tie (the common case for a
+  // title-only tag). Do this before the tag-vs-filename hierarchy so the
+  // unique-title relaxation cannot bypass the duration safety rule.
+  if (top.tagTitleExact && top.tagDurationConflict) return 'ambiguous'
+
+  if (top.tagScore > top.nameScore) {
+    // A substring tag match (not an exact title) is never certain enough.
+    if (!top.tagTitleExact) return 'ambiguous'
+    // 6.5a: an exact-title tag match without artist agreement binds only when
+    // UNIQUE — artist is the tiebreaker across same-title files.
+    if (!top.tagCertain && scored.slice(1).some((s) => s.tagTitleExact)) {
+      return 'ambiguous'
+    }
+  }
+
+  // Two files with the same top score (e.g. duplicate "01 - Intro.flac" in
+  // different albums, same size) are indistinguishable — picking the first
+  // index entry could rewrite the WRONG file's tags on Push.
+  if (scored.length > 1 && top.score === scored[1].score) return 'ambiguous'
+  return 'bind'
 }
 
 export function matchTrackToWebdav(
@@ -188,30 +281,9 @@ export function matchTrackToWebdav(
   excludePaths?: ReadonlySet<string>,
 ): TrackMatchResult {
   const scored = scoreTrackMatches(track, index, excludePaths)
-
-  // Auto-binding requires filename or tag evidence: `nameScore === 40` is
-  // exactly the byte-size heuristic, and a size coincidence is not proof a
-  // file IS the song (same-encode albums historically auto-bound whole
-  // albums to one wrong file). Size-only matches remain visible in the
-  // File Matching picker as suggestions — never an automatic bind. The
-  // `track.size` fallback that duplicated this path is gone.
-  if (scored.length > 0 && scored[0].score >= 40
-      && (scored[0].nameScore > 40 || scored[0].tagScore > 0)) {
-    // A tag verdict that is not title+artist-certain must not auto-bind —
-    // surface it as ambiguous so the user confirms (the picker shows tags).
-    if (scored[0].tagScore > scored[0].nameScore && !scored[0].tagCertain) {
-      return { entry: null, ambiguous: true }
-    }
-    // Two files with the same score (e.g. duplicate "01 - Intro.flac" in
-    // different albums, same size) are indistinguishable — picking the first
-    // index entry could rewrite the WRONG file's tags on Push.
-    if (scored.length > 1 && scored[0].score === scored[1].score) {
-      return { entry: null, ambiguous: true }
-    }
-    return { entry: scored[0].entry, ambiguous: false }
-  }
-
-  return { entry: null, ambiguous: false }
+  const verdict = classifyScoredTrackMatch(scored)
+  if (verdict === 'bind') return { entry: scored[0].entry, ambiguous: false }
+  return { entry: null, ambiguous: verdict === 'ambiguous' }
 }
 
 export interface MatchCandidates {
@@ -238,37 +310,99 @@ export function matchTrackToWebdavCandidates(
       && !excludePaths?.has(e.path),
   )
 
-  // Same evidence gate as `matchTrackToWebdav`: a byte-size-only lead must
-  // not classify as 'matched' (a size-only TIE would otherwise count
-  // 'ambiguous' here while the scanner counts it 'no-match' — the count
-  // line and scan result would disagree). Size-only entries still surface
-  // as near-miss suggestions below.
-  if (scored.length > 0 && scored[0].score >= 40
-      && (scored[0].nameScore > 40 || scored[0].tagScore > 0)) {
-    const top = scored[0].score
-    const group = scored.filter((s) => s.score === top).map((s) => s.entry)
-    // Mirrors `matchTrackToWebdav`: a tag verdict that beats the filename
-    // guess without title+artist certainty must not auto-bind — classify it
-    // ambiguous so listUnresolvedMatches' counts agree with the scanner's.
-    const tagLedUncertain = scored[0].tagScore > scored[0].nameScore && !scored[0].tagCertain
-    return {
-      status: group.length > 1 || tagLedUncertain ? 'ambiguous' : 'matched',
-      promptCandidates: group,
-      allCandidates,
+  const verdict = classifyScoredTrackMatch(scored)
+  if (verdict === 'none') {
+    // No confident match: surface the best near-misses so the user sees why
+    // nothing scored and has a starting point (size-only hits included — the
+    // probe-contradicted ones are already excluded from `scored`).
+    if (scored.length > 0) {
+      return {
+        status: 'none',
+        promptCandidates: scored.slice(0, 5).map((s) => s.entry),
+        allCandidates,
+      }
     }
+    return { status: 'none', promptCandidates: [], allCandidates }
   }
 
-  // No confident match: surface the best near-misses so the user sees why
-  // nothing scored and has a starting point (size-only hits included — the
-  // probe-contradicted ones are already excluded from `scored`).
-  if (scored.length > 0) {
-    return {
-      status: 'none',
-      promptCandidates: scored.slice(0, 5).map((s) => s.entry),
-      allCandidates,
-    }
+  const top = scored[0].score
+  const group = scored.filter((s) => s.score === top).map((s) => s.entry)
+  return {
+    status: verdict === 'ambiguous' ? 'ambiguous' : 'matched',
+    promptCandidates: group,
+    allCandidates,
   }
-  return { status: 'none', promptCandidates: [], allCandidates }
+}
+
+/** Navidrome's placeholder for a missing title (`navidromeSongToTrack` maps
+ *  `song.title || 'Unknown Title'`). A track with no real title must never
+ *  become a reverse-match candidate — the index is keyed by normalized title,
+ *  and an empty/degenerate key could only bind untagged files to placeholder
+ *  tracks. */
+const UNKNOWN_TITLE = normalizeForMatch('Unknown Title')
+
+/** normalizedTitle → tracks sharing that exact title. Empty and sentinel
+ *  titles are excluded: they can only produce false reverse-matches. */
+export interface TrackTitleIndex {
+  byTitle: Map<string, Track[]>
+}
+
+export function buildTrackTitleIndex(tracks: Track[]): TrackTitleIndex {
+  const byTitle = new Map<string, Track[]>()
+  for (const t of tracks) {
+    const title = normalizeForMatch(t.title)
+    if (!title || title === UNKNOWN_TITLE) continue
+    let list = byTitle.get(title)
+    if (!list) {
+      list = []
+      byTitle.set(title, list)
+    }
+    list.push(t)
+  }
+  return { byTitle }
+}
+
+export interface FileTrackMatch {
+  verdict: 'certain' | 'unique-title' | 'ambiguous' | 'none'
+  trackId: string | null
+}
+
+/** Reverse matching (file → track) for probe-time auto-binding: given a probed
+ *  file's identity tags, find the track(s) it matches. Only EXACT-title
+ *  candidates are considered (near-title matches never auto-bind — they are
+ *  the 'ambiguous' surface the user confirms); `excludeTrackIds` drops tracks
+ *  already bound elsewhere, mirroring the scan's track→file first-claims
+ *  direction. Verdicts: 'certain' (exact title AND artist AND no duration
+ *  conflict, one track), 'unique-title' (exact title, one candidate — the
+ *  6.5a relaxation for artist-less tags, demoted by a 6.4 duration conflict),
+ *  'ambiguous' (shared title, never guessed), 'none' (no candidate). */
+export function matchFileToTracks(
+  entry: WebdavFileEntry,
+  index: TrackTitleIndex,
+  excludeTrackIds?: ReadonlySet<string>,
+): FileTrackMatch {
+  const fileTitle = entry.tags ? normalizeForMatch(entry.tags.title ?? '') : ''
+  if (!fileTitle) return { verdict: 'none', trackId: null }
+
+  const candidates = (index.byTitle.get(fileTitle) ?? []).filter(
+    (t) => !excludeTrackIds?.has(t.trackId)
+      && entry.filename.toLowerCase().endsWith(`.${t.fileType}`),
+  )
+  if (candidates.length === 0) return { verdict: 'none', trackId: null }
+
+  const certain = candidates.filter((t) => scoreAgainstTags(t, entry, t.size).certain)
+  if (certain.length === 1) return { verdict: 'certain', trackId: certain[0].trackId }
+  if (certain.length > 1) return { verdict: 'ambiguous', trackId: null }
+
+  if (candidates.length === 1) {
+    // 6.4: the duration demotion also gates the unique-title relaxation — a
+    // different-length file is a different version even when its title is
+    // unique.
+    const scored = scoreAgainstTags(candidates[0], entry, candidates[0].size)
+    if (scored.durationConflict) return { verdict: 'ambiguous', trackId: null }
+    return { verdict: 'unique-title', trackId: candidates[0].trackId }
+  }
+  return { verdict: 'ambiguous', trackId: null }
 }
 
 /**
@@ -291,6 +425,83 @@ export function computeIndexFingerprint(index: WebdavFileEntry[]): string {
     }
   }
   return hash.toString(36)
+}
+
+/**
+ * Change-detector over the PROBED tag cache (the second evidence channel):
+ * FNV-1a over sorted `path|size|mtime|status|probedAt` pairs. `probedAt`
+ * flips exactly when the probe writes a new result, while `mtime` makes a
+ * same-size tag edit visible to the next freshness check. Tag CONTENT is
+ * deliberately not hashed: these fields are change markers, and a rewritten
+ * probedAt with identical tags is still new evidence.
+ */
+export function computeTagCacheFingerprint(entries: FileTagCacheEntry[]): string {
+  const parts = entries.map((e) => `${e.path}\u0000${e.size}\u0000${e.lastModified ?? ''}\u0000${e.status}\u0000${e.probedAt}`)
+  parts.sort()
+  let hash = 0x811c9dc5
+  for (const p of parts) {
+    for (let i = 0; i < p.length; i++) {
+      hash ^= p.charCodeAt(i)
+      hash = Math.imul(hash, 0x01000193) >>> 0
+    }
+  }
+  return hash.toString(36)
+}
+
+/** Cache freshness policy for the tag probe (6.6). Successful and empty
+ * results remain valid until the file size or WebDAV mtime changes. Parse
+ * failures are retried after a long TTL; network failures use a short TTL so
+ * an offline/online transition cannot poison a file for the rest of the session. */
+export const TAG_NETWORK_ERROR_TTL_MS = 5 * 60 * 1000
+export const TAG_UNREADABLE_TTL_MS = 6 * 60 * 60 * 1000
+export const PROBE_SWEEP_MIN_FILES = 50
+
+export type ProbeSweepMode = 'sweep-all' | 'hint-gated'
+
+/** Decide whether the WebDAV server is probably the user's library. Bound
+ * files leave the unclaimed pool, so a roughly 1:1 unclaimed-file/track ratio
+ * is the safe point at which probing every remaining audio file is cheaper and
+ * more complete than relying on filenames or byte-size hints. */
+export function planProbeSweep(
+  unclaimedFiles: number,
+  unclaimedTracks: number,
+): ProbeSweepMode {
+  if (unclaimedFiles <= Math.max(unclaimedTracks, PROBE_SWEEP_MIN_FILES)) return 'sweep-all'
+  return 'hint-gated'
+}
+
+export function tagCacheEntryIsFresh(
+  entry: FileTagCacheEntry,
+  currentSize: number,
+  currentLastModified?: string,
+  now = Date.now(),
+): boolean {
+  if (entry.size !== currentSize || mtimeChanged(entry.lastModified, currentLastModified)) return false
+  if (entry.status === 'ok' || entry.status === 'empty') return true
+  const age = Math.max(0, now - entry.probedAt)
+  if (entry.status === 'network-error') return age < TAG_NETWORK_ERROR_TTL_MS
+  return age < TAG_UNREADABLE_TTL_MS
+}
+
+/**
+ * Remove cache rows for paths that disappeared from a COMPLETE server index.
+ * A partial crawl must retain them: an unreadable directory may still contain
+ * the file, and deleting its evidence would make a later recovery look like a
+ * brand-new server. The returned arrays are new and the input is untouched.
+ */
+export function pruneTagCacheEntries(
+  entries: FileTagCacheEntry[],
+  activePaths: ReadonlySet<string>,
+  indexComplete: boolean,
+): { kept: FileTagCacheEntry[]; removed: FileTagCacheEntry[] } {
+  if (!indexComplete) return { kept: [...entries], removed: [] }
+  const kept: FileTagCacheEntry[] = []
+  const removed: FileTagCacheEntry[] = []
+  for (const entry of entries) {
+    if (activePaths.has(entry.path)) kept.push(entry)
+    else removed.push(entry)
+  }
+  return { kept, removed }
 }
 
 /**
@@ -396,4 +607,24 @@ export function findChangedTracks(
   }
 
   return { changed, unmatched }
+}
+
+/** Reason an automatic bind (scan auto-match or probe-time reverse-match) was
+ *  refused. The eligibility rules are the shared subset of `processItem`'s
+ *  guards: never rebind a row that already owns a file, never override a
+ *  manual verdict, and never touch a row awaiting push or dismissed. */
+export type AutoBindDecision =
+  | { bindable: true }
+  | { bindable: false; reason: 'track-missing' | 'already-bound' | 'manual' | 'pending-sync' | 'ignored' }
+
+export function canAutoBind(
+  track: Track | undefined,
+  existing: LocalMetadataStore | undefined,
+): AutoBindDecision {
+  if (!track) return { bindable: false, reason: 'track-missing' }
+  if (existing?.webdavPath != null) return { bindable: false, reason: 'already-bound' }
+  if (existing?.matchSource === 'manual') return { bindable: false, reason: 'manual' }
+  if (existing?.syncStatus === 'pending_sync') return { bindable: false, reason: 'pending-sync' }
+  if (existing?.ignored) return { bindable: false, reason: 'ignored' }
+  return { bindable: true }
 }

@@ -5,6 +5,7 @@
   import { initEqStore } from './lib/eq/eqStore'
   import { sleepTimerManager } from './lib/sleepTimer'
   import { loadLibraryFromNavidrome } from './lib/syncEngine'
+  import { ensureTagProbeAfterRestore } from './lib/metadataScanner'
   import { setCachedConfig } from './lib/navidromeApi'
   import { playbackManager } from './lib/playbackManager'
   import { audioManager } from './lib/audioManager'
@@ -73,6 +74,17 @@
         navidromeConnection.set({ connected: false, error: msg, checking: false })
         navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: msg })
       }
+    }
+
+    // Restore the tag-evidence cache in the background when a library was
+    // recovered from local state. Online reconnect scans already own the
+    // lifecycle; the helper waits for that scan/tail and deduplicates through
+    // the probe mutex. Offline startup is intentionally a no-op.
+    if ($settings.webdavUrl && $settings.webdavUser && $settings.webdavToken
+        && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+      void ensureTagProbeAfterRestore().catch((err) => {
+        console.warn('[metadata] restore tag probe failed:', err)
+      })
     }
 
     getTagLib()

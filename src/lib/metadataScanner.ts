@@ -2,26 +2,33 @@ import { get } from "svelte/store"
 import { writable } from "svelte/store"
 import { library, metadataCache, metadataScanState, settings, updateMetadata } from "../stores/appState"
 import type { Track } from "../stores/appState"
-import { saveWebdavFileIndex, clearWebdavFileIndex, getWebdavFileIndex, getFileTagsForBase, putFileTag } from "./db"
+import { saveWebdavFileIndex, clearWebdavFileIndex, getWebdavFileIndex, getFileTagsForBase, putFileTag, deleteFileTagsForBase, deleteFileTagsByIds, updateWebdavFileTagFingerprint } from "./db"
 import type { LocalMetadataStore, FileTagCacheEntry } from "./db"
-import { buildWebdavFileIndex, readFileMetadata } from "./metadataReader"
+import { buildWebdavFileIndexDetailed, readFileMetadata } from "./metadataReader"
 import {
   matchTrackToWebdav,
   matchTrackToWebdavCandidates,
   buildPathTimestamps,
   findChangedTracks,
   computeIndexFingerprint,
+  computeTagCacheFingerprint,
   slimIndexForPersistence,
   isAudioFilePath,
   verifyEntryAgainstTrack,
   mergeFileComments,
+  tagCacheEntryIsFresh,
+  planProbeSweep,
+  buildTrackTitleIndex,
+  matchFileToTracks,
+  canAutoBind,
+  pruneTagCacheEntries,
 } from "./metadataCore"
 import { filenameHintsTitle, normalizeForHint } from "./matchNormalize"
 import { webdavBaseKey, webdavFetch, authHeaders, buildWebdavUrl, isTempFile } from "./webdavUtils"
 import { normalizeWebdavCredentials, sameWebdavCredentials, isCurrentWebdavSession } from "./webdavSession"
 import type { WebdavCredentials, WebdavSession } from "./webdavSession"
-import type { FileMetadata } from "./metadataReader"
-import type { WebdavFileEntry } from "./db"
+import { FileMetadataError, type FileMetadata } from "./metadataReader"
+import type { FileTags, WebdavFileEntry } from "./db"
 
 const CONCURRENCY = 6
 
@@ -43,6 +50,9 @@ interface QueueItem {
 let queue: QueueItem[] = []
 let activeCount = 0
 let activeDrain: Promise<void> | null = null
+/** Covers the pre-drain scan phase too, so restore probing cannot race a
+ * scan that has been scheduled but has not reached its tag phase yet. */
+let activeScanPromise: Promise<void> | null = null
 /** Serializes index persistence and credential-change invalidation. A stale
  * request that was already writing must finish before the invalidation delete,
  * so it cannot resurrect an old server snapshot after a credential swap. */
@@ -57,6 +67,11 @@ let scanGen = 0
 let claimedInScan = new Set<string>()
 let index: WebdavFileEntry[] = []
 let indexBuilt = false
+/** A partial Depth:1 fallback is useful for candidate display but is never a
+ *  safe basis for automatic binding or for declaring an existing path gone. */
+let indexComplete = false
+let indexRefreshPromise: Promise<boolean> | null = null
+let indexRefreshSession: WebdavSession | null = null
 let serverLastScan = ""
 
 let webdavUrl = ""
@@ -67,6 +82,7 @@ let indexBaseKey = ""
 let scannedCount = 0
 let failedCount = 0
 let missingCount = 0
+let notFoundCount = 0
 let ambiguousCount = 0
 let totalTracks = 0
 let shape: ScanShape = "modified"
@@ -102,7 +118,13 @@ function isCurrentSession(session: WebdavSession): boolean {
   return isCurrentWebdavSession(session, currentCredentials(), scanGen)
 }
 
-function queueIndexWrite(session: WebdavSession, entries: WebdavFileEntry[], lastScan: string): Promise<boolean> {
+function queueIndexWrite(
+  session: WebdavSession,
+  entries: WebdavFileEntry[],
+  lastScan: string,
+  tagFingerprint: string,
+  complete: boolean,
+): Promise<boolean> {
   const slim = slimIndexForPersistence(entries)
   const fingerprint = computeIndexFingerprint(entries)
   let result = false
@@ -114,11 +136,25 @@ function queueIndexWrite(session: WebdavSession, entries: WebdavFileEntry[], las
       lastScan,
       baseKey: session.baseKey,
       fingerprint,
+      tagFingerprint,
+      complete,
     })
     result = isCurrentSession(session)
   })
   indexPersistence = write.catch(() => {})
   return write.then(() => result)
+}
+
+function queueTagFingerprintWrite(session: WebdavSession): Promise<void> {
+  const tagFingerprint = computeTagCacheFingerprint([...tagCache.values()])
+  const write = indexPersistence.then(async () => {
+    if (!isCurrentSession(session) || !indexBuilt || indexBaseKey !== session.baseKey) return
+    await updateWebdavFileTagFingerprint(session.baseKey, tagFingerprint)
+  })
+  indexPersistence = write.catch(() => {})
+  return write.catch((err) => {
+    console.warn('[metadata] failed to persist tag fingerprint:', err)
+  })
 }
 
 /**
@@ -141,18 +177,35 @@ export function setWebdavCredentials(url: string, user: string, token: string): 
   if (sameWebdavCredentials(next, currentCredentials())) return
 
   const davKey = webdavBaseKey(next.url, next.user)
+  const credentialsChanged = !sameWebdavCredentials(next, currentCredentials())
+  const previousIndexBaseKey = indexBaseKey
+  const previousTagBaseKey = tagCacheBaseKey || tagCacheLastKnownBaseKey || previousIndexBaseKey
   const baseChanged = davKey !== indexBaseKey
-  if (baseChanged) {
-    // The index (in-memory or cached) belongs to a different server/user —
-    // never reuse it against the new credentials.
+  if (baseChanged || credentialsChanged) {
+    // Any credential change can change the visible file set (including a
+    // token/account change on the same URL), so never reuse the old live
+    // index while the new session is being established.
     index = []
     indexBuilt = false
+    indexComplete = false
     indexBaseKey = ""
   }
   if (davKey !== tagCacheBaseKey) {
     tagCache = new Map()
     tagCacheLoaded = false
     tagCacheBaseKey = ""
+  }
+  if (previousTagBaseKey && previousTagBaseKey !== davKey) {
+    // Keep the active credential swap serialized behind any probe writes. This
+    // prevents an old in-flight write from resurrecting rows after cleanup.
+    tagCachePersistence = tagCachePersistence
+      .then(() => {
+        // A rapid A→B→A swap must not let the delayed A cleanup delete the
+        // cache for the server we have already returned to.
+        if (webdavBaseKey(webdavUrl, webdavUser) === previousTagBaseKey) return
+        return deleteFileTagsForBase(previousTagBaseKey)
+      })
+      .catch(() => {})
   }
 
   // Credentials changed mid-scan: in-flight work must abort at its next
@@ -162,6 +215,7 @@ export function setWebdavCredentials(url: string, user: string, token: string): 
   cancelled = true
   scanGen++
   tagProbeGen++
+  tagProbeState.update((state) => ({ ...state, active: false, done: 0, remaining: 0 }))
   indexPersistence = indexPersistence
     .then(() => clearWebdavFileIndex())
     .catch(() => {})
@@ -169,7 +223,7 @@ export function setWebdavCredentials(url: string, user: string, token: string): 
   if (get(metadataScanState).status === 'scanning') {
     metadataScanState.set({
       status: 'error',
-      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+      progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
       error: 'WebDAV credentials changed — scan cancelled',
     })
   }
@@ -177,6 +231,7 @@ export function setWebdavCredentials(url: string, user: string, token: string): 
   webdavUrl = next.url
   webdavUser = next.user
   webdavToken = next.token
+  tagCacheLastKnownBaseKey = davKey
 }
 
 export function setServerLastScan(scan: string): void {
@@ -190,26 +245,29 @@ export function setServerLastScan(scan: string): void {
  * for a scan diff. Returns false when the probe fails (server unreachable,
  * auth error) so the caller can abort instead of scanning a stale snapshot.
  */
-export async function refreshIndex(): Promise<boolean> {
-  const session = captureSession()
-  if (!session) return false
+async function refreshIndexForSession(session: WebdavSession): Promise<boolean> {
   try {
     // Keep the fetched index local until every asynchronous enrichment step
     // has completed and the session is still current. A stale probe must never
     // publish old rows into the new server's live index.
-    const freshIndex = await buildWebdavFileIndex(session.url, session.user, session.token)
+    const built = await buildWebdavFileIndexDetailed(session.url, session.user, session.token)
+    const freshIndex = built.entries
     if (!isCurrentSession(session)) return false
 
-    const cached = await loadTagCacheFor(session.baseKey)
+    let cached = await loadTagCacheFor(session.baseKey)
+    cached = await pruneTagCacheForIndex(session, cached, freshIndex, built.complete)
+    if (!isCurrentSession(session)) return false
+
+    const tagFingerprint = computeTagCacheFingerprint([...cached.values()])
     for (const entry of freshIndex) {
       const tag = cached.get(entry.path)
-      if (tag && tag.size === entry.size && tag.status === 'ok' && tag.tags) {
-        entry.tags = tag.tags
+      if (tag && tagCacheEntryIsFresh(tag, entry.size, entry.lastModified) && tag.status === 'ok' && tag.metadata) {
+        entry.tags = metadataToTags(tag.metadata)
       }
     }
     if (!isCurrentSession(session)) return false
 
-    const committed = await queueIndexWrite(session, freshIndex, serverLastScan)
+    const committed = await queueIndexWrite(session, freshIndex, serverLastScan, tagFingerprint, built.complete)
     if (!committed || !isCurrentSession(session)) return false
 
     await cleanupOrphanTempFiles(session, freshIndex)
@@ -218,12 +276,57 @@ export async function refreshIndex(): Promise<boolean> {
     index = freshIndex
     indexBaseKey = session.baseKey
     indexBuilt = true
+    indexComplete = built.complete
     tagCache = cached
     tagCacheBaseKey = session.baseKey
+    tagCacheLastKnownBaseKey = session.baseKey
     tagCacheLoaded = true
     return true
   } catch {
+    // A failed fresh probe must not leave an older live index eligible for a
+    // later restore/tag pass. Clearing it is safer than silently matching
+    // against a stale server snapshot.
+    if (isCurrentSession(session)) {
+      index = []
+      indexBuilt = false
+      indexComplete = false
+      indexBaseKey = ""
+    }
     return false
+  }
+}
+
+/** Serialize all fresh index requests. This prevents boot/File-Matching
+ *  startup races from issuing two PROPFINDs and publishing whichever result
+ *  happens to settle last. A request from an obsolete credential generation is
+ *  awaited and then retried for the current session by its caller. */
+export async function refreshIndex(): Promise<boolean> {
+  // Direct diagnostic/manual callers also obey the probe boundary; the one
+  // exception is the initial refresh performed inside ensureTagProbe before
+  // that operation has published its shared promise.
+  await waitForCurrentTagProbe()
+  const session = captureSession()
+  if (!session) return false
+  const active = indexRefreshPromise
+  if (active) {
+    const activeSession = indexRefreshSession
+    if (activeSession?.generation === session.generation && activeSession.baseKey === session.baseKey) {
+      return active
+    }
+    await active
+    return refreshIndex()
+  }
+
+  const operation = refreshIndexForSession(session)
+  indexRefreshPromise = operation
+  indexRefreshSession = session
+  try {
+    return await operation
+  } finally {
+    if (indexRefreshPromise === operation) {
+      indexRefreshPromise = null
+      indexRefreshSession = null
+    }
   }
 }
 
@@ -247,31 +350,11 @@ async function cleanupOrphanTempFiles(session: WebdavSession, entries: WebdavFil
 }
 
 export async function rebuildIndex(): Promise<boolean> {
-  const session = captureSession()
-  if (!session) throw new Error(CREDENTIALS_MISSING)
-
-  const freshIndex = await buildWebdavFileIndex(session.url, session.user, session.token)
-  if (!isCurrentSession(session)) return false
-  const cached = await loadTagCacheFor(session.baseKey)
-  for (const entry of freshIndex) {
-    const tag = cached.get(entry.path)
-    if (tag && tag.size === entry.size && tag.status === 'ok' && tag.tags) {
-      entry.tags = tag.tags
-    }
-  }
-  if (!isCurrentSession(session)) return false
-
-  const committed = await queueIndexWrite(session, freshIndex, serverLastScan)
-  if (!committed || !isCurrentSession(session)) return false
-  await cleanupOrphanTempFiles(session, freshIndex)
-  if (!isCurrentSession(session)) return false
-  index = freshIndex
-  indexBaseKey = session.baseKey
-  indexBuilt = true
-  tagCache = cached
-  tagCacheBaseKey = session.baseKey
-  tagCacheLoaded = true
-  return true
+  if (!captureSession()) throw new Error(CREDENTIALS_MISSING)
+  // Force scans and the explicit index button both require a fresh PROPFIND;
+  // the shared request path already serializes it and applies safe cache
+  // pruning, so there is no second implementation to drift.
+  return refreshIndex()
 }
 
 // ── In-file identity tags (content probing) ─────────────────────────────
@@ -281,22 +364,125 @@ export interface TagProbeState {
   done: number
   /** Files in the current candidate pool not yet probed. */
   remaining: number
+  /** Increments once per current-session probe completion. */
+  revision: number
 }
 
-export const tagProbeState = writable<TagProbeState>({ active: false, done: 0, remaining: 0 })
+export const tagProbeState = writable<TagProbeState>({ active: false, done: 0, remaining: 0, revision: 0 })
 
 const TAG_PROBE_CONCURRENCY = 4
 const TAG_PROBE_RETRY_MS = 800
 
 /** `baseUrl|user` the in-memory tag cache belongs to. */
 let tagCacheBaseKey = ""
+/** Last selected server identity, retained across rapid credential swaps so
+ * old-base cleanup cannot lose the intermediate key before its cache loads. */
+let tagCacheLastKnownBaseKey = ""
 let tagCache = new Map<string, FileTagCacheEntry>()
 let tagCacheLoaded = false
-let tagProbeActive = false
 let tagProbeGen = 0
+/** The one current probe operation. Every caller awaits this same promise. */
+let tagProbePromise: Promise<Set<string>> | null = null
+let tagProbePromiseGeneration: number | null = null
+/** Serializes cache writes and credential-swap cleanup. */
+let tagCachePersistence: Promise<void> = Promise.resolve()
 
 function fileTagId(baseKey: string, path: string): string {
   return `${baseKey}\u0000${path}`
+}
+
+function metadataToTags(meta: FileMetadata): FileTags {
+  return {
+    title: meta.title,
+    artist: meta.artist,
+    album: meta.album,
+    trackNumber: meta.trackNumber,
+    year: meta.year,
+    duration: meta.duration,
+  }
+}
+
+function persistTagEntry(entry: FileTagCacheEntry): Promise<void> {
+  const write = tagCachePersistence.then(() => putFileTag(entry))
+  tagCachePersistence = write.catch(() => {})
+  return write
+}
+
+/** Prune only after a complete index. Partial crawls deliberately retain
+ *  unseen cache rows because an unreadable directory may still contain them. */
+async function pruneTagCacheForIndex(
+  session: WebdavSession,
+  cached: Map<string, FileTagCacheEntry>,
+  entries: WebdavFileEntry[],
+  complete: boolean,
+): Promise<Map<string, FileTagCacheEntry>> {
+  const activePaths = new Set(entries.map((entry) => entry.path))
+  const pruned = pruneTagCacheEntries([...cached.values()], activePaths, complete)
+  if (pruned.removed.length === 0) return new Map(pruned.kept.map((entry) => [entry.path, entry]))
+  if (!isCurrentSession(session)) return cached
+
+  const write = tagCachePersistence.then(() => deleteFileTagsByIds(pruned.removed.map((entry) => entry.id)))
+  tagCachePersistence = write.catch(() => {})
+  await write
+  if (!isCurrentSession(session)) return cached
+  return new Map(pruned.kept.map((entry) => [entry.path, entry]))
+}
+
+/** Apply a confident reverse match from the probe without doing another file
+ * read. The live eligibility check is deliberately repeated here rather than
+ * trusting the probe's initial snapshot: a user edit, bind, dismissal, or
+ * Navidrome reconnect may have happened while a concurrent batch was reading.
+ */
+function maybeAutoBindFromProbe(
+  entry: WebdavFileEntry,
+  meta: FileMetadata,
+  titleIndex: ReturnType<typeof buildTrackTitleIndex>,
+  excludedTrackIds: Set<string>,
+  claimedPaths: Set<string>,
+  session: WebdavSession,
+): string | null {
+  if (!isCurrentSession(session) || claimedPaths.has(entry.path)) return null
+
+  // A manual bind or another UI edit may have landed after this probe batch
+  // built its initial claim set. Never let the probe steal a path that is now
+  // live-owned by a different row.
+  for (const row of get(metadataCache).values()) {
+    if (row.webdavPath === entry.path) return null
+  }
+
+  const match = matchFileToTracks(
+    { ...entry, tags: metadataToTags(meta) },
+    titleIndex,
+    excludedTrackIds,
+  )
+  if (match.verdict !== 'certain' && match.verdict !== 'unique-title' || !match.trackId) return null
+
+  // Re-read the track and row from live stores after the probe await.
+  const track = get(library).find((t) => t.trackId === match.trackId)
+  const current = get(metadataCache).get(match.trackId)
+  if (!track || !isCurrentSession(session) || !canAutoBind(track, current).bindable) return null
+  if (excludedTrackIds.has(track.trackId) || claimedPaths.has(entry.path)) return null
+
+  // This check/add is synchronous, so two concurrent probe completions cannot
+  // claim the same track or file between their verdict and store write.
+  excludedTrackIds.add(track.trackId)
+  claimedPaths.add(entry.path)
+  const navidromeAuthoritative = current != null && get(settings).ratingSource === 'navidrome'
+  updateMetadata({
+    trackId: track.trackId,
+    rating: navidromeAuthoritative ? current.rating : meta.rating,
+    loved: navidromeAuthoritative ? current.loved : meta.loved,
+    fileType: track.fileType,
+    syncStatus: 'synced',
+    lastModifiedLocally: Date.now(),
+    webdavPath: entry.path,
+    webdavLastModified: entry.lastModified,
+    webdavBase: session.baseKey,
+    comments: navidromeAuthoritative ? current?.comments : mergeFileComments(current?.comments, meta.comments),
+    matchSource: undefined,
+    ignored: current?.ignored,
+  })
+  return track.trackId
 }
 
 function fileTypeOf(filename: string): string {
@@ -323,19 +509,23 @@ async function loadTagCache(): Promise<boolean> {
   if (!isCurrentSession(session)) return false
   tagCache = loaded
   tagCacheBaseKey = session.baseKey
+  tagCacheLastKnownBaseKey = session.baseKey
   tagCacheLoaded = true
   return true
 }
 
-/** Stamp `entry.tags` from the cache when a size-matching probe exists. */
+/** Stamp `entry.tags` from the cache when a size/mtime-matching probe exists. */
 async function applyCachedTags(): Promise<boolean> {
   if (!await loadTagCache()) return false
   const session = captureSession()
   if (!session) return false
   for (const e of index) {
+    // Do not let an expired in-memory annotation survive while the cache entry
+    // is being re-probed; stale identity can produce a false candidate.
+    e.tags = undefined
     const cached = tagCache.get(e.path)
-    if (cached && cached.size === e.size && cached.status === 'ok' && cached.tags) {
-      e.tags = cached.tags
+    if (cached && tagCacheEntryIsFresh(cached, e.size, e.lastModified) && cached.status === 'ok' && cached.metadata) {
+      e.tags = metadataToTags(cached.metadata)
     }
   }
   return isCurrentSession(session)
@@ -350,80 +540,250 @@ async function applyCachedTags(): Promise<boolean> {
  * deliberately never sweeps the entire server: orphan file forests without
  * any hinted candidate are left alone (they cost probe bytes but match
  * nothing). Probed results are cached per `baseKey|path` + size in Dexie and
- * attached to the in-memory index for scoring; failures are cached as
- * poisoned so they are never retried until the file's size changes.
+ * attached to the in-memory index for scoring; successful/empty results are
+ * cached until the file size or WebDAV mtime changes, while network and parse
+ * failures use separate retry TTLs so a transient outage cannot poison the
+ * library forever.
  *
  * Pauses (waits) while a scan is draining so the two never compete for the
  * connection; a new call (gen bump) cancels a running pass.
  */
-export async function ensureTagProbe(): Promise<void> {
-  if (!webdavUrl || !webdavUser || !webdavToken) return
-  if (tagProbeActive) return
-  if (!indexBuilt) {
-    const ok = await refreshIndex()
-    if (!ok) return
-  }
-  const mutex = ++tagProbeGen
-  tagProbeActive = true
-  tagProbeState.set({ active: true, done: 0, remaining: 0 })
-  try {
-    await runTagProbe(mutex)
-  } finally {
-    // Unconditional: a credential swap bumps tagProbeGen mid-pass to cancel
-    // the run — the busy flag must still clear or every future probe no-ops.
-    tagProbeActive = false
-    tagProbeState.set({ active: false, done: 0, remaining: 0 })
+function launchTagProbe(): Promise<Set<string>> {
+  const promise = ensureTagProbe()
+  // A probe is evidence enrichment. A failed probe must never turn a valid
+  // fresh PROPFIND/filename scan into a failed scan or leave the UI in
+  // `scanning` forever; callers receive an empty bind set and the next TTL
+  // probe can retry the failed files.
+  return promise.catch((err) => {
+    console.warn('[metadata] tag probe failed:', err)
+    return new Set<string>()
+  })
+}
+
+/** Wait without starting a new probe. Used by readers that must not race an
+ *  already-running operation, while `ensureTagProbe()` remains the sole
+ *  start-or-join entry point. Re-check after each await: a cancelled probe can
+ *  be replaced by a new-generation probe before this continuation resumes. */
+async function waitForCurrentTagProbe(): Promise<void> {
+  while (true) {
+    const current = tagProbePromise
+    if (!current) return
+    try {
+      await current
+    } catch (err) {
+      // Probe failures are evidence misses, not index failures. The current
+      // operation has already recorded its failed files where possible; a
+      // reader can safely continue with filename/index evidence.
+      console.warn('[metadata] waiting for tag probe failed:', err)
+    }
+    if (tagProbePromise === current) return
   }
 }
 
-async function runTagProbe(gen: number): Promise<void> {
+/** A public reader/action must not replace the live index while the scan
+ *  drain is still consuming it. `runScan` itself does not call this helper;
+ *  its internal refresh is the owner of the active scan promise. */
+async function waitForCurrentScan(): Promise<void> {
+  while (true) {
+    const current = activeScanPromise
+    if (!current) return
+    await current
+    if (activeScanPromise === current) return
+  }
+}
+
+/** The index refresh has its own mutex because explicit File Matching refresh
+ *  is not itself a tag-probe operation. Tag probing and classification must
+ *  wait for it, or they can read the old live index while a new PROPFIND is
+ *  about to publish. */
+async function waitForCurrentIndexRefresh(): Promise<boolean> {
+  let result = true
+  while (true) {
+    const current = indexRefreshPromise
+    if (!current) return result
+    result = await current
+    if (indexRefreshPromise === current) return result
+  }
+}
+
+export function ensureTagProbe(): Promise<Set<string>> {
+  if (!webdavUrl || !webdavUser || !webdavToken) return Promise.resolve(new Set<string>())
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return Promise.resolve(new Set<string>())
+
+  const current = tagProbePromise
+  if (current) {
+    // A credential change increments scanGen. Let the stale operation settle,
+    // then recursively start the operation for the current session instead of
+    // returning its empty/cancelled result.
+    if (tagProbePromiseGeneration !== scanGen) {
+      // A cancelled old probe may reject (for example if its cache read
+      // failed). Rejection must not prevent the new credential generation
+      // from starting its own probe.
+      return current.then(() => ensureTagProbe(), () => ensureTagProbe())
+    }
+    // Recover from an unexpected same-generation rejection as well. The
+    // cleanup handler installed below was registered first, so it clears the
+    // shared slot before this recovery callback starts a replacement.
+    return current.catch(() => ensureTagProbe())
+  }
+
+  let operation: Promise<Set<string>> | null = null
+  let operationSession: WebdavSession | null = null
+  operation = (async () => {
+    // A direct index refresh (for example the File Matching button) is not
+    // represented by tagProbePromise, so join it explicitly before reading
+    // the live index. If it failed, the current index is invalid and the
+    // normal !indexBuilt path below may retry for the current session.
+    const refreshResult = await waitForCurrentIndexRefresh()
+    if (!refreshResult && !indexBuilt) return new Set<string>()
+
+    if (!indexBuilt) {
+      const ok = await refreshIndex()
+      if (!ok) return new Set<string>()
+    }
+    operationSession = captureSession()
+    if (!operationSession) return new Set<string>()
+    const mutex = ++tagProbeGen
+    tagProbeState.update((state) => ({ ...state, active: true, done: 0, remaining: 0 }))
+    try {
+      const autoBoundTrackIds = await runTagProbe(mutex)
+      if (tagProbeGen === mutex && isCurrentSession(operationSession) && indexBuilt) {
+        // The probe has consumed all cache writes for this run. Keep the
+        // persisted snapshot's evidence marker in sync with the actual cache.
+        await queueTagFingerprintWrite(operationSession)
+      }
+      return autoBoundTrackIds
+    } catch (err) {
+      // A tag read/cache failure is non-fatal enrichment loss. Do not reject
+      // the scan or strand direct readers behind a permanently failed promise.
+      console.warn('[metadata] tag probe failed:', err)
+      return new Set<string>()
+    } finally {
+      // Only the operation that still owns the shared promise may publish its
+      // terminal state. A cancelled old operation must not hide a new probe.
+      if (tagProbePromise === operation) {
+        if (operationSession && isCurrentSession(operationSession)) {
+          tagProbeState.update((state) => ({
+            ...state,
+            active: false,
+            done: state.done,
+            remaining: 0,
+            revision: state.revision + 1,
+          }))
+        } else {
+          tagProbeState.update((state) => ({ ...state, active: false, remaining: 0 }))
+        }
+      }
+    }
+  })()
+
+  tagProbePromise = operation
+  tagProbePromiseGeneration = scanGen
+  void operation.then(() => {
+    if (tagProbePromise === operation) {
+      tagProbePromise = null
+      tagProbePromiseGeneration = null
+    }
+  }, () => {
+    if (tagProbePromise === operation) {
+      tagProbePromise = null
+      tagProbePromiseGeneration = null
+    }
+  })
+  return operation
+}
+
+async function runTagProbe(gen: number): Promise<Set<string>> {
+  const autoBoundTrackIds = new Set<string>()
   const session = captureSession()
-  if (!session || !isCurrentWebdavSession(session, currentCredentials(), scanGen)) return
+  if (!session || !isCurrentWebdavSession(session, currentCredentials(), scanGen)) return autoBoundTrackIds
   const loadedCache = await loadTagCacheFor(session.baseKey)
-  if (tagProbeGen !== gen || !isCurrentSession(session)) return
+  if (tagProbeGen !== gen || !isCurrentSession(session)) return autoBoundTrackIds
   tagCache = loadedCache
   tagCacheBaseKey = session.baseKey
+  tagCacheLastKnownBaseKey = session.baseKey
   tagCacheLoaded = true
   const cache = get(metadataCache)
+  const tracks = get(library)
+  const titleIndex = buildTrackTitleIndex(tracks)
+  // The reverse binder must judge only bindable rows before it decides whether
+  // a title is unique. Otherwise an ignored/manual/pending sibling creates a
+  // false ambiguity for the clean row.
+  const excludedTrackIds = new Set<string>()
+  for (const track of tracks) {
+    if (!canAutoBind(track, cache.get(track.trackId)).bindable) excludedTrackIds.add(track.trackId)
+  }
+  // The probe runs before the scan drain, so its synchronous claim/update path
+  // is safe even while the scan status is `scanning`: no queue worker is active
+  // yet. Returning the claimed track ids lets the drain omit those rows rather
+  // than matching them a second time.
 
   // Unclaimed tracks (no staged auto target) give the hint sets.
   const unclaimedSizes = new Set<number>()
   const unclaimedTitles = new Set<string>()
-  const tracks = get(library)
+  let unclaimedTrackCount = 0
   for (const t of tracks) {
     const row = cache.get(t.trackId)
     if (row?.webdavPath || row?.ignored) continue
+    unclaimedTrackCount++
     if (t.size) unclaimedSizes.add(t.size)
     if (t.title) unclaimedTitles.add(normalizeForHint(t.title))
   }
 
+  if (unclaimedTrackCount === 0) return autoBoundTrackIds
+
   const pool: WebdavFileEntry[] = []
   const claimedPaths = new Set<string>()
+  let unclaimedAudioFileCount = 0
   for (const row of cache.values()) {
     if (row.webdavPath) claimedPaths.add(row.webdavPath)
   }
+
+  // Revisit fresh cached metadata before selecting new network reads. This is
+  // essential after a scan harvested tags while reverse binding was disabled,
+  // and it also makes a restored cache converge without requiring another
+  // GET. The same live guards and synchronous claims apply.
+  for (const entry of index) {
+    if (claimedPaths.has(entry.path) || !isAudioFilePath(entry.filename)) continue
+    const cached = tagCache.get(entry.path)
+    if (!cached || !tagCacheEntryIsFresh(cached, entry.size, entry.lastModified)
+        || cached.status !== 'ok' || !cached.metadata) continue
+    entry.tags = metadataToTags(cached.metadata)
+    const boundTrackId = maybeAutoBindFromProbe(
+      entry,
+      cached.metadata,
+      titleIndex,
+      excludedTrackIds,
+      claimedPaths,
+      session,
+    )
+    if (boundTrackId) autoBoundTrackIds.add(boundTrackId)
+  }
+
   for (const entry of index) {
     if (claimedPaths.has(entry.path)) continue
     if (!isAudioFilePath(entry.filename)) continue
+    unclaimedAudioFileCount++
     const cached = tagCache.get(entry.path)
-    if (cached && cached.size === entry.size) continue // fresh: ok/empty/unreadable
+    if (cached && tagCacheEntryIsFresh(cached, entry.size, entry.lastModified)) continue // fresh result, including TTL-governed failures
     pool.push(entry)
   }
 
-  if (pool.length === 0) return
+  if (pool.length === 0) return autoBoundTrackIds
 
   // Hint ordering: byte-size suggestions first (strong), then filename hints,
-  // then the rest. This is the "never sweep the server" guard — files with no
-  // hint at all are skipped entirely.
+  // then the rest. When the server is close to the library size, sweep all
+  // remaining unclaimed audio files so arbitrary filenames cannot starve tag
+  // matching; otherwise keep the orphan-forest guard.
+  const sweep = planProbeSweep(unclaimedAudioFileCount, unclaimedTrackCount)
   const rank = new Map<string, number>()
   for (const e of pool) {
     let r = 0
     if (e.size && unclaimedSizes.has(e.size)) r = 2
     else if (filenameHintsTitle(e.filename, unclaimedTitles)) r = 1
-    if (r === 0) continue
-    rank.set(e.path, r)
+    if (sweep === 'sweep-all' || r > 0) rank.set(e.path, r)
   }
-  const hinted = pool.filter((e) => rank.has(e.path))
+  const hinted = sweep === 'sweep-all' ? pool : pool.filter((e) => rank.has(e.path))
   hinted.sort((a, b) => (rank.get(b.path) ?? 0) - (rank.get(a.path) ?? 0) || a.path.localeCompare(b.path))
 
   const baseKey = session.baseKey
@@ -432,10 +792,10 @@ async function runTagProbe(gen: number): Promise<void> {
   for (let i = 0; i < hinted.length; i += TAG_PROBE_CONCURRENCY) {
     // Coalesce behind any running scan: probe batches wait for the scan
     // queue to drain instead of competing for the same connection.
-    if (tagProbeGen !== gen || !isCurrentSession(session)) return
+    if (tagProbeGen !== gen || !isCurrentSession(session)) return autoBoundTrackIds
     while (queue.length > 0 || activeCount > 0) {
       await sleep(TAG_PROBE_RETRY_MS)
-      if (tagProbeGen !== gen || !isCurrentSession(session)) return
+      if (tagProbeGen !== gen || !isCurrentSession(session)) return autoBoundTrackIds
     }
     const batch = hinted.slice(i, i + TAG_PROBE_CONCURRENCY)
     await Promise.all(batch.map(async (entry) => {
@@ -452,34 +812,51 @@ async function runTagProbe(gen: number): Promise<void> {
           baseKey,
           path: entry.path,
           size: entry.size,
-          tags: hasIdentity ? { title: meta.title, artist: meta.artist, album: meta.album, trackNumber: meta.trackNumber } : undefined,
+          lastModified: entry.lastModified,
+          metadata: meta,
           status: hasIdentity ? 'ok' : 'empty',
           probedAt: Date.now(),
         }
-        await putFileTag(next)
+        await persistTagEntry(next)
         if (tagProbeGen !== gen || !isCurrentSession(session)) return
         tagCache.set(entry.path, next)
-        if (hasIdentity) entry.tags = next.tags
-      } catch {
+        if (hasIdentity && next.metadata) {
+          entry.tags = metadataToTags(next.metadata)
+          const boundTrackId = maybeAutoBindFromProbe(
+            entry,
+            next.metadata,
+            titleIndex,
+            excludedTrackIds,
+            claimedPaths,
+            session,
+          )
+          if (boundTrackId) autoBoundTrackIds.add(boundTrackId)
+        }
+      } catch (err) {
         if (tagProbeGen !== gen || !isCurrentSession(session)) return
         const next: FileTagCacheEntry = {
-          id, baseKey, path: entry.path, size: entry.size,
-          status: 'unreadable', probedAt: Date.now(),
+          id,
+          baseKey,
+          path: entry.path,
+          size: entry.size,
+          lastModified: entry.lastModified,
+          status: err instanceof FileMetadataError && err.kind === 'network'
+            ? 'network-error'
+            : 'unreadable',
+          probedAt: Date.now(),
         }
-        await putFileTag(next)
+        await persistTagEntry(next)
         if (tagProbeGen !== gen || !isCurrentSession(session)) return
         tagCache.set(entry.path, next)
       }
       if (tagProbeGen !== gen || !isCurrentSession(session)) return
       done++
       const remaining = Math.max(0, hinted.length - (i + batch.length))
-      tagProbeState.set({ active: true, done, remaining })
+      tagProbeState.update((state) => ({ ...state, active: true, done, remaining }))
     }))
   }
 
-  if (tagProbeGen === gen && isCurrentSession(session)) {
-    tagProbeState.set({ active: false, done, remaining: 0 })
-  }
+  return autoBoundTrackIds
 }
 
 /**
@@ -498,21 +875,52 @@ async function runTagProbe(gen: number): Promise<void> {
  */
 /** Public entry: runs the scan, then auto-content-probes so that as long as
  *  tracks remain unclaimed, in-file tag identity is harvested in the
- *  background (guarded internally — a no-op while a probe is already active). */
-export async function scanAll(shape_: ScanShape = "modified"): Promise<void> {
-  const completed = await scanAllInternal(shape_)
-  if (!completed) return
-  // Content probing is deliberately a second phase: it must not compete with
-  // the metadata workers, and a cancelled scan must not start work for its
-  // stale session. Detached callers still receive a logged failure instead of
-  // an unhandled rejection.
-  void ensureTagProbe().catch((err) => {
-    console.warn('[metadata] tag probe failed:', err)
+ *  background (guarded internally — a no-op while a probe is already active).
+ *  The wrapper records the whole pre-drain operation so restore probing cannot
+ *  start a competing PROPFIND/tag pass in the small scheduling window before
+ *  metadataScanState becomes `scanning`.
+ */
+export function scanAll(shape_: ScanShape = "modified"): Promise<void> {
+  const operation = (async () => {
+    const completed = await runScan(shape_)
+    if (!completed) return
+    // Keep the post-scan tail for callers that do not need to wait for probe
+    // enrichment. A later scan will await this promise before starting.
+    void launchTagProbe()
+  })()
+  activeScanPromise = operation
+  void operation.then(() => {
+    if (activeScanPromise === operation) activeScanPromise = null
   })
+  return operation
 }
 
-async function scanAllInternal(shape_: ScanShape = "modified"): Promise<boolean> {
+/** Online-gated restore/boot trigger. It waits for an already-scheduled scan
+ * and its post-scan probe, then performs a no-op-or-start probe against the
+ * restored library. The shared probe promise makes this safe for cached
+ * reconnects and cold File Matching opens alike. */
+export async function ensureTagProbeAfterRestore(): Promise<void> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return
+  const scan = activeScanPromise
+  if (scan) await scan
+  await ensureTagProbe()
+}
+
+/** Explicit File Matching refresh boundary: never replace the live index while
+ * a probe is reading it, then refresh PROPFIND mtimes before harvesting tags.
+ * This keeps the one-pass cache and the view's freshness action serialized. */
+export async function refreshIndexAndProbe(): Promise<boolean> {
+  await waitForCurrentScan()
+  await waitForCurrentTagProbe()
+  const refreshed = await refreshIndex()
+  if (!refreshed) return false
+  await ensureTagProbe()
+  return true
+}
+
+async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
   const previousDrain = activeDrain
+  const previousProbe = tagProbePromise
   cancelled = true
   const myGen = ++scanGen
   tagProbeGen++
@@ -521,16 +929,23 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<boolean>
   scannedCount = 0
   failedCount = 0
   missingCount = 0
+  notFoundCount = 0
   ambiguousCount = 0
   totalTracks = 0
   shape = shape_
   activeAnnotation = annotationFor(shape)
+  let pendingTracks: Track[] = []
 
   // A cancelled scan may still have in-flight metadata reads. Wait for those
   // workers to release their ownership before starting a replacement run; the
   // reads themselves cannot be aborted by every WebDAV adapter, but their
   // completions are generation-guarded and must not overlap a new worker pool.
-  if (previousDrain) await previousDrain
+  if (previousDrain || previousProbe) {
+    await Promise.all([
+      previousDrain ?? Promise.resolve(),
+      previousProbe ?? Promise.resolve(),
+    ])
+  }
   if (scanGen !== myGen) return false
 
   // Creds check AFTER the gen guard: a creds-less second call must not stomp
@@ -540,13 +955,13 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<boolean>
   if (!webdavUrl || !webdavUser || !webdavToken) {
     metadataScanState.set({
       status: "error",
-      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+      progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
       error: CREDENTIALS_MISSING,
     })
     return false
   }
 
-  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation } })
+  metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation } })
 
   if (shape === "force") {
     try {
@@ -556,7 +971,7 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<boolean>
       if (scanGen !== myGen) return false
       metadataScanState.set({
         status: "error",
-        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+        progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
         error: INDEX_REFRESH_FAILED,
       })
       return false
@@ -587,23 +1002,22 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<boolean>
       if (scanGen !== myGen) return false
       metadataScanState.set({
         status: "error",
-        progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+        progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
         error: INDEX_REFRESH_FAILED,
       })
       return false
     }
-    if (index.length === 0) {
-      metadataScanState.set({ status: "complete", progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation } })
-      return true
-    }
-
+    // Do not short-circuit an empty COMPLETE index: bound rows must still
+    // pass through the drain so a server-side deletion clears their stale
+    // paths (while preserving rating/loved) and reports `missing`. An empty
+    // index is a valid fresh server state, not proof that there is no work.
     const tracks = get(library)
     const cache = get(metadataCache)
 
     const timestamps = buildPathTimestamps(index)
     const { changed, unmatched } = findChangedTracks(tracks, cache, timestamps)
 
-    for (const t of changed) queue.push({ trackId: t.trackId })
+    pendingTracks.push(...changed)
 
     // The server file set is identical to the last probe (fingerprint match):
     // rows that were never matched cannot have become matchable (no added/
@@ -612,14 +1026,33 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<boolean>
     // fingerprint (first scan after the upgrade) treats the set as changed.
     const setUnchanged = priorForThisSession?.fingerprint !== undefined
       && computeIndexFingerprint(index) === priorForThisSession.fingerprint
-    if (!setUnchanged) {
-      for (const t of unmatched) queue.push({ trackId: t.trackId })
+    const tagEvidenceUnchanged = priorForThisSession?.tagFingerprint !== undefined
+      && computeTagCacheFingerprint([...tagCache.values()]) === priorForThisSession.tagFingerprint
+    if (!setUnchanged || !tagEvidenceUnchanged) {
+      pendingTracks.push(...unmatched)
     }
   }
 
+  // Probe before queueing the drain. The probe's own wait-for-drain guard
+  // would deadlock if queue were already populated; at this point the index is
+  // fresh, the prior drain is finished, and the cache can be used by every
+  // matching decision in the upcoming run.
+  activeAnnotation = "Reading file tags…"
+  metadataScanState.set({
+    status: "scanning",
+    progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+  })
+  const autoBoundTrackIds = await launchTagProbe()
+  if (scanGen !== myGen) return false
+  activeAnnotation = annotationFor(shape)
+
   const tracks = get(library)
+  pendingTracks = pendingTracks.filter((t) => !autoBoundTrackIds.has(t.trackId))
+  for (const t of pendingTracks) queue.push({ trackId: t.trackId })
   if (shape === "force") {
-    for (const t of tracks) queue.push({ trackId: t.trackId })
+    for (const t of tracks) {
+      if (!autoBoundTrackIds.has(t.trackId)) queue.push({ trackId: t.trackId })
+    }
   }
 
   totalTracks = queue.length
@@ -631,7 +1064,7 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<boolean>
     // updateScanProgress, leaving the UI stuck at 0/0 "scanning" forever.
     metadataScanState.set({
       status: "complete",
-      progress: { scanned: 0, total: 0, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+      progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
       error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
     })
     return true
@@ -639,7 +1072,7 @@ async function scanAllInternal(shape_: ScanShape = "modified"): Promise<boolean>
 
   metadataScanState.set({
     status: "scanning",
-    progress: { scanned: 0, total: totalTracks, failed: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+    progress: { scanned: 0, total: totalTracks, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
   })
 
   const drainPromise = drain(myGen)
@@ -804,11 +1237,13 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
       // previous mapping (if any) and is not re-fetched; Push skips rows it
       // cannot confidently target.
       ambiguousCount++
-    } else if (existing && existing.webdavPath && !index.some((i) => i.path === existing.webdavPath)) {
-      // The file it was previously matched to no longer exists in a FRESH
-      // index (deleted/renamed). Clear the stale path so the row re-matches
-      // on a later PROPFIND (renames) and Push skips it cleanly instead of
-      // 404 failing forever. Rating/loved are preserved — data loss-free.
+    } else if (existing && existing.webdavPath && indexComplete && !index.some((i) => i.path === existing.webdavPath)) {
+      // The file it was previously matched to no longer exists in a COMPLETE
+      // fresh index (deleted/renamed). Clear the stale path so the row
+      // re-matches on a later PROPFIND (renames) and Push skips it cleanly
+      // instead of 404 failing forever. Rating/loved are preserved — data
+      // loss-free. Guard on indexComplete: a partial crawl cannot prove a
+      // bound path vanished — it may exist in an unreadable directory.
       missingCount++
       updateMetadata({
         trackId: track.trackId,
@@ -824,14 +1259,32 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
         matchSource: undefined,
       })
     } else {
-      scannedCount++
+      notFoundCount++
     }
     updateScanProgress()
     return
   }
 
   try {
-    const meta = await readFileMetadata(webdavUrl, match.entry.path, webdavUser, webdavToken, track.fileType)
+    // A fresh probe already fetched this file's complete metadata. Reuse that
+    // payload for the bind so identity/rating/loved/comments are all sourced
+    // from one read. Filename-only matches without a cache entry retain the
+    // fallback GET path.
+    const cached = tagCache.get(match.entry.path)
+    const cachedFresh = cached != null
+      && tagCacheEntryIsFresh(cached, match.entry.size, match.entry.lastModified)
+    // The probe is the single read boundary. A fresh failure entry is still
+    // evidence that the file was attempted; retrying it immediately here would
+    // turn one failed probe into a second GET and inflate the scan's `failed`
+    // count. Filename evidence can still bind without file metadata, while a
+    // later probe retries the failure after its TTL.
+    const meta = cachedFresh
+      ? cached?.metadata ?? {
+          rating: existing?.rating ?? 0,
+          loved: existing?.loved ?? false,
+          comments: existing?.comments,
+        }
+      : await readFileMetadata(webdavUrl, match.entry.path, webdavUser, webdavToken, track.fileType)
     if (scanGen !== startedGen) return
 
     // The user may have edited rating/loved while the fetch was in flight —
@@ -883,11 +1336,12 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
 }
 
 function updateScanProgress(): void {
-  const done = scannedCount + failedCount + missingCount + ambiguousCount
+  const done = scannedCount + failedCount + notFoundCount + missingCount + ambiguousCount
   const progress = {
     scanned: scannedCount,
     total: totalTracks,
     failed: failedCount,
+    notFound: notFoundCount,
     missing: missingCount,
     duplicateMatches: ambiguousCount,
     annotation: activeAnnotation,
@@ -927,8 +1381,8 @@ export interface UnresolvedMatch {
   rows: UnresolvedTrack[]
   /** Exact per-kind counts over the whole library (cheap — no scoring). */
   counts: Record<UnresolvedKind, number>
-
-
+  /** Whether the live WebDAV file set is complete enough for safe conclusions. */
+  indexComplete: boolean
   /** Exact count of unresolved rows carrying a pending edit (blocks Push). */
   pendingBlocked: number
 }
@@ -956,8 +1410,16 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
   if (!webdavUrl || !webdavUser || !webdavToken) return {
     rows: [],
     counts: { 'no-match': 0, ambiguous: 0, vanished: 0, 'stale-base': 0, ignored: 0, matched: 0 },
+    indexComplete: false,
     pendingBlocked: 0,
   }
+  // Do not classify against an index while a scan, boot, scan-tail, or
+  // explicit probe is still enriching it. This is the non-UI half of the
+  // refresh race fix; callers that list after a probe always observe its
+  // cache writes.
+  await waitForCurrentScan()
+  await waitForCurrentTagProbe()
+  await waitForCurrentIndexRefresh()
   if (!indexBuilt) {
     const ok = await refreshIndex()
     if (!ok) throw new Error("Index refresh failed — is the WebDAV server reachable?")
@@ -1005,12 +1467,7 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
       if (base.pendingPush) pendingBlocked++
       row = { ...base, kind: 'ignored', candidates: [] }
     } else if (meta?.webdavPath) {
-      if (!indexPaths.has(meta.webdavPath)) {
-        counts.vanished++
-        // Vanished + pending is equally un-pushable (GET 404s -> skipped).
-        if (base.pendingPush) pendingBlocked++
-        row = { ...base, kind: 'vanished', webdavPath: meta.webdavPath, candidates: [] }
-      } else if (meta.webdavBase !== baseKey) {
+      if (meta.webdavBase !== baseKey) {
         counts['stale-base']++
         if (base.pendingPush) pendingBlocked++
         // Suggest candidates for the row's own prompts: the current stamp is
@@ -1024,9 +1481,10 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
           webdavPath: meta.webdavPath,
           candidates: match.promptCandidates.slice(0, 3),
         }
-      } else {
-        // Correctly bound (auto or manual) — the "resolved" bucket. Listed
-        // so the user can audit a match and Clear it when it picked wrong.
+      } else if (!indexComplete || indexPaths.has(meta.webdavPath)) {
+        // A complete index is required before calling a path vanished. During
+        // a partial crawl the old current-server binding remains the safest
+        // known target and must not be cleared or mislabeled.
         counts.matched++
         row = {
           ...base,
@@ -1035,6 +1493,11 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
           matchSource: meta.matchSource ?? 'auto',
           candidates: [],
         }
+      } else {
+        counts.vanished++
+        // Vanished + pending is equally un-pushable (GET 404s -> skipped).
+        if (base.pendingPush) pendingBlocked++
+        row = { ...base, kind: 'vanished', webdavPath: meta.webdavPath, candidates: [] }
       }
     } else {
       // Exact no-match/ambiguous split requires scoring every unbound track —
@@ -1064,7 +1527,7 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
     if (d !== 0) return d
     return a.title.localeCompare(b.title)
   })
-  return { rows, counts, pendingBlocked }
+  return { rows, counts, indexComplete, pendingBlocked }
 }
 
 /** Path/filename substring search over the in-memory index (extension-filtered). */
@@ -1097,9 +1560,13 @@ export type BindResult =
 export async function bindTrackToFile(
   trackId: string,
   path: string,
+
   force = false,
 ): Promise<BindResult> {
   if (!webdavUrl || !webdavUser || !webdavToken) return { ok: false, reason: 'no-creds' }
+  await waitForCurrentScan()
+  await waitForCurrentTagProbe()
+
   if (!indexBuilt) {
     const ok = await refreshIndex()
     if (!ok) return { ok: false, reason: 'not-in-index' }
@@ -1258,6 +1725,8 @@ export async function reverifyStaleLinks(): Promise<ReverifyResult> {
   if (!webdavUrl || !webdavUser || !webdavToken) {
     throw new Error("WebDAV credentials not configured")
   }
+  await waitForCurrentScan()
+  await waitForCurrentTagProbe()
   if (!indexBuilt) {
     const ok = await refreshIndex()
     if (!ok) throw new Error("Index refresh failed — is the WebDAV server reachable?")
@@ -1308,6 +1777,8 @@ export type ReverifyTrackResult =
  *  verdict for files the machine can't read. */
 export async function reverifyTrack(trackId: string): Promise<ReverifyTrackResult> {
   if (!webdavUrl || !webdavUser || !webdavToken) return { ok: false, reason: 'no-creds' }
+  await waitForCurrentScan()
+  await waitForCurrentTagProbe()
   if (!indexBuilt) {
     const ok = await refreshIndex()
     if (!ok) return { ok: false, reason: 'index-failure' }

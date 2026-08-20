@@ -1,4 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie'
+import type { FileMetadata } from './metadataReader'
 
 export interface LocalMetadataStore {
   trackId: string
@@ -34,19 +35,31 @@ export interface FileTags {
   artist?: string
   album?: string
   trackNumber?: number
+  /** Release year (corroboration only — never a contradiction on mismatch). */
+  year?: number
+  /** Duration in SECONDS (taglib `AudioProperties.duration`). Absent/null
+   *  (0, `getAudioProperties()` null) = no signal — never a demotion. */
+  duration?: number
 }
 
-/** Cached tag-probe result, keyed `baseKey|path` scoped by size + status. */
+/** Cached tag-probe result, keyed `baseKey|path` scoped by size + mtime + status. */
 export interface FileTagCacheEntry {
   id: string
   /** `baseUrl|user` this probe ran against — never reused across servers. */
   baseKey: string
   path: string
-  /** Size at probe time; a size change invalidates the cached tags. */
+  /** Size at probe time; a size change invalidates the cached result. */
   size: number
-  tags?: FileTags
-  /** 'ok' = tags read; 'empty' = reachable but no identity tags; 'unreadable' = poisoned (don't retry). */
-  status: 'ok' | 'empty' | 'unreadable'
+  /** WebDAV mtime at probe time; a changed mtime invalidates the cached result. */
+  lastModified?: string
+  /** The complete result of the one metadata read (identity + feedback). */
+  metadata?: FileMetadata
+  /**
+   * `ok` = identity tags read; `empty` = reachable but no identity tags;
+   * `unreadable` = tag parsing/read failed; `network-error` = the fetch did
+   * not complete. Error statuses are retried by their TTL, not forever.
+   */
+  status: 'ok' | 'empty' | 'unreadable' | 'network-error'
   probedAt: number
 }
 
@@ -59,6 +72,10 @@ export interface WebdavFileIndex {
   baseKey?: string
   /** Change-detector over the file set (path+size); lets scans skip unmatched retries when the server is unchanged. */
   fingerprint?: string
+  /** Change-detector over newly harvested tag evidence. */
+  tagFingerprint?: string
+  /** False when the Depth:1 fallback skipped one or more directories. */
+  complete?: boolean
 }
 
 export interface SongLibraryCache {
@@ -121,6 +138,18 @@ db.version(4).stores({
   songLibraryCache: 'id',
   webdavFileTags: 'id, baseKey',
 })
+
+// The tag cache payload changed from identity-only tags to the complete result
+// of one metadata read. Local cache data is disposable, so clear it once at
+// the schema boundary instead of carrying probe-version branches forever.
+db.version(5).stores({
+  localMetadata: 'trackId, syncStatus, rating, loved',
+  userSettings: 'key',
+  playQueue: 'id',
+  webdavFileIndex: 'id',
+  songLibraryCache: 'id',
+  webdavFileTags: 'id, baseKey',
+}).upgrade((tx) => tx.table('webdavFileTags').clear())
 
 export { db }
 
@@ -199,4 +228,27 @@ export async function getFileTagsForBase(
 
 export async function putFileTag(entry: FileTagCacheEntry): Promise<void> {
   await db.webdavFileTags.put(entry)
+}
+
+/** Drop probe results for a server identity when credentials move away from it. */
+export async function deleteFileTagsForBase(baseKey: string): Promise<void> {
+  await db.webdavFileTags.where('baseKey').equals(baseKey).delete()
+}
+
+/** Delete a bounded set of probe rows after a complete fresh index proves the
+ *  paths no longer exist on the server. */
+export async function deleteFileTagsByIds(ids: string[]): Promise<void> {
+  for (let i = 0; i < ids.length; i += BULK_CHUNK) {
+    await db.webdavFileTags.bulkDelete(ids.slice(i, i + BULK_CHUNK))
+  }
+}
+
+/** Update only the tag-evidence marker on the current index snapshot. */
+export async function updateWebdavFileTagFingerprint(
+  baseKey: string,
+  tagFingerprint: string,
+): Promise<void> {
+  const current = await db.webdavFileIndex.get('main')
+  if (!current || current.baseKey !== baseKey) return
+  await db.webdavFileIndex.put({ ...current, tagFingerprint })
 }
