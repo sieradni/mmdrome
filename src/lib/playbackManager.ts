@@ -267,6 +267,7 @@ export class PlaybackManager {
     // the engine in the required order (snap tolerance before pitch).
     this._applyPlaybackParams()
     this._engine.setCrossfade(s.crossfadeDuration ?? 0)
+    BackgroundAudio.setPreloadCount({ count: s.preloadTracks ?? 0 }).catch(() => {})
     this._engine.pushNativeEqFromStore()
 
     BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode ?? 'off' }).catch(() => {})
@@ -306,6 +307,7 @@ export class PlaybackManager {
     unsubs.push(settings.subscribe((s) => {
       this._engine.setCrossfade(s.crossfadeDuration ?? 0)
       if (this.isNative()) {
+        BackgroundAudio.setPreloadCount({ count: s.preloadTracks ?? 0 }).catch(() => {})
         if (s.replayGainMode) {
           BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode }).catch(() => {})
         }

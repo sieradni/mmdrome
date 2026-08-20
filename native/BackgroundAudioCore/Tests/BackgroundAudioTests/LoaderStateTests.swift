@@ -14,25 +14,27 @@ final class LoaderStateTests: XCTestCase {
 
     func testChainAndComplete() {
         var s = LoaderState<Int>()
-        _ = s.claim("a", task: 1)
+        let requestID = UUID()
+        _ = s.claim("a", task: 1, requestID: requestID)
         s.chain("a", { _, _ in })
         s.chain("a", { _, _ in })
         XCTAssertEqual(s.pendingCount(for: "a"), 2)
-        let fired = s.complete("a")
+        let fired = s.complete("a", requestID: requestID)
         XCTAssertEqual(fired.count, 2)
         XCTAssertEqual(s.pendingCount(for: "a"), 0)
         XCTAssertFalse(s.isActive("a"))
         // A second complete finds nothing pending — no double-fire.
-        XCTAssertEqual(s.complete("a").count, 0)
+        XCTAssertEqual(s.complete("a", requestID: requestID).count, 0)
     }
 
     func testCompleteFiresInChainOrder() {
         var s = LoaderState<Int>()
-        _ = s.claim("a", task: 1)
+        let requestID = UUID()
+        _ = s.claim("a", task: 1, requestID: requestID)
         var order: [Int] = []
         s.chain("a", { _, _ in order.append(1) })
         s.chain("a", { _, _ in order.append(2) })
-        let fired = s.complete("a")
+        let fired = s.complete("a", requestID: requestID)
         XCTAssertEqual(fired.count, 2)
         fired.forEach { $0(nil, nil) }
         XCTAssertEqual(order, [1, 2])
@@ -58,12 +60,30 @@ final class LoaderStateTests: XCTestCase {
         XCTAssertEqual(s.pendingCount(for: "a"), 0)
     }
 
+    func testStaleCompletionCannotCompleteReplacementRequest() {
+        var s = LoaderState<Int>()
+        let first = UUID()
+        let second = UUID()
+        _ = s.claim("a", task: 1, requestID: first)
+        let (task, _) = s.evict("a")
+        XCTAssertEqual(task, 1)
+        _ = s.claim("a", task: 2, requestID: second)
+
+        XCTAssertFalse(s.isCurrent("a", requestID: first))
+        XCTAssertTrue(s.isCurrent("a", requestID: second))
+        XCTAssertEqual(s.complete("a", requestID: first).count, 0)
+        XCTAssertTrue(s.isActive("a"), "the stale completion must not clear the replacement")
+        XCTAssertEqual(s.complete("a", requestID: second).count, 0)
+        XCTAssertFalse(s.isActive("a"))
+    }
+
     func testFullCycle() {
         var s = LoaderState<Int>()
-        _ = s.claim("a", task: 1)
+        let requestID = UUID()
+        _ = s.claim("a", task: 1, requestID: requestID)
         s.chain("a", { _, _ in })
         s.store(URL(fileURLWithPath: "/tmp/cached"), for: "b")
-        _ = s.complete("a")
+        _ = s.complete("a", requestID: requestID)
         // Cached track is re-prefetchable while the download for `a` is gone.
         XCTAssertFalse(s.isActive("a"))
         XCTAssertEqual(s.cached("b"), URL(fileURLWithPath: "/tmp/cached"))

@@ -9,6 +9,11 @@ public struct LoaderState<Task> {
     public private(set) var cache: [String: URL] = [:]
     public private(set) var inFlight: [String: Task] = [:]
     public private(set) var pending: [String: [(URL?, Error?) -> Void]] = [:]
+    /// Identifies the particular download currently owned by each track id.
+    /// A canceled URLSession task may still deliver its completion after a new
+    /// fetch has claimed the same id, so completion must be token-checked before
+    /// it can clear or populate the replacement request.
+    public private(set) var requestIDs: [String: UUID] = [:]
 
     public init() {}
 
@@ -22,10 +27,15 @@ public struct LoaderState<Task> {
     /// active — the caller must `chain` onto the existing task instead of
     /// starting a second download.
     @discardableResult
-    public mutating func claim(_ id: String, task: Task) -> Bool {
+    public mutating func claim(_ id: String, task: Task, requestID: UUID = UUID()) -> Bool {
         guard inFlight[id] == nil else { return false }
         inFlight[id] = task
+        requestIDs[id] = requestID
         return true
+    }
+
+    public func isCurrent(_ id: String, requestID: UUID) -> Bool {
+        requestIDs[id] == requestID
     }
 
     /// Queues a completion onto the in-flight download for `id` so it fires
@@ -36,8 +46,10 @@ public struct LoaderState<Task> {
 
     /// Ends the in-flight download for `id` and returns every chained
     /// completion (empty when nothing was pending).
-    public mutating func complete(_ id: String) -> [(URL?, Error?) -> Void] {
+    public mutating func complete(_ id: String, requestID: UUID) -> [(URL?, Error?) -> Void] {
+        guard requestIDs[id] == requestID else { return [] }
         inFlight[id] = nil
+        requestIDs[id] = nil
         return pending.removeValue(forKey: id) ?? []
     }
 
@@ -49,6 +61,7 @@ public struct LoaderState<Task> {
     /// deletes the returned cached file (if any).
     public mutating func evict(_ id: String) -> (task: Task?, url: URL?) {
         let task = inFlight.removeValue(forKey: id)
+        requestIDs[id] = nil
         pending.removeValue(forKey: id)
         return (task, cache.removeValue(forKey: id))
     }

@@ -123,3 +123,43 @@ public struct CrossfadeState: Equatable {
     /// The active node finished and the standby became the active node.
     public func completing() -> CrossfadeState { .idle }
 }
+
+// MARK: - Crossfade readiness
+
+/// Explains why the native engine can or cannot start a fade. Keeping this
+/// decision pure makes the engine's early-return guards testable without
+/// constructing AVAudioEngine or downloading files.
+public enum CrossfadeReadiness: Equatable {
+    case disabled
+    case paused
+    case loopOne
+    case missingCurrentDuration
+    case noSuccessor
+    case currentTooShort
+    case nextTooShort
+    case targetNotReady
+    case ready
+}
+
+/// Evaluates the non-audio conditions required before the standby node may be
+/// scheduled. `targetReady` is supplied by the loader adapter and is checked
+/// separately from metadata duration because a cached file can still be
+/// corrupt or unavailable to AVAudioFile.
+public func crossfadeReadiness(
+    isPlaying: Bool,
+    loopOne: Bool,
+    fadeDuration: Double,
+    currentDuration: Double,
+    nextDuration: Double?,
+    targetReady: Bool
+) -> CrossfadeReadiness {
+    guard fadeDuration > 0 else { return .disabled }
+    guard isPlaying else { return .paused }
+    guard !loopOne else { return .loopOne }
+    guard currentDuration > 0 else { return .missingCurrentDuration }
+    guard let nextDuration else { return .noSuccessor }
+    guard currentDuration >= fadeDuration + 1 else { return .currentTooShort }
+    guard nextDuration >= fadeDuration else { return .nextTooShort }
+    guard targetReady else { return .targetNotReady }
+    return .ready
+}

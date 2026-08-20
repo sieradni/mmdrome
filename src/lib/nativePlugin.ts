@@ -59,6 +59,7 @@ interface BackgroundAudioPlugin {
     curve: NativeCrossfadeCurve
     sigmoidSteepness: number
   }): Promise<void>
+  setPreloadCount(options: { count: number }): Promise<void>
   setSleepTimer(options: { active: boolean; mode: 'minutes' | 'endOfTrack'; minutes: number }): Promise<void>
   setEq(options: { filters: NativeFilterSnapshot[]; bypassed: boolean }): Promise<void>
   getState(): Promise<NativeEngineState>

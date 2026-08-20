@@ -78,4 +78,45 @@ final class CrossfadeTests: XCTestCase {
         // Completion also lands back at idle.
         XCTAssertEqual(inFlight.completing(), .idle)
     }
+
+    // MARK: - Crossfade readiness
+
+    func testCrossfadeReadinessExplainsEveryGate() {
+        XCTAssertEqual(
+            crossfadeReadiness(isPlaying: true, loopOne: false, fadeDuration: 0, currentDuration: 60, nextDuration: 60, targetReady: true),
+            .disabled
+        )
+        XCTAssertEqual(
+            crossfadeReadiness(isPlaying: false, loopOne: false, fadeDuration: 5, currentDuration: 60, nextDuration: 60, targetReady: true),
+            .paused
+        )
+        XCTAssertEqual(
+            crossfadeReadiness(isPlaying: true, loopOne: true, fadeDuration: 5, currentDuration: 60, nextDuration: 60, targetReady: true),
+            .loopOne
+        )
+        XCTAssertEqual(
+            crossfadeReadiness(isPlaying: true, loopOne: false, fadeDuration: 5, currentDuration: 0, nextDuration: 60, targetReady: true),
+            .missingCurrentDuration
+        )
+        XCTAssertEqual(
+            crossfadeReadiness(isPlaying: true, loopOne: false, fadeDuration: 5, currentDuration: 60, nextDuration: nil, targetReady: true),
+            .noSuccessor
+        )
+        XCTAssertEqual(
+            crossfadeReadiness(isPlaying: true, loopOne: false, fadeDuration: 5, currentDuration: 5.5, nextDuration: 60, targetReady: true),
+            .currentTooShort
+        )
+        XCTAssertEqual(
+            crossfadeReadiness(isPlaying: true, loopOne: false, fadeDuration: 5, currentDuration: 60, nextDuration: 4.9, targetReady: true),
+            .nextTooShort
+        )
+        XCTAssertEqual(
+            crossfadeReadiness(isPlaying: true, loopOne: false, fadeDuration: 5, currentDuration: 60, nextDuration: 60, targetReady: false),
+            .targetNotReady
+        )
+        XCTAssertEqual(
+            crossfadeReadiness(isPlaying: true, loopOne: false, fadeDuration: 5, currentDuration: 60, nextDuration: 60, targetReady: true),
+            .ready
+        )
+    }
 }

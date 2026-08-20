@@ -27,6 +27,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setPreampDb", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setMasterVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setCrossfade", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setPreloadCount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSleepTimer", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setEq", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise)
@@ -37,13 +38,30 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private let nowPlaying = NowPlayingController()
     private var nowPlayingTimer: Timer?
 
+    /// Capacitor invokes plugin methods on its serial bridge queue. The native
+    /// audio graph, loader, timers, and engine state are main-thread-owned, so
+    /// commands are marshalled before touching the engine and resolve only after
+    /// the main-thread operation completes.
+    private func performOnMain(_ work: @escaping () -> Void) {
+        if Thread.isMainThread {
+            work()
+        } else {
+            DispatchQueue.main.async(execute: work)
+        }
+    }
+
+    private func performOnMainSync<T>(_ work: () -> T) -> T {
+        if Thread.isMainThread { return work() }
+        return DispatchQueue.main.sync(execute: work)
+    }
+
     @objc override public func load() {
         super.load()
 
         session.configure(
-            onPause: { [weak self] in self?.engine.pause() },
-            onResume: { [weak self] in self?.engine.play() },
-            isPlaying: { [weak self] in self?.engine.isCurrentlyPlaying ?? false }
+            onPause: { [weak self] in self?.performOnMain { self?.engine.pause() } },
+            onResume: { [weak self] in self?.performOnMain { self?.engine.play() } },
+            isPlaying: { [weak self] in self?.performOnMainSync { self?.engine.isCurrentlyPlaying ?? false } ?? false }
         )
 
         engine.onTrackChanged = { [weak self] trackId in
@@ -75,12 +93,12 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         nowPlaying.setupRemoteCommands()
-        nowPlaying.onPlay = { [weak self] in self?.engine.play() }
-        nowPlaying.onPause = { [weak self] in self?.engine.pause() }
-        nowPlaying.onToggle = { [weak self] in self?.engine.togglePlayPause() }
-        nowPlaying.onNext = { [weak self] in self?.engine.next() }
-        nowPlaying.onPrevious = { [weak self] in self?.engine.previous() }
-        nowPlaying.onSeek = { [weak self] position in self?.engine.seek(to: position) }
+        nowPlaying.onPlay = { [weak self] in self?.performOnMain { self?.engine.play() } }
+        nowPlaying.onPause = { [weak self] in self?.performOnMain { self?.engine.pause() } }
+        nowPlaying.onToggle = { [weak self] in self?.performOnMain { self?.engine.togglePlayPause() } }
+        nowPlaying.onNext = { [weak self] in self?.performOnMain { self?.engine.next() } }
+        nowPlaying.onPrevious = { [weak self] in self?.performOnMain { self?.engine.previous() } }
+        nowPlaying.onSeek = { [weak self] position in self?.performOnMain { self?.engine.seek(to: position) } }
     }
 
     deinit {
@@ -101,8 +119,11 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         let activeIndex = call.getInt("activeIndex", 0)
         let loopMode = NativeLoopMode(rawValue: call.getString("loopMode", "none")) ?? .none
-        engine.setQueue(tracks: tracks, activeIndex: activeIndex, loopMode: loopMode)
-        call.resolve()
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setQueue(tracks: tracks, activeIndex: activeIndex, loopMode: loopMode)
+            call.resolve()
+        }
     }
 
     @objc func refreshQueue(_ call: CAPPluginCall) {
@@ -112,129 +133,205 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             return NativeTrack(from: dict, index: idx)
         }
         let activeIndex = call.getInt("activeIndex", 0)
-        engine.refreshQueue(tracks: tracks, activeIndex: activeIndex)
-        call.resolve()
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.refreshQueue(tracks: tracks, activeIndex: activeIndex)
+            call.resolve()
+        }
     }
 
     @objc func setLoopMode(_ call: CAPPluginCall) {
         let mode = NativeLoopMode(rawValue: call.getString("loopMode", "none")) ?? .none
-        engine.setLoopMode(mode)
-        call.resolve()
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setLoopMode(mode)
+            call.resolve()
+        }
     }
 
     @objc func playTrackAt(_ call: CAPPluginCall) {
         let index = call.getInt("index", 0)
         let autoPlay = call.getBool("autoPlay", true)
-        engine.playTrack(at: index, autoPlay: autoPlay)
-        call.resolve()
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.playTrack(at: index, autoPlay: autoPlay)
+            call.resolve()
+        }
     }
 
     @objc func play(_ call: CAPPluginCall) {
-        engine.play()
-        refreshNowPlaying()
-        call.resolve()
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.play()
+            self.refreshNowPlaying()
+            call.resolve()
+        }
     }
 
     @objc func pause(_ call: CAPPluginCall) {
-        engine.pause()
-        // The engine's onPlaybackStateChanged only fires when isPlaying actually
-        // flips; refreshing unconditionally guarantees the lock screen / control
-        // center reflects the paused state even when the guard short-circuits.
-        refreshNowPlaying()
-        call.resolve()
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.pause()
+            // The engine's onPlaybackStateChanged only fires when isPlaying actually
+            // flips; refreshing unconditionally guarantees the lock screen / control
+            // center reflects the paused state even when the guard short-circuits.
+            self.refreshNowPlaying()
+            call.resolve()
+        }
     }
 
     @objc func toggle(_ call: CAPPluginCall) {
-        engine.togglePlayPause()
-        refreshNowPlaying()
-        call.resolve()
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.togglePlayPause()
+            self.refreshNowPlaying()
+            call.resolve()
+        }
     }
 
     @objc func seek(_ call: CAPPluginCall) {
-        engine.seek(to: call.getDouble("position", 0))
-        call.resolve()
+        let position = call.getDouble("position", 0)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.seek(to: position)
+            call.resolve()
+        }
     }
 
     @objc func next(_ call: CAPPluginCall) {
-        engine.next()
-        call.resolve()
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.next()
+            call.resolve()
+        }
     }
 
     @objc func previous(_ call: CAPPluginCall) {
-        engine.previous()
-        call.resolve()
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.previous()
+            call.resolve()
+        }
     }
 
     @objc func setSpeed(_ call: CAPPluginCall) {
-        engine.setSpeed(call.getDouble("speed", 1))
-        call.resolve()
+        let speed = call.getDouble("speed", 1)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setSpeed(speed)
+            call.resolve()
+        }
     }
 
     @objc func setPitchOctaves(_ call: CAPPluginCall) {
-        engine.setPitchOctaves(call.getDouble("octaves", 0))
-        call.resolve()
+        let octaves = call.getDouble("octaves", 0)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setPitchOctaves(octaves)
+            call.resolve()
+        }
     }
 
     @objc func setTapeMode(_ call: CAPPluginCall) {
-        engine.setTapeMode(call.getBool("enabled", false))
-        call.resolve()
+        let enabled = call.getBool("enabled", false)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setTapeMode(enabled)
+            call.resolve()
+        }
     }
 
     @objc func setSnapTolerance(_ call: CAPPluginCall) {
-        engine.setSnapTolerance(call.getDouble("semitones", 0.15))
-        call.resolve()
+        let semitones = call.getDouble("semitones", 0.15)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setSnapTolerance(semitones)
+            call.resolve()
+        }
     }
 
     @objc func setReplayGainMode(_ call: CAPPluginCall) {
-        engine.setReplayGainMode(call.getString("mode", "off"))
-        call.resolve()
+        let mode = call.getString("mode", "off")
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setReplayGainMode(mode)
+            call.resolve()
+        }
     }
 
     @objc func setPreampDb(_ call: CAPPluginCall) {
-        engine.setPreampDb(call.getDouble("db", 0))
-        call.resolve()
+        let db = call.getDouble("db", 0)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setPreampDb(db)
+            call.resolve()
+        }
     }
 
     @objc func setMasterVolume(_ call: CAPPluginCall) {
-        engine.setMasterVolume(call.getDouble("volume", 1))
-        call.resolve()
+        let volume = call.getDouble("volume", 1)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setMasterVolume(volume)
+            call.resolve()
+        }
     }
 
     @objc func setCrossfade(_ call: CAPPluginCall) {
-        engine.setCrossfade(
-            duration: call.getDouble("duration", 0),
-            curve: call.getString("curve", "sigmoid"),
-            sigmoidSteepness: call.getDouble("sigmoidSteepness", 6)
-        )
-        call.resolve()
+        let duration = call.getDouble("duration", 0)
+        let curve = call.getString("curve", "sigmoid")
+        let steepness = call.getDouble("sigmoidSteepness", 6)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setCrossfade(duration: duration, curve: curve, sigmoidSteepness: steepness)
+            call.resolve()
+        }
+    }
+
+    @objc func setPreloadCount(_ call: CAPPluginCall) {
+        let count = call.getInt("count", 0)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setPreloadCount(count)
+            call.resolve()
+        }
     }
 
     @objc func setSleepTimer(_ call: CAPPluginCall) {
-        engine.setSleepTimer(
-            active: call.getBool("active", false),
-            mode: call.getString("mode", "minutes"),
-            minutes: call.getDouble("minutes", 30)
-        )
-        call.resolve()
+        let active = call.getBool("active", false)
+        let mode = call.getString("mode", "minutes")
+        let minutes = call.getDouble("minutes", 30)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setSleepTimer(active: active, mode: mode, minutes: minutes)
+            call.resolve()
+        }
     }
 
     @objc func setEq(_ call: CAPPluginCall) {
         let raw = call.getArray("filters", [])
         let filters = raw.compactMap { $0 as? JSObject }.map { NativeFilterConfig(from: $0) }
-        engine.applyFilters(filters, bypassed: call.getBool("bypassed", false))
-        call.resolve()
+        let bypassed = call.getBool("bypassed", false)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.applyFilters(filters, bypassed: bypassed)
+            call.resolve()
+        }
     }
 
     @objc func getState(_ call: CAPPluginCall) {
-        let state = engine.state()
-        call.resolve([
-            "index": state.index,
-            "trackId": state.trackId,
-            "position": state.position,
-            "duration": state.duration,
-            "playing": state.playing,
-            "speed": state.speed
-        ])
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            let state = self.engine.state()
+            call.resolve([
+                "index": state.index,
+                "trackId": state.trackId,
+                "position": state.position,
+                "duration": state.duration,
+                "playing": state.playing,
+                "speed": state.speed
+            ])
+        }
     }
 
     // MARK: - Now Playing

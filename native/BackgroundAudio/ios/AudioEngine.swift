@@ -109,24 +109,37 @@ final class TrackFileLoader {
     }
 
     func prefetch(_ track: NativeTrack, completion: @escaping (URL?, Error?) -> Void) {
+        // Every completion is delivered on the main thread, including cache hits.
+        // Capacitor invokes plugin methods on its bridge queue, while the audio
+        // graph, loader state, and crossfade timers are main-thread-owned.
+        let deliver: (URL?, Error?) -> Void = { url, error in
+            if Thread.isMainThread {
+                completion(url, error)
+            } else {
+                DispatchQueue.main.async {
+                    completion(url, error)
+                }
+            }
+        }
         if track.url.isFileURL {
-            completion(track.url, nil)
+            deliver(track.url, nil)
             return
         }
         if let url = state.cached(track.trackId) {
-            completion(url, nil)
+            deliver(url, nil)
             return
         }
         if state.isActive(track.trackId) {
             // A download for this track is already in flight (started by
-            // `prefetchNeighbors`). Chain onto it instead of dropping the
+            // `prefetchUpcoming`). Chain onto it instead of dropping the
             // completion: `loadAndStart` only schedules its track once this
             // fires, so a dropped callback leaves the engine silently stalled.
-            state.chain(track.trackId, completion)
+            state.chain(track.trackId, deliver)
             return
         }
 
         let destination = Self.destinationURL(for: track)
+        let requestID = UUID()
         let task = session.downloadTask(with: track.url) { [weak self] tempURL, _, error in
             // Hop to the main thread: this completion runs on the URLSession
             // delegate queue, while `state` (cache/activeTasks/pending), the
@@ -135,32 +148,39 @@ final class TrackFileLoader {
             // with every reader (`localURL`/`evict`/`cleanup`).
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
-                let pendings = self.state.complete(track.trackId)
+                // A canceled task can still call its completion after a retry
+                // has claimed the same track id. Only the current request may
+                // clear the in-flight entry, publish a cache file, or notify
+                // callbacks; stale completions are deliberately inert.
+                guard self.state.isCurrent(track.trackId, requestID: requestID) else { return }
+                let pendings = self.state.complete(track.trackId, requestID: requestID)
                 if let tempURL = tempURL, error == nil {
                     do {
                         try? FileManager.default.removeItem(at: destination)
                         try FileManager.default.moveItem(at: tempURL, to: destination)
                         self.state.store(destination, for: track.trackId)
                     } catch {
-                        pendings.forEach { $0(nil, error) }
+                        let moveError = error
+                        deliver(nil, moveError)
+                        pendings.forEach { $0(nil, moveError) }
                         return
                     }
-                    completion(destination, nil)
+                    deliver(destination, nil)
                     pendings.forEach { $0(destination, nil) }
                 } else {
-                    completion(nil, error)
+                    deliver(nil, error)
                     pendings.forEach { $0(nil, error) }
                 }
             }
         }
-        if state.claim(track.trackId, task: task) {
+        if state.claim(track.trackId, task: task, requestID: requestID) {
             task.resume()
         } else {
             // Unreachable on the main thread (the isActive check above already
             // chained) — defensive: never resume a second download for a
             // claimed id, and never leak the abandoned task.
             task.cancel()
-            state.chain(track.trackId, completion)
+            state.chain(track.trackId, deliver)
         }
     }
 
@@ -298,6 +318,11 @@ public final class NativeAudioEngine: NSObject {
     private var crossfadeDuration: Double = 0
     private var crossfadeCurve = "sigmoid"
     private var sigmoidSteepness: Double = 6
+    /// Number of upcoming files to keep warm. When crossfade is enabled, the
+    /// immediate successor is always retained as a transition reserve even when
+    /// this setting is zero.
+    private var preloadCount = 0
+    private var lastCrossfadeReadiness: CrossfadeReadiness?
 
     public override init() {
         super.init()
@@ -387,11 +412,29 @@ public final class NativeAudioEngine: NSObject {
             onQueueEnded?()
             return
         }
+        let oldTargetId: String? = {
+            guard crossfade.isActive,
+                  self.tracks.indices.contains(crossfade.targetIndex) else { return nil }
+            print("[native-crossfade] queue-refresh phase=\(crossfade.phase) target=\(self.tracks[crossfade.targetIndex].trackId)")
+            return self.tracks[crossfade.targetIndex].trackId
+        }()
         self.tracks = tracks
         // The active track ID stayed the same, but its position may have moved
         // after a queue mutation. Keep the native clock attached to that ID by
         // re-anchoring the index before rebuilding any crossfade tail.
         self.activeIndex = synchronizedIndex
+        let newTargetIndex = oldTargetId.flatMap { targetId in
+            guard let candidate = tracks.firstIndex(where: { $0.trackId == targetId }),
+                  self.nextIndex(after: synchronizedIndex) == candidate else { return nil }
+            return candidate
+        }
+        // Preserve an in-flight fade when its audible target survived the queue
+        // refresh. Numeric indexes are re-derived by ID; the scheduled standby
+        // node and gain ramp remain untouched.
+        if crossfade.isInFlight, let newTargetIndex {
+            crossfade = CrossfadeState(phase: .inFlight, targetIndex: newTargetIndex)
+            return
+        }
         // Tear down any armed crossfade targeting the OLD tail; the monitor re-arms
         // from the new list on its next tick. Only invalidate the standby completion
         // while a crossfade is armed/in-flight — after finalizeCrossfadeSwitch the
@@ -402,6 +445,7 @@ public final class NativeAudioEngine: NSObject {
         if hadCrossfade {
             standbyScheduleGeneration += 1
             standbyNode.stop()
+            refreshActiveGain()
         }
         standbyGain.outputVolume = 0
         crossfade = .idle
@@ -418,6 +462,7 @@ public final class NativeAudioEngine: NSObject {
         if hadCrossfade {
             standbyScheduleGeneration += 1
             standbyNode.stop()
+            refreshActiveGain()
         }
         standbyGain.outputVolume = 0
         crossfade = .idle
@@ -623,10 +668,17 @@ public final class NativeAudioEngine: NSObject {
         crossfadeCurve = curve
         self.sigmoidSteepness = sigmoidSteepness
         if isPlaying {
+            prefetchUpcoming(from: activeIndex)
             setupCrossfadeMonitor()
         } else {
             stopCrossfadeMonitor()
         }
+    }
+
+    public func setPreloadCount(_ count: Int) {
+        preloadCount = max(0, min(5, count))
+        guard isPlaying else { return }
+        prefetchUpcoming(from: activeIndex)
     }
 
     /// Sets the native sleep timer. `active=false` cancels any pending timer;
@@ -649,7 +701,7 @@ public final class NativeAudioEngine: NSObject {
             if hadCrossfade {
                 standbyScheduleGeneration += 1
                 standbyNode.stop()
-
+                refreshActiveGain()
             }
             standbyGain.outputVolume = 0
             crossfade = .idle
@@ -760,15 +812,37 @@ public final class NativeAudioEngine: NSObject {
                 self.onError?(error?.localizedDescription ?? "Failed to load track")
                 return
             }
-            self.loader.cleanup(currentIndex: index, tracks: self.tracks)
-            self.prefetchNeighbors(of: index)
+            guard self.tracks.indices.contains(self.activeIndex),
+                  self.tracks[self.activeIndex].trackId == track.trackId else { return }
+            let currentIndex = self.activeIndex
+            self.loader.cleanup(
+                currentIndex: currentIndex,
+                tracks: self.tracks,
+                keepRadius: max(3, self.preloadCount + 1)
+            )
+            self.prefetchUpcoming(from: currentIndex)
             self.scheduleCurrentTrack(from: 0, autoPlay: autoPlay)
         }
     }
 
-    private func prefetchNeighbors(of index: Int) {
-        if let next = nextIndex(after: index), tracks.indices.contains(next) {
-            loader.prefetch(tracks[next], completion: { _, _ in })
+    /// Prefetches the configured upcoming rows, always reserving the immediate
+    /// successor while crossfade is enabled. Completion re-checks the monitor
+    /// immediately, so a target that becomes ready inside the fade window does
+    /// not wait for the next 100 ms tick.
+    private func prefetchUpcoming(from index: Int) {
+        let depth = crossfadeDuration > 0 ? max(1, preloadCount) : preloadCount
+        guard depth > 0 else { return }
+        var cursor = index
+        var seen = Set<Int>()
+        for _ in 0..<depth {
+            guard let next = nextIndex(after: cursor),
+                  tracks.indices.contains(next),
+                  seen.insert(next).inserted else { return }
+            let track = tracks[next]
+            loader.prefetch(track) { [weak self] _, _ in
+                self?.crossfadeMonitorTick()
+            }
+            cursor = next
         }
     }
 
@@ -943,11 +1017,18 @@ public final class NativeAudioEngine: NSObject {
         guard crossfadeDuration > 0, isPlaying, loopMode != .one, !sleepAtTrackEnd, tracks.indices.contains(activeIndex) else { return }
 
         let current = tracks[activeIndex]
-        guard current.duration >= crossfadeDuration + 1 else { return }
-        guard let nextIdx = nextIndex(after: activeIndex), tracks.indices.contains(nextIdx) else { return }
-        let next = tracks[nextIdx]
-        // The standby track must be long enough to fully overlap the fade.
-        guard next.duration >= crossfadeDuration else { return }
+        let nextIdx = nextIndex(after: activeIndex)
+        let nextDuration = nextIdx.flatMap { tracks.indices.contains($0) ? tracks[$0].duration : nil }
+        let readiness = crossfadeReadiness(
+            isPlaying: isPlaying,
+            loopOne: loopMode == .one,
+            fadeDuration: crossfadeDuration,
+            currentDuration: current.duration,
+            nextDuration: nextDuration,
+            targetReady: nextIdx.flatMap { tracks.indices.contains($0) ? loader.localURL(for: tracks[$0]) != nil : nil } ?? false
+        )
+        reportCrossfadeReadiness(readiness)
+        guard readiness == .ready || readiness == .targetNotReady else { return }
 
         let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             self?.crossfadeMonitorTick()
@@ -959,6 +1040,7 @@ public final class NativeAudioEngine: NSObject {
     private func stopCrossfadeMonitor() {
         crossfadeMonitor?.invalidate()
         crossfadeMonitor = nil
+        lastCrossfadeReadiness = nil
         // An armed-but-not-started fade without a live monitor is meaningless;
         // an in-flight fade keeps running (the ramp owns it until finalize).
         if crossfade.phase == .armed {
@@ -974,6 +1056,17 @@ public final class NativeAudioEngine: NSObject {
         let transitionPoint = current.duration - crossfadeDuration
         guard currentPosition >= transitionPoint else { return }
         guard let nextIdx = nextIndex(after: activeIndex), tracks.indices.contains(nextIdx) else { return }
+        let next = tracks[nextIdx]
+        let readiness = crossfadeReadiness(
+            isPlaying: isPlaying,
+            loopOne: loopMode == .one,
+            fadeDuration: crossfadeDuration,
+            currentDuration: current.duration,
+            nextDuration: next.duration,
+            targetReady: loader.localURL(for: next) != nil
+        )
+        reportCrossfadeReadiness(readiness)
+        guard readiness == .ready else { return }
 
         crossfade = crossfade.arming(targetIndex: nextIdx)
         startCrossfade(to: nextIdx)
@@ -981,14 +1074,25 @@ public final class NativeAudioEngine: NSObject {
 
     private func startCrossfade(to nextIdx: Int) {
         let nextTrack = tracks[nextIdx]
-        guard let localURL = loader.localURL(for: nextTrack),
-              let file = try? AVAudioFile(forReading: localURL) else {
-            // Standby not ready yet: fall back to plain transition at natural end.
+        guard let localURL = loader.localURL(for: nextTrack) else {
+            reportCrossfadeReadiness(.targetNotReady)
+            crossfade = .idle
+            return
+        }
+        guard let file = try? AVAudioFile(forReading: localURL) else {
+            // A cached path can still be corrupt. Evict and restart its fetch;
+            // the completion will re-check the active window on the main thread.
+            print("[native-crossfade] target file could not be opened: \(nextTrack.trackId)")
+            loader.evict(nextTrack.trackId)
+            loader.prefetch(nextTrack) { [weak self] _, _ in
+                self?.crossfadeMonitorTick()
+            }
             crossfade = .idle
             return
         }
 
         crossfade = crossfade.starting(targetIndex: nextIdx)
+        print("[native-crossfade] start current=\(currentTrackId) target=\(nextTrack.trackId) position=\(String(format: \"%.2f\", currentPosition))")
         let targetGain = Float(nextTrack.replayGainLinear(mode: replayGainMode))
         let startGain = activeGain.outputVolume
         let duration = Float(crossfadeDuration)
@@ -1041,6 +1145,7 @@ public final class NativeAudioEngine: NSObject {
             }
         }
         volumeRampTimer = timer
+        print("[native-crossfade] ramp-start duration=\(plan.duration) steps=\(RampPlan.stepCount)")
         RunLoop.main.add(timer, forMode: .common)
     }
 
@@ -1048,6 +1153,12 @@ public final class NativeAudioEngine: NSObject {
         volumeRampTimer?.invalidate()
         volumeRampTimer = nil
         rampStepCount = 0
+    }
+
+    private func reportCrossfadeReadiness(_ readiness: CrossfadeReadiness) {
+        guard readiness != lastCrossfadeReadiness else { return }
+        lastCrossfadeReadiness = readiness
+        print("[native-crossfade] readiness=\(readiness) track=\(currentTrackId) position=\(String(format: \"%.2f\", currentPosition)) fade=\(crossfadeDuration)")
     }
 
     private func finalizeCrossfadeSwitch() {
@@ -1063,6 +1174,7 @@ public final class NativeAudioEngine: NSObject {
         positionBias = 0
         cachedPosition = 0
         activeGain.outputVolume = Float(tracks[activeIndex].replayGainLinear(mode: replayGainMode))
+        print("[native-crossfade] complete track=\(tracks[activeIndex].trackId) position=\(String(format: \"%.2f\", currentPosition))")
 
         onTrackChanged?(tracks[activeIndex].trackId)
         setupCrossfadeMonitor()
