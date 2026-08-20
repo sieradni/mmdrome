@@ -423,7 +423,7 @@ public final class NativeAudioEngine: NSObject {
         // after a queue mutation. Keep the native clock attached to that ID by
         // re-anchoring the index before rebuilding any crossfade tail.
         self.activeIndex = synchronizedIndex
-        let newTargetIndex = oldTargetId.flatMap { targetId in
+        let newTargetIndex: Int? = oldTargetId.flatMap { targetId -> Int? in
             guard let candidate = tracks.firstIndex(where: { $0.trackId == targetId }),
                   self.nextIndex(after: synchronizedIndex) == candidate else { return nil }
             return candidate
@@ -1092,7 +1092,8 @@ public final class NativeAudioEngine: NSObject {
         }
 
         crossfade = crossfade.starting(targetIndex: nextIdx)
-        print("[native-crossfade] start current=\(currentTrackId) target=\(nextTrack.trackId) position=\(String(format: \"%.2f\", currentPosition))")
+        let formattedPosition = String(format: "%.2f", currentPosition)
+        print("[native-crossfade] start current=\(currentTrackId) target=\(nextTrack.trackId) position=\(formattedPosition)")
         let targetGain = Float(nextTrack.replayGainLinear(mode: replayGainMode))
         let startGain = activeGain.outputVolume
         let duration = Float(crossfadeDuration)
@@ -1158,7 +1159,8 @@ public final class NativeAudioEngine: NSObject {
     private func reportCrossfadeReadiness(_ readiness: CrossfadeReadiness) {
         guard readiness != lastCrossfadeReadiness else { return }
         lastCrossfadeReadiness = readiness
-        print("[native-crossfade] readiness=\(readiness) track=\(currentTrackId) position=\(String(format: \"%.2f\", currentPosition)) fade=\(crossfadeDuration)")
+        let formattedPosition = String(format: "%.2f", currentPosition)
+        print("[native-crossfade] readiness=\(readiness) track=\(currentTrackId) position=\(formattedPosition) fade=\(crossfadeDuration)")
     }
 
     private func finalizeCrossfadeSwitch() {
@@ -1174,7 +1176,8 @@ public final class NativeAudioEngine: NSObject {
         positionBias = 0
         cachedPosition = 0
         activeGain.outputVolume = Float(tracks[activeIndex].replayGainLinear(mode: replayGainMode))
-        print("[native-crossfade] complete track=\(tracks[activeIndex].trackId) position=\(String(format: \"%.2f\", currentPosition))")
+        let formattedPosition = String(format: "%.2f", currentPosition)
+        print("[native-crossfade] complete track=\(tracks[activeIndex].trackId) position=\(formattedPosition)")
 
         onTrackChanged?(tracks[activeIndex].trackId)
         setupCrossfadeMonitor()
