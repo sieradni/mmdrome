@@ -30,6 +30,33 @@ import type { WebdavCredentials, WebdavSession } from "./webdavSession"
 import { FileMetadataError, type FileMetadata } from "./metadataReader"
 import type { FileTags, WebdavFileEntry } from "./db"
 
+// ── Injectable dependencies ─────────────────────────────────────────────────
+// The scanner reads from Dexie and calls the WebDAV layer; these are the two
+// functions that cross the I/O boundary. Tests inject mocks via the setters
+// below; production code uses the real implementations.
+interface ScannerDeps {
+  buildIndex: typeof buildWebdavFileIndexDetailed
+  readFile: typeof readFileMetadata
+}
+
+const defaultDeps: ScannerDeps = {
+  buildIndex: buildWebdavFileIndexDetailed,
+  readFile: readFileMetadata,
+}
+
+let _deps: ScannerDeps = { ...defaultDeps }
+
+/** Override injectable dependencies for testing. Pass partial overrides;
+ *  unspecified deps use real implementations. */
+export function __setScannerDeps(overrides: Partial<ScannerDeps>): void {
+  _deps = { ...defaultDeps, ...overrides }
+}
+
+/** Reset to real implementations. Call in test teardown. */
+export function __resetScannerDeps(): void {
+  _deps = { ...defaultDeps }
+}
+
 const CONCURRENCY = 6
 
 const ORPHAN_DELETE_TIMEOUT = 30000
@@ -250,7 +277,7 @@ async function refreshIndexForSession(session: WebdavSession): Promise<boolean> 
     // Keep the fetched index local until every asynchronous enrichment step
     // has completed and the session is still current. A stale probe must never
     // publish old rows into the new server's live index.
-    const built = await buildWebdavFileIndexDetailed(session.url, session.user, session.token)
+    const built = await _deps.buildIndex(session.url, session.user, session.token)
     const freshIndex = built.entries
     if (!isCurrentSession(session)) return false
 
@@ -637,12 +664,27 @@ export function ensureTagProbe(): Promise<Set<string>> {
     const refreshResult = await waitForCurrentIndexRefresh()
     if (!refreshResult && !indexBuilt) return new Set<string>()
 
-    if (!indexBuilt) {
-      const ok = await refreshIndex()
-      if (!ok) return new Set<string>()
-    }
     operationSession = captureSession()
     if (!operationSession) return new Set<string>()
+
+    if (!indexBuilt) {
+      // Direct call to refreshIndexForSession — NOT refreshIndex() which
+      // calls waitForCurrentTagProbe() and would deadlock on this promise.
+      // The waitForCurrentIndexRefresh() above already guarantees no
+      // concurrent index refresh, so we own the serialization slot here.
+      const op = refreshIndexForSession(operationSession)
+      indexRefreshPromise = op
+      indexRefreshSession = operationSession
+      try {
+        const ok = await op
+        if (!ok) return new Set<string>()
+      } finally {
+        if (indexRefreshPromise === op) {
+          indexRefreshPromise = null
+          indexRefreshSession = null
+        }
+      }
+    }
     const mutex = ++tagProbeGen
     tagProbeState.update((state) => ({ ...state, active: true, done: 0, remaining: 0 }))
     try {
@@ -1166,7 +1208,7 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
     const myGen = scanGen
     try {
       const boundEntry = index.find((i) => i.path === boundPath)
-      const meta = await readFileMetadata(
+      const meta = await _deps.readFile(
         webdavUrl, boundPath, webdavUser, webdavToken, track.fileType,
       )
       if (scanGen !== myGen) return
@@ -1284,7 +1326,7 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
           loved: existing?.loved ?? false,
           comments: existing?.comments,
         }
-      : await readFileMetadata(webdavUrl, match.entry.path, webdavUser, webdavToken, track.fileType)
+      : await _deps.readFile(webdavUrl, match.entry.path, webdavUser, webdavToken, track.fileType)
     if (scanGen !== startedGen) return
 
     // The user may have edited rating/loved while the fetch was in flight —
@@ -1661,7 +1703,7 @@ interface ReverifyRowResult {
  *  Read failures and untagged files both land on 'unknown'. */
 async function reverifyRow(track: Track, entry: WebdavFileEntry): Promise<ReverifyRowResult> {
   try {
-    const meta = await readFileMetadata(webdavUrl, entry.path, webdavUser, webdavToken, track.fileType)
+    const meta = await _deps.readFile(webdavUrl, entry.path, webdavUser, webdavToken, track.fileType)
     if (!meta.title) return { verdict: 'unknown', fileTitle: undefined, meta }
     return {
       verdict: verifyEntryAgainstTrack(track, { ...entry, tags: {
