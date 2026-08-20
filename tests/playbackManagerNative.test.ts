@@ -176,6 +176,8 @@ class FakeSleepTimer {
 // --- harness ---------------------------------------------------------------
 
 type PrivatePM = {
+  playTrackById(trackId: string): Promise<void>
+  playTrackAt(index: number): Promise<void>
   _nativeLoadPlay(track: Track): Promise<void>
   _onNativeTrackEnded(fromError?: boolean): Promise<void>
   _onNativeRetry(trackId: string): Promise<void>
@@ -237,6 +239,17 @@ test('_nativeLoadPlay success: engages the snapshot and promotes', async () => {
   assert.ok(h.qm.calls.includes('promoteActiveTrack'))
   assert.ok(h.qm.calls.includes('replenishAutoQueue'))
   assert.ok(h.stm.calls.includes('rearmAfterSnapshot'))
+})
+
+test('public playTrackById uses native transport without a WebBgTransport', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1'], [t1], 0)
+  await h.m.playTrackById('t1')
+
+  assert.equal(get(currentTrack)?.trackId, 't1')
+  assert.equal(get(playbackState), 'playing')
+  assert.equal(h.nt.lastEngage?.activeIndex, 0)
 })
 
 test('_nativeLoadPlay failure: reports stopped and never promotes', async () => {

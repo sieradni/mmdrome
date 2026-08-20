@@ -606,6 +606,19 @@ export class PlaybackManager {
 
   // MARK: - Web engine path
 
+  /**
+   * Routes a resolved track to the platform-specific load path. The background
+   * transport exists only on web; native playback must never inspect it before
+   * dispatching to `_loadAndPlay`.
+   */
+  private async _loadTrack(track: Track): Promise<void> {
+    if (!this.isNative() && this._bgTransport?.engaged) {
+      await this._loadAndPlayInBg(track)
+    } else {
+      await this._loadAndPlay(track)
+    }
+  }
+
   private async _loadAndPlay(track: Track): Promise<void> {
     if (this.isNative()) {
       await this._nativeLoadPlay(track)
@@ -1014,11 +1027,7 @@ export class PlaybackManager {
         saveQueue(updated)
         return updated
       })
-      if (this._bgTransport!.engaged) {
-        await this._loadAndPlayInBg(track)
-      } else {
-        await this._loadAndPlay(track)
-      }
+      await this._loadTrack(track)
     }
   }
 
@@ -1043,11 +1052,7 @@ export class PlaybackManager {
     }
     const track = this._qm.findTrack(combined[index])
     if (track) {
-      if (this._bgTransport!.engaged) {
-        await this._loadAndPlayInBg(track)
-      } else {
-        await this._loadAndPlay(track)
-      }
+      await this._loadTrack(track)
     }
   }
 
@@ -1158,11 +1163,7 @@ export class PlaybackManager {
 
       const track = this._qm.findTrack(combined[nextIndex])
       if (track) {
-        if (this._bgTransport!.engaged) {
-          await this._loadAndPlayInBg(track)
-        } else {
-          await this._loadAndPlay(track)
-        }
+        await this._loadTrack(track)
       }
     }
   }
@@ -1184,11 +1185,7 @@ export class PlaybackManager {
       this._qm.advanceTo(prevIndex, currentId ?? undefined)
       const track = this._qm.findTrack(combined[prevIndex])
       if (track) {
-        if (this._bgTransport!.engaged) {
-          await this._loadAndPlayInBg(track)
-        } else {
-          await this._loadAndPlay(track)
-        }
+        await this._loadTrack(track)
       }
       return
     }
@@ -1199,11 +1196,7 @@ export class PlaybackManager {
         this._qm.advanceTo(lastIndex, currentId ?? undefined)
         const track = this._qm.findTrack(combined[lastIndex])
         if (track) {
-          if (this._bgTransport!.engaged) {
-            await this._loadAndPlayInBg(track)
-          } else {
-            await this._loadAndPlay(track)
-          }
+          await this._loadTrack(track)
         }
       }
       return
