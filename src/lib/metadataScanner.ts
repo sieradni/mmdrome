@@ -57,6 +57,48 @@ export function __resetScannerDeps(): void {
   _deps = { ...defaultDeps }
 }
 
+/** Reset ALL module-level mutable state (queue, index, tag cache, generations,
+ *  credentials, counters) so a test file that shares one Node process gets a
+ *  clean scanner per test. Without this, `indexBuilt`/`scanGen`/`tagCache`
+ *  leak across tests and tests can pass for the wrong reason (e.g. a
+ *  deadlock-regression test that never actually hits the `!indexBuilt` path).
+ *  Test-only. */
+export function __resetScannerState(): void {
+  queue = []
+  activeCount = 0
+  activeDrain = null
+  activeScanPromise = null
+  indexPersistence = Promise.resolve()
+  tagCachePersistence = Promise.resolve()
+  cancelled = false
+  scanGen = 0
+  claimedInScan = new Set<string>()
+  index = []
+  indexBuilt = false
+  indexComplete = false
+  indexRefreshPromise = null
+  indexRefreshSession = null
+  serverLastScan = ""
+  webdavUrl = ""
+  webdavUser = ""
+  webdavToken = ""
+  indexBaseKey = ""
+  scannedCount = 0
+  failedCount = 0
+  missingCount = 0
+  notFoundCount = 0
+  ambiguousCount = 0
+  totalTracks = 0
+  tagCacheBaseKey = ""
+  tagCacheLastKnownBaseKey = ""
+  tagCache = new Map()
+  tagCacheLoaded = false
+  tagProbeGen = 0
+  tagProbePromise = null
+  tagProbePromiseGeneration = null
+  tagProbeState.set({ active: false, done: 0, remaining: 0, revision: 0 })
+}
+
 const CONCURRENCY = 6
 
 const ORPHAN_DELETE_TIMEOUT = 30000
@@ -844,7 +886,9 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
       if (tagProbeGen !== gen || !isCurrentSession(session)) return
       const id = fileTagId(baseKey, entry.path)
       try {
-        const meta = await readFileMetadata(
+        // Route through the injectable seam like every other read path so the
+        // lifecycle tests can mock the probe's network reads.
+        const meta = await _deps.readFile(
           session.url, entry.path, session.user, session.token, fileTypeOf(entry.filename),
         )
         if (tagProbeGen !== gen || !isCurrentSession(session)) return

@@ -1,8 +1,9 @@
 // TODO 6.7/6.10/6.11/6.12 lifecycle harness — tests the scanner/WebDAV/Dexie
 // glue that was previously [not test-pinned]. The harness injects mock
 // implementations of `buildWebdavFileIndexDetailed` and `readFileMetadata` via
-// `__setScannerDeps` and provides in-memory Dexie stubs so the scanner's
-// persistence layer works in Node (no IndexedDB).
+// `__setScannerDeps`, provides in-memory Dexie stubs so the scanner's
+// persistence layer works in Node (no IndexedDB), and resets ALL scanner
+// module state between tests so ordering can never mask a regression.
 //
 // Pure-core logic (scoring, fingerprinting, mtime) is pinned by
 // `metadataCore.test.ts`; this suite covers the async state-machine glue.
@@ -24,6 +25,7 @@ import type { WebdavFileEntry } from '../src/lib/db'
 import {
   __setScannerDeps,
   __resetScannerDeps,
+  __resetScannerState,
   refreshIndex,
   ensureTagProbe,
   scanAll,
@@ -75,6 +77,10 @@ let mockComplete = true
 let mockMeta: Record<string, FileMetadata> = {}
 let buildCallCount = 0
 let readCallCount = 0
+/** When set, the mock PROPFIND blocks until `releaseBuild` runs — used to hold
+ *  a probe genuinely mid-flight while a credential swap lands. */
+let buildGate: Promise<void> | null = null
+let releaseBuild: (() => void) | null = null
 
 function setupMocks() {
   buildCallCount = 0
@@ -82,9 +88,13 @@ function setupMocks() {
   mockEntries = []
   mockComplete = true
   mockMeta = {}
+  buildGate = null
+  releaseBuild = null
   __setScannerDeps({
     buildIndex: async () => {
       buildCallCount++
+      const gate = buildGate
+      if (gate) await gate
       return { entries: mockEntries, complete: mockComplete }
     },
     readFile: async (_baseUrl: string, filePath: string, _user: string, _token: string, _fileType: string) => {
@@ -98,6 +108,8 @@ function setupMocks() {
 
 function teardown() {
   __resetScannerDeps()
+  __resetScannerState()
+  for (const m of Object.values(memStores)) m.clear()
   library.set([])
   metadataCache.set(new Map())
   metadataScanState.set({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0 } })
@@ -193,35 +205,43 @@ test('overlapping ensureTagProbe() calls deduplicate (same generation)', async (
   assert.notEqual(p1, p2, 'chained promise, not reference-equal')
 
   const [r1, r2] = await Promise.all([p1, p2])
-  // Both receive results from the single underlying probe
   assert.ok(r1 instanceof Set, 'first call resolves')
   assert.ok(r2 instanceof Set, 'second call resolves')
 
-  // The mock buildIndex should have been called at most once for this generation
-  assert.ok(buildCallCount <= 1, `buildIndex called ${buildCallCount}x, expected ≤1`)
+  // The one underlying probe builds the index exactly once — the second call
+  // must not start a competing PROPFIND.
+  assert.equal(buildCallCount, 1, 'single underlying probe, single build')
 
   teardown()
 })
 
-test('credential swap mid-probe starts a new probe for new session', async () => {
+test('credential swap mid-probe discards the stale build and starts a new probe', async () => {
   setupMocks()
   initWebdav()
   library.set([track()])
 
-  // Start a probe with original credentials
+  // Hold the first PROPFIND so the probe is genuinely mid-flight when the
+  // credential swap lands.
+  buildGate = new Promise((resolve) => { releaseBuild = resolve })
   const p1 = ensureTagProbe()
+  await Promise.resolve() // let the probe operation start and capture the OLD session
+  assert.equal(buildCallCount, 1, 'old-session probe started its build')
 
-  // Swap credentials while probe is in-flight
+  // Swap credentials while the probe is blocked mid-build
   settings.set({ webdavUrl: 'http://new.com', webdavUser: 'user2', webdavToken: 'token2' })
   setWebdavCredentials('http://new.com', 'user2', 'token2')
 
-  // New call should start a DIFFERENT probe (different generation)
+  // A call after the swap must wait for the stale probe to settle, then start
+  // a fresh probe for the new session.
   const p2 = ensureTagProbe()
   assert.notEqual(p1, p2, 'credential swap produces a different promise')
 
+  releaseBuild!()
   await Promise.all([p1, p2])
-  // Both builds should have run (old gen + new gen)
-  assert.ok(buildCallCount >= 1, `buildIndex called ${buildCallCount}x`)
+
+  // The old-session build was discarded (its session no longer current) and
+  // the new session rebuilt the index from scratch.
+  assert.equal(buildCallCount, 2, 'stale build discarded, new session rebuilt')
 
   teardown()
 })
@@ -231,7 +251,6 @@ test('token-only credential change invalidates live index', async () => {
   mockEntries = [entry()]
   initWebdav()
 
-  // Build the index with original token
   const ok1 = await refreshIndex()
   assert.equal(ok1, true)
   assert.equal(buildCallCount, 1)
@@ -240,7 +259,6 @@ test('token-only credential change invalidates live index', async () => {
   settings.set({ webdavUrl: 'http://test.com', webdavUser: 'user', webdavToken: 'newtoken' })
   setWebdavCredentials('http://test.com', 'user', 'newtoken')
 
-  // Next refresh should rebuild (token change invalidates)
   const ok2 = await refreshIndex()
   assert.equal(ok2, true)
   assert.equal(buildCallCount, 2, 'token change forces rebuild')
@@ -259,11 +277,12 @@ test('partial index allows auto-binds with tag verification', async () => {
     '/dav/files/user/Song.flac': fileMeta({ title: 'Song', artist: 'Artist' }),
   }
 
-  // Run a scan — the probe should discover the file and auto-bind
   await scanAll('force')
 
-  // The auto-bind should have been attempted
-  assert.ok(readCallCount > 0 || get(metadataCache).size > 0, 'probe attempted binding from partial index')
+  // The probe read the file's tags and auto-bound the unclaimed track.
+  const bound = get(metadataCache).get('t1')
+  assert.equal(bound?.webdavPath, '/dav/files/user/Song.flac', 'tag-verified auto-bind lands from a partial index')
+  assert.equal(bound?.matchSource, undefined, 'auto-bind is not a manual binding')
 
   teardown()
 })
@@ -341,11 +360,10 @@ test('probe failure does not break scan, TTL allows retry', async () => {
   mockComplete = true
   mockMeta = {} // no metadata → readFile throws
 
-  // Scan should not throw
   await scanAll('force')
 
   const state = get(metadataScanState)
-  assert.ok(state.status === 'complete' || state.status === 'error', 'scan finished')
+  assert.equal(state.status, 'complete', 'scan completes despite probe read failure')
 
   teardown()
 })
@@ -369,9 +387,12 @@ test('ensureTagProbe completes without deadlock when index is not built', async 
   library.set([track()])
 
   // This would have deadlocked before the fix (ensureTagProbe called
-  // refreshIndex which called waitForCurrentTagProbe waiting for itself)
+  // refreshIndex which called waitForCurrentTagProbe waiting for itself).
+  // The state reset guarantees indexBuilt=false here — the deadlock path is
+  // genuinely exercised, not skipped because an earlier test built the index.
   const result = await ensureTagProbe()
   assert.ok(result instanceof Set, 'probe completes without deadlock')
+  assert.equal(buildCallCount, 1, 'probe built the missing index itself')
 
   teardown()
 })
