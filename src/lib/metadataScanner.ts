@@ -1,5 +1,6 @@
 import { get } from "svelte/store"
 import { writable } from "svelte/store"
+import { Capacitor } from "@capacitor/core"
 import { library, metadataCache, metadataScanState, settings, updateMetadata } from "../stores/appState"
 import type { Track } from "../stores/appState"
 import { saveWebdavFileIndex, clearWebdavFileIndex, getWebdavFileIndex, getFileTagsForBase, putFileTag, deleteFileTagsForBase, deleteFileTagsByIds, updateWebdavFileTagFingerprint } from "./db"
@@ -96,7 +97,7 @@ export function __resetScannerState(): void {
   tagProbeGen = 0
   tagProbePromise = null
   tagProbePromiseGeneration = null
-  tagProbeState.set({ active: false, done: 0, remaining: 0, revision: 0 })
+  tagProbeState.set({ active: false, done: 0, remaining: 0, revision: 0, resolved: 0 })
 }
 
 const CONCURRENCY = 6
@@ -435,11 +436,17 @@ export interface TagProbeState {
   remaining: number
   /** Increments once per current-session probe completion. */
   revision: number
+  /** Tracks auto-bound by THIS probe run, so the scan result line can
+   *  reconcile "no safe match" rows that the post-scan probe resolved. */
+  resolved: number
 }
 
-export const tagProbeState = writable<TagProbeState>({ active: false, done: 0, remaining: 0, revision: 0 })
+export const tagProbeState = writable<TagProbeState>({ active: false, done: 0, remaining: 0, revision: 0, resolved: 0 })
 
-const TAG_PROBE_CONCURRENCY = 4
+// Native pays per-request TLS/radio latency that the browser hides with
+// keep-alive, so it needs more in-flight reads to reach the same throughput;
+// the desktop value is the measured-stable one (50 files / 6 s).
+const TAG_PROBE_CONCURRENCY = Capacitor.isNativePlatform() ? 8 : 4
 const TAG_PROBE_RETRY_MS = 800
 
 /** `baseUrl|user` the in-memory tag cache belongs to. */
@@ -728,7 +735,7 @@ export function ensureTagProbe(): Promise<Set<string>> {
       }
     }
     const mutex = ++tagProbeGen
-    tagProbeState.update((state) => ({ ...state, active: true, done: 0, remaining: 0 }))
+    tagProbeState.update((state) => ({ ...state, active: true, done: 0, remaining: 0, resolved: 0 }))
     try {
       const autoBoundTrackIds = await runTagProbe(mutex)
       if (tagProbeGen === mutex && isCurrentSession(operationSession) && indexBuilt) {
@@ -755,7 +762,7 @@ export function ensureTagProbe(): Promise<Set<string>> {
             revision: state.revision + 1,
           }))
         } else {
-          tagProbeState.update((state) => ({ ...state, active: false, remaining: 0 }))
+          tagProbeState.update((state) => ({ ...state, active: false, remaining: 0, resolved: 0 }))
         }
       }
     }
@@ -853,7 +860,12 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
     pool.push(entry)
   }
 
-  if (pool.length === 0) return autoBoundTrackIds
+  if (pool.length === 0) {
+    // Cached-revisit binds (no network reads needed) must still be visible in
+    // the store, or a converge-only probe reports resolved 0 forever.
+    tagProbeState.update((state) => ({ ...state, resolved: autoBoundTrackIds.size }))
+    return autoBoundTrackIds
+  }
 
   // Hint ordering: byte-size suggestions first (strong), then filename hints,
   // then the rest. When the server is close to the library size, sweep all
@@ -938,7 +950,9 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
       if (tagProbeGen !== gen || !isCurrentSession(session)) return
       done++
       const remaining = Math.max(0, hinted.length - (i + batch.length))
-      tagProbeState.update((state) => ({ ...state, active: true, done, remaining }))
+      // resolved mirrors autoBoundTrackIds.size — the batch loop is the only
+      // place binds land, so this is always current for a live run.
+      tagProbeState.update((state) => ({ ...state, active: true, done, remaining, resolved: autoBoundTrackIds.size }))
     }))
   }
 
@@ -1130,6 +1144,11 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
   })
   const autoBoundTrackIds = await launchTagProbe()
   if (scanGen !== myGen) return false
+  // The inline probe's binds are already excluded from the drain queue (and
+  // thus from notFoundCount) — reset the counter so the UI never attributes
+  // them to the post-scan background probe, which starts after 'complete' is
+  // published and re-counts from zero.
+  tagProbeState.update((state) => ({ ...state, resolved: 0 }))
   activeAnnotation = annotationFor(shape)
 
   const tracks = get(library)

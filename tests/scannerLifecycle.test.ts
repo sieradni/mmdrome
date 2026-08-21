@@ -30,6 +30,7 @@ import {
   ensureTagProbe,
   scanAll,
   setWebdavCredentials,
+  tagProbeState,
 } from '../src/lib/metadataScanner'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -291,6 +292,56 @@ test('partial index allows auto-binds with tag verification', async () => {
   const bound = get(metadataCache).get('t1')
   assert.equal(bound?.webdavPath, '/dav/files/user/Song.flac', 'tag-verified auto-bind lands from a partial index')
   assert.equal(bound?.matchSource, undefined, 'auto-bind is not a manual binding')
+
+  teardown()
+})
+
+test('probe publishes resolved count for tag auto-binds, reset per run', async () => {
+  setupMocks()
+  initWebdav()
+  library.set([track()])
+
+  mockEntries = [entry()]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/Song.flac': fileMeta({ title: 'Song', artist: 'Artist' }),
+  }
+
+  await ensureTagProbe()
+  const s1 = get(tagProbeState)
+  assert.equal(s1.active, false, 'probe finished')
+  assert.equal(s1.resolved, 1, 'the tag-bound track is reported as resolved')
+  assert.equal(get(metadataCache).get('t1')?.webdavPath, '/dav/files/user/Song.flac', 'auto-bind landed')
+
+  // A second probe with nothing left unclaimed must not echo the previous
+  // run's count — the counter is reset at probe start and only re-published.
+  await ensureTagProbe()
+  const s2 = get(tagProbeState)
+  assert.equal(s2.active, false, 'second probe finished')
+  assert.equal(s2.resolved, 0, 'resolved resets to 0 for an empty run')
+
+  teardown()
+})
+
+test('inline probe binds are not attributed to the post-scan tail', async () => {
+  setupMocks()
+  initWebdav()
+  library.set([track()])
+
+  mockEntries = [entry()]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/Song.flac': fileMeta({ title: 'Song', artist: 'Artist' }),
+  }
+
+  await scanAll('force')
+
+  // The inline probe bound t1 before the drain, so the drain never saw it as
+  // unmatched. The drain-start reset zeroes the counter: the status line must
+  // never attribute inline binds to the post-scan background probe (which, with
+  // nothing left unclaimed, also publishes 0).
+  assert.equal(get(tagProbeState).resolved, 0, 'inline binds are not double-counted')
+  assert.equal(get(metadataCache).get('t1')?.webdavPath, '/dav/files/user/Song.flac', 'inline auto-bind landed')
 
   teardown()
 })

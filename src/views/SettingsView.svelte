@@ -352,6 +352,16 @@
     return s.done > 0 ? `${s.done} file${s.done === 1 ? '' : 's'} (${s.remaining} remaining)` : 'unclaimed files'
   }
 
+  function tagProbeMatched(): string {
+    const s = $tagProbeState
+    return s.resolved > 0 ? `, ${s.resolved} matched` : ''
+  }
+
+  function scanButtonText(): string {
+    if ($tagProbeState.active) return `Reading tags — ${tagProbeText()}…`
+    return `Scanning ${$metadataScanState.progress.scanned}/${$metadataScanState.progress.total}...`
+  }
+
   // Full set (returned uncapped) is held in unresolvedRows; toggles + matchCap
   // filter and slice it client-side so ignored/matched rows are never starved
   // out of visibility by an arbitrary hard cap.
@@ -722,7 +732,7 @@
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
+                {scanButtonText()}
               {:else if $metadataScanState.status === 'complete' && $metadataScanState.progress.total > 0 && $metadataScanState.error === undefined}
                 <svg class="h-4 w-4 text-green-400" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
                 Done — rescan again
@@ -736,12 +746,19 @@
                 <p class="text-sm text-red-400">{$metadataScanState.error}</p>
               {:else}
                 <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
-                {#if $tagProbeState.active}
-                  <p class="text-sm text-muted">Tag matching continues in the background while file tags are read…</p>
-                {/if}
+              {#if $tagProbeState.active}
+                <p class="text-sm text-muted">Reading tags in the background — {tagProbeText()}{tagProbeMatched()}…</p>
+              {/if}
+              {#if !$tagProbeState.active && $tagProbeState.resolved > 0}
+                <p class="text-sm text-muted">Background tag probe matched {$tagProbeState.resolved} more file{$tagProbeState.resolved === 1 ? '' : 's'} — see File Matching.</p>
+              {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
-              <p class="text-sm text-muted">{$metadataScanState.progress.annotation ?? 'Scanning files'} — {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
+              {#if $tagProbeState.active}
+                <p class="text-sm text-muted">Reading file tags — {tagProbeText()}{tagProbeMatched()}…</p>
+              {:else}
+                <p class="text-sm text-muted">{$metadataScanState.progress.annotation ?? 'Scanning files'} — {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
+              {/if}
             {:else if $metadataScanState.status === 'error'}
               <p class="text-sm text-red-400">{$metadataScanState.error}</p>
             {/if}
@@ -920,7 +937,7 @@
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
+                {scanButtonText()}
               {:else}
                 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
                 Check Modified Ratings
@@ -936,7 +953,7 @@
                   <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
                   <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                Scanning {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total}...
+                {scanButtonText()}
               {:else}
                 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
                 Rescan All Metadata
@@ -958,12 +975,19 @@
                 <p class="text-sm text-red-400">{$metadataScanState.error}</p>
               {:else}
                 <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
-                {#if $tagProbeState.active}
-                  <p class="text-sm text-muted">Tag matching continues in the background while file tags are read…</p>
-                {/if}
+              {#if $tagProbeState.active}
+                <p class="text-sm text-muted">Reading tags in the background — {tagProbeText()}{tagProbeMatched()}…</p>
+              {/if}
+              {#if !$tagProbeState.active && $tagProbeState.resolved > 0}
+                <p class="text-sm text-muted">Background tag probe matched {$tagProbeState.resolved} more file{$tagProbeState.resolved === 1 ? '' : 's'} — see File Matching.</p>
+              {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
-              <p class="text-sm text-muted">{$metadataScanState.progress.annotation ?? 'Scanning files'} — {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
+              {#if $tagProbeState.active}
+                <p class="text-sm text-muted">Reading file tags — {tagProbeText()}{tagProbeMatched()}…</p>
+              {:else}
+                <p class="text-sm text-muted">{$metadataScanState.progress.annotation ?? 'Scanning files'} — {$metadataScanState.progress.scanned}/{$metadataScanState.progress.total} ({$metadataScanState.progress.failed} failed)</p>
+              {/if}
             {:else if $metadataScanState.status === 'error'}
               <p class="text-sm text-red-400">{$metadataScanState.error}</p>
             {/if}
@@ -988,7 +1012,7 @@
           {/if}
           {#if $tagProbeState.active}
             <p class="mb-2 text-sm text-muted">
-              Reading tags from {tagProbeText()} to match files by their contents…
+              Reading tags from {tagProbeText()}{tagProbeMatched()} to match files by their contents…
             </p>
           {/if}
           {#if countTotal() > 0}
