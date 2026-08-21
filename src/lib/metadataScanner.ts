@@ -878,9 +878,7 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
   let hinted = sweep === 'sweep-all' ? pool : pool.filter((e) => rank.has(e.path))
   if (sweep === 'hint-gated' && hinted.length === 0 && pool.length > 0 && unclaimedTrackCount > 0) {
     const fallbackCap = Math.max(unclaimedTrackCount * 2, 50)
-    const offset = gen % pool.length
-    if (offset + fallbackCap <= pool.length) hinted = pool.slice(offset, offset + fallbackCap)
-    else hinted = [...pool.slice(offset), ...pool.slice(0, (offset + fallbackCap) % pool.length)]
+    hinted = pool.slice(0, fallbackCap)
   }
   hinted.sort((a, b) => (rank.get(b.path) ?? 0) - (rank.get(a.path) ?? 0) || a.path.localeCompare(b.path))
 

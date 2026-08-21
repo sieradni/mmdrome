@@ -765,7 +765,11 @@
               {:else}
                 <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
                 {#if $metadataScanState.progress.total === 0 && $metadataScanState.progress.scanned === 0}
-                  <p class="text-sm text-muted">No changes on server — see File Matching for remaining unmatched tracks.</p>
+                  {#if $metadataScanState.progress.annotation?.startsWith('Matched')}
+                    <p class="text-sm text-muted">{$metadataScanState.progress.annotation} — see File Matching.</p>
+                  {:else}
+                    <p class="text-sm text-muted">No changes on server — see File Matching for remaining unmatched tracks.</p>
+                  {/if}
                 {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
@@ -991,7 +995,11 @@
               {:else}
                 <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
                 {#if $metadataScanState.progress.total === 0 && $metadataScanState.progress.scanned === 0}
-                  <p class="text-sm text-muted">No changes on server — see File Matching for remaining unmatched tracks.</p>
+                  {#if $metadataScanState.progress.annotation?.startsWith('Matched')}
+                    <p class="text-sm text-muted">{$metadataScanState.progress.annotation} — see File Matching.</p>
+                  {:else}
+                    <p class="text-sm text-muted">No changes on server — see File Matching for remaining unmatched tracks.</p>
+                  {/if}
                 {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
