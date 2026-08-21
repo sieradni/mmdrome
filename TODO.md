@@ -198,9 +198,12 @@ consumers of probe state.
       restore/boot **[online-gated — 6.0f]**, (b) post-scan (existing tail), (c)
       post-connect, (d) the explicit File Matching Refresh button. Add a
       revision; defer one refresh while scanning, loading, or an open picker,
-      then consume it when the blocker clears. **Test**: the view glue is
-      `[not test-pinned]`; lifecycle behavior is guarded by the single shared
-      probe promise/generation. **Closed 2026-08-20**: automatic list refresh no
+      then consume it when the blocker clears. **Test**: the view glue stays
+      `[not test-pinned]` (SettingsView is DOM; its deferred-refresh state is
+      simple enough to leave prose-guarded), but the scanner lifecycle is pinned
+      by `tests/scannerLifecycle.test.ts` (shared probe promise, credential
+      swap mid-probe, per-test state reset via `__resetScannerState`).
+      **Closed 2026-08-20**: automatic list refresh no
       longer starts a fire-and-forget probe; explicit Refresh awaits it, the App
       boot trigger waits behind any scheduled scan/tail, all boot/scan probing
       is online-gated, and completion uses a monotonic revision so a completion

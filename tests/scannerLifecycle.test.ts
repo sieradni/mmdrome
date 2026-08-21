@@ -81,6 +81,10 @@ let readCallCount = 0
  *  a probe genuinely mid-flight while a credential swap lands. */
 let buildGate: Promise<void> | null = null
 let releaseBuild: (() => void) | null = null
+/** When set, the mock file read blocks until `releaseRead` runs — used to hold
+ *  a manual re-read mid-fetch so a dismissal can land while it is in flight. */
+let readGate: Promise<void> | null = null
+let releaseRead: (() => void) | null = null
 
 function setupMocks() {
   buildCallCount = 0
@@ -90,6 +94,8 @@ function setupMocks() {
   mockMeta = {}
   buildGate = null
   releaseBuild = null
+  readGate = null
+  releaseRead = null
   __setScannerDeps({
     buildIndex: async () => {
       buildCallCount++
@@ -99,6 +105,8 @@ function setupMocks() {
     },
     readFile: async (_baseUrl: string, filePath: string, _user: string, _token: string, _fileType: string) => {
       readCallCount++
+      const gate = readGate
+      if (gate) await gate
       const meta = mockMeta[filePath]
       if (!meta) throw new Error(`No mock metadata for ${filePath}`)
       return meta
@@ -377,6 +385,137 @@ test('refreshIndex builds index and populates live store', async () => {
   const ok = await refreshIndex()
   assert.equal(ok, true)
   assert.equal(buildCallCount, 1, 'buildIndex called once')
+
+  teardown()
+})
+
+test('force scan skips pending_sync rows — binding and local edits untouched (D4)', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t = track()
+  library.set([t])
+  // A row with a pending local edit (rating changed, not yet pushed): the file
+  // exists in the index and matches by size, so WITHOUT the D4 skip the drain
+  // would re-read it and clobber the edit.
+  updateMetadata({
+    trackId: 't1',
+    rating: 80,
+    loved: false,
+    fileType: 'flac',
+    syncStatus: 'pending_sync',
+    lastModifiedLocally: Date.now(),
+    webdavPath: '/dav/files/user/Song.flac',
+    webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+  mockEntries = [entry()]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/Song.flac': fileMeta({ rating: 90, loved: true }),
+  }
+
+  await scanAll('force')
+
+  const row = get(metadataCache).get('t1')
+  assert.equal(row?.webdavPath, '/dav/files/user/Song.flac', 'binding untouched by scan')
+  assert.equal(row?.syncStatus, 'pending_sync', 'pending edit survives a force rescan')
+  assert.equal(row?.rating, 80, 'local rating not clobbered by the file tag')
+  assert.equal(readCallCount, 0, 'pending row never re-read')
+  assert.equal(get(metadataScanState).status, 'complete', 'scan completed')
+
+  teardown()
+})
+
+test('manual binding is re-read but never re-matched (D8 issue-1 guard)', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t = track()
+  library.set([t])
+  // The user manually bound this track to Song.flac at a rating of 40.
+  updateMetadata({
+    trackId: 't1',
+    rating: 40,
+    loved: false,
+    fileType: 'flac',
+    syncStatus: 'synced',
+    lastModifiedLocally: Date.now(),
+    webdavPath: '/dav/files/user/Song.flac',
+    webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+    matchSource: 'manual',
+  })
+  mockEntries = [entry()]
+  mockComplete = true
+  // The bound file's tags changed since the bind (MusicBee edit) — a scan must
+  // re-read THE BOUND FILE to propagate them.
+  mockMeta = {
+    '/dav/files/user/Song.flac': fileMeta({ rating: 90, loved: true }),
+  }
+
+  await scanAll('force')
+
+  const row = get(metadataCache).get('t1')
+  assert.equal(row?.webdavPath, '/dav/files/user/Song.flac', 'manual binding never re-matched')
+  assert.equal(row?.matchSource, 'manual', 'manual marker preserved')
+  assert.equal(row?.rating, 90, 'bound file re-read propagates MusicBee edits')
+  assert.equal(row?.loved, true, 'loved propagated from the bound file')
+  assert.equal(readCallCount, 1, 'exactly one read: the bound file only')
+
+  teardown()
+})
+
+test('a dismissal landing mid manual re-read survives the full-row replace (D8)', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t = track()
+  library.set([t])
+  updateMetadata({
+    trackId: 't1',
+    rating: 40,
+    loved: false,
+    fileType: 'flac',
+    syncStatus: 'synced',
+    lastModifiedLocally: Date.now(),
+    webdavPath: '/dav/files/user/Song.flac',
+    webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+    matchSource: 'manual',
+  })
+  mockEntries = [entry()]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/Song.flac': fileMeta({ rating: 90, loved: true }),
+  }
+
+  // Hold the bound-file read in flight, then dismiss the row while it runs.
+  readGate = new Promise((resolve) => { releaseRead = resolve })
+  const scanPromise = scanAll('force')
+  for (let i = 0; i < 500 && readCallCount === 0; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1))
+  }
+  assert.equal(readCallCount, 1, 'manual re-read is in flight')
+  updateMetadata({
+    trackId: 't1',
+    rating: 40,
+    loved: false,
+    fileType: 'flac',
+    syncStatus: 'synced',
+    lastModifiedLocally: Date.now(),
+    webdavPath: '/dav/files/user/Song.flac',
+    webdavBase: 'http://test.com|user',
+    matchSource: 'manual',
+    ignored: true,
+  })
+  releaseRead!()
+  await scanPromise
+
+  const row = get(metadataCache).get('t1')
+  assert.equal(row?.ignored, true, 'dismissal survives the scan')
+  assert.equal(row?.rating, 40, 'file tags did not clobber the dismissed row')
+  assert.equal(get(metadataScanState).status, 'complete', 'scan completed')
 
   teardown()
 })
