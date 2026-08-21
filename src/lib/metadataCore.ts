@@ -502,19 +502,19 @@ export function computeTagCacheFingerprint(entries: FileTagCacheEntry[]): string
  * an offline/online transition cannot poison a file for the rest of the session. */
 export const TAG_NETWORK_ERROR_TTL_MS = 5 * 60 * 1000
 export const TAG_UNREADABLE_TTL_MS = 6 * 60 * 60 * 1000
-export const PROBE_SWEEP_MIN_FILES = 50
+export const PROBE_SWEEP_MIN_FILES = 500
 
 export type ProbeSweepMode = 'sweep-all' | 'hint-gated'
 
 /** Decide whether the WebDAV server is probably the user's library. Bound
- * files leave the unclaimed pool, so a roughly 1:1 unclaimed-file/track ratio
+ * files leave the unclaimed pool, so a roughly proportional unclaimed-file/track ratio
  * is the safe point at which probing every remaining audio file is cheaper and
  * more complete than relying on filenames or byte-size hints. */
 export function planProbeSweep(
   unclaimedFiles: number,
   unclaimedTracks: number,
 ): ProbeSweepMode {
-  if (unclaimedFiles <= Math.max(unclaimedTracks, PROBE_SWEEP_MIN_FILES)) return 'sweep-all'
+  if (unclaimedFiles <= Math.max(unclaimedTracks * 3, PROBE_SWEEP_MIN_FILES)) return 'sweep-all'
   return 'hint-gated'
 }
 

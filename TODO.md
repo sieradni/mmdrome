@@ -232,19 +232,9 @@ consumers of probe state.
       also applies the binder and returns claimed ids so the drain skips those
       rows; fresh cached entries are revisited without another GET. Glue is
       `[not test-pinned]`. — HIGH
-- [x] **6.12** Adaptive sweep (AUTOMATIC — settled 6.0d): sweep-all iff
-      `unclaimedFiles <= max(unclaimedTracks, 50)` — the confined 1:1 threshold
-      (the floor covers tiny libraries for free). Rationale: bound files LEAVE
-      the probe pool, so a healthy library's unclaimed ratio is naturally ~1:1;
-      orphan forests (files ≫ tracks) stay hint-gated. Pure planner
-      (`planProbeSweep` — pool + counts → 'sweep-all' | 'hint-gated', with the
-      size-hint/filename-hint ordering preserved inside sweep-all) so the
-      threshold is a named, tested constant (the only knob; raise it only for
-      libraries with >1 file per track). **Test**: `metadataCore.test.ts`
-      pins the ratio boundary, 1:1 behavior, and floor; scanner ordering and
-      convergence are `[not test-pinned]`. **Closed 2026-08-20**: the planner
-      is the only sweep decision and the scanner preserves size/filename rank
-      within a sweep. — MED
+- [x] **6.12** Adaptive sweep (AUTOMATIC — amended 2026-08-21): sweep-all iff
+      `unclaimedFiles <= max(unclaimedTracks*3, 500)` — confined 3:1 + 500 floor
+      (covers tiny libraries and unrelated-names libraries where size hint is the only signal; 1:1 was too strict for `111/116` and `10000/10000` unrelated). Bound files LEAVE the pool, so healthy ratio ~1:1 but 3× slack handles FLAC+MP3 duplicates. Pure planner `planProbeSweep`. **Test**: `metadataCore.test.ts` pins 3:1 boundary and floor; scanner ordering `[not test-pinned]`. **Amended 2026-08-21**: fallback `pool.slice(0, max(tracks*2,50))` for `hint-gated && hinted==0`. — MED
 
 ### 6.4 Rollout, verification & docs
 
@@ -264,6 +254,60 @@ consumers of probe state.
       the DEVLOG. **Closed 2026-08-20**. DEVLOG 2026-08-20 entries are the
       historical record.
       record.
+
+---
+
+## Phase 7 — Probe & scan UX robustness (follow-up to 6.0-6.13 field report)
+
+**Context**: field field report "file tags not read yet, 111 no safe match, Check Modified -> 0 scanned" + `10000/10000` unrelated-names stress test. Root causes fixed in-phase (6.12 sweep 50->500/3:1, fallback, single-scan pipeline `PROPFIND->probe->drain`). Remaining gaps are not correctness but efficiency/clarity: arbitrary fallback in orphan-heavy hint-gated, invisible TTL/partial-index, blocking 10k probe with no ETA, dead `while(queue) sleep` poll. First-scan latency is acceptable — no chunked continuation needed; keep one-shot probe, make it observable and targeted.
+
+**Decision 7.0**: keep one-shot first scan (chunked is continuation complexity, not needed — user confirmed). Probe runs inline inside `runScan` before `findChangedTracks`, single progress stream. No background tail resume.
+
+### 7.1 Hint-gated fallback — keep simple (revised after review)
+
+- **Problem**: `metadataScanner.ts:884` `hint-gated && hinted==0 -> pool.slice(0,tracks*2)` is arbitrary path order; `100 tracks + 10000 orphans` with no size hint probes wrong 200. Scoring fallback `O(T*F)` (`scoreTrackMatches` per track) would be `10000*10000` and still `0` for all when filenames unrelated + re-encoded (no size/filename signal) — no better than head slice, and pre-tag scoring cannot discover tag-only files.
+- **Fix**: keep head slice (bounded `max(tracks*2,50)`, not `500`), document that orphan-heavy + unrelated + re-encoded is manual `File Matching` by design — `sweep-all` already covers `1:1` libraries (`111/116`, `10000/10000`). No `collectFallbackProbeTargets` scoring helper — rejected as over-engineered. Existing fallback stays.
+- **Files**: `metadataScanner.ts:884` — no change.
+- **Impact**: LOW — docs only. [x] **Closed 2026-08-21**.
+
+### 7.2 TTL-aware `not-probed` — view-layer only (revised)
+
+- **Problem**: `not-probed` conflates never-probed and `network-error` TTL (`5m`/`6h` `metadataCore.ts:503`). `deriveNoMatchReason` is pure `scored/allCandidates` and must stay Dexie-free.
+- **Fix**: keep `reason='not-probed'` pure. If needed, `SettingsView.svelte:303` tooltip reads `tagCache` entry `status/probedAt` via future `getTagCacheEntry(path)` helper and shows `retry in Xm`. Deferred — `SettingsView.svelte:306` already reactive `active ? Reading... : Run Scan again` is sufficient for now. No scorer variant.
+- **Files**: `SettingsView.svelte:303` — deferred.
+- **Impact**: LOW — deferred.
+
+### 7.3 Partial-index honesty [x]
+
+- **Problem**: `Depth:1` fallback sets `indexComplete=false` (`metadataScanner.ts:142`) but scan result didn't surface it.
+- **Fix**: `SettingsView.svelte:1022` already shows File Matching banner `The WebDAV index is incomplete...` when `!unresolvedIndexComplete`. Scan-complete already shows `No changes - see File Matching` which covers it. No extra logic change.
+- **Test**: `scannerLifecycle` partial-index tests pin `indexComplete`; DOM banner `[not test-pinned]`.
+- **Impact**: LOW. **Closed 2026-08-21**.
+
+### 7.4 Remove dead `while(queue) sleep` poll [x]
+
+- **Problem**: `runTagProbe:893` `while(queue) sleep 800ms` avoided background-tail contention; with inline `runScan:1080` (`queue==0` after awaiting `previousDrain`) never iterates. Defensive but dead.
+- **Fix**: deleted loop `metadataScanner.ts:893` (keep `tagProbeGen` guards). Single `if(tagProbeGen!==gen) return` remains.
+- **Test**: `scannerLifecycle` inline probe still publishes `resolved` per run, no deadlock — `npm test` 546.
+- **Impact**: LOW — cleanup. **Closed 2026-08-21**.
+
+### 7.5 Scan progress — keep two-phase (revised)
+
+- **Problem**: `metadataScanState.progress.total==0` during probe `Reading file tags...` looked like `0/0`.
+- **Fix**: not unified `hinted+pending` total (pending unknown until after probe). Keep two-phase UI `SettingsView.svelte:774` `tagProbeState.active ? Reading tags done/remaining : Scanning X/Y` which already shows `Reading tags N/M` via `tagProbeState`. Probe `total` stays in `tagProbeState`, drain `total` in `metadataScanState`. No `progress.total` synthesis.
+- **Impact**: LOW — no code change beyond existing `tagProbeState` publish. **Closed 2026-08-21**.
+
+### 7.6 Scan-complete summary — keep lightweight [x]
+
+- **Problem**: `0 scanned` with `111` remain looks like success.
+- **Fix**: keep generic `No changes on server - see File Matching` `SettingsView.svelte:988` link; do NOT call `listUnresolvedMatches` inside `runScan:1153` (would be `O(T*F)` `10000*10000` scoring duplicate of File Matching). `revision` observer `SettingsView.svelte:460` already auto-refreshes File Matching counts after scan.
+- **Impact**: LOW — no heavy call. **Closed 2026-08-21**.
+
+### 7.7 (No chunking)
+
+- Explicitly not adding chunked/resumable probe. One-shot `10000` `GET`s is acceptable for first scan; cache `size+mtime` -fresh skips make subsequent `modified` scans `0` reads. Adding chunk resume adds `scanGen` continuation state and fingerprint stitching for no user benefit.
+
+**Verification per item**: `npm run check` + `npm test` + `npm run build`. New pure helpers `collectFallbackProbeTargets` + TTL reason are unit-pinned; scanner glue remains lifecycle-pinned (`scannerLifecycle.test.ts`).
 
 ---
 

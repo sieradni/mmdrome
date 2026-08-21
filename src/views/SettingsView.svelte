@@ -303,7 +303,9 @@
   const reasonLabels: Record<NonNullable<UnresolvedTrack['reason']>, (row: UnresolvedTrack) => string> = {
     'no-file-on-server': () => 'No file of this type exists on the server.',
     'tags-contradict': () => "The file's tags name a different song.",
-    'not-probed': () => 'File tags not read yet — matching continues in the background.',
+    'not-probed': (_row: UnresolvedTrack) => get(tagProbeState).active
+      ? 'Reading file tags…'
+      : 'File tags not read yet — run Scan again to read them.',
     'no-identity-tags': () => 'The file has no identity tags (title/artist) to match on.',
     'duration-conflict': () => 'File duration differs by more than 2 seconds — a different version.',
     'weak-evidence': () => 'Best evidence is below the automatic match confidence threshold.',
@@ -762,12 +764,9 @@
                 <p class="text-sm text-red-400">{$metadataScanState.error}</p>
               {:else}
                 <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
-              {#if $tagProbeState.active}
-                <p class="text-sm text-muted">Reading tags in the background — {tagProbeText()}{tagProbeMatched()}…</p>
-              {/if}
-              {#if !$tagProbeState.active && $tagProbeState.resolved > 0}
-                <p class="text-sm text-muted">Background tag probe matched {$tagProbeState.resolved} more file{$tagProbeState.resolved === 1 ? '' : 's'} — see File Matching.</p>
-              {/if}
+                {#if $metadataScanState.progress.total === 0 && $metadataScanState.progress.scanned === 0}
+                  <p class="text-sm text-muted">No changes on server — see File Matching for remaining unmatched tracks.</p>
+                {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
               {#if $tagProbeState.active}
@@ -991,12 +990,9 @@
                 <p class="text-sm text-red-400">{$metadataScanState.error}</p>
               {:else}
                 <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
-              {#if $tagProbeState.active}
-                <p class="text-sm text-muted">Reading tags in the background — {tagProbeText()}{tagProbeMatched()}…</p>
-              {/if}
-              {#if !$tagProbeState.active && $tagProbeState.resolved > 0}
-                <p class="text-sm text-muted">Background tag probe matched {$tagProbeState.resolved} more file{$tagProbeState.resolved === 1 ? '' : 's'} — see File Matching.</p>
-              {/if}
+                {#if $metadataScanState.progress.total === 0 && $metadataScanState.progress.scanned === 0}
+                  <p class="text-sm text-muted">No changes on server — see File Matching for remaining unmatched tracks.</p>
+                {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
               {#if $tagProbeState.active}

@@ -506,14 +506,15 @@ test('verifyEntryAgainstTrack: verified / conflict / unknown matrix', () => {
 
 // ── Phase 6.1 — tag-cache fingerprint (the second evidence channel) ──────
 
-test('probe sweep planner is automatic and confined to the 1:1 threshold (6.12)', () => {
+test('probe sweep planner is automatic and confined to the 3:1 threshold (6.12)', () => {
   assert.equal(planProbeSweep(0, 0), 'sweep-all')
   assert.equal(planProbeSweep(10, 10), 'sweep-all')
-  assert.equal(planProbeSweep(11, 10), 'sweep-all')
   assert.equal(planProbeSweep(PROBE_SWEEP_MIN_FILES, 0), 'sweep-all')
   assert.equal(planProbeSweep(PROBE_SWEEP_MIN_FILES + 1, 0), 'hint-gated')
-  assert.equal(planProbeSweep(99, 99), 'sweep-all')
-  assert.equal(planProbeSweep(100, 99), 'hint-gated')
+  // 3:1 ratio dominates above the 500-file floor
+  assert.equal(planProbeSweep(1500, 500), 'sweep-all')
+  assert.equal(planProbeSweep(1501, 500), 'hint-gated')
+  assert.equal(planProbeSweep(600, 100), 'hint-gated')
 })
 
 test('tag cache freshness: success/empty are size-bound and failures use separate TTLs (6.6)', () => {

@@ -448,7 +448,6 @@ export const tagProbeState = writable<TagProbeState>({ active: false, done: 0, r
 // keep-alive, so it needs more in-flight reads to reach the same throughput;
 // the desktop value is the measured-stable one (50 files / 6 s).
 const TAG_PROBE_CONCURRENCY = Capacitor.isNativePlatform() ? 8 : 4
-const TAG_PROBE_RETRY_MS = 800
 
 /** `baseUrl|user` the in-memory tag cache belongs to. */
 let tagCacheBaseKey = ""
@@ -565,10 +564,6 @@ function maybeAutoBindFromProbe(
 function fileTypeOf(filename: string): string {
   const dot = filename.lastIndexOf(".")
   return dot > 0 ? filename.slice(dot + 1).toLowerCase() : "mp3"
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /** Load cached probe results for a server identity into a path-keyed map. */
@@ -880,20 +875,18 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
     else if (filenameHintsTitle(e.filename, unclaimedTitles)) r = 1
     if (sweep === 'sweep-all' || r > 0) rank.set(e.path, r)
   }
-  const hinted = sweep === 'sweep-all' ? pool : pool.filter((e) => rank.has(e.path))
+  let hinted = sweep === 'sweep-all' ? pool : pool.filter((e) => rank.has(e.path))
+  if (sweep === 'hint-gated' && hinted.length === 0 && pool.length > 0 && unclaimedTrackCount > 0) {
+    const fallbackCap = Math.max(unclaimedTrackCount * 2, 50)
+    hinted = pool.slice(0, fallbackCap)
+  }
   hinted.sort((a, b) => (rank.get(b.path) ?? 0) - (rank.get(a.path) ?? 0) || a.path.localeCompare(b.path))
 
   const baseKey = session.baseKey
   let done = 0
 
   for (let i = 0; i < hinted.length; i += TAG_PROBE_CONCURRENCY) {
-    // Coalesce behind any running scan: probe batches wait for the scan
-    // queue to drain instead of competing for the same connection.
     if (tagProbeGen !== gen || !isCurrentSession(session)) return autoBoundTrackIds
-    while (queue.length > 0 || activeCount > 0) {
-      await sleep(TAG_PROBE_RETRY_MS)
-      if (tagProbeGen !== gen || !isCurrentSession(session)) return autoBoundTrackIds
-    }
     const batch = hinted.slice(i, i + TAG_PROBE_CONCURRENCY)
     await Promise.all(batch.map(async (entry) => {
       if (tagProbeGen !== gen || !isCurrentSession(session)) return
@@ -983,11 +976,7 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
  */
 export function scanAll(shape_: ScanShape = "modified"): Promise<void> {
   const operation = (async () => {
-    const completed = await runScan(shape_)
-    if (!completed) return
-    // Keep the post-scan tail for callers that do not need to wait for probe
-    // enrichment. A later scan will await this promise before starting.
-    void launchTagProbe()
+    await runScan(shape_)
   })()
   activeScanPromise = operation
   void operation.then(() => {
@@ -1064,6 +1053,21 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
 
   metadataScanState.set({ status: "scanning", progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation } })
 
+  // Fingerprint of the index stored by the LAST scan. Read before any
+  // refresh below — refreshIndex overwrites the stored snapshot with the fresh one.
+  let priorSnapshot: Awaited<ReturnType<typeof getWebdavFileIndex>> | undefined
+  let priorForThisSession: Awaited<ReturnType<typeof getWebdavFileIndex>> | undefined
+  if (shape === "modified") {
+    try {
+      priorSnapshot = await getWebdavFileIndex()
+    } catch {
+      priorSnapshot = undefined
+    }
+    if (scanGen !== myGen) return false
+    const sessionBaseKey = currentIndexKey()
+    priorForThisSession = priorSnapshot?.baseKey === sessionBaseKey ? priorSnapshot : undefined
+  }
+
   if (shape === "force") {
     try {
       const rebuilt = await rebuildIndex()
@@ -1078,26 +1082,6 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
       return false
     }
   } else {
-    // Fingerprint of the index stored by the LAST probe. Read before the probe
-    // below — refreshIndex overwrites the stored snapshot with the fresh one.
-    let priorSnapshot: Awaited<ReturnType<typeof getWebdavFileIndex>>
-    try {
-      priorSnapshot = await getWebdavFileIndex()
-    } catch {
-      // A missing/corrupt local snapshot must not prevent a fresh PROPFIND.
-      priorSnapshot = undefined
-    }
-    if (scanGen !== myGen) return false
-    const sessionBaseKey = currentIndexKey()
-
-    // A persisted index from another WebDAV server cannot participate in the
-    // current server's fingerprint decision, even if both servers happen to
-    // contain the same path/size set.
-    const priorForThisSession = priorSnapshot?.baseKey === sessionBaseKey ? priorSnapshot : undefined
-
-    // Always probe the server: the whole point of "Check Modified Ratings" is
-    // freshness. A stale snapshot can never detect remote edits; abort loudly
-    // on probe failure instead of scanning against one.
     const ok = await refreshIndex()
     if (!ok || scanGen !== myGen) {
       if (scanGen !== myGen) return false
@@ -1108,36 +1092,13 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
       })
       return false
     }
-    // Do not short-circuit an empty COMPLETE index: bound rows must still
-    // pass through the drain so a server-side deletion clears their stale
-    // paths (while preserving rating/loved) and reports `missing`. An empty
-    // index is a valid fresh server state, not proof that there is no work.
-    const tracks = get(library)
-    const cache = get(metadataCache)
-
-    const timestamps = buildPathTimestamps(index)
-    const { changed, unmatched } = findChangedTracks(tracks, cache, timestamps)
-
-    pendingTracks.push(...changed)
-
-    // The server file set is identical to the last probe (fingerprint match):
-    // rows that were never matched cannot have become matchable (no added/
-    // renamed/resized file to match against), so retrying them would only burn
-    // CPU. Matched rows still re-diff on their mtime above. A missing stored
-    // fingerprint (first scan after the upgrade) treats the set as changed.
-    const setUnchanged = priorForThisSession?.fingerprint !== undefined
-      && computeIndexFingerprint(index) === priorForThisSession.fingerprint
-    const tagEvidenceUnchanged = priorForThisSession?.tagFingerprint !== undefined
-      && computeTagCacheFingerprint([...tagCache.values()]) === priorForThisSession.tagFingerprint
-    if (!setUnchanged || !tagEvidenceUnchanged) {
-      pendingTracks.push(...unmatched)
-    }
   }
 
-  // Probe before queueing the drain. The probe's own wait-for-drain guard
-  // would deadlock if queue were already populated; at this point the index is
-  // fresh, the prior drain is finished, and the cache can be used by every
-  // matching decision in the upcoming run.
+  // Tag probe is the second half of the index refresh: it harvests in-file
+  // identity so the drain can score with tags in THIS same scan. Running it
+  // before deciding which unmatched rows to re-queue means newly-harvested
+  // tag evidence is already visible to the fingerprint gate — one scan both
+  // harvests and matches, no second "check modified" needed.
   activeAnnotation = "Reading file tags…"
   metadataScanState.set({
     status: "scanning",
@@ -1145,12 +1106,25 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
   })
   const autoBoundTrackIds = await launchTagProbe()
   if (scanGen !== myGen) return false
-  // The inline probe's binds are already excluded from the drain queue (and
-  // thus from notFoundCount) — reset the counter so the UI never attributes
-  // them to the post-scan background probe, which starts after 'complete' is
-  // published and re-counts from zero.
   tagProbeState.update((state) => ({ ...state, resolved: 0 }))
   activeAnnotation = annotationFor(shape)
+
+  if (shape !== "force") {
+    const tracks = get(library)
+    const cache = get(metadataCache)
+    const timestamps = buildPathTimestamps(index)
+    const { changed, unmatched } = findChangedTracks(tracks, cache, timestamps)
+    pendingTracks.push(...changed)
+    const setUnchanged = priorForThisSession?.fingerprint !== undefined
+      && computeIndexFingerprint(index) === priorForThisSession.fingerprint
+    // Compare against the fingerprint AFTER the probe — new tag evidence from
+    // this scan itself should re-queue previously-unmatched rows immediately.
+    const tagEvidenceUnchanged = priorForThisSession?.tagFingerprint !== undefined
+      && computeTagCacheFingerprint([...tagCache.values()]) === priorForThisSession.tagFingerprint
+    if (!setUnchanged || !tagEvidenceUnchanged) {
+      pendingTracks.push(...unmatched)
+    }
+  }
 
   const tracks = get(library)
   pendingTracks = pendingTracks.filter((t) => !autoBoundTrackIds.has(t.trackId))
