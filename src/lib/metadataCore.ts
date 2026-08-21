@@ -292,12 +292,54 @@ export interface MatchCandidates {
   promptCandidates: WebdavFileEntry[]
   /** Every matching-extension file, for the manual search picker. */
   allCandidates: WebdavFileEntry[]
+  /** Why no confident match happened, for the File Matching row label. Null
+   *  when the track matched. Pure derivation — every value is readable from
+   *  the index + probed tags, so the UI never guesses. */
+  reason: NoMatchReason | null
+}
+
+export type NoMatchReason =
+  /** No file of this track's type exists in the index at all. */
+  | 'no-file-on-server'
+  /** Every same-type file's probed tags name a different song (6.5b suppression). */
+  | 'tags-contradict'
+  /** A size/filename candidate exists but its tags were never read (or the read failed). */
+  | 'not-probed'
+  /** The file was probed but carries no title identity to match on. */
+  | 'no-identity-tags'
+  /** The file's tag duration differs beyond ±2 s — a different version (6.4). */
+  | 'duration-conflict'
+  /** Evidence exists but is below the auto-bind confidence gate (D8). */
+  | 'weak-evidence'
+  /** Several files score equally, or a near-title tag match — the user confirms. */
+  | 'ambiguous'
+
+/** Why a track with no confident match missed, derived from the same scored
+ *  evidence the verdict used. `allCandidates` is the same-type file set (the
+ *  probe-contradicted files are absent from `scored` — they scored 0). */
+function deriveNoMatchReason(scored: ScoredEntry[], allCandidates: WebdavFileEntry[]): NoMatchReason {
+  if (scored.length === 0) {
+    if (allCandidates.length === 0) return 'no-file-on-server'
+    // Every same-type file scored 0 — either its probed tags contradicted the
+    // track (6.5b suppression) or it is untagged with no size/filename hint.
+    const anyIdentity = allCandidates.some((e) => !!normalizeForMatch(e.tags?.title ?? ''))
+    return anyIdentity ? 'tags-contradict' : 'not-probed'
+  }
+  const top = scored[0]
+  if (top.tagDurationConflict) return 'duration-conflict'
+  if (top.tagScore === 0) {
+    // The best lead scored only on filename/size — its tags are missing
+    // (never probed / read failed) or empty (no identity to match on).
+    return top.entry.tags ? 'no-identity-tags' : 'not-probed'
+  }
+  return 'weak-evidence'
 }
 
 /**
  * Candidate view for the File Matching UI: the same scoring as
  * `matchTrackToWebdav`, but exposes the tied/near-miss entries instead of
- * collapsing them to an unambiguous boolean.
+ * collapsing them to an unambiguous boolean, plus the reason no confident
+ * match was reached.
  */
 export function matchTrackToWebdavCandidates(
   track: Track,
@@ -315,22 +357,28 @@ export function matchTrackToWebdavCandidates(
     // No confident match: surface the best near-misses so the user sees why
     // nothing scored and has a starting point (size-only hits included — the
     // probe-contradicted ones are already excluded from `scored`).
+    const reason = deriveNoMatchReason(scored, allCandidates)
     if (scored.length > 0) {
       return {
         status: 'none',
         promptCandidates: scored.slice(0, 5).map((s) => s.entry),
         allCandidates,
+        reason,
       }
     }
-    return { status: 'none', promptCandidates: [], allCandidates }
+    return { status: 'none', promptCandidates: [], allCandidates, reason }
   }
 
   const top = scored[0].score
   const group = scored.filter((s) => s.score === top).map((s) => s.entry)
+  const reason: NoMatchReason | null = verdict === 'ambiguous'
+    ? (scored[0].tagDurationConflict ? 'duration-conflict' : 'ambiguous')
+    : null
   return {
     status: verdict === 'ambiguous' ? 'ambiguous' : 'matched',
     promptCandidates: group,
     allCandidates,
+    reason,
   }
 }
 

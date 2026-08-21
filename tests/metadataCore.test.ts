@@ -333,6 +333,74 @@ test('excludePaths removes already-bound files from scoring', () => {
   assert.deepEqual(match, { entry: null, ambiguous: false })
 })
 
+// ── No-match reasons (File Matching row labels) ──────────────────────────
+
+test('reason: no file of the track\'s type exists on the server', () => {
+  const mp3 = entry({ path: '/dav/only/Other.mp3', filename: 'Other.mp3', size: 1, tags: undefined })
+  const cand = matchTrackToWebdavCandidates(track(), [mp3])
+  assert.equal(cand.status, 'none')
+  assert.equal(cand.reason, 'no-file-on-server')
+})
+
+test('reason: probed tags name a different song (6.5b suppression)', () => {
+  const wrong = entry({ path: '/dav/x/Wrong.flac', filename: 'Song.flac', size: 12345, tags: { title: 'Unrelated Title' } })
+  const cand = matchTrackToWebdavCandidates(track(), [wrong])
+  assert.equal(cand.status, 'none')
+  assert.equal(cand.reason, 'tags-contradict')
+})
+
+test('reason: a size/filename candidate exists but its tags were never read', () => {
+  const unprobed = entry({ path: '/dav/x/Whatever.flac', filename: 'Whatever.flac', size: 12345, tags: undefined })
+  const cand = matchTrackToWebdavCandidates(track(), [unprobed])
+  assert.equal(cand.status, 'none')
+  assert.equal(cand.reason, 'not-probed')
+})
+
+test('reason: the file was probed but carries no identity title', () => {
+  const empty = entry({ path: '/dav/x/Whatever.flac', filename: 'Whatever.flac', size: 12345, tags: { title: '' } })
+  const cand = matchTrackToWebdavCandidates(track(), [empty])
+  assert.equal(cand.status, 'none')
+  assert.equal(cand.reason, 'no-identity-tags')
+})
+
+test('reason: a duration mismatch beyond ±2 s demotes to a labeled conflict', () => {
+  const version = entry({
+    path: '/dav/x/Song.flac',
+    filename: 'other.flac',
+    size: 1,
+    tags: { title: 'Song', artist: 'Artist', album: 'Album', trackNumber: 1, duration: 205 },
+  })
+  const cand = matchTrackToWebdavCandidates(track({ duration: 200 }), [version])
+  assert.equal(cand.status, 'ambiguous')
+  assert.equal(cand.reason, 'duration-conflict')
+})
+
+test('reason: a tie leaves the verdict ambiguous with a labeled tie', () => {
+  const a = entry({ path: '/dav/A/01 - Intro.flac', filename: '01 - Intro.flac', tags: undefined })
+  const b = entry({ path: '/dav/B/01 - Intro.flac', filename: '01 - Intro.flac', tags: undefined })
+  const cand = matchTrackToWebdavCandidates(track({ title: 'Intro' }), [a, b])
+  assert.equal(cand.status, 'ambiguous')
+  assert.equal(cand.reason, 'ambiguous')
+})
+
+test('reason: near-title tag evidence below the confidence gate is weak', () => {
+  const longTitle = entry({
+    path: '/dav/x/Other.flac',
+    filename: 'Other.flac',
+    size: 1,
+    tags: { title: 'Song Is Actually A Considerably Longer Extended Title Here' },
+  })
+  const cand = matchTrackToWebdavCandidates(track(), [longTitle])
+  assert.equal(cand.status, 'none')
+  assert.equal(cand.reason, 'weak-evidence')
+})
+
+test('reason: a matched track reports null', () => {
+  const cand = matchTrackToWebdavCandidates(track(), [entry()])
+  assert.equal(cand.status, 'matched')
+  assert.equal(cand.reason, null)
+})
+
 // ── Fingerprint (FNV change-gating) ──────────────────────────────────────
 
 test('fingerprint is order-stable and path+size-keyed; mtime is deliberately blind', () => {

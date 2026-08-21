@@ -300,6 +300,22 @@
 
   // ── File Matching ──────────────────────────────────────────────────────
 
+  const reasonLabels: Record<NonNullable<UnresolvedTrack['reason']>, (row: UnresolvedTrack) => string> = {
+    'no-file-on-server': () => 'No file of this type exists on the server.',
+    'tags-contradict': () => "The file's tags name a different song.",
+    'not-probed': () => 'File tags not read yet — matching continues in the background.',
+    'no-identity-tags': () => 'The file has no identity tags (title/artist) to match on.',
+    'duration-conflict': () => 'File duration differs by more than 2 seconds — a different version.',
+    'weak-evidence': () => 'Best evidence is below the automatic match confidence threshold.',
+    'ambiguous': (row) => (row.candidates.length > 1
+      ? `${row.candidates.length} files match equally — choose the correct one.`
+      : 'Matches by its tags but not certainly — confirm the link.'),
+  }
+
+  function reasonText(row: UnresolvedTrack): string {
+    return row.reason ? reasonLabels[row.reason](row) : ''
+  }
+
   const kindBadges: Record<UnresolvedTrack['kind'], { label: string; cls: string }> = {
     'ambiguous': { label: 'Multiple matches', cls: 'bg-yellow-500/20 text-yellow-300 ring-yellow-500/30' },
     'no-match': { label: 'No safe match', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
@@ -1040,6 +1056,9 @@
                   <div class="min-w-0">
                     <p class="truncate text-sm text-primary">{row.title}</p>
                     <p class="truncate text-xs text-muted">{row.artist}{row.album ? ` · ${row.album}` : ''}</p>
+                    {#if row.reason && (row.kind === 'no-match' || row.kind === 'ambiguous')}
+                      <p class="mt-1 text-xs text-yellow-300/70">{reasonText(row)}</p>
+                    {/if}
                   </div>
                   <span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 {kindBadges[row.kind].cls}">
                     {row.kind === 'matched' && row.matchSource === 'manual' ? 'Manually bound' : kindBadges[row.kind].label}

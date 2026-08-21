@@ -31,6 +31,7 @@ import {
   scanAll,
   setWebdavCredentials,
   tagProbeState,
+  listUnresolvedMatches,
 } from '../src/lib/metadataScanner'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -342,6 +343,26 @@ test('inline probe binds are not attributed to the post-scan tail', async () => 
   // nothing left unclaimed, also publishes 0).
   assert.equal(get(tagProbeState).resolved, 0, 'inline binds are not double-counted')
   assert.equal(get(metadataCache).get('t1')?.webdavPath, '/dav/files/user/Song.flac', 'inline auto-bind landed')
+
+  teardown()
+})
+
+test('unresolved rows carry a per-row no-match reason from the probe cache', async () => {
+  setupMocks()
+  initWebdav()
+  library.set([track()])
+
+  // Same-size file whose tags were never read → the row must say "not probed",
+  // not silently look permanent.
+  mockEntries = [entry({ path: '/dav/files/user/Whatever.flac', filename: 'Whatever.flac', size: 12345, tags: undefined })]
+  mockComplete = true
+
+  await refreshIndex()
+  const result = await listUnresolvedMatches()
+  const row = result.rows.find((r) => r.kind === 'no-match')
+  assert.ok(row, 'the unclaimed track lists as no-match')
+  assert.equal(row.reason, 'not-probed', 'reason derived from missing tag evidence')
+  assert.equal(row.candidates.length, 1, 'the size-only file stays a suggestion')
 
   teardown()
 })

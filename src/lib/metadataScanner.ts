@@ -18,6 +18,7 @@ import {
   verifyEntryAgainstTrack,
   mergeFileComments,
   tagCacheEntryIsFresh,
+  type NoMatchReason,
   planProbeSweep,
   buildTrackTitleIndex,
   matchFileToTracks,
@@ -1474,6 +1475,8 @@ export interface UnresolvedTrack {
   matchSource?: 'auto' | 'manual'
   pendingPush: boolean
   candidates: WebdavFileEntry[]
+  /** Why an unmatched row missed, derived from the probe cache + index. */
+  reason?: NoMatchReason
 }
 
 /**
@@ -1618,6 +1621,7 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
         ...base,
         kind: match.status === 'ambiguous' ? 'ambiguous' : 'no-match',
         candidates: match.promptCandidates,
+        reason: match.reason ?? undefined,
       }
     }
     rows.push(row)
