@@ -305,7 +305,7 @@
     'tags-contradict': () => "The file's tags name a different song.",
     'not-probed': (_row: UnresolvedTrack) => get(tagProbeState).active
       ? 'Reading file tags…'
-      : 'File tags not read yet — run Scan again to read them.',
+      : 'File tags not read yet — run Scan for changes to read them.',
     'no-identity-tags': () => 'The file has no identity tags (title/artist) to match on.',
     'duration-conflict': () => 'File duration differs by more than 2 seconds — a different version.',
     'weak-evidence': () => 'Best evidence is below the automatic match confidence threshold.',
@@ -955,7 +955,7 @@
                 {scanButtonText()}
               {:else}
                 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
-                Check Modified Ratings
+                Scan for changes (reads new tags)
               {/if}
             </button>
             <button
@@ -971,7 +971,7 @@
                 {scanButtonText()}
               {:else}
                 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
-                Rescan All Metadata
+                Rescan all (re-reads all tags)
               {/if}
             </button>
             <button

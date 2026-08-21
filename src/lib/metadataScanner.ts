@@ -878,7 +878,9 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
   let hinted = sweep === 'sweep-all' ? pool : pool.filter((e) => rank.has(e.path))
   if (sweep === 'hint-gated' && hinted.length === 0 && pool.length > 0 && unclaimedTrackCount > 0) {
     const fallbackCap = Math.max(unclaimedTrackCount * 2, 50)
-    hinted = pool.slice(0, fallbackCap)
+    const offset = gen % pool.length
+    if (offset + fallbackCap <= pool.length) hinted = pool.slice(offset, offset + fallbackCap)
+    else hinted = [...pool.slice(offset), ...pool.slice(0, (offset + fallbackCap) % pool.length)]
   }
   hinted.sort((a, b) => (rank.get(b.path) ?? 0) - (rank.get(a.path) ?? 0) || a.path.localeCompare(b.path))
 
@@ -1142,9 +1144,10 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
   if (totalTracks === 0) {
     // Nothing to read. Without this short-circuit the drain loop never runs
     // updateScanProgress, leaving the UI stuck at 0/0 "scanning" forever.
+    const completeAnnotation = autoBoundTrackIds.size > 0 ? `Matched ${autoBoundTrackIds.size} via tags` : activeAnnotation
     metadataScanState.set({
       status: "complete",
-      progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+      progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: completeAnnotation },
       error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
     })
     return true
