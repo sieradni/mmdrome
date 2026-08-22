@@ -432,7 +432,33 @@ export async function readFileMetadata(
           const sizeInfo = fileSize ? `${buffer.byteLength}/${fileSize}` : `${buffer.byteLength}/${chunkSize}`
           console.log(`[metadata-reader] ${fileType} duration truncated for ${filePath}: ${meta.duration}s from ${sizeInfo} bytes — dropping duration for matching (saves full-file fetch)`)
         }
-        return { ...meta, duration: undefined }
+        // Return without duration but keep tags — don't retry just for duration.
+        // Duration retry would cost a full-file GET (GBs for opus). Tags are
+        // already at the head for these formats.
+        if (meta.title || meta.artist || meta.album) {
+          return { ...meta, duration: undefined }
+        }
+      }
+      // No identity tags but head-only and file is much larger — tags may be
+      // at the tail (wav/m4a with INFO at end, 33 MB wav example). Retry with
+      // larger head before giving up, otherwise the file is permanently
+      // 'empty' and shows 'no-identity-tags' forever.
+      const hasIdentity = !!(meta.title || meta.artist || meta.album)
+      if (!hasIdentity && !gotFullFile && fileSize !== undefined && buffer.byteLength < fileSize) {
+        // Only retry for formats where tail tags are plausible and we haven't
+        // yet fetched a substantial portion. Avoid retrying for small files
+        // where 512k already covers most of the file.
+        const tailTagTypes = fileType === 'wav' || fileType === 'aiff' || fileType === 'm4a'
+        if (tailTagTypes && fileSize > 1048576 && buffer.byteLength < Math.min(fileSize, 2097152)) {
+          if (chunkSize >= maxChunkSize || chunkSize >= fileSize) {
+            console.log(`[metadata-reader] No identity for ${filePath} after ${buffer.byteLength} bytes — giving up, file may truly have no tags`)
+          } else {
+            const nextSize = Math.min(fileSize, chunkSize * 2, maxChunkSize)
+            console.log(`[metadata-reader] No identity for ${filePath} from ${buffer.byteLength} bytes (head-only), retrying with ${nextSize} bytes for tail tags`)
+            chunkSize = nextSize
+            continue
+          }
+        }
       }
       console.log(`[metadata-reader] Successfully read metadata for ${filePath}:`, meta)
       return meta
