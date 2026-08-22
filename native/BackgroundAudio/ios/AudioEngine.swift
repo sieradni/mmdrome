@@ -156,11 +156,29 @@ final class TrackFileLoader {
                 let pendings = self.state.complete(track.trackId, requestID: requestID)
                 if let tempURL = tempURL, error == nil {
                     do {
-                        try? FileManager.default.removeItem(at: destination)
-                        try FileManager.default.moveItem(at: tempURL, to: destination)
+                        // Ensure parent exists — Caches/mmdrome-tracks can be purged by the
+                        // system between tracks, and destinationURL's try? create may have
+                        // been before the purge. Re-create right before the move.
+                        let parent = destination.deletingLastPathComponent()
+                        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+                        // Remove any stale file at destination before moving; ignore if missing.
+                        if FileManager.default.fileExists(atPath: destination.path) {
+                            try FileManager.default.removeItem(at: destination)
+                        }
+                        do {
+                            try FileManager.default.moveItem(at: tempURL, to: destination)
+                        } catch {
+                            // moveItem can fail with NSCocoaErrorDomain 516 if temp and
+                            // caches are on different volumes or file still open;
+                            // fall back to copy+remove which is more tolerant.
+                            print("[native] moveItem failed for \(track.trackId) \(error.localizedDescription) — trying copy")
+                            try FileManager.default.copyItem(at: tempURL, to: destination)
+                            try? FileManager.default.removeItem(at: tempURL)
+                        }
                         self.state.store(destination, for: track.trackId)
                     } catch {
                         let moveError = error
+                        print("[native] final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(moveError.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: tempURL.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
                         deliver(nil, moveError)
                         pendings.forEach { $0(nil, moveError) }
                         return
@@ -211,7 +229,11 @@ final class TrackFileLoader {
         // must survive across launches or every launch re-downloads the whole
         // queue and orphans the previous launch's files (TODO 4.5a).
         let hash = StableID.fnv1a64(track.trackId).description
-        let ext = track.url.pathExtension
+        var ext = track.url.pathExtension
+        // Navidrome stream URLs end in /stream.view?query — pathExtension is "view",
+        // not the real audio suffix. Use no extension so AVAudioFile probes the
+        // header (or .mp3 fallback). Real file URLs (WebDAV) keep their suffix.
+        if ext == "view" || ext == "rest" || ext == "stream" { ext = "" }
         let name = ext.isEmpty ? "\(hash)" : "\(hash).\(ext)"
         return dir.appendingPathComponent(name)
     }
