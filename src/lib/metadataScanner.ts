@@ -916,7 +916,7 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
         // Route through the injectable seam like every other read path so the
         // lifecycle tests can mock the probe's network reads.
         const meta = await _deps.readFile(
-          session.url, entry.path, session.user, session.token, fileTypeOf(entry.filename),
+          session.url, entry.path, session.user, session.token, fileTypeOf(entry.filename), entry.size,
         )
         if (tagProbeGen !== gen || !isCurrentSession(session)) return
         const hasIdentity = !!(meta.title || meta.artist || meta.album)
@@ -1300,7 +1300,7 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
     try {
       const boundEntry = index.find((i) => i.path === boundPath)
       const meta = await _deps.readFile(
-        webdavUrl, boundPath, webdavUser, webdavToken, track.fileType,
+        webdavUrl, boundPath, webdavUser, webdavToken, track.fileType, boundEntry?.size,
       )
       if (scanGen !== myGen) return
 
@@ -1417,7 +1417,7 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
           loved: existing?.loved ?? false,
           comments: existing?.comments,
         }
-      : await _deps.readFile(webdavUrl, match.entry.path, webdavUser, webdavToken, track.fileType)
+      : await _deps.readFile(webdavUrl, match.entry.path, webdavUser, webdavToken, track.fileType, match.entry.size)
     if (scanGen !== startedGen) return
 
     // The user may have edited rating/loved while the fetch was in flight —
@@ -1803,7 +1803,7 @@ interface ReverifyRowResult {
  *  Read failures and untagged files both land on 'unknown'. */
 async function reverifyRow(track: Track, entry: WebdavFileEntry): Promise<ReverifyRowResult> {
   try {
-    const meta = await _deps.readFile(webdavUrl, entry.path, webdavUser, webdavToken, track.fileType)
+    const meta = await _deps.readFile(webdavUrl, entry.path, webdavUser, webdavToken, track.fileType, entry.size)
     if (!meta.title) return { verdict: 'unknown', fileTitle: undefined, meta }
     return {
       verdict: verifyEntryAgainstTrack(track, { ...entry, tags: {

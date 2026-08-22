@@ -174,12 +174,21 @@ export async function buildWebdavFileIndex(
   return (await buildWebdavFileIndexDetailed(baseUrl, user, token)).entries
 }
 
-function getMetadataChunkSize(fileType: string): number {
+function getMetadataChunkSize(fileType: string, fileSize?: number): number {
+  const MAX = 8388608
+  // Ogg/Opus duration is stored in the last Ogg page's granule position (tail of file).
+  // Reading only the head (262 kB) makes taglib return the truncated buffer's
+  // duration (~20 s for a 1.9 MB file) instead of the real duration (158 s).
+  // For small opus/ogg (1–3 MB typical, up to 8 MB max) fetch the whole file.
+  if ((fileType === 'opus' || fileType === 'ogg') && fileSize !== undefined && fileSize > 0 && fileSize <= MAX) {
+    return fileSize
+  }
+  if (fileType === 'opus' || fileType === 'ogg') {
+    return 1048576 // 1 MiB initial when size unknown or >8 MiB — still better than 256 kB
+  }
   switch (fileType) {
     case "mp3":
     case "flac":
-    case "ogg":
-    case "opus":
     case "m4a":
     case "wav":
     case "aac":
@@ -398,16 +407,32 @@ export async function readFileMetadata(
   user: string,
   token: string,
   fileType: string,
+  fileSize?: number,
 ): Promise<FileMetadata> {
   const maxChunkSize = 8388608
-  let chunkSize = getMetadataChunkSize(fileType)
-  console.log(`[metadata-reader] Reading ${fileType} metadata for ${filePath} (initial chunk: ${chunkSize} bytes)`)
+  let chunkSize = getMetadataChunkSize(fileType, fileSize)
+  console.log(`[metadata-reader] Reading ${fileType} metadata for ${filePath} (initial chunk: ${chunkSize} bytes${fileSize ? `, fileSize: ${fileSize}` : ''})`)
 
   while (true) {
     const buffer = await readMetadataChunk(baseUrl, filePath, user, token, fileType, chunkSize)
     const gotFullFile = buffer.byteLength < chunkSize
     try {
       const meta = await extractMetadataFromBuffer(buffer, fileType)
+      // Ogg/Opus: truncated buffer yields truncated duration (20 s vs 158 s).
+      // Even though taglib succeeds, the duration is wrong when we haven't
+      // fetched the tail. Detect and retry with larger chunk / full file.
+      if ((fileType === 'opus' || fileType === 'ogg') && fileSize !== undefined && !gotFullFile && buffer.byteLength < fileSize) {
+        // If we already tried the full file size, don't loop forever — treat
+        // duration as unreliable and return without it so matching uses no-signal.
+        if (chunkSize >= fileSize || chunkSize >= maxChunkSize) {
+          console.warn(`[metadata-reader] Opus duration truncated for ${filePath}: buffer ${buffer.byteLength} < fileSize ${fileSize}, duration=${meta.duration} — treating as absent for matching`)
+          return { ...meta, duration: undefined }
+        }
+        const nextSize = Math.min(fileSize, chunkSize * 2, maxChunkSize)
+        console.log(`[metadata-reader] Opus truncated duration for ${filePath} (${meta.duration}s from ${buffer.byteLength} bytes), retrying with ${nextSize} bytes for accurate duration`)
+        chunkSize = nextSize
+        continue
+      }
       console.log(`[metadata-reader] Successfully read metadata for ${filePath}:`, meta)
       return meta
     } catch (err) {
@@ -417,6 +442,8 @@ export async function readFileMetadata(
         throw new FileMetadataError('parse', `Could not parse metadata for ${filePath}`, err)
       }
       chunkSize *= 2
+      // Clamp to fileSize when known to avoid overshooting
+      if (fileSize !== undefined && chunkSize > fileSize) chunkSize = fileSize
       console.log(`[metadata-reader] Chunk size insufficient for ${filePath}, retrying with ${chunkSize} bytes`)
     }
   }
