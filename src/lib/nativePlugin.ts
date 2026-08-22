@@ -38,6 +38,12 @@ export type NativeCrossfadeCurve = 'linear' | 'exponential' | 'sigmoid'
 interface BackgroundAudioPlugin {
   initialize(): Promise<void>
   setQueue(options: { tracks: NativeTrackSnapshot[]; activeIndex: number; loopMode: NativeLoopMode }): Promise<void>
+  setQueueAndPlay(options: {
+    tracks: NativeTrackSnapshot[]
+    activeIndex: number
+    loopMode: NativeLoopMode
+    autoPlay?: boolean
+  }): Promise<void>
   refreshQueue(options: { tracks: NativeTrackSnapshot[]; activeIndex: number }): Promise<void>
   setLoopMode(options: { loopMode: NativeLoopMode }): Promise<void>
   playTrackAt(options: { index: number; autoPlay: boolean }): Promise<void>

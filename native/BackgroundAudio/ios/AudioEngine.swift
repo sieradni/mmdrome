@@ -362,6 +362,13 @@ public final class NativeAudioEngine: NSObject {
 
     private func ensureEngineRunning() {
         guard !engine.isRunning else { return }
+        do {
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+            try AVAudioSession.sharedInstance().setActive(true)
+        } catch {
+            // Non-fatal: engine.start may still succeed if session already active.
+            print("[native] ensureEngineRunning session activate failed: \(error.localizedDescription)")
+        }
         engine.prepare()
         do {
             try engine.start()
@@ -379,14 +386,34 @@ public final class NativeAudioEngine: NSObject {
         self.activeIndex = tracks.isEmpty ? 0 : max(0, min(activeIndex, tracks.count - 1))
     }
 
+    /// Atomic setQueue+playTrackAt for JS `engage` (fixes N1 — the split
+    /// setQueue→playTrackAt left `playTrack.changed` false because setQueue
+    /// already moved `activeIndex`, suppressing the `trackChanged` event and
+    /// leaving the lock-screen on the previous track while JS showed the new one).
+    public func setQueueAndPlay(tracks: [NativeTrack], activeIndex: Int, loopMode: NativeLoopMode, autoPlay: Bool = true) {
+        let oldId = currentTrackId
+        stopPlayback()
+        self.tracks = tracks
+        self.loopMode = loopMode
+        self.activeIndex = tracks.isEmpty ? 0 : max(0, min(activeIndex, tracks.count - 1))
+        guard !tracks.isEmpty else { return }
+        let clamped = self.activeIndex
+        loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
+        let newId = tracks.indices.contains(clamped) ? tracks[clamped].trackId : ""
+        if autoPlay && newId != oldId && !newId.isEmpty {
+            onTrackChanged?(newId)
+        }
+    }
+
     public func playTrack(at index: Int, autoPlay: Bool) {
         guard !tracks.isEmpty else { return }
         let clamped = max(0, min(index, tracks.count - 1))
-        let changed = clamped != activeIndex
+        let oldTrackId = currentTrackId
         activeIndex = clamped
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
-        if autoPlay && changed {
-            onTrackChanged?(tracks[clamped].trackId)
+        let newTrackId = tracks.indices.contains(clamped) ? tracks[clamped].trackId : ""
+        if autoPlay && newTrackId != oldTrackId && !newTrackId.isEmpty {
+            onTrackChanged?(newTrackId)
         }
     }
 
@@ -807,13 +834,21 @@ public final class NativeAudioEngine: NSObject {
             guard let self = self else { return }
             // The user moved on (next-skip, another load) while this file was
             // downloading — leave the newer schedule alone.
-            guard generation == self.scheduleGeneration else { return }
+            guard generation == self.scheduleGeneration else {
+                print("[native] loadAndStart dropped stale generation \(generation) vs \(self.scheduleGeneration) for \(track.trackId)")
+                return
+            }
             guard let url = url else {
                 self.onError?(error?.localizedDescription ?? "Failed to load track")
                 return
             }
             guard self.tracks.indices.contains(self.activeIndex),
-                  self.tracks[self.activeIndex].trackId == track.trackId else { return }
+                  self.tracks[self.activeIndex].trackId == track.trackId else {
+                let current = self.tracks.indices.contains(self.activeIndex) ? self.tracks[self.activeIndex].trackId : "OOR"
+                print("[native] loadAndStart dropped divergent track \(track.trackId) vs \(current) gen=\(generation) active=\(self.activeIndex)")
+                self.onError?("Track diverged: \(track.title)")
+                return
+            }
             let currentIndex = self.activeIndex
             self.loader.cleanup(
                 currentIndex: currentIndex,

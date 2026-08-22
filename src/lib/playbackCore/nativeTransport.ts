@@ -85,6 +85,12 @@ export interface NativeRefreshPayload {
 /** The plugin surface the transport drives (BackgroundAudioPlugin satisfies it). */
 export interface NativePluginClient {
   setQueue(options: { tracks: NativeSnapshotTrack[]; activeIndex: number; loopMode: NativeLoopMode }): Promise<void>
+  setQueueAndPlay?(options: {
+    tracks: NativeSnapshotTrack[]
+    activeIndex: number
+    loopMode: NativeLoopMode
+    autoPlay?: boolean
+  }): Promise<void>
   refreshQueue(options: { tracks: NativeSnapshotTrack[]; activeIndex: number }): Promise<void>
   playTrackAt(options: { index: number; autoPlay: boolean }): Promise<void>
   play(): Promise<void>
@@ -264,12 +270,22 @@ export class NativeTransport {
       return false
     }
     try {
-      await this._client.plugin().setQueue({
-        tracks: request.snapshot,
-        activeIndex: request.activeIndex,
-        loopMode: request.loopMode,
-      })
-      await this._client.plugin().playTrackAt({ index: request.activeIndex, autoPlay: true })
+      const plugin = this._client.plugin()
+      if (typeof plugin.setQueueAndPlay === 'function') {
+        await plugin.setQueueAndPlay({
+          tracks: request.snapshot,
+          activeIndex: request.activeIndex,
+          loopMode: request.loopMode,
+          autoPlay: true,
+        })
+      } else {
+        await plugin.setQueue({
+          tracks: request.snapshot,
+          activeIndex: request.activeIndex,
+          loopMode: request.loopMode,
+        })
+        await plugin.playTrackAt({ index: request.activeIndex, autoPlay: true })
+      }
     } catch (err) {
       console.error('[native] failed to start playback:', err)
       // A replacement engage may have stopped the previously active native

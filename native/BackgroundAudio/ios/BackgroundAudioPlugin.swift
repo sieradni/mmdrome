@@ -10,6 +10,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "initialize", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setQueue", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setQueueAndPlay", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "refreshQueue", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setLoopMode", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "playTrackAt", returnType: CAPPluginReturnPromise),
@@ -122,6 +123,27 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
             self.engine.setQueue(tracks: tracks, activeIndex: activeIndex, loopMode: loopMode)
+            call.resolve()
+        }
+    }
+
+    @objc func setQueueAndPlay(_ call: CAPPluginCall) {
+        let raw = call.getArray("tracks", [])
+        let tracks: [NativeTrack] = raw.enumerated().compactMap { idx, object in
+            guard let dict = object as? JSObject else { return nil }
+            return NativeTrack(from: dict, index: idx)
+        }
+        let activeIndex = call.getInt("activeIndex", 0)
+        let loopMode = NativeLoopMode(rawValue: call.getString("loopMode", "none")) ?? .none
+        let autoPlay = call.getBool("autoPlay", true)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setQueueAndPlay(tracks: tracks, activeIndex: activeIndex, loopMode: loopMode, autoPlay: autoPlay)
+            // Ensure lock-screen updates even when playback hasn't started yet — the
+            // trackChanged event fired synchronously above, but if the caller
+            // restarts the same track (oldId==newId) no event fires and the previous
+            // track's artwork/duration would linger until the next timer tick.
+            self.refreshNowPlaying()
             call.resolve()
         }
     }
