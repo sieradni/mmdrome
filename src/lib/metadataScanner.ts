@@ -467,6 +467,8 @@ let tagProbePromise: Promise<Set<string>> | null = null
 let tagProbePromiseGeneration: number | null = null
 /** Serializes cache writes and credential-swap cleanup. */
 let tagCachePersistence: Promise<void> = Promise.resolve()
+/** Force re-read for specific paths on next probe (Refresh / per-row Retry) */
+let forceProbePaths: Set<string> | null = null
 
 function fileTagId(baseKey: string, path: string): string {
   return `${baseKey}\u0000${path}`
@@ -687,7 +689,14 @@ async function waitForCurrentIndexRefresh(): Promise<boolean> {
   }
 }
 
-export function ensureTagProbe(): Promise<Set<string>> {
+export function ensureTagProbe(forcePaths?: Set<string>): Promise<Set<string>> {
+  if (forcePaths && forcePaths.size > 0) {
+    forceProbePaths = forcePaths
+    // Invalidate those cache entries now so the next runTagProbe sees them as uncached.
+    // Deletion is async but we set the in-memory flag synchronously so the pool
+    // builder already treats them as force.
+    for (const p of forcePaths) tagCache.delete(p)
+  }
   if (!webdavUrl || !webdavUser || !webdavToken) return Promise.resolve(new Set<string>())
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return Promise.resolve(new Set<string>())
 
@@ -793,6 +802,16 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
   const autoBoundTrackIds = new Set<string>()
   const session = captureSession()
   if (!session || !isCurrentWebdavSession(session, currentCredentials(), scanGen)) return autoBoundTrackIds
+  // Capture and clear the force set so concurrent force requests don't race.
+  const myForce = forceProbePaths ? new Set(forceProbePaths) : null
+  if (myForce) {
+    forceProbePaths = null
+    // Also delete from Dexie so isFresh check fails and pool includes them.
+    const ids = [...myForce].map(p => fileTagId(session.baseKey, p))
+    // Fire-and-forget, but await before building pool so deletion is visible.
+    await deleteFileTagsByIds(ids).catch(() => {})
+    for (const p of myForce) tagCache.delete(p)
+  }
   const loadedCache = await loadTagCacheFor(session.baseKey)
   if (tagProbeGen !== gen || !isCurrentSession(session)) return autoBoundTrackIds
   tagCache = loadedCache
@@ -862,7 +881,8 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
     if (!isAudioFilePath(entry.filename)) continue
     unclaimedAudioFileCount++
     const cached = tagCache.get(entry.path)
-    if (cached && tagCacheEntryIsFresh(cached, entry.size, entry.lastModified)) continue // fresh result, including TTL-governed failures
+    const isForced = myForce?.has(entry.path) ?? false
+    if (cached && tagCacheEntryIsFresh(cached, entry.size, entry.lastModified) && !isForced) continue // fresh result, including TTL-governed failures
     pool.push(entry)
   }
 
@@ -902,6 +922,15 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
     hinted = ranked.concat(unhinted)
   }
   hinted.sort((a, b) => (rank.get(b.path) ?? 0) - (rank.get(a.path) ?? 0) || a.path.localeCompare(b.path))
+  // Force requested paths are always included, even if they were unhinted and beyond budget.
+  if (myForce) {
+    for (const p of myForce) {
+      if (!hinted.some(e => e.path === p)) {
+        const forcedEntry = pool.find(e => e.path === p)
+        if (forcedEntry) hinted.push(forcedEntry)
+      }
+    }
+  }
 
   const baseKey = session.baseKey
   let done = 0
@@ -1045,6 +1074,31 @@ export async function refreshIndexAndProbe(): Promise<boolean> {
   const refreshed = await refreshIndex()
   if (!refreshed) return false
   await ensureTagProbe()
+  return true
+}
+
+/** Force re-read of specific paths, bypassing TTL/empty freshness.
+ *  Used by Refresh (visible empty rows) and per-row Retry. Deletes the
+ *  cached entries and forces them into the next probe's pool even though
+ *  they are otherwise fresh. */
+export async function reprobeFiles(paths: string[]): Promise<void> {
+  if (paths.length === 0) return
+  await ensureTagProbe(new Set(paths))
+}
+
+/** Refresh index then force re-probe given paths (tail-tag wav/m4a) plus
+ *  normal hint-gated probe. For Refresh button that should re-resolve the
+ *  currently displayed unmatched rows. */
+export async function refreshIndexAndProbeForced(forcePaths: string[]): Promise<boolean> {
+  await waitForCurrentScan()
+  await waitForCurrentTagProbe()
+  const refreshed = await refreshIndex()
+  if (!refreshed) return false
+  if (forcePaths.length > 0) {
+    await ensureTagProbe(new Set(forcePaths))
+  } else {
+    await ensureTagProbe()
+  }
   return true
 }
 

@@ -8,7 +8,7 @@
   import { runManualWebDAVSync, testWebdavConn, testNavidromeConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
   import { webdavBaseKey } from '../lib/webdavUtils'
   import { getPendingSyncMetadata } from '../lib/db'
-  import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, refreshIndexAndProbeForced, reprobeFiles, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
@@ -390,6 +390,9 @@
   )
   const visibleRows = $derived(filterVisible.slice(0, matchCap))
 
+  let retryingTrackId = $state<string | null>(null)
+  let forceRefreshing = $state(false)
+
   async function refreshUnresolved(probe = false) {
     // File Matching reads the live index; it must not invalidate or race the
     // metadata scan that is currently building that index. Mark a deferred
@@ -423,7 +426,21 @@
         // An explicit refresh is the one view action allowed to refresh both
         // the PROPFIND mtime view and the tag evidence. The scanner helper
         // serializes this against an already-running probe.
-        const refreshed = await refreshIndexAndProbe()
+        // For data-efficiency, normal refresh respects TTL. For force refresh
+        // (visible empty rows), bypass TTL for those specific files so a
+        // truncated-head wav (33 MB, 512k head gave empty) can be retried with
+        // larger head (1M/2M) without sweeping the whole library.
+        const forcePaths = unresolvedLoaded
+          ? unresolvedRows.filter(r => r.reason === 'no-identity-tags' && r.candidates.length > 0).flatMap(r => r.candidates.slice(0,1).map(c => c.path))
+          : []
+        let refreshed: boolean
+        if (forcePaths.length > 0) {
+          forceRefreshing = true
+          refreshed = await refreshIndexAndProbeForced(forcePaths.slice(0, 20))
+          forceRefreshing = false
+        } else {
+          refreshed = await refreshIndexAndProbe()
+        }
         if (!refreshed) throw new Error('Index refresh failed — is the WebDAV server reachable?')
       }
       const rows = await listUnresolvedMatches()
@@ -436,6 +453,7 @@
     } catch (err) {
       unresolvedError = err instanceof Error ? err.message : String(err)
     } finally {
+      forceRefreshing = false
       // A probe can finish while this list is scoring. If so, keep the
       // completion request pending for one follow-up list; otherwise a
       // transient timing edge can leave the view showing the pre-probe rows.
@@ -447,6 +465,22 @@
       unresolvedLoading = false
       await tick()
       if (scrollContainer && prevTop > 0) scrollContainer.scrollTop = prevTop
+    }
+  }
+
+  async function doRetryRow(row: UnresolvedTrack) {
+    const paths = row.candidates.slice(0,1).map(c => c.path)
+    // Fallback: if row has no candidate (should not happen for no-identity with fallback),
+    // try to find any file of that type that is empty in the index
+    if (paths.length === 0) return
+    retryingTrackId = row.trackId
+    try {
+      await reprobeFiles(paths)
+      await refreshUnresolved()
+    } catch (err) {
+      bindError = { trackId: row.trackId, message: err instanceof Error ? err.message : String(err) }
+    } finally {
+      retryingTrackId = null
     }
   }
 
@@ -1022,9 +1056,9 @@
             <h3 class="text-base font-medium text-primary">File Matching</h3>
             <button
               onclick={() => refreshUnresolved(true)}
-              disabled={unresolvedLoading || $metadataScanState.status === 'scanning' || $tagProbeState.active}
+              disabled={unresolvedLoading || $metadataScanState.status === 'scanning' || $tagProbeState.active || forceRefreshing}
               class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
-            >Refresh</button>
+            >{forceRefreshing ? 'Retrying…' : 'Refresh'}</button>
           </div>
           <p class="mb-2 text-sm text-muted">
             Shows songs the scanner could not safely link to a file on your WebDAV server. Link them manually so Push Changes can write their ratings, or mark them as not on this server.
@@ -1114,7 +1148,7 @@
                     class="mt-2 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
                   >Un-ignore</button>
                 {:else}
-                  <div class="mt-2 flex gap-2">
+                  <div class="mt-2 flex flex-wrap gap-2">
                     <button
                       onclick={() => openPicker(row.trackId)}
                       class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-80"
@@ -1123,6 +1157,13 @@
                       onclick={() => doIgnore(row.trackId)}
                       class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-muted transition-opacity hover:opacity-80"
                     >Not on this server</button>
+                    {#if row.reason === 'no-identity-tags' && row.candidates.length > 0}
+                      <button
+                        onclick={() => doRetryRow(row)}
+                        disabled={retryingTrackId === row.trackId || $tagProbeState.active || $metadataScanState.status === 'scanning'}
+                        class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                      >{retryingTrackId === row.trackId ? 'Retrying…' : 'Retry read'}</button>
+                    {/if}
                   </div>
                   {/if}
                 {#if bindError && bindError.trackId === row.trackId}
