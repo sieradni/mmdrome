@@ -243,6 +243,36 @@ export async function readMetadataChunk(
   }
 }
 
+async function readTailChunk(
+  baseUrl: string,
+  filePath: string,
+  user: string,
+  token: string,
+  fileSize: number,
+  tailSize = 131072,
+): Promise<ArrayBuffer> {
+  const start = Math.max(0, fileSize - tailSize)
+  const url = buildWebdavUrl(baseUrl, filePath)
+  let res: Awaited<ReturnType<typeof webdavFetch>>
+  try {
+    res = await webdavFetch(url, {
+      method: "GET",
+      headers: {
+        ...authHeaders(user, token),
+        Range: `bytes=${start}-${fileSize - 1}`,
+      },
+    }, METADATA_FETCH_TIMEOUT)
+  } catch (err) {
+    throw new FileMetadataError('network', `Tail GET ${filePath} failed`, err)
+  }
+  if (!res.ok) throw new FileMetadataError('network', `Tail GET ${filePath} failed: ${res.status}`)
+  try {
+    return await res.arrayBuffer()
+  } catch (err) {
+    throw new FileMetadataError('network', `Reading tail GET ${filePath} failed`, err)
+  }
+}
+
 export type FileMetadataFailureKind = 'network' | 'parse'
 
 /** A typed boundary between WebDAV transport failures and tag parsing failures.
@@ -440,21 +470,47 @@ export async function readFileMetadata(
         }
       }
       // No identity tags but head-only and file is much larger — tags may be
-      // at the tail (wav/m4a with INFO at end, 33 MB wav example). Retry with
-      // larger head before giving up, otherwise the file is permanently
-      // 'empty' and shows 'no-identity-tags' forever.
+      // at the tail (wav/m4a with INFO at end, 33 MB wav example: 512k head
+      // gives empty, tail holds INFO). Instead of doubling head beyond 2M
+      // (wasteful for 33 MB), fetch tail 128k and try head+tail in one go.
       const hasIdentity = !!(meta.title || meta.artist || meta.album)
       if (!hasIdentity && !gotFullFile && fileSize !== undefined && buffer.byteLength < fileSize) {
-        // Only retry for formats where tail tags are plausible and we haven't
-        // yet fetched a substantial portion. Avoid retrying for small files
-        // where 512k already covers most of the file.
         const tailTagTypes = fileType === 'wav' || fileType === 'aiff' || fileType === 'm4a'
-        if (tailTagTypes && fileSize > 1048576 && buffer.byteLength < Math.min(fileSize, 2097152)) {
-          if (chunkSize >= maxChunkSize || chunkSize >= fileSize) {
-            console.log(`[metadata-reader] No identity for ${filePath} after ${buffer.byteLength} bytes — giving up, file may truly have no tags`)
-          } else {
+        if (tailTagTypes && fileSize > 1048576) {
+          // Head already 512k and still empty — try tail. 128k tail is 0.4%
+          // of 33 MB vs 8M head (24%). Single extra request, no sweep.
+          try {
+            const tailBuf = await readTailChunk(baseUrl, filePath, user, token, fileSize, 131072)
+            // Try tail alone first (wav INFO often at very end)
+            try {
+              const tailMeta = await extractMetadataFromBuffer(tailBuf, fileType)
+              if (tailMeta.title || tailMeta.artist || tailMeta.album) {
+                console.log(`[metadata-reader] Found tail tags for ${filePath} from tail ${tailBuf.byteLength} bytes:`, tailMeta)
+                // Keep head duration (wav duration at head) + tail tags
+                return { ...tailMeta, duration: meta.duration ?? tailMeta.duration }
+              }
+            } catch {}
+            // Try head+tail concatenated (RIFF needs both fmt and INFO)
+            const combined = new Uint8Array(buffer.byteLength + tailBuf.byteLength)
+            combined.set(new Uint8Array(buffer), 0)
+            combined.set(new Uint8Array(tailBuf), buffer.byteLength)
+            try {
+              const combinedMeta = await extractMetadataFromBuffer(combined.buffer, fileType)
+              if (combinedMeta.title || combinedMeta.artist || combinedMeta.album) {
+                console.log(`[metadata-reader] Found head+tail tags for ${filePath} from ${combined.byteLength} bytes:`, combinedMeta)
+                return combinedMeta
+              }
+            } catch {}
+            console.log(`[metadata-reader] No identity for ${filePath} after head ${buffer.byteLength} + tail ${tailBuf.byteLength} bytes — giving up, file may truly have no tags`)
+          } catch (err) {
+            console.warn(`[metadata-reader] Tail fetch failed for ${filePath}:`, err)
+          }
+          // Fall through to return empty (no retry beyond 2M head, tail already tried)
+        } else if (fileSize > 1048576 && buffer.byteLength < Math.min(fileSize, 2097152)) {
+          // For non-tail types that are empty, try larger head up to 2M once
+          if (chunkSize < maxChunkSize && chunkSize < fileSize) {
             const nextSize = Math.min(fileSize, chunkSize * 2, maxChunkSize)
-            console.log(`[metadata-reader] No identity for ${filePath} from ${buffer.byteLength} bytes (head-only), retrying with ${nextSize} bytes for tail tags`)
+            console.log(`[metadata-reader] No identity for ${filePath} from ${buffer.byteLength} bytes (head-only), retrying with ${nextSize} bytes`)
             chunkSize = nextSize
             continue
           }
