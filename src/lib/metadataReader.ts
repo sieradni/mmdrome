@@ -175,14 +175,13 @@ export async function buildWebdavFileIndex(
 }
 
 function getMetadataChunkSize(fileType: string): number {
-  // Data-efficiency: keep initial small, grow on demand. Opus/ogg/m4a often
-  // need >262 kB for tags (3162 retries for 2383 files in the 3.6 MB log),
-  // so start them at 512 kB — halves retries for large Vorbis/MP4 comments
-  // without wasting 750 kB on every small mp3 that only needs 262 kB.
-  // Duration for opus/ogg is *not* fetched via full-file reads (see
-  // readFileMetadata — truncated duration is dropped, matching treats it as
-  // no-signal). This saves ~8× vs fetching 1–3 MB opus whole files.
-  if (fileType === 'opus' || fileType === 'ogg' || fileType === 'm4a') {
+  // Data-efficiency: keep initial small, grow on demand. Opus/ogg/m4a/wav
+  // often need >262 kB for tags (3162 retries for 2383 files in the 3.6 MB
+  // log, wav 33 MB with tags at tail returned empty on 262 kB). Start them
+  // at 512 kB — halves retries for large Vorbis/MP4 + wav without wasting
+  // 750 kB on every small mp3 (mp3 tags at head, duration now dropped when
+  // truncated so 262 kB is enough for identity).
+  if (fileType === 'opus' || fileType === 'ogg' || fileType === 'm4a' || fileType === 'wav' || fileType === 'aiff') {
     return 524288
   }
   switch (fileType) {
@@ -416,19 +415,22 @@ export async function readFileMetadata(
     const gotFullFile = buffer.byteLength < chunkSize
     try {
       const meta = await extractMetadataFromBuffer(buffer, fileType)
-      // Ogg/Opus duration lives in the last Ogg page (tail). With a head-only
-      // Range we get a truncated duration (20 s vs 158 s for the 1.95 MB example).
-      // Fetching the tail to fix it costs a full-file GET — defeats the purpose
-      // of range reads (1–3 MB opus × 2k files = GBs). Instead treat opus/ogg
-      // duration as absent when truncated so matching uses no-signal (no false
-      // ambiguous). mp3/flac/m4a durations are at the head and remain usable.
-      if ((fileType === 'opus' || fileType === 'ogg') && !gotFullFile) {
+      // Duration for many formats is unreliable from a head-only Range:
+      // - Ogg/Opus: granule at tail (20 s vs 158 s for 1.95 MB)
+      // - MP3 without Xing: estimated from truncated fileSize (262 kB @ 192k → 10 s vs 403 s)
+      //   The three remaining ambiguous mp3 in the 2.1 MB log (10 s/6 s/9 s for
+      //   5–9 MB files) are exactly this — joint stereo 192/224/320k CBR/VBR.
+      // Fetching the tail to fix it costs a full-file GET (1–3 MB × 2k = GBs).
+      // Instead drop duration when truncated so matching uses no-signal (no false
+      // ambiguous). FLAC/WAV/AIFF store duration in the head STREAMINFO/RIFF and
+      // remain usable.
+      const durationUnreliable = fileType === 'opus' || fileType === 'ogg' || fileType === 'mp3' || fileType === 'm4a' || fileType === 'aac' || fileType === 'wma'
+      if (durationUnreliable && !gotFullFile) {
         // gotFullFile = buffer.byteLength < chunkSize — true only when we got
-        // the whole file (or server ignored Range). Otherwise we did a head-only
-        // Range and the granule at the tail is missing.
+        // the whole file (or server ignored Range). Otherwise head-only.
         if (meta.duration !== undefined) {
           const sizeInfo = fileSize ? `${buffer.byteLength}/${fileSize}` : `${buffer.byteLength}/${chunkSize}`
-          console.log(`[metadata-reader] Opus duration truncated for ${filePath}: ${meta.duration}s from ${sizeInfo} bytes — dropping duration for matching (saves full-file fetch)`)
+          console.log(`[metadata-reader] ${fileType} duration truncated for ${filePath}: ${meta.duration}s from ${sizeInfo} bytes — dropping duration for matching (saves full-file fetch)`)
         }
         return { ...meta, duration: undefined }
       }

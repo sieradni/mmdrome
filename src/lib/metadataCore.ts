@@ -20,6 +20,17 @@ export function isAudioFilePath(filename: string): boolean {
   return AUDIO_EXTENSIONS.includes(filename.slice(dot + 1).toLowerCase())
 }
 
+/** Effective title for scoring: CJK-safe normalize, but punctuation-only
+ *  titles (e.g. "/////////////////////////" → "" ) keep raw punctuation
+ *  (lowercased, whitespace collapsed) so they retain identity. Without this
+ *  every punctuation title vacuously matches every filename via
+ *  `"".includes("")` and has no tag identity. */
+function effectiveTitle(s: string): string {
+  const n = normalizeForMatch(s)
+  if (n) return n
+  return s.toLowerCase().replace(/\s+/g, " ").trim()
+}
+
 function extractTitleFromFilename(filename: string): string {
   const dot = filename.lastIndexOf(".")
   const base = dot > 0 ? filename.slice(0, dot) : filename
@@ -77,10 +88,12 @@ function scoreAgainstTags(
 ): TagScore {
   if (!entry.tags) return { score: 0, certain: false, titleExact: false, durationConflict: false }
   const tags = entry.tags
-  const fileTitle = normalizeForMatch(tags.title ?? '')
+  const rawFileTitle = tags.title ?? ''
+  const rawNavTitle = track.title
+  const fileTitle = effectiveTitle(rawFileTitle)
   if (!fileTitle) return { score: 0, certain: false, titleExact: false, durationConflict: false }
 
-  const navTitle = normalizeForMatch(track.title)
+  const navTitle = effectiveTitle(rawNavTitle)
   const fileArtist = normalizeForMatch(tags?.artist ?? '')
   const navArtist = normalizeForMatch(track.artist)
   const fileAlbum = normalizeForMatch(tags?.album ?? '')
@@ -139,14 +152,13 @@ function scoreAgainstTags(
  *  title. Contradicting tags suppress BOTH the filename evidence and the
  *  byte-size fallback (6.0a/6.5b) — in-file identity outranks a filename. A
  *  file with NO identity title is not a contradiction (it still binds on
- *  filename/size). */
+ *  filename/size). Punctuation-only titles use effectiveTitle so "///" retains
+ *  identity. */
 function tagsContradictTrack(track: Track, entry: WebdavFileEntry): boolean {
-  const fileTitle = normalizeForMatch(entry.tags?.title ?? '')
-  // Whitespace/punctuation-only title values carry no identity signal; treat
-  // them like an absent title rather than suppressing a valid filename/size
-  // fallback.
+  const rawFileTitle = entry.tags?.title ?? ''
+  const fileTitle = effectiveTitle(rawFileTitle)
   if (!fileTitle) return false
-  return fileTitle !== normalizeForMatch(track.title)
+  return fileTitle !== effectiveTitle(track.title)
 }
 
 /** Re-verification verdict for an EXISTING binding judged against the file
@@ -164,8 +176,8 @@ export function verifyEntryAgainstTrack(
   const fileTitle = entry.tags?.title
   const navTitle = track.title
   if (!fileTitle || !navTitle) return 'unknown'
-  const f = normalizeForMatch(fileTitle)
-  const n = normalizeForMatch(navTitle)
+  const f = effectiveTitle(fileTitle)
+  const n = effectiveTitle(navTitle)
   if (!f || !n) return 'unknown'
   return f === n ? 'verified' : 'conflict'
 }
@@ -177,7 +189,7 @@ function scoreTrackMatches(
   index: WebdavFileEntry[],
   excludePaths?: ReadonlySet<string>,
 ): ScoredEntry[] {
-  const navTitle = normalizeForMatch(track.title)
+  const navTitle = effectiveTitle(track.title)
   const navSize = track.size
 
   const scored: ScoredEntry[] = []
@@ -193,11 +205,14 @@ function scoreTrackMatches(
 
     let nameScore = 0
     if (!contradicts) {
-      if (cleanedFilename === navTitle) {
+      // Punctuation-only titles (e.g. "/////////////////////////") normalize to "".
+      // "" vacuously includes every string in JS ("".includes("") === true) and
+      // would give every file a spurious 80/60. Require non-empty on both sides.
+      if (cleanedFilename && navTitle && cleanedFilename === navTitle) {
         nameScore = 100
-      } else if (cleanedFilename.includes(navTitle)) {
+      } else if (navTitle && cleanedFilename.includes(navTitle)) {
         nameScore = 80 - Math.abs(cleanedFilename.length - navTitle.length)
-      } else if (navTitle.includes(cleanedFilename)) {
+      } else if (cleanedFilename && navTitle.includes(cleanedFilename)) {
         nameScore = 60 - Math.abs(cleanedFilename.length - navTitle.length)
       }
 
