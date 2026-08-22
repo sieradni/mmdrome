@@ -191,12 +191,13 @@
       if (s.webdavUrl && s.webdavUser && s.webdavToken) {
         setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
       }
-      await rebuildIndex()
+      const rebuilt = await rebuildIndex()
+      if (!rebuilt) throw new Error('WebDAV index refresh failed — is the WebDAV server reachable?')
     } catch (err) {
       metadataScanState.set({
         status: 'error',
         progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0 },
-        error: err instanceof Error && err.message === 'WebDAV credentials not configured'
+        error: err instanceof Error && (err.message === 'WebDAV credentials not configured' || err.message === 'WebDAV index refresh failed — is the WebDAV server reachable?')
           ? err.message
           : 'WebDAV index refresh failed — is the WebDAV server reachable?',
       })

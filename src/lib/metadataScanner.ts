@@ -1111,7 +1111,15 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
   if (shape === "force") {
     try {
       const rebuilt = await rebuildIndex()
-      if (!rebuilt || scanGen !== myGen) return false
+      if (scanGen !== myGen) return false
+      if (!rebuilt) {
+        metadataScanState.set({
+          status: "error",
+          progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
+          error: INDEX_REFRESH_FAILED,
+        })
+        return false
+      }
     } catch {
       if (scanGen !== myGen) return false
       metadataScanState.set({
