@@ -953,6 +953,10 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
           title: meta.title,
           artist: meta.artist,
           album: meta.album,
+          trackNumber: meta.trackNumber,
+          year: meta.year,
+          duration: meta.duration,
+          size: entry.size,
           boundTrackId,
         })
       } catch (err) {

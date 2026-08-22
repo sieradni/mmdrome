@@ -290,7 +290,7 @@ function getPropValue(props: Record<string, unknown>, keys: string[]): string | 
 }
 
 function parseTrackNumberFromProps(props: Record<string, unknown>): number | undefined {
-  const raw = getPropValue(props, ['TRACKNUMBER', 'TRCK', 'TRACK', 'WM/TrackNumber'])
+  const raw = getPropValue(props, ['TRACKNUMBER', 'TRACK'])
   if (!raw) return undefined
   const num = parseInt(raw.split('/')[0], 10)
   return isNaN(num) ? undefined : num
@@ -342,14 +342,14 @@ export async function extractMetadataFromBuffer(
       if (!isNaN(parsed) && parsed > 0) rating = Math.min(100, parsed)
     }
 
-    comments = getPropValue(props, ['COMMENTS', 'COMMENT', 'COMM', 'DESCRIPTION', 'WM/Comment']) ?? ''
+    comments = getPropValue(props, ['COMMENTS', 'COMMENT']) ?? ''
 
-    title = getPropValue(props, ['TITLE', 'TIT2', 'WM/SongTitle', 'TITLE_SORT'])
-    artist = getPropValue(props, ['ARTIST', 'TPE1', 'WM/Author', 'ALBUMARTIST', 'TPE2'])
-    album = getPropValue(props, ['ALBUM', 'TALB', 'WM/AlbumTitle'])
+    title = getPropValue(props, ['TITLE'])
+    artist = getPropValue(props, ['ARTIST'])
+    album = getPropValue(props, ['ALBUM'])
     trackNumber = parseTrackNumberFromProps(props)
 
-    const rawYear = getPropValue(props, ['DATE', 'YEAR', 'TDRC', 'TYER', 'WM/Year'])
+    const rawYear = getPropValue(props, ['DATE', 'YEAR'])
     if (rawYear) {
       const parsedYear = parseInt(rawYear.slice(0, 4), 10)
       if (Number.isFinite(parsedYear) && parsedYear > 0) year = parsedYear

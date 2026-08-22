@@ -328,9 +328,8 @@ function deriveNoMatchReason(scored: ScoredEntry[], allCandidates: WebdavFileEnt
     if (allCandidates.length === 0) return 'no-file-on-server'
     // Every same-type file scored 0 — either its probed tags contradicted the
     // track (6.5b suppression) or it is untagged with no size/filename hint.
-    const anyIdentity = allCandidates.some((e) =>
-      !!(normalizeForMatch(e.tags?.title ?? '') || normalizeForMatch(e.tags?.artist ?? '') || normalizeForMatch(e.tags?.album ?? ''))
-    )
+    // Identity = non-empty normalized title; artist/album alone never counts.
+    const anyIdentity = allCandidates.some((e) => !!normalizeForMatch(e.tags?.title ?? ''))
     if (anyIdentity) return 'tags-contradict'
     const anyFailed = allCandidates.some((e) => e.probeStatus === 'network-error' || e.probeStatus === 'unreadable')
     if (anyFailed) return 'read-failed'
@@ -342,17 +341,13 @@ function deriveNoMatchReason(scored: ScoredEntry[], allCandidates: WebdavFileEnt
   if (top.tagScore === 0) {
     // The best lead scored only on filename/size — distinguish its tag state:
     // tags object present = probed; failure status = read attempted and failed;
-    // otherwise never probed.
+    // otherwise never probed. Identity = title only.
     if (!top.entry.tags) {
       if (top.entry.probeStatus === 'unreadable' || top.entry.probeStatus === 'network-error') return 'read-failed'
       if (top.entry.probeStatus) return 'no-identity-tags'
       return 'not-probed'
     }
-    const hasTagIdentity = !!(
-      normalizeForMatch(top.entry.tags.title ?? '') ||
-      normalizeForMatch(top.entry.tags.artist ?? '') ||
-      normalizeForMatch(top.entry.tags.album ?? '')
-    )
+    const hasTagIdentity = !!normalizeForMatch(top.entry.tags.title ?? '')
     if (hasTagIdentity) return 'tags-contradict'
     return 'no-identity-tags'
   }
@@ -377,14 +372,57 @@ export function matchTrackToWebdavCandidates(
   )
 
   const verdict = classifyScoredTrackMatch(scored)
+  // ── reconstructable debug log ──────────────────────────────────────
+  // Every evaluation is logged with full inputs so the user can see why a
+  // track did / did not match and fix the underlying data. Grouped to avoid
+  // flooding the console when the library is large.
+  const debugTrack = {
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    fileType: track.fileType,
+    duration: track.duration,
+    size: track.size,
+    trackNumber: track.trackNumber,
+    year: track.year,
+  }
+  const debugScored = scored.slice(0, 5).map((s) => {
+    const fileDuration = s.entry.tags?.duration
+    const navDuration = track.duration
+    const durationDiff = fileDuration !== undefined && navDuration > 0 ? Math.abs(fileDuration - navDuration) : undefined
+    return {
+      path: s.entry.path,
+      filename: s.entry.filename,
+      size: s.entry.size,
+      probeStatus: s.entry.probeStatus,
+      cleanedFilename: extractTitleFromFilename(s.entry.filename),
+      nameScore: s.nameScore,
+      tagScore: s.tagScore,
+      score: s.score,
+      tagTitleExact: s.tagTitleExact,
+      tagCertain: s.tagCertain,
+      tagDurationConflict: s.tagDurationConflict,
+      fileTitle: s.entry.tags?.title,
+      fileArtist: s.entry.tags?.artist,
+      fileAlbum: s.entry.tags?.album,
+      fileDuration,
+      navDuration,
+      durationDiff: durationDiff !== undefined ? Number(durationDiff.toFixed(2)) : undefined,
+      tags: s.entry.tags,
+    }
+  })
+
   if (verdict === 'none') {
     // No confident match: surface the best near-misses so the user sees why
     // nothing scored and has a starting point (size-only hits included — the
     // probe-contradicted ones are already excluded from `scored`).
     const reason = deriveNoMatchReason(scored, allCandidates)
     let promptCandidates = scored.slice(0, 5).map((s) => s.entry)
+    let fallbackUsed = false
     if (promptCandidates.length === 0 && allCandidates.length > 0) {
-      // Fallback: surface top candidates from allCandidates ranked by filename similarity
+      // Fallback: surface top candidates from allCandidates ranked by filename similarity.
+      // These scored 0 and were excluded from `scored` (e.g. tags contradict), but the user
+      // still needs visible suggestions — otherwise "no good suggested".
       const navTitle = normalizeForMatch(track.title)
       const ranked = [...allCandidates].sort((a, b) => {
         const aName = normalizeForMatch(extractTitleFromFilename(a.filename))
@@ -394,26 +432,28 @@ export function matchTrackToWebdavCandidates(
         return aDist - bDist
       })
       promptCandidates = ranked.slice(0, 5)
+      fallbackUsed = true
     }
 
-    console.log(`[metadata-match] Evaluation for "${track.title}" by "${track.artist}" (${track.fileType}):`, {
+    // Only log none/ambiguous in full detail; matched is quiet to avoid spam.
+    // Use console.debug for per-candidate detail, console.log for summary.
+    console.log(`[metadata-match: none] "${track.title}" — reason=${reason} scored=${scored.length}/${allCandidates.length} fallback=${fallbackUsed}`, {
+      track: debugTrack,
       verdict,
       reason,
       scoredCount: scored.length,
       allCandidatesCount: allCandidates.length,
-      topScored: scored.slice(0, 3).map((s) => ({
-        filename: s.entry.filename,
-        score: s.score,
-        nameScore: s.nameScore,
-        tagScore: s.tagScore,
-        tagTitleExact: s.tagTitleExact,
-        tagDurationConflict: s.tagDurationConflict,
-        tags: s.entry.tags,
-        probeStatus: s.entry.probeStatus,
-      })),
+      topScored: debugScored,
       promptCandidates: promptCandidates.map((c) => ({
-        filename: c.filename,
         path: c.path,
+        filename: c.filename,
+        size: c.size,
+        probeStatus: c.probeStatus,
+        tags: c.tags,
+      })),
+      allCandidatesSample: allCandidates.slice(0, 3).map((c) => ({
+        path: c.path,
+        filename: c.filename,
         tags: c.tags,
         probeStatus: c.probeStatus,
       })),
@@ -427,19 +467,71 @@ export function matchTrackToWebdavCandidates(
     }
   }
 
-  const top = scored[0].score
-  const group = scored.filter((s) => s.score === top).map((s) => s.entry)
+  const topScore = scored[0].score
+  const group = scored.filter((s) => s.score === topScore).map((s) => s.entry)
   const reason: NoMatchReason | null = verdict === 'ambiguous'
     ? (scored[0].tagDurationConflict ? 'duration-conflict' : 'ambiguous')
     : null
 
-  console.log(`[metadata-match] Evaluation for "${track.title}" by "${track.artist}" (${track.fileType}):`, {
-    verdict,
-    status: verdict === 'ambiguous' ? 'ambiguous' : 'matched',
-    topScore: top,
-    groupCount: group.length,
-    promptCandidates: group.map((c) => ({ filename: c.filename, path: c.path, tags: c.tags })),
-  })
+  // Log ambiguous in detail (the broken case), matched only as summary.
+  if (verdict === 'ambiguous') {
+    const detailedGroup = group.map((c) => {
+      const s = scored.find((x) => x.entry.path === c.path)
+      const fileDuration = c.tags?.duration
+      const navDuration = track.duration
+      const diff = fileDuration !== undefined && navDuration > 0 ? Math.abs(fileDuration - navDuration) : undefined
+      return {
+        path: c.path,
+        filename: c.filename,
+        size: c.size,
+        probeStatus: c.probeStatus,
+        tags: c.tags,
+        score: s?.score,
+        nameScore: s?.nameScore,
+        tagScore: s?.tagScore,
+        tagTitleExact: s?.tagTitleExact,
+        tagDurationConflict: s?.tagDurationConflict,
+        tagCertain: s?.tagCertain,
+        fileDuration,
+        navDuration,
+        durationDiff: diff !== undefined ? Number(diff.toFixed(2)) : undefined,
+      }
+    })
+    console.log(`[metadata-match: ambiguous] "${track.title}" — reason=${reason} group=${group.length} topScore=${topScore}`, {
+      track: debugTrack,
+      verdict,
+      reason,
+      topScore,
+      groupCount: group.length,
+      topScored: debugScored,
+      ambiguousGroup: detailedGroup,
+      allScoredCount: scored.length,
+    })
+    // Also trace which rule caused ambiguous for reconstruction
+    const top = scored[0]
+    const secondScore = scored[1]?.score
+    const tie = scored.length > 1 && top.score === secondScore
+    const durationRule = top.tagTitleExact && top.tagDurationConflict
+    const substringRule = top.tagScore > top.nameScore && !top.tagTitleExact
+    const artistTieRule = top.tagScore > top.nameScore && !top.tagCertain && scored.slice(1).some((s) => s.tagTitleExact)
+    console.log(`[metadata-match: ambiguous-trace] "${track.title}"`, {
+      durationRule,
+      tie,
+      substringRule,
+      artistTieRule,
+      topTagTitleExact: top.tagTitleExact,
+      topTagDurationConflict: top.tagDurationConflict,
+      topTagCertain: top.tagCertain,
+      topNameScore: top.nameScore,
+      topTagScore: top.tagScore,
+    })
+  } else {
+    // matched — brief
+    console.log(`[metadata-match: matched] "${track.title}" — topScore=${topScore} group=${group.length}`, {
+      track: debugTrack,
+      topScored: debugScored.slice(0, 1),
+    })
+  }
 
   return {
     status: verdict === 'ambiguous' ? 'ambiguous' : 'matched',
