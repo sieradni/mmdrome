@@ -328,7 +328,9 @@ function deriveNoMatchReason(scored: ScoredEntry[], allCandidates: WebdavFileEnt
     if (allCandidates.length === 0) return 'no-file-on-server'
     // Every same-type file scored 0 — either its probed tags contradicted the
     // track (6.5b suppression) or it is untagged with no size/filename hint.
-    const anyIdentity = allCandidates.some((e) => !!normalizeForMatch(e.tags?.title ?? ''))
+    const anyIdentity = allCandidates.some((e) =>
+      !!(normalizeForMatch(e.tags?.title ?? '') || normalizeForMatch(e.tags?.artist ?? '') || normalizeForMatch(e.tags?.album ?? ''))
+    )
     if (anyIdentity) return 'tags-contradict'
     const anyFailed = allCandidates.some((e) => e.probeStatus === 'network-error' || e.probeStatus === 'unreadable')
     if (anyFailed) return 'read-failed'
@@ -339,13 +341,19 @@ function deriveNoMatchReason(scored: ScoredEntry[], allCandidates: WebdavFileEnt
   if (top.tagDurationConflict) return 'duration-conflict'
   if (top.tagScore === 0) {
     // The best lead scored only on filename/size — distinguish its tag state:
-    // tags object present = probed but no identity title; failure status = the
-    // read was attempted and failed; otherwise it was never probed.
+    // tags object present = probed; failure status = read attempted and failed;
+    // otherwise never probed.
     if (!top.entry.tags) {
       if (top.entry.probeStatus === 'unreadable' || top.entry.probeStatus === 'network-error') return 'read-failed'
       if (top.entry.probeStatus) return 'no-identity-tags'
       return 'not-probed'
     }
+    const hasTagIdentity = !!(
+      normalizeForMatch(top.entry.tags.title ?? '') ||
+      normalizeForMatch(top.entry.tags.artist ?? '') ||
+      normalizeForMatch(top.entry.tags.album ?? '')
+    )
+    if (hasTagIdentity) return 'tags-contradict'
     return 'no-identity-tags'
   }
   return 'weak-evidence'
@@ -374,15 +382,49 @@ export function matchTrackToWebdavCandidates(
     // nothing scored and has a starting point (size-only hits included — the
     // probe-contradicted ones are already excluded from `scored`).
     const reason = deriveNoMatchReason(scored, allCandidates)
-    if (scored.length > 0) {
-      return {
-        status: 'none',
-        promptCandidates: scored.slice(0, 5).map((s) => s.entry),
-        allCandidates,
-        reason,
-      }
+    let promptCandidates = scored.slice(0, 5).map((s) => s.entry)
+    if (promptCandidates.length === 0 && allCandidates.length > 0) {
+      // Fallback: surface top candidates from allCandidates ranked by filename similarity
+      const navTitle = normalizeForMatch(track.title)
+      const ranked = [...allCandidates].sort((a, b) => {
+        const aName = normalizeForMatch(extractTitleFromFilename(a.filename))
+        const bName = normalizeForMatch(extractTitleFromFilename(b.filename))
+        const aDist = Math.abs(aName.length - navTitle.length)
+        const bDist = Math.abs(bName.length - navTitle.length)
+        return aDist - bDist
+      })
+      promptCandidates = ranked.slice(0, 5)
     }
-    return { status: 'none', promptCandidates: [], allCandidates, reason }
+
+    console.log(`[metadata-match] Evaluation for "${track.title}" by "${track.artist}" (${track.fileType}):`, {
+      verdict,
+      reason,
+      scoredCount: scored.length,
+      allCandidatesCount: allCandidates.length,
+      topScored: scored.slice(0, 3).map((s) => ({
+        filename: s.entry.filename,
+        score: s.score,
+        nameScore: s.nameScore,
+        tagScore: s.tagScore,
+        tagTitleExact: s.tagTitleExact,
+        tagDurationConflict: s.tagDurationConflict,
+        tags: s.entry.tags,
+        probeStatus: s.entry.probeStatus,
+      })),
+      promptCandidates: promptCandidates.map((c) => ({
+        filename: c.filename,
+        path: c.path,
+        tags: c.tags,
+        probeStatus: c.probeStatus,
+      })),
+    })
+
+    return {
+      status: 'none',
+      promptCandidates,
+      allCandidates,
+      reason,
+    }
   }
 
   const top = scored[0].score
@@ -390,6 +432,15 @@ export function matchTrackToWebdavCandidates(
   const reason: NoMatchReason | null = verdict === 'ambiguous'
     ? (scored[0].tagDurationConflict ? 'duration-conflict' : 'ambiguous')
     : null
+
+  console.log(`[metadata-match] Evaluation for "${track.title}" by "${track.artist}" (${track.fileType}):`, {
+    verdict,
+    status: verdict === 'ambiguous' ? 'ambiguous' : 'matched',
+    topScore: top,
+    groupCount: group.length,
+    promptCandidates: group.map((c) => ({ filename: c.filename, path: c.path, tags: c.tags })),
+  })
+
   return {
     status: verdict === 'ambiguous' ? 'ambiguous' : 'matched',
     promptCandidates: group,

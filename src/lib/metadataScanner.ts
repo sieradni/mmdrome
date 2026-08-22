@@ -934,9 +934,10 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
         if (tagProbeGen !== gen || !isCurrentSession(session)) return
         tagCache.set(entry.path, next)
         entry.probeStatus = next.status
+        let boundTrackId: string | null = null
         if (hasIdentity && next.metadata) {
           entry.tags = metadataToTags(next.metadata)
-          const boundTrackId = maybeAutoBindFromProbe(
+          boundTrackId = maybeAutoBindFromProbe(
             entry,
             next.metadata,
             titleIndex,
@@ -946,6 +947,14 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
           )
           if (boundTrackId) autoBoundTrackIds.add(boundTrackId)
         }
+        console.log(`[metadata-probe] Probed ${entry.path}:`, {
+          status: next.status,
+          hasIdentity,
+          title: meta.title,
+          artist: meta.artist,
+          album: meta.album,
+          boundTrackId,
+        })
       } catch (err) {
         if (tagProbeGen !== gen || !isCurrentSession(session)) return
         const next: FileTagCacheEntry = {
@@ -963,6 +972,10 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
         if (tagProbeGen !== gen || !isCurrentSession(session)) return
         tagCache.set(entry.path, next)
         entry.probeStatus = next.status
+        console.warn(`[metadata-probe] Probe failed for ${entry.path}:`, {
+          status: next.status,
+          error: err instanceof Error ? err.message : String(err),
+        })
       }
       if (tagProbeGen !== gen || !isCurrentSession(session)) return
       done++
@@ -1633,6 +1646,12 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
         candidates: match.promptCandidates,
         reason: match.reason ?? undefined,
       }
+      console.log(`[metadata-scanner] Unresolved match for "${t.title}":`, {
+        kind: row.kind,
+        reason: row.reason,
+        candidatesCount: row.candidates.length,
+        candidatePaths: row.candidates.map((c) => c.path),
+      })
     }
     rows.push(row)
   }

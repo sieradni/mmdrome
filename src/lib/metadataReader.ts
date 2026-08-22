@@ -272,8 +272,25 @@ function firstPropValue(value: unknown): string | undefined {
   return undefined
 }
 
-function parseTrackNumber(value: unknown): number | undefined {
-  const raw = firstPropValue(value)
+function getPropValue(props: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const k of keys) {
+    if (props[k] !== undefined) {
+      const val = firstPropValue(props[k])
+      if (val !== undefined && val !== '') return val
+    }
+  }
+  const upperKeys = keys.map((k) => k.toUpperCase())
+  for (const propKey of Object.keys(props)) {
+    if (upperKeys.includes(propKey.toUpperCase())) {
+      const val = firstPropValue(props[propKey])
+      if (val !== undefined && val !== '') return val
+    }
+  }
+  return undefined
+}
+
+function parseTrackNumberFromProps(props: Record<string, unknown>): number | undefined {
+  const raw = getPropValue(props, ['TRACKNUMBER', 'TRCK', 'TRACK', 'WM/TrackNumber'])
   if (!raw) return undefined
   const num = parseInt(raw.split('/')[0], 10)
   return isNaN(num) ? undefined : num
@@ -325,21 +342,14 @@ export async function extractMetadataFromBuffer(
       if (!isNaN(parsed) && parsed > 0) rating = Math.min(100, parsed)
     }
 
-    const rawComments = props['COMMENTS']
-    if (Array.isArray(rawComments) && rawComments[0]) {
-      comments = rawComments[0]
-    }
+    comments = getPropValue(props, ['COMMENTS', 'COMMENT', 'COMM', 'DESCRIPTION', 'WM/Comment']) ?? ''
 
-    const rawComment = props['COMMENT']
-    if (!comments && Array.isArray(rawComment) && rawComment[0]) {
-      comments = rawComment[0]
-    }
-    title = firstPropValue(props['TITLE'])
-    artist = firstPropValue(props['ARTIST'])
-    album = firstPropValue(props['ALBUM'])
-    trackNumber = parseTrackNumber(props['TRACKNUMBER'])
+    title = getPropValue(props, ['TITLE', 'TIT2', 'WM/SongTitle', 'TITLE_SORT'])
+    artist = getPropValue(props, ['ARTIST', 'TPE1', 'WM/Author', 'ALBUMARTIST', 'TPE2'])
+    album = getPropValue(props, ['ALBUM', 'TALB', 'WM/AlbumTitle'])
+    trackNumber = parseTrackNumberFromProps(props)
 
-    const rawYear = firstPropValue(props['DATE']) ?? firstPropValue(props['YEAR'])
+    const rawYear = getPropValue(props, ['DATE', 'YEAR', 'TDRC', 'TYER', 'WM/Year'])
     if (rawYear) {
       const parsedYear = parseInt(rawYear.slice(0, 4), 10)
       if (Number.isFinite(parsedYear) && parsedYear > 0) year = parsedYear
@@ -354,7 +364,23 @@ export async function extractMetadataFromBuffer(
       duration = parsedDuration
     }
 
+    console.log(`[metadata-reader] TagLib extracted for ${fileType}:`, {
+      propsKeys: Object.keys(props),
+      title,
+      artist,
+      album,
+      trackNumber,
+      year,
+      duration,
+      rating,
+      loved,
+      comments: comments || undefined,
+    })
+
     return { rating, loved, comments: comments || undefined, title, artist, album, trackNumber, year, duration }
+  } catch (err) {
+    console.warn(`[metadata-reader] TagLib parse error for ${fileType}:`, err)
+    throw err
   } finally {
     // Never leak the WASM handle: an exception mid-parse must not skip
     // dispose(), and a dispose failure must never mask the read error.
@@ -375,18 +401,23 @@ export async function readFileMetadata(
 ): Promise<FileMetadata> {
   const maxChunkSize = 8388608
   let chunkSize = getMetadataChunkSize(fileType)
+  console.log(`[metadata-reader] Reading ${fileType} metadata for ${filePath} (initial chunk: ${chunkSize} bytes)`)
 
   while (true) {
     const buffer = await readMetadataChunk(baseUrl, filePath, user, token, fileType, chunkSize)
     const gotFullFile = buffer.byteLength < chunkSize
     try {
-      return await extractMetadataFromBuffer(buffer, fileType)
+      const meta = await extractMetadataFromBuffer(buffer, fileType)
+      console.log(`[metadata-reader] Successfully read metadata for ${filePath}:`, meta)
+      return meta
     } catch (err) {
       if (chunkSize >= maxChunkSize || gotFullFile) {
+        console.warn(`[metadata-reader] Failed to parse metadata for ${filePath} after chunk size ${chunkSize}:`, err)
         if (err instanceof FileMetadataError) throw err
         throw new FileMetadataError('parse', `Could not parse metadata for ${filePath}`, err)
       }
       chunkSize *= 2
+      console.log(`[metadata-reader] Chunk size insufficient for ${filePath}, retrying with ${chunkSize} bytes`)
     }
   }
 }
