@@ -141,53 +141,54 @@ final class TrackFileLoader {
         let destination = Self.destinationURL(for: track)
         let requestID = UUID()
         let task = session.downloadTask(with: track.url) { [weak self] tempURL, _, error in
-            // Hop to the main thread: this completion runs on the URLSession
-            // delegate queue, while `state` (cache/activeTasks/pending), the
-            // AVFoundation graph and the RunLoop.main timers are all
-            // main-thread-only. Without the hop, the callbacks below race
-            // with every reader (`localURL`/`evict`/`cleanup`).
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                // A canceled task can still call its completion after a retry
-                // has claimed the same track id. Only the current request may
-                // clear the in-flight entry, publish a cache file, or notify
-                // callbacks; stale completions are deliberately inert.
-                guard self.state.isCurrent(track.trackId, requestID: requestID) else { return }
-                let pendings = self.state.complete(track.trackId, requestID: requestID)
-                if let tempURL = tempURL, error == nil {
-                    do {
-                        // Ensure parent exists — Caches/mmdrome-tracks can be purged by the
-                        // system between tracks, and destinationURL's try? create may have
-                        // been before the purge. Re-create right before the move.
-                        let parent = destination.deletingLastPathComponent()
-                        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-                        // Remove any stale file at destination before moving; ignore if missing.
-                        if FileManager.default.fileExists(atPath: destination.path) {
-                            try FileManager.default.removeItem(at: destination)
-                        }
-                        do {
-                            try FileManager.default.moveItem(at: tempURL, to: destination)
-                        } catch {
-                            // moveItem can fail with NSCocoaErrorDomain 516 if temp and
-                            // caches are on different volumes or file still open;
-                            // fall back to copy+remove which is more tolerant.
-                            print("[native] moveItem failed for \(track.trackId) \(error.localizedDescription) — trying copy")
-                            try FileManager.default.copyItem(at: tempURL, to: destination)
-                            try? FileManager.default.removeItem(at: tempURL)
-                        }
-                        self.state.store(destination, for: track.trackId)
-                    } catch {
-                        let moveError = error
-                        print("[native] final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(moveError.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: tempURL.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
-                        deliver(nil, moveError)
-                        pendings.forEach { $0(nil, moveError) }
-                        return
+            // The temp file is only valid until this handler returns. Move it
+            // synchronously on the delegate queue before hopping to main — an
+            // async hop would let the system delete the temp file first, which
+            // is exactly the "couldn't be opened because there is no such file"
+            // seen in the HUD. State bookkeeping (isCurrent/complete/store) still
+            // happens on main.
+            var movedURL: URL? = nil
+            var moveError: Error? = nil
+            if let temp = tempURL, error == nil {
+                do {
+                    let parent = destination.deletingLastPathComponent()
+                    try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+                    if FileManager.default.fileExists(atPath: destination.path) {
+                        try FileManager.default.removeItem(at: destination)
                     }
-                    deliver(destination, nil)
-                    pendings.forEach { $0(destination, nil) }
+                    do {
+                        try FileManager.default.moveItem(at: temp, to: destination)
+                    } catch {
+                        print("[native] moveItem failed for \(track.trackId) \(error.localizedDescription) — trying copy")
+                        try FileManager.default.copyItem(at: temp, to: destination)
+                        try? FileManager.default.removeItem(at: temp)
+                    }
+                    movedURL = destination
+                } catch {
+                    moveError = error
+                    print("[native] final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(error.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: temp.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else {
+                    if let moved = movedURL { try? FileManager.default.removeItem(at: moved) }
+                    return
+                }
+                guard self.state.isCurrent(track.trackId, requestID: requestID) else {
+                    if let moved = movedURL { try? FileManager.default.removeItem(at: moved) }
+                    return
+                }
+                let pendings = self.state.complete(track.trackId, requestID: requestID)
+                if let moved = movedURL {
+                    self.state.store(moved, for: track.trackId)
+                    deliver(moved, nil)
+                    pendings.forEach { $0(moved, nil) }
                 } else {
-                    deliver(nil, error)
-                    pendings.forEach { $0(nil, error) }
+                    let err = moveError ?? error
+                    // If we moved but became stale, the file was already cleaned above.
+                    // Otherwise report the download/move error to trigger retry.
+                    deliver(nil, err)
+                    pendings.forEach { $0(nil, err) }
                 }
             }
         }
