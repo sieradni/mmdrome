@@ -31,7 +31,8 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setPreloadCount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSleepTimer", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setEq", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getDebugState", returnType: CAPPluginReturnPromise)
     ]
 
     private let engine = NativeAudioEngine()
@@ -353,6 +354,13 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 "playing": state.playing,
                 "speed": state.speed
             ])
+        }
+    }
+
+    @objc func getDebugState(_ call: CAPPluginCall) {
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            call.resolve(self.engine.debugState())
         }
     }
 

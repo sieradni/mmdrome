@@ -784,6 +784,40 @@ public final class NativeAudioEngine: NSObject {
         )
     }
 
+    public func debugState() -> [String: Any] {
+        let track = tracks.indices.contains(activeIndex) ? tracks[activeIndex] : nil
+        let hasLocal = track.flatMap { loader.localURL(for: $0) != nil } ?? false
+        return [
+            "isRunning": engine.isRunning,
+            "isPlaying": isPlaying,
+            "hasLiveSchedule": hasLiveSchedule,
+            "activeIndex": activeIndex,
+            "queueCount": tracks.count,
+            "activeTrackId": track?.trackId ?? "",
+            "activeTitle": track?.title ?? "",
+            "cachedPosition": cachedPosition,
+            "positionBias": positionBias,
+            "currentPosition": currentPosition,
+            "scheduleGeneration": scheduleGeneration,
+            "standbyGeneration": standbyScheduleGeneration,
+            "crossfadePhase": "\(crossfade.phase)",
+            "crossfadeTarget": crossfade.isActive ? crossfade.targetIndex : -1,
+            "activeGain": activeGain.outputVolume,
+            "standbyGain": standbyGain.outputVolume,
+            "preampVolume": preamp.outputVolume,
+            "masterVolume": masterVolume,
+            "preampDb": preampDb,
+            "hasLocalURL": hasLocal,
+            "computedDurations": computedDurations.count,
+            "waitingAtTrackEnd": waitingAtTrackEnd,
+            "sleepAtTrackEnd": sleepAtTrackEnd,
+            "paramsDirty": paramsDirty,
+            "speed": speed,
+            "pitchOctaves": pitchOctaves,
+            "tapeMode": tapeMode,
+        ]
+    }
+
     /// Position within the current track, in seconds.
     public var currentPosition: Double {
         guard isPlaying,

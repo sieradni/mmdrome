@@ -22,6 +22,7 @@
   import VolumeView from './views/VolumeView.svelte'
   import DetailView from './views/DetailView.svelte'
   import LazyThumb from './components/LazyThumb.svelte'
+  import DebugHud from './components/DebugHud.svelte'
 
   let nowPlayingOpen = $state(false)
   let queueOpen = $state(false)
@@ -33,8 +34,31 @@
    *  "ready" signal for the e2e smoke test (tests/e2e/smoke.spec.ts). Stays
    *  false on a boot failure, which the smoke test treats as a failed boot. */
   let appReady = $state(false)
+  let debugHudEnabled = $state(false)
+
+  function checkDebugHud() {
+    try {
+      const params = new URLSearchParams(window.location.search)
+      if (params.has('debug') || params.has('debugHud') || localStorage.getItem('mmdrome:debugHud') === '1') {
+        debugHudEnabled = true
+      }
+    } catch {}
+  }
+
+  // global toggle for console / debug hud button
+  if (typeof window !== 'undefined') {
+    // @ts-ignore
+    window.__toggleDebugHud = () => {
+      debugHudEnabled = !debugHudEnabled
+      try {
+        if (debugHudEnabled) localStorage.setItem('mmdrome:debugHud', '1')
+        else localStorage.removeItem('mmdrome:debugHud')
+      } catch {}
+    }
+  }
 
   onMount(async () => {
+    checkDebugHud()
     if (Capacitor.isNativePlatform()) {
       // Light status bar content over the app's dark chrome (dynamic island area).
       SystemBars.setStyle({ style: SystemBarsStyle.Dark, bar: SystemBarType.StatusBar }).catch(() => {})
@@ -527,4 +551,8 @@ function seek(e: Event) {
   <div class="fixed inset-0 z-50 flex flex-col bg-background safe-area-full">
     <DetailView onback={() => overlay = 'trackOptions'} oncloseall={closeAll} />
   </div>
+{/if}
+
+{#if debugHudEnabled}
+  <DebugHud onclose={() => { debugHudEnabled = false; try { localStorage.removeItem('mmdrome:debugHud') } catch {} }} />
 {/if}

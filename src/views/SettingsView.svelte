@@ -1302,6 +1302,21 @@
           <p class="mt-4 text-sm text-muted">
             A minimalist music player for your Navidrome / WebDAV library.
           </p>
+          <div class="mt-6 rounded-lg bg-surface-hover p-3">
+            <h4 class="mb-2 text-sm font-medium text-primary">Diagnostics</h4>
+            <p class="mb-3 text-xs text-muted">Show live engine + queue state to diagnose playback stalls. Persists until closed. Also toggled via URL <code>?debug</code> or console <code>__toggleDebugHud()</code>.</p>
+            <button
+              onclick={() => {
+                try {
+                  const cur = localStorage.getItem('mmdrome:debugHud') === '1'
+                  if (cur) localStorage.removeItem('mmdrome:debugHud')
+                  else localStorage.setItem('mmdrome:debugHud', '1')
+                  location.reload()
+                } catch {}
+              }}
+              class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-background hover:opacity-80"
+            >Toggle Debug HUD</button>
+          </div>
         </section>
       {/if}
     </div>

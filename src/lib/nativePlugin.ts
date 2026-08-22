@@ -69,6 +69,7 @@ interface BackgroundAudioPlugin {
   setSleepTimer(options: { active: boolean; mode: 'minutes' | 'endOfTrack'; minutes: number }): Promise<void>
   setEq(options: { filters: NativeFilterSnapshot[]; bypassed: boolean }): Promise<void>
   getState(): Promise<NativeEngineState>
+  getDebugState(): Promise<Record<string, unknown>>
   addListener(
     eventName: 'trackChanged',
     listenerFunc: (data: { trackId: string }) => void
