@@ -356,6 +356,54 @@ test('reason: a size/filename candidate exists but its tags were never read', ()
   assert.equal(cand.reason, 'not-probed')
 })
 
+test('reason: the read was attempted and failed is NOT reported as not-probed (2026-08-21)', () => {
+  // A failed probe must never tell the user to rescan — rescanning cannot
+  // succeed where the read itself failed. The failure statuses are honest.
+  const unreadable = entry({
+    path: '/dav/x/Bad.flac',
+    filename: 'Bad.flac',
+    size: 12345,
+    tags: undefined,
+    probeStatus: 'unreadable',
+  })
+  const network = entry({
+    path: '/dav/x/Flaky.flac',
+    filename: 'Flaky.flac',
+    size: 12345,
+    tags: undefined,
+    probeStatus: 'network-error',
+  })
+  assert.equal(matchTrackToWebdavCandidates(track(), [unreadable]).reason, 'read-failed')
+  assert.equal(matchTrackToWebdavCandidates(track(), [network]).reason, 'read-failed')
+
+  // A size-only scored lead (below the D8 gate) whose tag read failed gets
+  // the same honesty — not "run Scan again".
+  const sizeOnlyFailed = entry({ path: '/dav/x/Whatever.flac', filename: 'Whatever.flac', size: 12345, tags: undefined, probeStatus: 'unreadable' })
+  assert.equal(matchTrackToWebdavCandidates(track(), [sizeOnlyFailed]).reason, 'read-failed')
+})
+
+test('reason: probed-but-empty candidates are no-identity-tags, not not-probed (2026-08-21)', () => {
+  // THE field-report bug: every candidate was probed, all carried no identity
+  // title, and the row still said "File tags not read yet — run Scan" forever.
+  const probed = entry({
+    path: '/dav/x/Whatever.flac',
+    filename: 'Whatever.flac',
+    size: 12345,
+    tags: undefined,
+    probeStatus: 'empty',
+  })
+  assert.equal(matchTrackToWebdavCandidates(track(), [probed]).reason, 'no-identity-tags')
+})
+
+test('reason: unprobed candidates outrank probed-empty ones in the no-score case', () => {
+  // Mixed pool: one file still genuinely unread → there is still hope, so
+  // "not probed" stays the truthful headline over "no identity tags".
+  const unprobed = entry({ path: '/dav/x/A.flac', filename: 'A.flac', size: 12345, tags: undefined })
+  const probedEmpty = entry({ path: '/dav/x/B.flac', filename: 'B.flac', size: 12345, tags: undefined, probeStatus: 'empty' })
+  assert.equal(matchTrackToWebdavCandidates(track(), [probedEmpty]).reason, 'no-identity-tags')
+  assert.equal(matchTrackToWebdavCandidates(track(), [unprobed, probedEmpty]).reason, 'not-probed')
+})
+
 test('reason: the file was probed but carries no identity title', () => {
   const empty = entry({ path: '/dav/x/Whatever.flac', filename: 'Whatever.flac', size: 12345, tags: { title: '' } })
   const cand = matchTrackToWebdavCandidates(track(), [empty])

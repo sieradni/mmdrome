@@ -269,6 +269,7 @@ consumers of probe state.
 - **Fix**: keep head slice (bounded `max(tracks*2,50)`, not `500`), document that orphan-heavy + unrelated + re-encoded is manual `File Matching` by design — `sweep-all` already covers `1:1` libraries (`111/116`, `10000/10000`). No `collectFallbackProbeTargets` scoring helper — rejected as over-engineered. Existing fallback stays.
 - **Files**: `metadataScanner.ts:884` — no change.
 - **Impact**: LOW — docs only. [x] **Closed 2026-08-21**.
+- **REVISED 2026-08-21 (user field report: "scan doesn't read no-safe-match files")**: the zero-hints-only fallback permanently abandoned unhinted files whenever even ONE file was hinted, and their rows sat at "not probed" forever. Replaced by a rotating unhinted window appended after the (uncapped) ranked set — `max(unclaimedTrackCount*2, 100)` per run; probed files leave the pool next run, so coverage advances monotonically while each scan stays bounded. Orphan-heavy is no longer "manual by design"; convergence now happens across ordinary scans. See DEVLOG 2026-08-21.
 
 ### 7.2 TTL-aware `not-probed` — view-layer only (revised)
 
@@ -276,6 +277,7 @@ consumers of probe state.
 - **Fix**: keep `reason='not-probed'` pure. If needed, `SettingsView.svelte:303` tooltip reads `tagCache` entry `status/probedAt` via future `getTagCacheEntry(path)` helper and shows `retry in Xm`. Deferred — `SettingsView.svelte:306` already reactive `active ? Reading... : Run Scan again` is sufficient for now. No scorer variant.
 - **Files**: `SettingsView.svelte:303` — deferred.
 - **Impact**: LOW — deferred.
+- **REVISED 2026-08-21**: done without breaking purity — index entries now carry an in-memory `probeStatus` annotation (stamped wherever fresh cache entries are applied; dropped by `slimIndexForPersistence`, so the pure core stays Dexie-free), and `deriveNoMatchReason` returns a new honest `read-failed` reason for `unreadable`/`network-error` candidates plus `no-identity-tags` for probed-but-empty ones (the field-report bug where fully-probed pools still said "run Scan to read them"). Pinned in `metadataCore.test.ts` + `scannerLifecycle.test.ts`.
 
 ### 7.3 Partial-index honesty [x]
 

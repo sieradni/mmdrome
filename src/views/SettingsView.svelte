@@ -305,8 +305,9 @@
     'tags-contradict': () => "The file's tags name a different song.",
     'not-probed': (_row: UnresolvedTrack) => get(tagProbeState).active
       ? 'Reading file tags…'
-      : 'File tags not read yet — run Scan for changes to read them.',
-    'no-identity-tags': () => 'The file has no identity tags (title/artist) to match on.',
+      : 'File tags not read yet — run Scan for changes to keep reading files in the background.',
+    'read-failed': () => 'File tags could not be read — the server may be busy or the file damaged. It is retried automatically later.',
+    'no-identity-tags': () => 'The file has no identity tags (title/artist) to match on — select the file manually.',
     'duration-conflict': () => 'File duration differs by more than 2 seconds — a different version.',
     'weak-evidence': () => 'Best evidence is below the automatic match confidence threshold.',
     'ambiguous': (row) => (row.candidates.length > 1

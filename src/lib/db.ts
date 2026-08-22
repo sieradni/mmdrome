@@ -27,6 +27,10 @@ export interface WebdavFileEntry {
   lastModified?: string
   /** Identity tags harvested from a content probe (`probeFileTags`). */
   tags?: FileTags
+  /** Probe outcome for THIS entry's freshest cache record (in-memory annotation
+   *  only — `slimIndexForPersistence` drops it like `tags`). Distinguishes
+   *  "never probed" from "probed but empty/unreadable" in no-match reasons. */
+  probeStatus?: FileTagCacheEntry['status']
 }
 
 /** Identity metadata read from a file's tags (not filename-derived). */

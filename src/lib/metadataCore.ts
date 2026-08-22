@@ -305,6 +305,10 @@ export type NoMatchReason =
   | 'tags-contradict'
   /** A size/filename candidate exists but its tags were never read (or the read failed). */
   | 'not-probed'
+  /** The read was ATTEMPTED but failed (network error or unparseable file) —
+   *  retried by TTL, not by rescanning. Distinct from `not-probed` so the UI
+   *  never tells the user to rerun a scan that cannot help (2026-08-21). */
+  | 'read-failed'
   /** The file was probed but carries no title identity to match on. */
   | 'no-identity-tags'
   /** The file's tag duration differs beyond ±2 s — a different version (6.4). */
@@ -316,21 +320,33 @@ export type NoMatchReason =
 
 /** Why a track with no confident match missed, derived from the same scored
  *  evidence the verdict used. `allCandidates` is the same-type file set (the
- *  probe-contradicted files are absent from `scored` — they scored 0). */
+ *  probe-contradicted files are absent from `scored` — they scored 0). Entries
+ *  carry the in-memory `probeStatus` annotation, so "never probed", "probed but
+ *  empty", and "probed but the read failed" are told apart honestly. */
 function deriveNoMatchReason(scored: ScoredEntry[], allCandidates: WebdavFileEntry[]): NoMatchReason {
   if (scored.length === 0) {
     if (allCandidates.length === 0) return 'no-file-on-server'
     // Every same-type file scored 0 — either its probed tags contradicted the
     // track (6.5b suppression) or it is untagged with no size/filename hint.
     const anyIdentity = allCandidates.some((e) => !!normalizeForMatch(e.tags?.title ?? ''))
-    return anyIdentity ? 'tags-contradict' : 'not-probed'
+    if (anyIdentity) return 'tags-contradict'
+    const anyFailed = allCandidates.some((e) => e.probeStatus === 'network-error' || e.probeStatus === 'unreadable')
+    if (anyFailed) return 'read-failed'
+    const anyUnprobed = allCandidates.some((e) => !e.probeStatus)
+    return anyUnprobed ? 'not-probed' : 'no-identity-tags'
   }
   const top = scored[0]
   if (top.tagDurationConflict) return 'duration-conflict'
   if (top.tagScore === 0) {
-    // The best lead scored only on filename/size — its tags are missing
-    // (never probed / read failed) or empty (no identity to match on).
-    return top.entry.tags ? 'no-identity-tags' : 'not-probed'
+    // The best lead scored only on filename/size — distinguish its tag state:
+    // tags object present = probed but no identity title; failure status = the
+    // read was attempted and failed; otherwise it was never probed.
+    if (!top.entry.tags) {
+      if (top.entry.probeStatus === 'unreadable' || top.entry.probeStatus === 'network-error') return 'read-failed'
+      if (top.entry.probeStatus) return 'no-identity-tags'
+      return 'not-probed'
+    }
+    return 'no-identity-tags'
   }
   return 'weak-evidence'
 }

@@ -332,8 +332,13 @@ async function refreshIndexForSession(session: WebdavSession): Promise<boolean> 
     const tagFingerprint = computeTagCacheFingerprint([...cached.values()])
     for (const entry of freshIndex) {
       const tag = cached.get(entry.path)
-      if (tag && tagCacheEntryIsFresh(tag, entry.size, entry.lastModified) && tag.status === 'ok' && tag.metadata) {
-        entry.tags = metadataToTags(tag.metadata)
+      if (tag && tagCacheEntryIsFresh(tag, entry.size, entry.lastModified)) {
+        // Annotate EVERY fresh outcome — including failures — so no-match
+        // reasons can distinguish "never read" from "read attempted, failed".
+        entry.probeStatus = tag.status
+        if (tag.status === 'ok' && tag.metadata) {
+          entry.tags = metadataToTags(tag.metadata)
+        }
       }
     }
     if (!isCurrentSession(session)) return false
@@ -595,9 +600,13 @@ async function applyCachedTags(): Promise<boolean> {
     // Do not let an expired in-memory annotation survive while the cache entry
     // is being re-probed; stale identity can produce a false candidate.
     e.tags = undefined
+    e.probeStatus = undefined
     const cached = tagCache.get(e.path)
-    if (cached && tagCacheEntryIsFresh(cached, e.size, e.lastModified) && cached.status === 'ok' && cached.metadata) {
-      e.tags = metadataToTags(cached.metadata)
+    if (cached && tagCacheEntryIsFresh(cached, e.size, e.lastModified)) {
+      e.probeStatus = cached.status
+      if (cached.status === 'ok' && cached.metadata) {
+        e.tags = metadataToTags(cached.metadata)
+      }
     }
   }
   return isCurrentSession(session)
@@ -835,6 +844,7 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
     const cached = tagCache.get(entry.path)
     if (!cached || !tagCacheEntryIsFresh(cached, entry.size, entry.lastModified)
         || cached.status !== 'ok' || !cached.metadata) continue
+    entry.probeStatus = cached.status
     entry.tags = metadataToTags(cached.metadata)
     const boundTrackId = maybeAutoBindFromProbe(
       entry,
@@ -863,22 +873,33 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
     return autoBoundTrackIds
   }
 
-  // Hint ordering: byte-size suggestions first (strong), then filename hints,
-  // then the rest. When the server is close to the library size, sweep all
-  // remaining unclaimed audio files so arbitrary filenames cannot starve tag
-  // matching; otherwise keep the orphan-forest guard.
+  // Hint ordering: byte-size suggestions first (strong), then filename hints.
+  // When the server is close to the library size, sweep all remaining
+  // unclaimed audio files so arbitrary filenames cannot starve tag matching.
   const sweep = planProbeSweep(unclaimedAudioFileCount, unclaimedTrackCount)
   const rank = new Map<string, number>()
   for (const e of pool) {
     let r = 0
     if (e.size && unclaimedSizes.has(e.size)) r = 2
     else if (filenameHintsTitle(e.filename, unclaimedTitles)) r = 1
-    if (sweep === 'sweep-all' || r > 0) rank.set(e.path, r)
+    if (r > 0) rank.set(e.path, r)
   }
-  let hinted = sweep === 'sweep-all' ? pool : pool.filter((e) => rank.has(e.path))
-  if (sweep === 'hint-gated' && hinted.length === 0 && pool.length > 0 && unclaimedTrackCount > 0) {
-    const fallbackCap = Math.max(unclaimedTrackCount * 2, 50)
-    hinted = pool.slice(0, fallbackCap)
+  let hinted: WebdavFileEntry[]
+  if (sweep === 'sweep-all') {
+    hinted = pool
+  } else {
+    // Progressive coverage: hinted files first (uncapped — live evidence is
+    // always worth reading now), then a bounded rotating window of unhinted
+    // files. Probed files leave the pool on the next run (fresh cache), so the
+    // window advances monotonically: repeated scans eventually read every
+    // audio file without any single scan sweeping an orphan-heavy server. The
+    // previous fallback only fired when NO hint matched at all, which
+    // permanently abandoned unhinted files whenever even one file was hinted —
+    // their tracks then sat at "not probed" forever (2026-08-21 defect).
+    const ranked = pool.filter((e) => rank.has(e.path))
+    const unhintedBudget = Math.max(unclaimedTrackCount * 2, 100)
+    const unhinted = pool.filter((e) => !rank.has(e.path)).slice(0, unhintedBudget)
+    hinted = ranked.concat(unhinted)
   }
   hinted.sort((a, b) => (rank.get(b.path) ?? 0) - (rank.get(a.path) ?? 0) || a.path.localeCompare(b.path))
 
@@ -912,6 +933,7 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
         await persistTagEntry(next)
         if (tagProbeGen !== gen || !isCurrentSession(session)) return
         tagCache.set(entry.path, next)
+        entry.probeStatus = next.status
         if (hasIdentity && next.metadata) {
           entry.tags = metadataToTags(next.metadata)
           const boundTrackId = maybeAutoBindFromProbe(
@@ -940,6 +962,7 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
         await persistTagEntry(next)
         if (tagProbeGen !== gen || !isCurrentSession(session)) return
         tagCache.set(entry.path, next)
+        entry.probeStatus = next.status
       }
       if (tagProbeGen !== gen || !isCurrentSession(session)) return
       done++
@@ -1121,7 +1144,19 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
     // this scan itself should re-queue previously-unmatched rows immediately.
     const tagEvidenceUnchanged = priorForThisSession?.tagFingerprint !== undefined
       && computeTagCacheFingerprint([...tagCache.values()]) === priorForThisSession.tagFingerprint
-    if (!setUnchanged || !tagEvidenceUnchanged) {
+    // Unprobed audio files remain: the tag-evidence channel has not converged,
+    // so unmatched rows must be re-scored against whatever evidence exists —
+    // including the probe-failed/offline case where this run's probe wrote
+    // nothing and BOTH fingerprints are unchanged. Without this condition such
+    // a scan reported "no changes" while File Matching rows sat unresolved
+    // (2026-08-21 deadlock). Same freshness predicate as the probe pool, so
+    // the gate closes exactly when the probe itself would stop doing work.
+    const hasUnprobedAudioFiles = index.some((e) => {
+      if (!isAudioFilePath(e.filename)) return false
+      const cached = tagCache.get(e.path)
+      return !(cached && tagCacheEntryIsFresh(cached, e.size, e.lastModified))
+    })
+    if (!setUnchanged || !tagEvidenceUnchanged || hasUnprobedAudioFiles) {
       pendingTracks.push(...unmatched)
     }
   }

@@ -367,6 +367,114 @@ test('unresolved rows carry a per-row no-match reason from the probe cache', asy
   teardown()
 })
 
+test('a probed-but-empty candidate reports no-identity-tags, not not-probed (2026-08-21)', async () => {
+  setupMocks()
+  initWebdav()
+  library.set([track()])
+
+  // The file IS read (probe succeeds) but carries no identity title. The row
+  // must not tell the user to rescan — rescanning cannot add identity that
+  // the file does not have.
+  mockEntries = [entry({ path: '/dav/files/user/Whatever.flac', filename: 'Whatever.flac', size: 12345 })]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/Whatever.flac': fileMeta({ title: undefined, artist: undefined, album: undefined } as Partial<FileMetadata>),
+  }
+
+  await scanAll('force')
+  const result = await listUnresolvedMatches()
+  const row = result.rows.find((r) => r.kind === 'no-match')
+  assert.ok(row, 'the unclaimed track lists as no-match')
+  assert.equal(row.reason, 'no-identity-tags', 'probed-empty is honest, not "not read yet"')
+
+  teardown()
+})
+
+test('hint-gated probing rotates: unhinted files are read even when hints matched (2026-08-21)', async () => {
+  setupMocks()
+  initWebdav()
+  library.set([track()])
+
+  // One size-hinted file whose tags name a DIFFERENT song (never binds, keeps
+  // the track unclaimed) plus 600 unhinted files (no size/filename signal).
+  // 600 > the 500 sweep-all floor, so the probe runs hint-gated. The old
+  // fallback only fired when NO hint matched, so the 600 were abandoned
+  // forever; the rotation reads a bounded window of them per scan.
+  const ORPHANS = 600
+  mockEntries = [
+    entry({ path: '/dav/files/user/Hinted.flac', filename: 'Hinted.flac', size: 12345 }),
+    ...Array.from({ length: ORPHANS }, (_, i) =>
+      entry({ path: `/dav/files/user/Orphan ${String(i).padStart(3, '0')}.flac`, filename: `Orphan ${String(i).padStart(3, '0')}.flac`, size: 999000 + i })),
+  ]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/Hinted.flac': fileMeta({ title: 'Different Song', artist: 'Someone Else' }),
+    ...Object.fromEntries(
+      Array.from({ length: ORPHANS }, (_, i) => [
+        `/dav/files/user/Orphan ${String(i).padStart(3, '0')}.flac`,
+        fileMeta({ title: `Unrelated ${i}`, artist: 'Various' }),
+      ]),
+    ),
+  }
+
+  await scanAll('modified')
+  const firstRunReads = readCallCount
+  // 1 hinted + the 100-file unhinted window — NOT all 601, NOT zero.
+  assert.ok(firstRunReads >= 100 && firstRunReads < ORPHANS, `bounded unhinted window flows alongside the hinted one (got ${firstRunReads})`)
+
+  // Second scan: probed files left the pool, so the window rotates forward.
+  await scanAll('modified')
+  assert.ok(readCallCount > firstRunReads, `rotation advances coverage (run1=${firstRunReads}, total=${readCallCount})`)
+
+  // The track was never bound (its candidate contradicts) — the point is
+  // coverage progress, not a bind.
+  assert.equal(get(metadataCache).get('t1')?.webdavPath, undefined)
+
+  teardown()
+})
+
+test('modified scan re-queues unmatched rows while unprobed files remain, even with stable fingerprints (2026-08-21)', async () => {
+  setupMocks()
+  initWebdav()
+
+  // An ignored row is excluded from the probe's unclaimed set (probe no-ops,
+  // writes nothing), so both fingerprints stay stable across scans — the old
+  // gate skipped the drain entirely ("0 scanned / no changes") while the
+  // files backing the row were never read.
+  library.set([track()])
+  updateMetadata({
+    trackId: 't1',
+    rating: 0,
+    loved: false,
+    fileType: 'flac',
+    syncStatus: 'synced',
+    lastModifiedLocally: Date.now(),
+    ignored: true,
+  })
+  mockEntries = [
+    entry({ path: '/dav/files/user/A.flac', filename: 'A.flac', size: 1 }),
+    entry({ path: '/dav/files/user/B.flac', filename: 'B.flac', size: 2 }),
+  ]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/A.flac': fileMeta({ title: 'Unrelated A' }),
+    '/dav/files/user/B.flac': fileMeta({ title: 'Unrelated B' }),
+  }
+
+  await scanAll('modified')
+  const first = get(metadataScanState)
+  assert.equal(first.status, 'complete')
+  assert.equal(first.progress.total, 1, 'first scan queues the unmatched row')
+
+  await scanAll('modified')
+  const second = get(metadataScanState)
+  assert.equal(second.status, 'complete')
+  assert.equal(second.progress.total, 1, 'second scan still queues the row while files remain unprobed')
+  assert.equal(second.progress.scanned, 1, 'not a 0/0 "no changes" short-circuit')
+
+  teardown()
+})
+
 test('partial index blocks vanished-path clearing', async () => {
   setupMocks()
   initWebdav()
