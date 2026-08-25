@@ -20,15 +20,16 @@
   import type { SettingsMap } from '../stores/appState'
   import type { WebdavFileEntry } from '../lib/db'
 
-  type SettingsTab = 'sources' | 'playback' | 'library' | 'about'
+  type SettingsTab = 'sources' | 'scrobbling' | 'playback' | 'library' | 'about'
 
   const savedSettingsState = restoreViewStateSession<{ tab?: SettingsTab; scrollTops?: Record<string, number> }>('settings')
 
   let tab = $state<SettingsTab>(savedSettingsState?.tab ?? 'sources')
-  let scrollTops = $state<Record<string, number>>({ sources: 0, playback: 0, library: 0, about: 0, ...(savedSettingsState?.scrollTops ?? {}) })
+  let scrollTops = $state<Record<string, number>>({ sources: 0, scrobbling: 0, playback: 0, library: 0, about: 0, ...(savedSettingsState?.scrollTops ?? {}) })
 
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'sources', label: 'Sources' },
+    { id: 'scrobbling', label: 'Scrobble' },
     { id: 'playback', label: 'Playback' },
     { id: 'library', label: 'Library' },
     { id: 'about', label: 'About' },
@@ -678,11 +679,11 @@
 <div class="flex h-full flex-col">
   <div class="border-b border-white/10 px-4 py-3">
     <h2 class="text-sm font-medium uppercase tracking-wider text-muted">Settings</h2>
-    <div class="mt-2 flex gap-1">
+    <div class="mt-2 flex gap-1 overflow-x-auto">
       {#each tabs as t (t.id)}
         <button
           onclick={() => switchTab(t.id)}
-          class="rounded-lg px-4 py-1.5 text-sm font-medium transition-colors"
+          class="whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
           class:bg-surface-hover={tab === t.id}
           class:text-primary={tab === t.id}
           class:text-muted={tab !== t.id}
@@ -908,9 +909,24 @@
           </div>
         </section>
 
-        <!-- Scrobbling services -->
+      {/if}
+
+      {#if tab === 'scrobbling'}
+        <!-- Navidrome forwarding -->
         <section class="px-4 py-4">
-          <h3 class="mb-3 text-base font-medium text-primary">Scrobbling</h3>
+          <h3 class="mb-3 text-base font-medium text-primary">Navidrome</h3>
+          <label class="flex cursor-pointer items-center gap-3">
+            <input type="checkbox" checked={$settings.scrobbling ?? false} onchange={setScrobbling} class="accent-yellow-500" />
+            <div>
+              <p class="text-base text-primary">Scrobble to Navidrome</p>
+              <p class="text-sm text-muted">Report plays and now-playing to your server (bumps its play counts). Navidrome can forward these to Last.fm / ListenBrainz if configured server-side.</p>
+            </div>
+          </label>
+        </section>
+
+        <!-- Direct services -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Direct Services</h3>
           <p class="mb-2 text-sm text-muted">Report plays and hearts straight to your music profiles — no server-side setup needed. Works even when Navidrome is not forwarding to Last.fm.</p>
           <div class="space-y-4">
             <!-- Last.fm -->
@@ -1084,17 +1100,6 @@
               >{mode === 'off' ? 'Off' : mode === 'track' ? 'Track Gain' : 'Album Gain'}</button>
             {/each}
           </div>
-        </section>
-
-        <!-- Scrobbling -->
-        <section class="px-4 py-4">
-          <label class="flex cursor-pointer items-center gap-3">
-            <input type="checkbox" checked={$settings.scrobbling ?? false} onchange={setScrobbling} class="accent-yellow-500" />
-            <div>
-              <p class="text-base text-primary">Scrobble to Navidrome</p>
-              <p class="text-sm text-muted">Report plays and now-playing status. Navidrome forwards to Last.fm / ListenBrainz if configured there.</p>
-            </div>
-          </label>
         </section>
       {/if}
 

@@ -145,9 +145,12 @@ export class ScrobbleFlushEngine {
     this.opts = opts
   }
 
-  /** App-init wiring: pending count restore, online kick, slow periodic tick. */
+  /** App-init wiring: pending count restore + immediate drain, online kick, slow periodic tick. */
   init(): void {
-    void this.store.count().then((pending) => scrobbleFlushStatus.update((s) => ({ ...s, pending })))
+    void this.store.count().then((pending) => {
+      scrobbleFlushStatus.update((s) => ({ ...s, pending }))
+      if (pending > 0) this.kick()
+    })
     window.addEventListener('online', () => this.kick())
     setInterval(() => {
       let pending = 0
