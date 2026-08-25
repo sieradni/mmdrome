@@ -1,5 +1,6 @@
 import Dexie, { type EntityTable } from 'dexie'
 import type { FileMetadata } from './metadataReader'
+import type { ScrobbleKind } from './lastfmCore'
 
 export interface LocalMetadataStore {
   trackId: string
@@ -104,6 +105,28 @@ export interface PlayQueueState {
   activeIndex: number
 }
 
+/**
+ * Durable outbound queue for direct scrobbling/hearts (Last.fm + ListenBrainz).
+ * `kind` discriminates the destination call; the unique compound index makes
+ * duplicate enqueues (same play re-evaluated, double heart event) a no-op at
+ * the DB layer instead of a manual pre-check.
+ */
+export interface PendingScrobbleRow {
+  seq?: number
+  kind: ScrobbleKind
+  artist: string
+  track: string
+  album?: string
+  albumArtist?: string
+  /** Seconds. */
+  duration?: number
+  /** Unix seconds — listen start for time-sensitive kinds, enqueue time otherwise. */
+  timestamp: number
+  /** Epoch ms — arrival order/diagnostics. */
+  queuedAt: number
+  attempts: number
+}
+
 const db = new Dexie('mmdrome') as Dexie & {
   localMetadata: EntityTable<LocalMetadataStore, 'trackId'>
   userSettings: EntityTable<UserSettings, 'key'>
@@ -111,6 +134,7 @@ const db = new Dexie('mmdrome') as Dexie & {
   webdavFileIndex: EntityTable<WebdavFileIndex, 'id'>
   songLibraryCache: EntityTable<SongLibraryCache, 'id'>
   webdavFileTags: EntityTable<FileTagCacheEntry, 'id'>
+  pendingScrobbles: EntityTable<PendingScrobbleRow, 'seq'>
 }
 
 db.version(1).stores({
@@ -155,6 +179,19 @@ db.version(5).stores({
   webdavFileTags: 'id, baseKey',
 }).upgrade((tx) => tx.table('webdavFileTags').clear())
 
+db.version(6).stores({
+  localMetadata: 'trackId, syncStatus, rating, loved',
+  userSettings: 'key',
+  playQueue: 'id',
+  webdavFileIndex: 'id',
+  songLibraryCache: 'id',
+  webdavFileTags: 'id, baseKey',
+  // Unique compound index: a repeated enqueue of the same play/heart is a
+  // silent no-op rather than a duplicate delivery (Last.fm dedupes too, but
+  // the queue must not grow unbounded on re-evaluations).
+  pendingScrobbles: '++seq, &[kind+artist+track+timestamp]',
+})
+
 export { db }
 
 export async function getAllMetadata(): Promise<LocalMetadataStore[]> {
@@ -194,6 +231,10 @@ export async function getSetting<T = string>(key: string): Promise<T | undefined
 
 export async function setSetting(key: string, value: string | number | boolean | object): Promise<void> {
   await db.userSettings.put({ key, value })
+}
+
+export async function deleteSetting(key: string): Promise<void> {
+  await db.userSettings.delete(key)
 }
 
 export async function getQueue(): Promise<PlayQueueState | undefined> {
@@ -255,4 +296,35 @@ export async function updateWebdavFileTagFingerprint(
   const current = await db.webdavFileIndex.get('main')
   if (!current || current.baseKey !== baseKey) return
   await db.webdavFileIndex.put({ ...current, tagFingerprint })
+}
+
+// ── Pending scrobble/heart queue (direct Last.fm + ListenBrainz) ──────────
+
+/** Returns false when the unique compound index already holds this event. */
+export async function enqueuePendingScrobble(row: Omit<PendingScrobbleRow, 'seq'>): Promise<boolean> {
+  try {
+    await db.pendingScrobbles.add({ ...row })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function readOldestPending(limit: number): Promise<PendingScrobbleRow[]> {
+  // toCollection() iterates in primary-key order (seq is the ++seq PK) — the
+  // guaranteed oldest-first drain order.
+  return db.pendingScrobbles.toCollection().limit(limit).toArray()
+}
+
+export async function deletePendingBySeq(seqs: number[]): Promise<void> {
+  if (seqs.length === 0) return
+  await db.pendingScrobbles.bulkDelete(seqs)
+}
+
+export async function putPendingScrobble(row: PendingScrobbleRow): Promise<void> {
+  await db.pendingScrobbles.put(row)
+}
+
+export async function countPendingScrobbles(): Promise<number> {
+  return db.pendingScrobbles.count()
 }
