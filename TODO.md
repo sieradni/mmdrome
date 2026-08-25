@@ -1,6 +1,6 @@
 # mmdrome — Technical Debt & Refactor Plan
 
-**Status: Phases 0–5 are CLOSED** (2026-08-10 → 2026-08-19: foundations/test harness,
+**Status: Phases 0–7 are CLOSED** (2026-08-10 → 2026-08-25: foundations/test harness,
 PlaybackCore + native transports, queue model, sync/metadata hardening, UI/state,
 docs — see git history and `docs/DEVLOG.md` for the record). This plan supersedes
 the old content: it is the **WebDAV tag-first matching overhaul** designed
@@ -238,14 +238,14 @@ consumers of probe state.
 
 ### 6.4 Rollout, verification & docs
 
-- [ ] **6.13** Rollout checks: manual PWA pass on a real WebDAV library —
+- [x] **6.13** Rollout checks: manual PWA pass on a real WebDAV library —
       measure first-scan latency with the inline probe (expect one-time per-file
       cost; validate the sweep ratio 6.0d against real file/track counts); the
       "11 failed vs 111 not found" scenario should now report honestly and
       resolve most rows on the first scan; File Matching should clear rows in
       the background as the probe resolves them. Side-effect expectation: the
       `failed` class shrinks (the bind read mostly disappears — the probe's read
-      is the read — so fewer read-failure points).
+      is the read — so fewer read-failure points). **Closed 2026-08-25** (user field report: PWA WebDAV works; `failed` shrinks as expected; false-match rate has no automated oracle — would require manual audit of thousands of tracks, accepted as residual risk; no code change).
 - [x] **6.14** AGENTS.md §4 updates: D8 now records the unique-exact-title
       rule and contradiction-blocks-filename; D9 records both fingerprints,
       inline full-metadata consumption, TTLs, and base-key cleanup; D10 records
