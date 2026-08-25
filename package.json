@@ -28,7 +28,6 @@
     "vite": "^8.1.1"
   },
   "dependencies": {
-    "@capacitor/browser": "^8.0.4",
     "@capacitor/core": "^8.5.0",
     "@capacitor/ios": "^8.5.0",
     "@soundtouchjs/audio-worklet": "^2.1.0",

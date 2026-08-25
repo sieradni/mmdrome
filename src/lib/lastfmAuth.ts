@@ -1,6 +1,5 @@
 import { writable } from 'svelte/store'
 import { get } from 'svelte/store'
-import { Capacitor } from '@capacitor/core'
 import { settings } from '../stores/appState'
 import { getSetting, setSetting, deleteSetting } from './db'
 import {
@@ -88,13 +87,12 @@ interface ConnectDeps {
 
 let connectGen = 0
 
-function defaultOpenUrl(url: string): void | Promise<void> {
-  if (Capacitor.isNativePlatform()) {
-    void import('@capacitor/browser')
-      .then(({ Browser }) => Browser.open({ url }))
-      .catch(() => window.open(url, '_blank'))
-    return
-  }
+function defaultOpenUrl(url: string): void {
+  // `window.open` works on both the PWA and the native WebView; the
+  // approval page is opened in the system browser / external tab. The UI
+  // also renders `pendingAuthUrl` as a manual fallback link in case a
+  // popup blocker refuses the programmatic open (it runs after the awaited
+  // getToken round-trip).
   window.open(url, '_blank', 'noopener')
 }
 
