@@ -11,6 +11,7 @@ A self-hosted, mobile-first music player PWA. Streams from a Navidrome server vi
 - **iOS background audio** — handoff mechanism with media session controls, position polling, and EQ/filter bypass
 - **Queue system** — user queue + auto-queue, shuffle, loop-one/loop-all, album/artist scoping
 - **WebDAV metadata writing** — edit ratings, loved status, and comments back to your audio files via taglib-wasm
+- **Direct scrobbling** — Last.fm (desktop auth flow) and ListenBrainz (user token) integration client-side: durable offline queue, now-playing, and outward heart sync — no server-side setup needed; Navidrome forwarding can stay off
 - **Fuzzy search** — search tracks, artists, albums
 - **PWA** — installable, works offline, service worker
 
