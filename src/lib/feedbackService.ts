@@ -4,6 +4,8 @@ import type { Track } from '../stores/appState'
 import type { LocalMetadataStore } from '../lib/db'
 import { getAllMetadata } from '../lib/db'
 import { getCachedConfig, setNavidromeRating, setNavidromeStarred } from './navidromeApi'
+import { getCachedLfmSession } from './lastfmAuth'
+import { scrobbleFlushEngine } from './scrobbleFlush'
 
 /**
  * Single place where rating/loved changes from the UI are committed. Routes to the
@@ -25,9 +27,9 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
   const source = get(settings).ratingSource ?? 'webdav'
   const syncToNavidrome = get(settings).syncToNavidrome ?? false
   const writeTags = get(settings).writeTagsInNavidromeMode ?? false
+  const existing = get(metadataCache).get(track.trackId)
 
   if (source === 'navidrome') {
-    const existing = get(metadataCache).get(track.trackId)
     const meta: LocalMetadataStore = {
       trackId: track.trackId,
       rating,
@@ -50,11 +52,11 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
     // cleared (rating 0 with a nonzero prior local value) without wiping a
     // server-side rating a track just gets a ♥ for.
     void pushToNavidrome(track, rating, loved, existing?.rating ?? 0)
+    fanOutHearts(track, loved, existing?.loved ?? false)
     return
   }
 
   // webdav source of truth
-  const existing = get(metadataCache).get(track.trackId)
   const meta: LocalMetadataStore = {
     trackId: track.trackId,
     rating,
@@ -75,6 +77,32 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
 
   if (syncToNavidrome) {
     void pushToNavidrome(track, rating, loved, existing?.rating ?? 0)
+  }
+
+  fanOutHearts(track, loved, existing?.loved ?? false)
+}
+
+/**
+ * Outward-only heart mirror to the direct scrobbler services (2026-08-25).
+ * Fires ONLY on an actual local loved-flag flip — a rating edit with unchanged
+ * heart must not re-deliver. Queued durably (survives offline) and idempotent
+ * server-side; there is deliberately NO reverse import (Last.fm exposes no
+ * love timestamps, so a merge basis doesn't exist).
+ */
+function fanOutHearts(track: Track, loved: boolean, prevLoved: boolean): void {
+  if (loved === prevLoved) return
+  const artist = track.artist?.trim()
+  const title = track.title?.trim()
+  if (!artist || !title) return
+
+  const s = get(settings)
+  if (s.lastfmScrobbling && getCachedLfmSession()) {
+    void scrobbleFlushEngine.enqueue(loved ? 'lfm-love' : 'lfm-unlove', artist, title)
+      .catch((err) => console.warn('[scrobble] heart enqueue failed:', err))
+  }
+  if (s.listenbrainzScrobbling && s.listenbrainzToken) {
+    void scrobbleFlushEngine.enqueue(loved ? 'lb-love' : 'lb-unlove', artist, title)
+      .catch((err) => console.warn('[scrobble] heart enqueue failed:', err))
   }
 }
 

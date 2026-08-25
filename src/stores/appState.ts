@@ -77,6 +77,13 @@ export interface SettingsMap {
   ratingSource?: 'webdav' | 'navidrome'
   syncToNavidrome?: boolean
   writeTagsInNavidromeMode?: boolean
+  /** Direct-scrobbler toggles — govern ALL outbound activity of that service (plays + hearts). */
+  lastfmScrobbling?: boolean
+  listenbrainzScrobbling?: boolean
+  listenbrainzToken?: string
+  /** BYO Last.fm API credentials override the compiled defaults. */
+  lastfmApiKey?: string
+  lastfmApiSecret?: string
 }
 
 export const currentTrack = writable<Track | null>(null)
@@ -341,7 +348,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'lastfmApiKey', 'lastfmApiSecret']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]

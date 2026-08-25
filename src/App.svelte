@@ -7,6 +7,8 @@
   import { loadLibraryFromNavidrome } from './lib/syncEngine'
   import { ensureTagProbeAfterRestore } from './lib/metadataScanner'
   import { setCachedConfig } from './lib/navidromeApi'
+  import { restoreLfmSession } from './lib/lastfmAuth'
+  import { scrobbleFlushEngine } from './lib/scrobbleFlush'
   import { playbackManager } from './lib/playbackManager'
   import { audioManager } from './lib/audioManager'
   import { engine } from './lib/engineFacade'
@@ -75,6 +77,11 @@
       initError = 'Failed to initialize EQ settings: ' + (err instanceof Error ? err.message : String(err))
       return
     }
+
+    // Direct-scrobbler wiring: restore the Last.fm session before the playback
+    // manager enables the tracker, and start the durable flush engine.
+    await restoreLfmSession()
+    scrobbleFlushEngine.init()
 
     const s = $settings
     if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {

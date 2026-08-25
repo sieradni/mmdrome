@@ -12,6 +12,9 @@
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
+  import { connectLfm, disconnectLfm, lastfmAuthPhase, pendingAuthUrl, getCachedLfmSession } from '../lib/lastfmAuth'
+  import { scrobbleFlushStatus } from '../lib/scrobbleFlush'
+  import { lbValidateToken } from '../lib/listenbrainzApi'
   import { getCachedConfig, setCachedConfig, cachedConfigMatches } from '../lib/navidromeApi'
   import { tick } from 'svelte'
   import type { SettingsMap } from '../stores/appState'
@@ -68,7 +71,7 @@
     })
   }
 
-  function onInput(field: 'webdavUrl' | 'webdavUser' | 'webdavToken' | 'navidromeUrl' | 'navidromeUser' | 'navidromePassword') {
+  function onInput(field: 'webdavUrl' | 'webdavUser' | 'webdavToken' | 'navidromeUrl' | 'navidromeUser' | 'navidromePassword' | 'listenbrainzToken' | 'lastfmApiKey' | 'lastfmApiSecret') {
     return (e: Event) => {
       updateSetting(field, (e.target as HTMLInputElement).value)
     }
@@ -119,6 +122,50 @@
 
   function setScrobbling() {
     updateSetting('scrobbling', !($settings.scrobbling ?? false))
+  }
+
+  function setLastfmScrobbling() {
+    updateSetting('lastfmScrobbling', !($settings.lastfmScrobbling ?? false))
+  }
+
+  function setListenbrainzScrobbling() {
+    updateSetting('listenbrainzScrobbling', !($settings.listenbrainzScrobbling ?? false))
+  }
+
+  let lfmError = $state('')
+  let lbChecking = $state(false)
+  let lbTokenResult = $state('')
+
+  async function connectLastfm() {
+    lfmError = ''
+    try {
+      await connectLfm()
+    } catch (err) {
+      lfmError = err instanceof Error ? err.message : String(err)
+    }
+  }
+
+  async function disconnectLastfm() {
+    lfmError = ''
+    await disconnectLfm()
+  }
+
+  async function testListenBrainzToken() {
+    lbChecking = true
+    lbTokenResult = ''
+    try {
+      const token = ($settings.listenbrainzToken ?? '').trim()
+      if (!token) {
+        lbTokenResult = 'Enter a token first (listenbrainz.org/settings).'
+        return
+      }
+      const v = await lbValidateToken(token)
+      lbTokenResult = v.valid ? `Validated as ${v.username}` : 'Invalid token.'
+    } catch (err) {
+      lbTokenResult = `Validation failed: ${err instanceof Error ? err.message : String(err)}`
+    } finally {
+      lbChecking = false
+    }
   }
 
   /**
@@ -858,6 +905,129 @@
                 <p class="text-sm text-muted">{reconcileResult}</p>
               {/if}
             {/if}
+          </div>
+        </section>
+
+        <!-- Scrobbling services -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Scrobbling</h3>
+          <p class="mb-2 text-sm text-muted">Report plays and hearts straight to your music profiles — no server-side setup needed. Works even when Navidrome is not forwarding to Last.fm.</p>
+          <div class="space-y-4">
+            <!-- Last.fm -->
+            <div class="space-y-3 rounded-lg bg-surface-hover/40 p-3">
+              <div class="flex items-center justify-between">
+                <p class="text-base font-medium text-primary">Last.fm</p>
+                {#if $lastfmAuthPhase === 'connected'}
+                  <span class="text-sm text-green-400">Connected{getCachedLfmSession()?.name ? ' as ' + getCachedLfmSession()!.name : ''}</span>
+                {/if}
+              </div>
+              {#if $lastfmAuthPhase === 'awaiting'}
+                <button disabled class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-2.5 text-sm font-medium text-muted">
+                  <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                  </svg>
+                  Waiting for authorization…
+                </button>
+                <p class="text-sm text-muted">Approve access in the browser tab that opened, then come back here.</p>
+                {#if $pendingAuthUrl}
+                  <p class="text-sm text-muted">Didn't open? <a href={$pendingAuthUrl} target="_blank" rel="noopener" class="text-primary underline">Tap here to open Last.fm</a>.</p>
+                {/if}
+              {:else if $lastfmAuthPhase === 'connected'}
+                <button
+                  onclick={disconnectLastfm}
+                  class="rounded-lg bg-surface-hover px-5 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                >Disconnect</button>
+              {:else}
+                <button
+                  onclick={connectLastfm}
+                  class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-80"
+                >Connect Last.fm</button>
+              {/if}
+              {#if lfmError}
+                <p class="text-sm text-red-400">{lfmError}</p>
+              {/if}
+              <label class="flex cursor-pointer items-center gap-3">
+                <input type="checkbox" checked={$settings.lastfmScrobbling ?? false} onchange={setLastfmScrobbling} class="accent-yellow-500" />
+                <div>
+                  <p class="text-base text-primary">Scrobble and sync hearts to Last.fm</p>
+                  <p class="text-sm text-muted">Plays queue up and are retried while offline; heart changes mirror outward.</p>
+                </div>
+              </label>
+            </div>
+
+            <!-- ListenBrainz -->
+            <div class="space-y-3 rounded-lg bg-surface-hover/40 p-3">
+              <p class="text-base font-medium text-primary">ListenBrainz</p>
+              <input
+                type="password"
+                placeholder="User token (listenbrainz.org/settings)"
+                value={$settings.listenbrainzToken ?? ''}
+                oninput={onInput('listenbrainzToken')}
+                class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+              />
+              <div class="flex items-center gap-3">
+                <button
+                  onclick={testListenBrainzToken}
+                  disabled={lbChecking}
+                  class="flex items-center justify-center gap-2 rounded-lg bg-surface-hover px-5 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                >
+                  {#if lbChecking}
+                    <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Checking…
+                  {:else}
+                    Validate Token
+                  {/if}
+                </button>
+                {#if lbTokenResult}
+                  <span class="text-sm {lbTokenResult.startsWith('Validated') ? 'text-green-400' : 'text-red-400'}">{lbTokenResult}</span>
+                {/if}
+              </div>
+              <label class="flex cursor-pointer items-center gap-3">
+                <input type="checkbox" checked={$settings.listenbrainzScrobbling ?? false} onchange={setListenbrainzScrobbling} class="accent-yellow-500" />
+                <div>
+                  <p class="text-base text-primary">Scrobble to ListenBrainz</p>
+                  <p class="text-sm text-muted">Same durable offline queue as Last.fm.</p>
+                </div>
+              </label>
+            </div>
+
+            <!-- Queue status + double-count warning -->
+            {#if $scrobbleFlushStatus.pending > 0 || $scrobbleFlushStatus.dropped > 0 || $scrobbleFlushStatus.skippedNoMbid > 0}
+              <p class="text-sm text-muted">
+                Queue: {$scrobbleFlushStatus.pending} pending{$scrobbleFlushStatus.dropped > 0 ? `, ${$scrobbleFlushStatus.dropped} expired/dropped` : ''}{$scrobbleFlushStatus.skippedNoMbid > 0 ? `, ${$scrobbleFlushStatus.skippedNoMbid} unmatched on ListenBrainz` : ''}.
+              </p>
+            {/if}
+            {#if $scrobbleFlushStatus.lastError}
+              <p class="text-sm text-red-400">Last sync issue: {$scrobbleFlushStatus.lastError} — will retry automatically.</p>
+            {/if}
+            {#if ($settings.scrobbling ?? false) && (($lastfmAuthPhase === 'connected' && ($settings.lastfmScrobbling ?? false)) || (($settings.listenbrainzScrobbling ?? false) && $settings.listenbrainzToken))}
+              <p class="text-sm text-yellow-500/90">If your Navidrome server also forwards scrobbles to Last.fm, enable only one path — otherwise plays count twice.</p>
+            {/if}
+
+            <details class="text-sm">
+              <summary class="cursor-pointer text-muted">Use your own Last.fm API credentials</summary>
+              <div class="mt-2 space-y-2">
+                <input
+                  type="text"
+                  placeholder="API key"
+                  value={$settings.lastfmApiKey ?? ''}
+                  oninput={onInput('lastfmApiKey')}
+                  class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                />
+                <input
+                  type="password"
+                  placeholder="Shared secret"
+                  value={$settings.lastfmApiSecret ?? ''}
+                  oninput={onInput('lastfmApiSecret')}
+                  class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                />
+                <p class="text-muted">Overrides the built-in mmdrome credentials (from last.fm/api/account/create).</p>
+              </div>
+            </details>
           </div>
         </section>
       {/if}
