@@ -1,6 +1,5 @@
 import { writable } from 'svelte/store'
 import { get } from 'svelte/store'
-import { Capacitor } from '@capacitor/core'
 import { settings } from '../stores/appState'
 import {
   enqueuePendingScrobble,
@@ -74,7 +73,9 @@ export interface SubmitDeps {
 
 function defaultDeps(): SubmitDeps {
   return {
-    batchSize: () => webBatchSize(),
+    // POST bodies have no URL-length constraint (the old JSONP/GET 20-cap is
+    // gone) — both platforms take full batches up to Last.fm's hard limit.
+    batchSize: () => LFM_SCROBBLE_BATCH_MAX,
     lfmScrobble: (metas) => {
       const session = getCachedLfmSession()
       if (!session) throw new LastfmError(9)
@@ -100,11 +101,6 @@ export class NoMbidMatchError extends Error {
     super('No ListenBrainz MBID match')
     this.name = 'NoMbidMatchError'
   }
-}
-
-function webBatchSize(): number {
-  // JSONP GET URLs must stay under conservative middlebox limits; native POSTs take full batches.
-  return Capacitor.isNativePlatform() ? LFM_SCROBBLE_BATCH_MAX : 20
 }
 
 function lbToken(): string {
