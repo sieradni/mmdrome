@@ -60,9 +60,15 @@ export interface PlaybackTransport {
   /**
    * Arms the next track for the crossfade (target id + url) and remembers the
    * replay-gain fields so the post-switch refresh can re-apply them. Passing
-   * null target/url disarms.
+   * null target/url disarms. `nextDuration` feeds the engine's target-duration
+   * gate (an unknown/short target never fades — natural end advances instead).
    */
-  prepareNext(targetId: string | null, url: string | null, rg?: ReplayGainFields): void
+  prepareNext(
+    targetId: string | null,
+    url: string | null,
+    rg?: ReplayGainFields,
+    nextDuration?: number,
+  ): void
 
   /** Disarms any armed next track. */
   cancelNext(): void

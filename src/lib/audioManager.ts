@@ -8,6 +8,11 @@ import type { EqPoint } from './eq/eqTypes'
 import { get } from 'svelte/store'
 import { currentTrack } from '../stores/appState'
 import { snapPitchToSemitone } from './playbackCore/pitchSnap'
+import {
+  evaluateCrossfadeGate,
+  isSeekInCrossfadeWindow,
+  shouldPauseOldElement,
+} from './playbackCore/crossfadePolicy'
 
 const EQ_FREQUENCIES = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
 const WORKLET_CACHE_BUST = '1' // increment when public/*-processor.js files change
@@ -50,7 +55,22 @@ class AudioManager {
   private _sigmoidSteepness = 6
   private _nextTrackUrl: string | null = null
   private _nextTrackReplayGainLinear: number | null = null
+  /** Metadata duration of the armed target — the `nextTooShort` gate input
+   *  (null = unknown, which the gate treats as too short: never fade blind). */
+  private _nextTrackDuration: number | null = null
   private _transitionArmed = false
+  /** A fade's gain ramps + delayed retire are running (the switch already
+   *  happened). The monitor refuses to execute another until it settles —
+   *  one fade in flight, ever (native `CrossfadeState` parity). */
+  private _fadeInFlight = false
+  /** The tracked retire timer of the in-flight fade. Stale fires are
+   *  validity-checked (`shouldPauseOldElement`) — an element that became
+   *  active again must never be paused (the "next song pauses" bug). */
+  private _retireTimer: ReturnType<typeof setTimeout> | null = null
+  /** A user seek landed inside this track's crossfade window — automation is
+   *  suppressed for the remainder of the track instance (cleared when a new
+   *  target is armed, i.e. on the next track load). */
+  private _seekSuppressed = false
   private _crossfadeInterval: ReturnType<typeof setInterval> | null = null
   private _replayGainMode: 'off' | 'track' | 'album' = 'off'
   private _currentTrackGainDb: number | null = null
@@ -205,18 +225,31 @@ class AudioManager {
   /** Re-arms the crossfade monitor after an exit from background mode. The
    *  enter-bg swap tore the monitor down; `_setupNextTrack` may have re-armed it
    *  already (idempotent — it tears down first), and the resumed element may be
-   *  sitting inside the crossfade window (fires immediately). */
+   *  sitting inside the crossfade window (fires immediately — through the same
+   *  gate as the monitor, so seek suppression and duration readiness hold). */
   resumeCrossfadeAfterBgExit(): void {
     if (this._nextTrackUrl && this._crossfadeDuration > 0 && this._webAudioReady) {
       this._setupCrossfadeMonitor()
       const el = this.activeElement
       const metaDur = get(currentTrack)?.duration ?? 0
-      if (metaDur && metaDur >= this._crossfadeDuration + 1 && !el.paused) {
-        if (el.currentTime >= metaDur - this._crossfadeDuration) {
+      if (metaDur && !el.paused && el.currentTime >= metaDur - this._crossfadeDuration) {
+        if (this._gate().allowed) {
           this._executeCrossfade()
         }
       }
     }
+  }
+
+  /** The shared execution gate: the exact decision set the monitor tick and
+   *  the bg-exit resume consult before executing a fade (crossfadePolicy). */
+  private _gate() {
+    return evaluateCrossfadeGate({
+      fadeDuration: this._crossfadeDuration,
+      currentDuration: get(currentTrack)?.duration ?? 0,
+      hasTarget: Boolean(this._nextTrackUrl),
+      nextDuration: this._nextTrackDuration,
+      seekSuppressed: this._seekSuppressed,
+    })
   }
 
   async ensureWebAudioReady(): Promise<boolean> {
@@ -305,6 +338,12 @@ class AudioManager {
   }
 
   private _cleanupWebAudio(): void {
+    if (this._retireTimer !== null) {
+      clearTimeout(this._retireTimer)
+      this._retireTimer = null
+    }
+    this._fadeInFlight = false
+    this._seekSuppressed = false
     if (this._sourceA) { try { this._sourceA.disconnect() } catch {} }
     if (this._sourceB) { try { this._sourceB.disconnect() } catch {} }
     if (this._gainA) { try { this._gainA.disconnect() } catch {} }
@@ -404,14 +443,62 @@ class AudioManager {
     this.setNextTrack(null)
   }
 
-  setNextTrack(url: string | null, replayGainLinear?: number): void {
+  setNextTrack(url: string | null, replayGainLinear?: number, nextDurationSeconds?: number): void {
     this._nextTrackUrl = url
     this._nextTrackReplayGainLinear = replayGainLinear ?? null
+    this._nextTrackDuration = nextDurationSeconds ?? null
     if (url && this._crossfadeDuration > 0 && this._webAudioReady) {
+      // A fresh arm is a fresh track context: seek suppression from the
+      // PREVIOUS track's window must not leak into it.
+      this._seekSuppressed = false
       this._setupCrossfadeMonitor()
     } else {
       this.teardownCrossfadeMonitor()
     }
+  }
+
+  /**
+   * The user moved the playhead (manager-routed foreground seeks). Two jobs:
+   *  - a seek landing INSIDE the current track's crossfade window latches the
+   *    suppression — scrubbing near the end plays the tail out and advances
+   *    naturally instead of executing one fade per `oninput` event (the skip
+   *    cascade);
+   *  - any in-flight fade COLLAPSES into the already-switched-to track: the
+   *    switch is committed (the queue advanced at execute time), so the ramps
+   *    are snapped and the retired element paused now rather than leaving a
+   *    stale retire timer behind.
+   */
+  markUserSeeked(positionSeconds: number): void {
+    const metaDur = get(currentTrack)?.duration ?? 0
+    if (isSeekInCrossfadeWindow(positionSeconds, metaDur, this._crossfadeDuration)) {
+      this._seekSuppressed = true
+    }
+    this._collapseInFlightFade()
+  }
+
+  /** Finish a running fade immediately: freeze both gain nodes, restore the
+   *  active side to unity and retire the faded-out element. */
+  private _collapseInFlightFade(): void {
+    if (!this._fadeInFlight) return
+    const ctx = this._ctx
+    if (ctx) {
+      const now = ctx.currentTime
+      for (const gain of [this._gainA, this._gainB]) {
+        if (!gain) continue
+        gain.gain.cancelScheduledValues(now)
+        gain.gain.setValueAtTime(gain.gain.value, now)
+      }
+      const activeGain = this._activeElement === 'a' ? this._gainA : this._gainB
+      activeGain?.gain.setValueAtTime(1, now)
+    }
+    if (this._retireTimer !== null) {
+      clearTimeout(this._retireTimer)
+      this._retireTimer = null
+    }
+    // Post-flip the faded-out element IS the standby — pause it unless ended.
+    const retired = this.standbyElement
+    if (!retired.ended) retired.pause()
+    this._fadeInFlight = false
   }
 
   setEqBandGain(bandIndex: number, gainDb: number): void {
@@ -686,15 +773,13 @@ class AudioManager {
 
     this._transitionArmed = false
     this._crossfadeInterval = setInterval(() => {
-      if (!this._nextTrackUrl || this._transitionArmed) return
+      if (!this._nextTrackUrl || this._transitionArmed || this._fadeInFlight) return
       const el = this.activeElement
       const metaDur = get(currentTrack)?.duration ?? 0
       if (!metaDur || el.paused) return
-
-      if (metaDur < this._crossfadeDuration + 1) return
-      const transitionPoint = metaDur - this._crossfadeDuration
-
-      if (el.currentTime >= transitionPoint) {
+      if (el.currentTime >= metaDur - this._crossfadeDuration && this._gate().allowed) {
+        // The gate owns every policy condition (durations both sides, seek
+        // suppression); only the position comparison lives here.
         this._executeCrossfade()
       }
     }, 100)
@@ -709,7 +794,7 @@ class AudioManager {
   }
 
   private _executeCrossfade(): void {
-    if (this._transitionArmed || !this._nextTrackUrl || !this._ctx || !this._webAudioReady) return
+    if (this._transitionArmed || this._fadeInFlight || !this._nextTrackUrl || !this._ctx || !this._webAudioReady) return
     this._transitionArmed = true
 
     const fadeDuration = this._crossfadeDuration
@@ -747,8 +832,11 @@ class AudioManager {
       if (this._crossfadeCurve === 'linear') {
         gain.gain.linearRampToValueAtTime(end, now + fadeDuration)
       } else if (this._crossfadeCurve === 'exponential') {
-        // Use audible start/end values instead of near-silent 0.001
-        gain.gain.exponentialRampToValueAtTime(end, now + fadeDuration)
+        // Exponential ramps are undefined for 0 endpoints (spec) — floor both
+        // at an inaudible epsilon; the delayed retire finishes the fade-out.
+        const EPSILON = 0.0001
+        gain.gain.setValueAtTime(Math.max(start, EPSILON), now)
+        gain.gain.exponentialRampToValueAtTime(Math.max(end, EPSILON), now + fadeDuration)
       } else {
         // Sigmoid/S-curve: manual interpolation for natural crossfade
         for (let i = 1; i <= steps; i++) {
@@ -769,8 +857,18 @@ class AudioManager {
     applyCurve(fadeInGain, 0, 1)
 
     const oldEl = this.activeElement
-    setTimeout(() => {
-      if (!oldEl.ended) oldEl.pause()
+    // One fade in flight: the retire timer is tracked so a seek collapse can
+    // cancel it, and its fire is validity-checked — with alternating elements
+    // a stale fire could target an element that became ACTIVE again and pause
+    // live audio (the reported "next song pauses" bug).
+    this._fadeInFlight = true
+    if (this._retireTimer !== null) clearTimeout(this._retireTimer)
+    this._retireTimer = setTimeout(() => {
+      this._retireTimer = null
+      this._fadeInFlight = false
+      if (shouldPauseOldElement(oldEl.ended, oldEl === this.activeElement)) {
+        oldEl.pause()
+      }
     }, fadeDuration * 1000)
 
     this.teardownCrossfadeMonitor()

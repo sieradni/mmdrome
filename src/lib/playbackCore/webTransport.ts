@@ -32,7 +32,7 @@ export interface WebTransportEngine {
   b: HTMLAudioElement
   readonly activeElement: HTMLAudioElement
   readonly playbackElement: HTMLAudioElement
-  setNextTrack(url: string | null, replayGainLinear?: number): void
+  setNextTrack(url: string | null, replayGainLinear?: number, nextDurationSeconds?: number): void
   cancelNextTrack(): void
   onTrackEnd: (() => void) | null
   reapplyEffects(): void
@@ -128,10 +128,15 @@ export class WebTransport implements PlaybackTransport {
     return true
   }
 
-  prepareNext(targetId: string | null, url: string | null, rg?: ReplayGainFields): void {
+  prepareNext(
+    targetId: string | null,
+    url: string | null,
+    rg?: ReplayGainFields,
+    nextDuration?: number,
+  ): void {
     this._crossfadeTargetId = targetId
     this._armedRg = rg ?? null
-    this._engine.setNextTrack(url, rg?.linearGain ?? undefined)
+    this._engine.setNextTrack(url, rg?.linearGain ?? undefined, nextDuration)
   }
 
   cancelNext(): void {

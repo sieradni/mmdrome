@@ -708,7 +708,9 @@ export class PlaybackManager {
       if (rawUrl) {
         const url = await resolveSrc(rawUrl)
         const rg = computeReplayGainFields(get(settings).replayGainMode ?? 'off', nextTrack)
-        this._webTransport!.prepareNext(combined[nextIdx], url, rg)
+        // The target duration rides along for the engine's nextTooShort gate
+        // (a shorter-than-fade target would end mid-ramp — native parity).
+        this._webTransport!.prepareNext(combined[nextIdx], url, rg, nextTrack?.duration ?? undefined)
       } else {
         // No URL for the next row — disarm (a stale arm could crossfade into
         // an old target at the transition point).
@@ -1226,6 +1228,13 @@ export class PlaybackManager {
     const track = get(currentTrack)
     const metaDur = (track?.duration) || time
     const clamped = Math.min(time, metaDur)
+    // User scrubbing owns the transition state (A12): the engine latches the
+    // crossfade suppression when the position lands in the window and collapses
+    // any in-flight fade. BG-engaged seeks drive the bg element — no fg fade
+    // machinery applies there.
+    if (!this._bgTransport!.engaged) {
+      this._am.markUserSeeked(clamped)
+    }
     el.currentTime = clamped
     currentTime.set(clamped)
   }

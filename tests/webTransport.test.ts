@@ -52,12 +52,14 @@ class FakeEngine {
   onTrackEnd: (() => void) | null = null
   nextTrackUrl: string | null = null
   nextTrackLinear: number | null = null
+  nextTrackDuration: number | null | undefined = undefined
   reapplyCalls = 0
   rgCalls: Array<[number | null, number | null]> = []
 
-  setNextTrack(url: string | null, replayGainLinear?: number): void {
+  setNextTrack(url: string | null, replayGainLinear?: number, nextDurationSeconds?: number): void {
     this.nextTrackUrl = url
     this.nextTrackLinear = replayGainLinear ?? null
+    this.nextTrackDuration = nextDurationSeconds
   }
 
   cancelNextTrack(): void { this.setNextTrack(null) }
@@ -148,6 +150,15 @@ test('prepareNext(null, null) disarms without an arm being consumed', async () =
   engine.onTrackEnd?.()
   assert.deepEqual(ended, [{ kind: 'crossfade', targetId: null }])
   assert.equal(engine.nextTrackUrl, null)
+})
+
+test('prepareNext forwards the target duration for the engine nextTooShort gate', async () => {
+  const { t, engine } = makeTransport()
+  await t.init()
+  t.prepareNext('t2', 'url2', undefined, 240)
+  assert.equal(engine.nextTrackDuration, 240)
+  t.prepareNext('t3', 'url3')
+  assert.equal(engine.nextTrackDuration, undefined)
 })
 
 // ── element events ─────────────────────────────────────────────────────────
