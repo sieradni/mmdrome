@@ -119,4 +119,19 @@ final class CrossfadeTests: XCTestCase {
             .ready
         )
     }
+
+    // MARK: - Seek suppression
+
+    func testSeekInCrossfadeWindowBoundaries() {
+        // 30s track, 10s fade: the transition point at 20 is IN-window.
+        XCTAssertTrue(isSeekInCrossfadeWindow(position: 20, duration: 30, fadeDuration: 10))
+        XCTAssertTrue(isSeekInCrossfadeWindow(position: 29.9, duration: 30, fadeDuration: 10))
+        // Just below the window is not.
+        XCTAssertFalse(isSeekInCrossfadeWindow(position: 19.9, duration: 30, fadeDuration: 10))
+        // Degenerate inputs never latch.
+        XCTAssertFalse(isSeekInCrossfadeWindow(position: 25, duration: 30, fadeDuration: 0))
+        XCTAssertFalse(isSeekInCrossfadeWindow(position: 25, duration: 0, fadeDuration: 10))
+        // Web-parity sanity: same boundary answers as crossfadePolicy.ts.
+        XCTAssertFalse(isSeekInCrossfadeWindow(position: 0, duration: 30, fadeDuration: 10))
+    }
 }

@@ -346,6 +346,11 @@ public final class NativeAudioEngine: NSObject {
     /// this setting is zero.
     private var preloadCount = 0
     private var lastCrossfadeReadiness: CrossfadeReadiness?
+    /// Track id whose crossfade automation a user seek suppressed (the seek
+    /// landed inside its window — `isSeekInCrossfadeWindow`). Cleared when a
+    /// DIFFERENT track loads (`playTrack`), so the suppression never leaks
+    /// into the next track. Web parity: audioManager `_seekSuppressed`.
+    private var seekSuppressedTrackId: String?
 
     public override init() {
         super.init()
@@ -432,6 +437,10 @@ public final class NativeAudioEngine: NSObject {
         guard !tracks.isEmpty else { return }
         let clamped = max(0, min(index, tracks.count - 1))
         let oldTrackId = currentTrackId
+        // A new track instance starts with clean crossfade automation — a
+        // suppression latched by seeking inside the PREVIOUS track's window
+        // must not leak (loop-one restarts clear it too; same id, new play).
+        seekSuppressedTrackId = nil
         activeIndex = clamped
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
         let newTrackId = tracks.indices.contains(clamped) ? tracks[clamped].trackId : ""
@@ -584,6 +593,14 @@ public final class NativeAudioEngine: NSObject {
         let track = tracks[activeIndex]
         let dur = effectiveDuration(of: track)
         let target = max(0, min(seconds, max(0, dur - 0.05)))
+        // A user scrub into this track's crossfade window owns the transition:
+        // latch the suppression (the re-schedule below re-arms the monitor,
+        // which would otherwise insta-fade within 100 ms — one fade per input
+        // event while a drag is held). Mid-fade seeks collapse cleanly via
+        // cancelScheduled() + the gain reset in scheduleCurrentTrack.
+        if isSeekInCrossfadeWindow(position: target, duration: dur, fadeDuration: crossfadeDuration) {
+            seekSuppressedTrackId = track.trackId
+        }
         cancelScheduled()
         hasLiveSchedule = false
         positionBias = target
@@ -1107,6 +1124,9 @@ public final class NativeAudioEngine: NSObject {
     private func setupCrossfadeMonitor() {
         stopCrossfadeMonitor()
         guard crossfadeDuration > 0, isPlaying, loopMode != .one, !sleepAtTrackEnd, tracks.indices.contains(activeIndex) else { return }
+        // A seek-suppressed track gets no monitor at all — automation is off
+        // for the remainder of this track instance.
+        guard tracks[activeIndex].trackId != seekSuppressedTrackId else { return }
 
         let current = tracks[activeIndex]
         let nextIdx = nextIndex(after: activeIndex)
@@ -1143,6 +1163,9 @@ public final class NativeAudioEngine: NSObject {
     private func crossfadeMonitorTick() {
         guard isPlaying, !crossfade.isActive else { return }
         guard crossfadeDuration > 0, tracks.indices.contains(activeIndex) else { return }
+        // Defense in depth: the setup guard normally keeps this monitor from
+        // existing at all while suppressed.
+        guard tracks[activeIndex].trackId != seekSuppressedTrackId else { return }
 
         let current = tracks[activeIndex]
         let transitionPoint = current.duration - crossfadeDuration

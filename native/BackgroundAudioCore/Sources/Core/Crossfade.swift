@@ -163,3 +163,19 @@ public func crossfadeReadiness(
     guard targetReady else { return .targetNotReady }
     return .ready
 }
+
+// MARK: - Seek suppression
+
+/// True when a user seek lands inside the playing track's crossfade window
+/// (the last `fadeDuration` seconds). Such a seek suppresses the auto-fade for
+/// the remainder of the track instance — the tail plays out and the natural
+/// end advances — so a held scrub cannot execute one fade per input event.
+/// Web mirror: `src/lib/playbackCore/crossfadePolicy.ts::isSeekInCrossfadeWindow`.
+public func isSeekInCrossfadeWindow(
+    position: Double,
+    duration: Double,
+    fadeDuration: Double
+) -> Bool {
+    guard fadeDuration > 0, duration > 0 else { return false }
+    return position >= duration - fadeDuration
+}
