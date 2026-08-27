@@ -434,8 +434,8 @@ export class PlaybackManager {
     if (activeIndex < 0 || activeIndex >= combined.length) return
 
     const snapshot = this._buildSnapshot(combined)
-    currentTime.set(0)
     setCurrentTrack(track)
+    currentTime.set(0)
 
     const ok = await this._nativeTransport!.engage(snapshot, activeIndex, get(loopMode))
     // A superseded engage must not reflect its outcome: a newer load already
@@ -652,8 +652,8 @@ export class PlaybackManager {
     this._am.setMasterVolume(get(masterGain))
 
     const el = this._am.activeElement
-    currentTime.set(0)
     setCurrentTrack(track)
+    currentTime.set(0)
     this._bgTransport!.syncSource(url)
     el.src = url
 

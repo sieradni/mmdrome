@@ -148,3 +148,28 @@ test('a non-navidrome track still reaches the direct legs (spy level)', async ()
   assert.ok(calls.includes('nav-scrobble:webdav-future-id'), 'dispatch is prefix-blind; gating belongs to destinations')
   manager.disable()
 })
+
+test('track transition setting currentTrack BEFORE currentTime(0) preserves previous track scrobble', async () => {
+  const { calls, dests } = spyDestinations()
+  settings.set({ scrobbling: true })
+  const manager = new ScrobbleManager(dests)
+  manager.init()
+  manager.enable()
+
+  const t1 = trackFixture({ trackId: 'navidrome-1', title: 'Song 1', duration: 200 })
+  const t2 = trackFixture({ trackId: 'navidrome-2', title: 'Song 2', duration: 200 })
+
+  // Play t1 past the 50% threshold (200s duration -> 100s)
+  currentTrack.set(t1)
+  for (let pos = 4; pos <= 120; pos += 4) currentTime.set(pos)
+
+  // Transition to t2 in correct order: currentTrack set first, then position reset to 0
+  currentTrack.set(t2)
+  currentTime.set(0)
+
+  await new Promise((r) => setTimeout(r, 0))
+
+  assert.ok(calls.includes('nav-scrobble:navidrome-1'), 't1 was scrobbled upon track change')
+
+  manager.disable()
+})
