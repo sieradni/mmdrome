@@ -64,6 +64,9 @@ export class PlaybackManager {
   /** Subscription teardown handles collected from `_subscribeShared` and the
    *  native-only `loopMode` wiring, released by `destroy()`. */
   private _unsubscribers: Array<() => void> = []
+  /** Coalescing flag for `_rearmCrossfadeTarget` (microtask, scheduleSync
+   *  convention) — reset by `destroy()`. */
+  private _rearmPending = false
   private _amOverride: typeof audioManager | null = null
   private _qmOverride: typeof queueManager | null = null
   private _stmOverride: typeof sleepTimerManager | null = null
@@ -359,6 +362,19 @@ export class PlaybackManager {
       }
     }))
 
+    // The web arm is never established under loop-one (the loads cancel it,
+    // the re-arm skips it) — a mid-track flip must keep it that way: toggling
+    // TO 'one' cancels an already-armed fade (the loop-one restart owns the
+    // transition), toggling AWAY re-arms from the live queue.
+    unsubs.push(loopMode.subscribe((m) => {
+      if (this.isNative()) return
+      if (m === 'one') {
+        this._webTransport?.cancelNext()
+      } else {
+        this._rearmCrossfadeTarget()
+      }
+    }))
+
     unsubs.push(autoQueueFilters.subscribe(() => {
       if (!this._initialized) return
       // Filter edits / scope changes re-rank the auto queue — trailing-
@@ -388,8 +404,13 @@ export class PlaybackManager {
     // Keep the native engine's queue snapshot in step with ANY queue mutation
     // (user edits add/remove/reorder/clear, plus promotions/replenishments).
     // The transport's scheduleSync coalesces same-task bursts into one refresh.
+    // Web: re-arm the armed crossfade target too — the next row may have
+    // changed (removal/reorder/clear/fill), and a stale arm would crossfade
+    // into a removed row at the transition point (then get rescued back into
+    // the queue — the scrambled-order autoplay bug).
     unsubs.push(queue.subscribe(() => {
       this._scheduleNativeQueueSync()
+      this._rearmCrossfadeTarget()
     }))
 
     return unsubs
@@ -692,6 +713,41 @@ export class PlaybackManager {
     }
   }
 
+  /**
+   * Re-arms the armed crossfade target after ANY queue mutation. The armed
+   * next row may have left the queue or moved (remove/reorder/clear/fill
+   * re-rank), and a stale arm crossfades into the REMOVED track at the
+   * transition point — the crossfade-end reconcile then RESCUES it back into
+   * the user queue, scrambling the order (the removed-song autoplay bug).
+   * `_setupNextTrack` recomputes the target from the LIVE queue.
+   *
+   * Microtask-coalesced (scheduleSync convention): one flow fires several
+   * queue writes per burst (advance → advanceTo + promote + replenish), and N
+   * concurrent `_setupNextTrack`s would race each other (out-of-order
+   * `prepareNext` if cache lookups reorder, plus blob-URL churn) — one re-arm
+   * at microtask time reads the FINAL snapshot. Guards are re-checked at fire
+   * time (a stop / loop-mode flip mid-tick must cancel the re-arm).
+   *
+   * Runs even while bg-engaged: `_bgLoad` already arms the fg target mid-bg,
+   * and a hidden queue mutation (scan-complete fill re-rank) must not leave it
+   * stale for the plain-resume exit — `resumeCrossfadeAfterBgExit` consumes
+   * `_nextTrackUrl` as-is on a non-load exit, and the iOS-hidden guard keeps
+   * the fg monitor from fading while hidden. Skipped under loop-one (the arm
+   * is always cancelled there).
+   */
+  private _rearmCrossfadeTarget(): void {
+    if (this.isNative() || !this._initialized || !get(currentTrack)) return
+    if (get(loopMode) === 'one') return
+    if (this._rearmPending) return
+    this._rearmPending = true
+    queueMicrotask(() => {
+      this._rearmPending = false
+      if (this.isNative() || !this._initialized || !get(currentTrack)) return
+      if (get(loopMode) === 'one') return
+      void this._setupNextTrack()
+    })
+  }
+
   private async _setupNextTrack(): Promise<void> {
     // While an end-of-track sleep is armed, no next track is prepared and no
     // crossfade armed — the current track must end naturally and park.
@@ -701,16 +757,36 @@ export class PlaybackManager {
     }
     const combined = this._qm.getCombinedQueue()
     const q = get(queue)
-    const nextIdx = q.activeIndex + 1
+    // Playing-track-aware target (advanceTargetIndex, 2.4 option b): after an
+    // active-row removal the row AT activeIndex IS the next row (the playing
+    // track left the queue), so `activeIndex + 1` would arm one PAST the
+    // highlighted successor — a stale arm that skips it on the fade.
+    const nextIdx = advanceTargetIndex(q, combined, get(currentTrack)?.trackId)
     if (nextIdx >= 0 && nextIdx < combined.length) {
-      const nextTrack = this._qm.findTrack(combined[nextIdx])
-      const rawUrl = this._resolveUrl(combined[nextIdx])
+      // The target ID is captured from THIS snapshot — the re-validation below
+      // must compare ids, never indices (a removal can slide a different row
+      // into the same index).
+      const targetId = combined[nextIdx]
+      const nextTrack = this._qm.findTrack(targetId)
+      const rawUrl = this._resolveUrl(targetId)
       if (rawUrl) {
         const url = await resolveSrc(rawUrl)
+        // Last-write-wins guard: the queue may have moved while the URL
+        // resolved (a removal/reorder landed mid-flight). Re-validate the
+        // TARGET ID against the live queue — a stale arm must never land late
+        // and crossfade into a row that is no longer next. On a mismatch, drop
+        // it: the write that moved the queue triggered its own coalesced
+        // re-arm, which owns the fresh target.
+        const liveQ = get(queue)
+        const liveCombined = this._qm.getCombinedQueue()
+        const liveTarget = advanceTargetIndex(liveQ, liveCombined, get(currentTrack)?.trackId)
+        if (!(liveTarget >= 0 && liveTarget < liveCombined.length && liveCombined[liveTarget] === targetId)) {
+          return
+        }
         const rg = computeReplayGainFields(get(settings).replayGainMode ?? 'off', nextTrack)
         // The target duration rides along for the engine's nextTooShort gate
         // (a shorter-than-fade target would end mid-ramp — native parity).
-        this._webTransport!.prepareNext(combined[nextIdx], url, rg, nextTrack?.duration ?? undefined)
+        this._webTransport!.prepareNext(targetId, url, rg, nextTrack?.duration ?? undefined)
       } else {
         // No URL for the next row — disarm (a stale arm could crossfade into
         // an old target at the transition point).
@@ -960,6 +1036,12 @@ export class PlaybackManager {
 
     if (get(loopMode) === 'one') {
       const current = get(currentTrack)
+      // 2.7 parity with the natural-end restart: a track that left the
+      // combined queue (removed mid-fade) must never restart.
+      if (current && !this._qm.getCombinedQueue().includes(current.trackId)) {
+        this._stopPlayback()
+        return
+      }
       if (current) {
         await this._loadAndPlay(current)
       }
@@ -1256,6 +1338,7 @@ export class PlaybackManager {
       clearTimeout(this._replenishTimer)
       this._replenishTimer = null
     }
+    this._rearmPending = false
     for (const unsubscribe of this._unsubscribers) unsubscribe()
     this._unsubscribers = []
     if (this.isNative()) {

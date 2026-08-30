@@ -1,5 +1,6 @@
 import { get } from 'svelte/store'
 import { settings, currentTrack, queue } from '../stores/appState'
+import { advanceTargetIndex } from './queueMutation'
 
 const CACHE_NAME = 'mmdrome-preload-cache'
 const MAX_CACHE_ENTRIES = 50
@@ -108,9 +109,15 @@ async function preloadNext(n: number): Promise<void> {
   try {
     const q = get(queue)
     const ids = [...q.userQueue, ...q.autoQueue]
-    const idx = q.activeIndex
+    // Playing-track-aware start (advanceTargetIndex) — the SAME function the
+    // crossfade arm uses (playbackManager._setupNextTrack), so the preload
+    // never disagrees with it: after an active-row removal the row AT
+    // activeIndex IS the next row (the playing track left the queue), and a
+    // plain `activeIndex + 1` would warm the cache one PAST the next-to-play
+    // row. Normal case: target = activeIndex + 1, identical to the old math.
+    const idx = advanceTargetIndex(q, ids, get(currentTrack)?.trackId)
     if (idx < 0 || idx >= ids.length) return
-    const nextIds = ids.slice(idx + 1, idx + 1 + n)
+    const nextIds = ids.slice(idx, idx + n)
     if (nextIds.length === 0) return
     const cache = await caches.open(CACHE_NAME)
     let didPut = false
