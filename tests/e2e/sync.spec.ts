@@ -86,3 +86,42 @@ test('a scan-timestamp-matching reconnect serves the cache without re-paginating
   await expect(page.getByText('Loaded 2 song(s), 0 failed (from cache)')).toBeVisible()
   expect(mock.search3Calls(), 'the cached reconnect must not re-paginate search3').toBe(1)
 })
+
+test('a cancelled load lands as honest copy (no resume button) and Connect & Load re-runs it', async ({ page }) => {
+  await bootApp(page)
+  await openSources(page)
+  await fillCredentials(page)
+
+  // Same surface as mockOnline, but search3 answers after a delay so the
+  // cancel can land mid-pagination.
+  await page.route('**/rest/**', async (route) => {
+    const endpoint = new URL(route.request().url()).pathname.split('/').pop()
+    let extra: Record<string, unknown> = {}
+    if (endpoint === 'ping.view') extra = { serverVersion: '0.50.0' }
+    else if (endpoint === 'getScanStatus.view') extra = { scanStatus: { lastScan: '2026-01-01T00:00:00Z' } }
+    else if (endpoint === 'search3.view') {
+      await new Promise((resolve) => setTimeout(resolve, 1500))
+      extra = { searchResult3: { song: SONGS } }
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(subsonic(extra)) })
+  })
+
+  await page.getByRole('button', { name: 'Connect & Load Songs' }).click()
+  await expect(page.getByText('Stop loading — your current library stays unchanged')).toBeVisible()
+  await page.getByRole('button', { name: 'Stop loading — your current library stays unchanged' }).click()
+
+  // The cancelled load's honest landing: the library is untouched (a partial
+  // page-set is never applied) and the copy says so — deliberately styled as
+  // information, not a red error, and with NO dedicated resume button: the
+  // continuation-affordance rule (AGENTS §4.C) — the existing Connect & Load
+  // button already calls the same handler, nothing partial survives, and
+  // "Resume" would imply progress exists to continue.
+  await expect(page.getByText(/Load cancelled — your current library is unchanged/)).toBeVisible({ timeout: 10_000 })
+  await expect(page.getByRole('button', { name: 'Resume load' })).toHaveCount(0)
+
+  // Re-run via the ordinary button: for a load, "resume" IS a fresh run.
+  await page.getByRole('button', { name: 'Connect & Load Songs' }).click()
+  await expect(page.getByText('Loaded 2 song(s), 0 failed')).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByText(/Load cancelled/)).toHaveCount(0)
+})
+

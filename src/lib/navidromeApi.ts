@@ -95,6 +95,11 @@ export interface NavidromeLoadResult {
   failed: number
   error?: string
   cached?: boolean
+  /** True when the load ended because the user cancelled it. A cancelled load
+   *  NEVER applies a partial page-set (the library is untouched), so resuming
+   *  is simply re-running the load — the UI's Resume-load affordance does
+   *  exactly that. */
+  cancelled?: boolean
 }
 
 export interface NavidromeConfig {
@@ -285,7 +290,10 @@ export function cachedConfigMatches(cached: NavidromeConfig | null, baseUrl: str
   return cached.baseUrl.trim() === baseUrl.trim() && cached.username.trim() === username.trim()
 }
 
-export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ songs: NavidromeSong[]; result: NavidromeLoadResult }> {
+export async function loadNavidromeSongs(
+  config: NavidromeConfig,
+  opts: { isCancelled?: () => boolean } = {},
+): Promise<{ songs: NavidromeSong[]; result: NavidromeLoadResult }> {
   try {
     // Sets both _cachedConfig and coverConfig (the store LazyThumb gates on).
     // Without the store update, thumbnails stay blank after a first-ever connect
@@ -295,6 +303,7 @@ export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ son
     // Fetch all songs via search3 pagination (standard Subsonic endpoint).
     // The pure driver caps pages AND stops on a repeated first id, so a server
     // that ignores songOffset terminates instead of accumulating forever (3.3).
+    // `isCancelled` (the caller's cancel token) is checked before each page.
     const songs = await paginateSearch3(async (offset, count) => {
       const resp = await callSubsonic(config, 'search3.view', {
         query: '',
@@ -304,7 +313,7 @@ export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ son
         albumCount: 0,
       })
       return resp.searchResult3?.song ?? []
-    })
+    }, opts)
 
     // `failed` is always 0 BY CONSTRUCTION: a pagination error aborts the
     // whole load (the catch returns zero songs with the error), so there is
@@ -325,7 +334,7 @@ export async function loadNavidromeSongs(config: NavidromeConfig): Promise<{ son
  */
 export async function paginateSearch3(
   fetchPage: (offset: number, count: number) => Promise<NavidromeSong[]>,
-  opts: { pageSize?: number; maxPages?: number } = {},
+  opts: { pageSize?: number; maxPages?: number; isCancelled?: () => boolean } = {},
 ): Promise<NavidromeSong[]> {
   const pageSize = opts.pageSize ?? 500
   const maxPages = opts.maxPages ?? 200 // 100k songs at 500/page — a sane ceiling
@@ -334,6 +343,11 @@ export async function paginateSearch3(
   let offset = 0
   let pages = 0
   while (pages < maxPages) {
+    // The caller's cancel token (loadLibraryFromNavidrome): checked BEFORE
+    // each page fetch, so an in-flight page is awaited but no NEW request
+    // starts. The partial page-set is returned — the CALLER decides what to
+    // do with it (the load pipeline applies nothing on a cancel).
+    if (opts.isCancelled?.()) break
     const page = await fetchPage(offset, pageSize)
     if (!Array.isArray(page) || page.length === 0) break
     const firstId = page[0]?.id

@@ -167,8 +167,13 @@ function tagsContradictTrack(track: Track, entry: WebdavFileEntry): boolean {
  *  This is the single comparison source for the Re-verify flows (bulk
  *  button + per-row "Update file link") — the only places existing bindings
  *  are re-judged after a server switch. 'conflict' is a strong hint, not
- *  proof (feat./live/alternate titles normalize differently), so callers
- *  must never auto-clear on it — only refuse to write. */
+ *  proof (feat./live/alternate titles normalize differently), so the
+ *  Re-verify flows never auto-clear on it — only refuse to write. (The
+ *  force-scan heal release is the one deliberate exception, OR-gated: it may
+ *  clear an AUTO binding when the file's title conflicts AND (some other
+ *  library track carries the file's exact title OR the titles are not a
+ *  same-release family) — see `selectHealEvictions`. Manual/pending/ignored
+ *  links are never auto-cleared anywhere.) */
 export function verifyEntryAgainstTrack(
   track: Track,
   entry: WebdavFileEntry,
@@ -180,6 +185,143 @@ export function verifyEntryAgainstTrack(
   const n = effectiveTitle(navTitle)
   if (!f || !n) return 'unknown'
   return f === n ? 'verified' : 'conflict'
+}
+
+/** A row the heal pass can judge: the owning track plus the file it is bound
+ *  to, carrying fresh tag evidence (`entry.tags`). Callers build candidates
+ *  ONLY for auto bindings they are allowed to release (synced, current-server,
+ *  never manual/ignored/pending) — this function reasons purely about identity. */
+export interface HealCandidate {
+  track: Track
+  entry: WebdavFileEntry
+}
+
+/**
+ * Decides which AUTO-bound rows a full rescan should RELEASE because the bound
+ * file's OWN identity tags prove the link wrong.
+ *
+ * Basis (2026-09-05): the file tags and the Navidrome catalog are parsed from
+ * the same files, so the in-file title is authoritative — an exact-title match
+ * is what `verifyEntryAgainstTrack` calls 'verified'. A binding whose file
+ * title DIFFERS from its owner is therefore an imperfect link, but not every
+ * difference is a wrong link: "Song (Live)" under owner "Song" (one release
+ * kept under the shorter catalog name) is plausibly the SAME file, and
+ * un-linking it would only orphan a working push target.
+ *
+ * Release when the titles differ AND either
+ *  - some OTHER library track carries the file's exact title (the file is
+ *    that other song — duplicate titles are fine, uniqueness is NOT required:
+ *    the file still cannot be the owner's), or
+ *  - the titles are not a same-release FAMILY — neither starts with the other
+ *    followed by a word boundary ("Song (Live)" vs "Song" IS a family;
+ *    "Rainbow" vs "Rain" is NOT).
+ *
+ * Release = unlink only (path/base/matchSource cleared; rating/loved/comments
+ * and `synced` preserved). The scanner's drain that follows re-matches the row
+ * against the freed file set; anything that stays ambiguous surfaces in File
+ * Matching for the user. Manual/pending/ignored rows never reach this
+ * function.
+ */
+/** Effective-title counts across a track list — the library-wide evidence map
+ *  the heal (D16) and the File Matching auditor use to answer "does some OTHER
+ *  track own a file's exact title?". Single normalization source so the two
+ *  consumers can never drift. */
+export function buildEffectiveTitleCounts(allTracks: Track[]): Map<string, number> {
+  const titleCounts = new Map<string, number>()
+  for (const t of allTracks) {
+    const title = effectiveTitle(t.title)
+    if (!title) continue
+    titleCounts.set(title, (titleCounts.get(title) ?? 0) + 1)
+  }
+  return titleCounts
+}
+
+/** Per-row release predicate behind the force-scan heal (D16), shared with the
+ *  File Matching auditor's `fixable` flag so the view and the scan never
+ *  disagree about what a rescan will release.
+ *
+ *  `ownerTitle`/`fileTitle` are RAW titles (normalized here); `titleCounts`
+ *  maps EFFECTIVE titles to how many library tracks carry them (owner included
+ *  — irrelevant here because an exact match never releases). False when either
+ *  title is empty or they normalize equal. Otherwise the binding is provably
+ *  wrong when some OTHER track owns the file's exact title (duplicate titles
+ *  are fine — the file still cannot be the owner's), or when the titles are
+ *  not a same-release family ("Song (Live)" under "Song" IS a family and
+ *  stays). */
+export function bindingReleaseable(
+  ownerTitleRaw: string,
+  fileTitleRaw: string,
+  titleCounts: ReadonlyMap<string, number>,
+): boolean {
+  const ownerTitle = effectiveTitle(ownerTitleRaw)
+  const fileTitle = effectiveTitle(fileTitleRaw)
+  if (!fileTitle || !ownerTitle || fileTitle === ownerTitle) return false
+  // Same-release family: one title starts with the other at a word boundary.
+  const family = fileTitle.startsWith(`${ownerTitle} `)
+    || ownerTitle.startsWith(`${fileTitle} `)
+  // The file's exact title existing among the OTHER tracks is decisive: the
+  // file is provably that other song, whatever the family relation. (The owner
+  // cannot be that other track: equal titles never reach here.)
+  const ownedElsewhere = (titleCounts.get(fileTitle) ?? 0) > 0
+  return ownedElsewhere || !family
+}
+
+export function selectHealEvictions(
+  candidates: HealCandidate[],
+  allTracks: Track[],
+): string[] {
+  // Exact normalized titles across the WHOLE library (owner included; if a
+  // non-owner shares the file's title the count is the proof we need).
+  const titleCounts = buildEffectiveTitleCounts(allTracks)
+  const released: string[] = []
+  const seen = new Set<string>()
+  for (const { track, entry } of candidates) {
+    if (seen.has(track.trackId)) continue
+    seen.add(track.trackId)
+    const fileTitle = entry.tags ? entry.tags.title ?? '' : ''
+    if (bindingReleaseable(track.title, fileTitle, titleCounts)) {
+      released.push(track.trackId)
+    }
+  }
+  return released
+}
+
+/**
+ * Verdict on an EXISTING binding for the File Matching auditor: what the bound
+ * file's OWN (fresh, cached) identity tags say about the link. Pure — the
+ * caller supplies the already-probed index entry (tag cache stamped), so
+ * listing thousands of links costs no network reads.
+ *
+ * - title tags present → `verified`/`conflict` via `verifyEntryAgainstTrack`
+ *   (the single comparison source — exact normalized titles; a differing
+ *   title is the *evidence* the force-scan heal acts on).
+ * - no usable title → `unknown`, with `readState` saying WHY: never read
+ *   (`not-probed`), read-but-title-less (`empty`), or the read failed
+ *   (`unreadable`/`network-error`) — never "run Scan again" when rescanning
+ *   cannot help. This mirrors the no-match reason honesty (2026-08-21).
+ */
+export interface LinkAudit {
+  verdict: 'verified' | 'conflict' | 'unknown'
+  /** The bound file's tag title when one was read (conflict messaging). */
+  fileTitle?: string
+  readState: 'tagged' | 'empty' | 'unreadable' | 'network-error' | 'not-probed'
+}
+
+export function auditBoundFile(track: Track, entry: WebdavFileEntry): LinkAudit {
+  const rawTitle = entry.tags?.title
+  if (rawTitle && effectiveTitle(rawTitle)) {
+    return {
+      verdict: verifyEntryAgainstTrack(track, entry),
+      fileTitle: rawTitle,
+      readState: 'tagged',
+    }
+  }
+  // No usable title identity: classify the read state honestly.
+  const status = entry.probeStatus
+  const readState = status === 'empty' || status === 'ok' ? 'empty'
+    : status === 'unreadable' || status === 'network-error' ? status
+      : 'not-probed'
+  return { verdict: 'unknown', readState }
 }
 
 /** Score every eligible entry of the index against the track (filename, size,
@@ -234,6 +376,16 @@ function scoreTrackMatches(
     // Historical size bonus on top of an equal-size filename match.
     if (nameScore > 0 && navSize && entry.size === navSize && score === nameScore) {
       score += 10
+    }
+    // Identity floor (heal/relink correctness): the file tags and the Navidrome
+    // catalog are parsed from the SAME files, so an exact-title tag match (with
+    // no duration conflict) IS the song — it must outrank the strongest
+    // filename-only evidence a competitor can reach (exact name 100 + equal-size
+    // bonus 10 = 110). Without this floor a same-name same-size UNTAGGED twin
+    // outscored the correctly-tagged file (110 vs 105) and re-links picked the
+    // tag-less duplicate over the real file.
+    if (tag.score > 0 && tag.titleExact && !tag.durationConflict && score <= 110) {
+      score = 111
     }
 
     if (score > 0) scored.push({

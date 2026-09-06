@@ -1,5 +1,5 @@
 /**
- * Pure Push re-pend decision (TODO 3.1).
+ * Pure Push row classification + re-pend decisions (TODO 3.1, TODO 3.9).
  *
  * `runManualWebDAVSync` pushes each pending row's rating/loved to its WebDAV
  * file via a GET → modify → PUT round-trip. The loop captures the row snapshot
@@ -87,4 +87,85 @@ export function shouldSkipBeforePut(stale: PushRowSnapshot, live: PushRowSnapsho
   if (live.webdavPath !== stale.webdavPath) return true
   if (live.webdavBase !== currentBaseKey) return true
   return false
+}
+
+/**
+ * The one per-row push classification, shared by BOTH consumers that D5
+ * ("the push CONFIRMATION count uses the SAME derivation") previously
+ * enforced by hand: `runManualWebDAVSync`'s loop AND the Push confirmation
+ * dialog's safe count (SettingsView `pushChanges`). The buckets and their
+ * precedence — the FIRST matching rule wins, mirroring the loop's original
+ * early-continue chain:
+ *
+ *  1. `no-path`   — no `webdavPath`: never fabricate a target from the
+ *     Navidrome id; there is nothing to write to.
+ *  2. `ignored`   — user dismissed the row via File Matching; never push it,
+ *     even when a path is still stamped.
+ *  3. `no-base`   — matched before base stamping existed; path provenance is
+ *     unknown, so it is skipped (unverified), NOT wrongServer.
+ *  4. `wrong-server` — the row's base differs from the CURRENT server
+ *     (derived with `webdavBaseKey` by the caller).
+ *  5. `pushable` — write it.
+ *
+ * Order matters: a row with no path but a stale base is `no-path` (the loop
+ * checks the path first), and an ignored row with a wrong-server base is
+ * `ignored` (dismissal beats provenance). The dialog's "safely pushable"
+ * count is `pushable` — which by construction excludes `ignored` rows, the
+ * TODO 3.8c overcount. Pure: takes no server state beyond the pre-computed
+ * baseKey.
+ */
+export type PushRowBucket = 'pushable' | 'no-path' | 'ignored' | 'no-base' | 'wrong-server'
+
+export function classifyRowForPush(row: PushRowSnapshot, currentBaseKey: string): PushRowBucket {
+  if (!row.webdavPath) return 'no-path'
+  if (row.ignored) return 'ignored'
+  if (!row.webdavBase) return 'no-base'
+  if (row.webdavBase !== currentBaseKey) return 'wrong-server'
+  return 'pushable'
+}
+
+/** A pushable row's display info for the dialog track list. */
+export interface PushableTrackInfo {
+  trackId: string
+  title: string
+  webdavPath: string
+}
+
+/** The row surface the breakdown needs (LocalMetadataStore satisfies it). */
+export interface PushBreakdownRow extends PushRowSnapshot {
+  trackId: string
+  title?: string
+}
+
+export interface PushBreakdown {
+  pushable: number
+  noPath: number
+  ignored: number
+  noBase: number
+  wrongServer: number
+  /** Every pushable row, uncapped — the dialog caps for display. */
+  tracks: PushableTrackInfo[]
+}
+
+export const EMPTY_PUSH_BREAKDOWN: PushBreakdown = { pushable: 0, noPath: 0, ignored: 0, noBase: 0, wrongServer: 0, tracks: [] }
+
+/**
+ * The dialog's full picture, derived through the ONE classifier (so the
+ * breakdown can never disagree with what the run will do). Buckets are
+ * counts; `tracks` lists the pushable rows (title + target path) so the
+ * user sees exactly which files are about to be rewritten.
+ */
+export function buildPushBreakdown(rows: PushBreakdownRow[], currentBaseKey: string): PushBreakdown {
+  const bd: PushBreakdown = { pushable: 0, noPath: 0, ignored: 0, noBase: 0, wrongServer: 0, tracks: [] }
+  for (const row of rows) {
+    const bucket = classifyRowForPush(row, currentBaseKey)
+    if (bucket === 'pushable') {
+      bd.pushable++
+      bd.tracks.push({ trackId: row.trackId, title: row.title ?? row.trackId, webdavPath: row.webdavPath! })
+    } else if (bucket === 'no-path') bd.noPath++
+    else if (bucket === 'ignored') bd.ignored++
+    else if (bucket === 'no-base') bd.noBase++
+    else bd.wrongServer++
+  }
+  return bd
 }

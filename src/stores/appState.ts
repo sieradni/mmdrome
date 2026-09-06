@@ -53,8 +53,17 @@ export interface MetadataScanProgress {
   missing: number
   /** Rows with multiple equally-scored candidates — left untouched. */
   duplicateMatches: number
+  /** AUTO links a FORCE scan released because the bound file's own tags proved
+   *  them wrong (D16 heal), then re-matched by the same scan. Set only when > 0. */
+  released?: number
   /** Human label of the active scan ("Scanning all files..."/"Scanning changed files..."). */
   annotation?: string
+  /** Set on a CANCELLED scan's landing (cancelScan). Holds the interrupted
+   *  scan's shape so the UI can offer a one-click "Resume scan" that re-runs
+   *  the SAME shape — a cancelled force scan must resume as force (its heal
+   *  pass only runs there), a cancelled modified scan as modified. Absence
+   *  = the scan was not cancelled. Cleared by the next scan state write. */
+  cancelledShape?: 'modified' | 'force'
 }
 
 export interface MetadataScanState {
@@ -94,7 +103,7 @@ export const metadataCache = writable<Map<string, LocalMetadataStore>>(new Map()
 export const library = writable<Track[]>([])
 export const webdavConnection = writable<{ connected: boolean; error?: string; checking: boolean }>({ connected: false, checking: false })
 export const navidromeConnection = writable<{ connected: boolean; error?: string; checking: boolean; serverVersion?: string }>({ connected: false, checking: false })
-export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string; cached?: boolean }>({ loading: false, loaded: 0, failed: 0 })
+export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string; cached?: boolean; cancelled?: boolean }>({ loading: false, loaded: 0, failed: 0 })
 // Engine-bound scalar settings: store-layer persistence via `persisted`, and
 // the engine push lives in playbackManager (`_applyPlaybackParams` at restore,
 // `_subscribeShared` reactions for the live edges). Restored once in
@@ -122,6 +131,21 @@ export const effectiveDuration = derived(
 )
 export const pitchOctaves = _pitchOctaves.store
 export const metadataScanState = writable<MetadataScanState>({ status: 'idle', progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0 } })
+
+/** Live progress of the Push run (the confirmation dialog shows it in place
+ *  of the confirm/cancel buttons once the run starts). `current` is the
+ *  row-level phase: `row N of M — <track title>` while a row is in flight.
+ *  `done` counts rows fully settled (pushed, skipped, or failed). */
+export interface PushProgress {
+  active: boolean
+  done: number
+  total: number
+  current: string
+  /** Set by the UI's Cancel; the run's isCancelled polls it and the loop
+   *  exits between rows. Cleared when the run settles. */
+  cancelRequested?: boolean
+}
+export const pushState = writable<PushProgress>({ active: false, done: 0, total: 0, current: '' })
 
 /** Fields the user edits in the Queue filter panel — persisted via `persisted`. */
 export interface AutoQueueFilterFields {

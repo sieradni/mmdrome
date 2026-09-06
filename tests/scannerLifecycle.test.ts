@@ -21,7 +21,7 @@ import {
 import type { Track } from '../src/stores/appState'
 import { db } from '../src/lib/db'
 import type { FileMetadata } from '../src/lib/metadataReader'
-import type { WebdavFileEntry } from '../src/lib/db'
+import type { WebdavFileEntry, FileTagCacheEntry } from '../src/lib/db'
 import {
   __setScannerDeps,
   __resetScannerDeps,
@@ -30,6 +30,9 @@ import {
   ensureTagProbe,
   scanAll,
   setWebdavCredentials,
+  cancelScan,
+  wipeMetadataForRelink,
+  resetMetadataAndRelink,
   tagProbeState,
   listUnresolvedMatches,
 } from '../src/lib/metadataScanner'
@@ -87,6 +90,9 @@ let releaseBuild: (() => void) | null = null
  *  a manual re-read mid-fetch so a dismissal can land while it is in flight. */
 let readGate: Promise<void> | null = null
 let releaseRead: (() => void) | null = null
+/** When set, the mock PROPFIND rejects — used to pin the reset's behavior when
+ *  the re-link scan cannot even build the index (wipe already happened). */
+let buildFails = false
 
 function setupMocks() {
   buildCallCount = 0
@@ -98,11 +104,13 @@ function setupMocks() {
   releaseBuild = null
   readGate = null
   releaseRead = null
+  buildFails = false
   __setScannerDeps({
     buildIndex: async () => {
       buildCallCount++
       const gate = buildGate
       if (gate) await gate
+      if (buildFails) throw new Error('mock PROPFIND failure')
       return { entries: mockEntries, complete: mockComplete }
     },
     readFile: async (_baseUrl: string, filePath: string, _user: string, _token: string, _fileType: string) => {
@@ -141,6 +149,21 @@ const memStores: Record<string, Map<string, MemEntry>> = {
   webdavFileIndex: new Map(),
   webdavFileTags: new Map(),
   localMetadata: new Map(),
+  playQueue: new Map(),
+  songLibraryCache: new Map(),
+  userSettings: new Map(),
+}
+
+// Each table's primary-key FIELD (not its name) — localMetadata rows carry
+// `trackId`, not an `id`, so the original entry?.id check silently dropped
+// every metadata write and made the wipe/persistence assertions vacuous.
+const KEY_OF: Record<string, string> = {
+  localMetadata: 'trackId',
+  webdavFileIndex: 'id',
+  webdavFileTags: 'id',
+  playQueue: 'id',
+  songLibraryCache: 'id',
+  userSettings: 'key',
 }
 
 // Patch Dexie table prototype methods once (all tables share the prototype).
@@ -152,7 +175,18 @@ tableProto.get = async function (this: { name: string }, key: string) {
 
 tableProto.put = async function (this: { name: string }, entry: MemEntry) {
   const store = memStores[this.name]
-  if (store && entry?.id != null) store.set(String(entry.id), { ...entry })
+  const keyOf = KEY_OF[this.name]
+  const key = keyOf ? entry?.[keyOf] : entry?.id
+  if (store && key != null) store.set(String(key), { ...entry })
+}
+
+tableProto.bulkPut = async function (this: { name: string }, items: MemEntry[]) {
+  const store = memStores[this.name]
+  const keyOf = KEY_OF[this.name]
+  if (!store || !keyOf) return
+  for (const item of items) {
+    if (item?.[keyOf] != null) store.set(String(item[keyOf]), { ...item })
+  }
 }
 
 tableProto.delete = async function (this: { name: string }, key: string) {
@@ -700,6 +734,648 @@ test('a dismissal landing mid manual re-read survives the full-row replace (D8)'
   teardown()
 })
 
+test('wipeMetadataForRelink clears bindings, index snapshot and tag cache only', async () => {
+  setupMocks()
+  initWebdav()
+  // initWebdav's credential config queued a deferred clearWebdavFileIndex on
+  // the scanner's persistence chain (stale-index invalidation). Let it settle
+  // so the seed below is what the pre-wipe assertions actually observe.
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  library.set([track()])
+
+  updateMetadata({
+    trackId: 't1',
+    rating: 80,
+    loved: true,
+    fileType: 'flac',
+    syncStatus: 'synced',
+    lastModifiedLocally: 1,
+    webdavPath: '/dav/files/user/Song.flac',
+    webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+    matchSource: 'manual',
+  })
+  await db.webdavFileIndex.put({ id: 'main', entries: [entry()], buildTimestamp: 1, complete: true })
+  await db.webdavFileTags.put({
+    id: 'http://test.com|user\u0000/dav/files/user/Song.flac',
+    baseKey: 'http://test.com|user',
+    path: '/dav/files/user/Song.flac',
+    size: 12345,
+    status: 'ok',
+    probedAt: 1,
+  })
+  // Preservation witnesses: the queue, the catalog cache and user settings
+  // must survive the wipe untouched (they are outside the recovery scope).
+  await db.playQueue.put({ id: 'main', userQueue: ['t1'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  await db.songLibraryCache.put({ id: 'main', tracks: [], lastScan: '2026-01-01T00:00:00Z' })
+  await db.userSettings.put({ key: 'webdavUrl', value: 'http://test.com' })
+
+  // The awaited put above flushed updateMetadata's fire-and-forget upsert, so
+  // the metadata row is genuinely IN the Dexie stub — these assertions were
+  // vacuous before the harness keyed localMetadata by trackId.
+  assert.equal(memStores.localMetadata.size, 1, 'row round-trips through the Dexie stub (pre-wipe)')
+  assert.equal(memStores.webdavFileIndex.size, 1, 'index snapshot present pre-wipe')
+  assert.equal(memStores.webdavFileTags.size, 1, 'tag-cache row present pre-wipe')
+
+  await wipeMetadataForRelink()
+
+  assert.equal(memStores.localMetadata.size, 0, 'per-track metadata (bindings/ratings) wiped at the DB layer')
+  assert.equal(memStores.webdavFileIndex.size, 0, 'persisted index snapshot wiped')
+  assert.equal(memStores.webdavFileTags.size, 0, 'tag-probe cache wiped')
+  assert.equal(get(metadataCache).size, 0, 'in-memory metadata cache cleared')
+  assert.equal(get(metadataScanState).status, 'idle', 'scan state reset to idle')
+  // Preservation: only the three metadata tables are in scope.
+  assert.equal(memStores.playQueue.size, 1, 'play queue untouched')
+  assert.equal(memStores.songLibraryCache.size, 1, 'song library cache untouched')
+  assert.equal(memStores.userSettings.size, 1, 'user settings untouched')
+
+  teardown()
+})
+
+test('resetMetadataAndRelink heals swapped auto bindings (wipe + full rescan)', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', album: 'Album', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', album: 'Album', size: 222 })
+  library.set([t1, t2])
+
+  // A previous bad pass SWAPPED the bindings: t1 owns B's file, t2 owns A's.
+  // Both files still exist, so a plain force rescan alone can never heal this
+  // (each bound path is excluded from the other track's candidate set) — only
+  // wiping every binding at once makes each file claimable again.
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  updateMetadata({
+    trackId: 't1', rating: 60, loved: false, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathB, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+  updateMetadata({
+    trackId: 't2', rating: 80, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathA, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+  mockMeta = {
+    [pathA]: fileMeta({ title: 'Song A', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 90, loved: true }),
+    [pathB]: fileMeta({ title: 'Song B', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 60, loved: false }),
+  }
+
+  await resetMetadataAndRelink()
+
+  const rowA = get(metadataCache).get('t1')
+  const rowB = get(metadataCache).get('t2')
+  assert.equal(rowA?.webdavPath, pathA, 't1 healed onto its own Song A file')
+  assert.equal(rowA?.rating, 90, 't1 rating re-imported from the correct file')
+  assert.equal(rowA?.loved, true, 't1 loved re-imported from the correct file')
+  assert.equal(rowB?.webdavPath, pathB, 't2 healed onto its own Song B file')
+  assert.equal(rowB?.rating, 60, 't2 rating re-imported from the correct file')
+  assert.equal(rowB?.loved, false, 't2 loved re-imported from the correct file')
+  assert.equal(get(metadataScanState).status, 'complete', 'reset scan completed')
+
+  teardown()
+})
+
+test('resetMetadataAndRelink refuses to wipe when no library is loaded (nothing lost)', async () => {
+  setupMocks()
+  initWebdav()
+  // Let initWebdav's queued stale-index clear settle before seeding (see the
+  // wipe test for why).
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  updateMetadata({
+    trackId: 't1', rating: 80, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: '/dav/files/user/Song.flac',
+    webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT', webdavBase: 'http://test.com|user',
+  })
+  await db.webdavFileIndex.put({ id: 'main', entries: [entry()], buildTimestamp: 1, complete: true })
+  await db.webdavFileTags.put({
+    id: 'http://test.com|user\u0000/dav/files/user/Song.flac',
+    baseKey: 'http://test.com|user', path: '/dav/files/user/Song.flac',
+    size: 12345, status: 'ok', probedAt: 1,
+  })
+  library.set([])
+
+  await assert.rejects(
+    resetMetadataAndRelink(),
+    /No library loaded/,
+    'reset refuses before wiping when the re-link scan would have nothing to match',
+  )
+  assert.equal(memStores.localMetadata.size, 1, 'metadata rows untouched by the refused reset')
+  assert.equal(memStores.webdavFileIndex.size, 1, 'index snapshot untouched')
+  assert.equal(memStores.webdavFileTags.size, 1, 'tag cache untouched')
+  assert.equal(get(metadataCache).size, 1, 'in-memory cache untouched')
+
+  teardown()
+})
+
+test('resetMetadataAndRelink throws an honest error when the re-link scan fails after the wipe', async () => {
+  setupMocks()
+  initWebdav()
+  // Let initWebdav's queued stale-index clear settle before seeding (see the
+  // wipe test for why).
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  const t = track()
+  library.set([t])
+
+  updateMetadata({
+    trackId: 't1', rating: 80, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: '/dav/files/user/Song.flac',
+    webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT', webdavBase: 'http://test.com|user',
+  })
+  await db.webdavFileIndex.put({ id: 'main', entries: [entry()], buildTimestamp: 1, complete: true })
+  await db.webdavFileTags.put({
+    id: 'http://test.com|user\u0000/dav/files/user/Song.flac',
+    baseKey: 'http://test.com|user', path: '/dav/files/user/Song.flac',
+    size: 12345, status: 'ok', probedAt: 1,
+  })
+
+  // The WebDAV server dies between the wipe and the re-link PROPFIND. The
+  // wipe already happened, so the reset must say so instead of resolving like
+  // a success over a wiped library.
+  buildFails = true
+  await assert.rejects(resetMetadataAndRelink(), /re-link scan failed/, 'failure surfaces the post-wipe state')
+  assert.equal(memStores.localMetadata.size, 0, 'wipe DID run before the scan failure')
+  assert.equal(memStores.webdavFileIndex.size, 0, 'index snapshot wiped')
+  assert.equal(memStores.webdavFileTags.size, 0, 'tag cache wiped')
+  assert.equal(get(metadataScanState).status, 'error', 'scan error state is what the reset reacted to')
+
+  teardown()
+})
+
+test('navidrome-mode reset: file tags never replace server ratings; the re-seed restores them', async () => {
+  setupMocks()
+  // ratingSource 'navidrome' → the SERVER is authoritative for rating/loved.
+  settings.set({
+    webdavUrl: 'http://test.com', webdavUser: 'user', webdavToken: 'token', ratingSource: 'navidrome',
+  })
+  setWebdavCredentials('http://test.com', 'user', 'token')
+
+  const t1 = track({
+    trackId: 'navidrome-s1', title: 'Song A', artist: 'Artist', album: 'Album', size: 111,
+    userRating: 5, starred: true,
+  })
+  const t2 = track({
+    trackId: 'navidrome-s2', title: 'Song B', artist: 'Artist', album: 'Album', size: 222,
+    userRating: 2, starred: false,
+  })
+  library.set([t1, t2])
+
+  // Swapped bindings (the recovery case) with stale local ratings that must
+  // NOT survive: the server (5★/100, 2★/40) always wins over file tags (60/90).
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  updateMetadata({
+    trackId: 'navidrome-s1', rating: 60, loved: false, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathB, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+  updateMetadata({
+    trackId: 'navidrome-s2', rating: 90, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathA, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+  mockMeta = {
+    [pathA]: fileMeta({ title: 'Song A', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 60, loved: false }),
+    [pathB]: fileMeta({ title: 'Song B', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 90, loved: true }),
+  }
+
+  await resetMetadataAndRelink()
+
+  const rowA = get(metadataCache).get('navidrome-s1')
+  const rowB = get(metadataCache).get('navidrome-s2')
+  assert.equal(rowA?.webdavPath, pathA, 's1 healed onto its own file')
+  assert.equal(rowA?.rating, 100, 's1 server rating (5★) wins over the file tag 60')
+  assert.equal(rowA?.loved, true, 's1 starred survives as loved')
+  assert.equal(rowB?.webdavPath, pathB, 's2 healed onto its own file')
+  assert.equal(rowB?.rating, 40, 's2 server rating (2★) wins over the file tag 90')
+  assert.equal(rowB?.loved, false, 's2 unstarred stays unloved')
+  assert.equal(get(metadataScanState).status, 'complete', 'reset scan completed')
+
+  teardown()
+})
+
+// ── Heal pass: force scans release provably-wrong AUTO links (2026-09-05) ──
+// A binding whose bound file's own identity tags prove it wrong (the file is
+// another track, or its title is unrelated) is released BEFORE the drain, so
+// the freed file becomes claimable and the same scan re-links everyone
+// correctly. This is what makes a plain "Rescan All Metadata" heal swapped
+// bindings — previously only the wipe-then-relink reset could. Manual,
+// ignored and pending rows never reach the heal candidates.
+
+test('force scan heals swapped auto bindings in one pass (release + re-link), no wipe needed', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', album: 'Album', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', album: 'Album', size: 222 })
+  library.set([t1, t2])
+
+  // A previous bad pass SWAPPED the bindings: t1 owns B's file, t2 owns A's.
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  updateMetadata({
+    trackId: 't1', rating: 60, loved: false, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathB, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+  updateMetadata({
+    trackId: 't2', rating: 80, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathA, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+  mockMeta = {
+    [pathA]: fileMeta({ title: 'Song A', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 90, loved: true }),
+    [pathB]: fileMeta({ title: 'Song B', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 60, loved: false }),
+  }
+
+  await scanAll('force')
+
+  const rowA = get(metadataCache).get('t1')
+  const rowB = get(metadataCache).get('t2')
+  assert.equal(rowA?.webdavPath, pathA, 't1 healed onto its own file without a wipe')
+  assert.equal(rowA?.rating, 90, 't1 rating follows the healed file (webdav mode)')
+  assert.equal(rowA?.loved, true, 't1 loved follows the healed file')
+  assert.equal(rowB?.webdavPath, pathB, 't2 healed onto its own file without a wipe')
+  assert.equal(rowB?.rating, 60, 't2 rating follows the healed file')
+  assert.equal(rowB?.loved, false, 't2 loved follows the healed file')
+  assert.equal(readCallCount, 2, 'exactly the two forced heal reads; the drain reuses the probe cache')
+  assert.equal(get(metadataScanState).status, 'complete', 'scan completed')
+  assert.equal(get(metadataScanState).progress.released, 2, 'the scan-complete line reports the two healed links')
+
+  // A second force scan must be stable: correct bindings with fresh tag cache
+  // produce no heal reads, no releases, no churn.
+  await scanAll('force')
+  assert.equal(get(metadataCache).get('t1')?.webdavPath, pathA, 't1 binding stable across rescans')
+  assert.equal(get(metadataCache).get('t2')?.webdavPath, pathB, 't2 binding stable across rescans')
+  assert.equal(readCallCount, 2, 'second scan added no heal reads')
+  assert.equal(get(metadataScanState).status, 'complete', 'second scan completed')
+  assert.equal(get(metadataScanState).progress.released, undefined, 'a healthy rescan reports no healing')
+
+  teardown()
+})
+
+test('heal pass never touches a manual binding, even when the file tags prove another owner', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', album: 'Album', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', album: 'Album', size: 222 })
+  library.set([t1, t2])
+
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  // BOTH links are wrong by the file tags' own testimony: t1 (Song A) is
+  // MANUALLY bound to B (tags Song B), t2 (Song B) is AUTO-bound to A (tags
+  // Song A). The heal pass must release ONLY the auto row — the user's manual
+  // verdict is never auto-cleared anywhere, even when provably wrong.
+  updateMetadata({
+    trackId: 't1', rating: 40, loved: false, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathB, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user', matchSource: 'manual',
+  })
+  updateMetadata({
+    trackId: 't2', rating: 80, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathA, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+  mockMeta = {
+    [pathA]: fileMeta({ title: 'Song A', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 90, loved: true }),
+    [pathB]: fileMeta({ title: 'Song B', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 60, loved: false }),
+  }
+
+  await scanAll('force')
+
+  const rowA = get(metadataCache).get('t1')
+  const rowB = get(metadataCache).get('t2')
+  assert.equal(rowA?.webdavPath, pathB, 'manual binding untouched by the heal pass')
+  assert.equal(rowA?.matchSource, 'manual', 'manual marker preserved')
+  // D8 manual re-read semantics: the LINK is the user's verdict, but in
+  // webdav mode the bound file's tags still propagate (rating 40 → 60 follows
+  // the re-read file). The heal pass never ran on this row — the re-read is
+  // the ordinary manual-binding scan path.
+  assert.equal(rowA?.rating, 60, 'manual row re-read follows the bound file (D8)')
+  assert.equal(rowB?.webdavPath, undefined, 'the provably-wrong AUTO link was released (manual protection only)')
+  assert.equal(rowB?.rating, 80, 'released auto row keeps its values when nothing re-matches')
+  assert.equal(rowB?.loved, true, 'released auto row keeps its loved flag')
+  assert.equal(get(metadataScanState).status, 'complete')
+
+  teardown()
+})
+
+test('heal pass never releases a pending_sync row and never re-reads its file', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', album: 'Album', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', album: 'Album', size: 222 })
+  library.set([t1, t2])
+
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  // t1 holds an un-pushed local edit (pending_sync) — D4 says scans must skip
+  // it entirely; the heal pass inherits that protection. t2's AUTO link to A
+  // is provably wrong (A's tags name t1's song) and must be released.
+  updateMetadata({
+    trackId: 't1', rating: 40, loved: false, fileType: 'flac', syncStatus: 'pending_sync',
+    lastModifiedLocally: 1, webdavPath: pathB, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+  updateMetadata({
+    trackId: 't2', rating: 80, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathA, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+  mockMeta = {
+    [pathA]: fileMeta({ title: 'Song A', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 90, loved: true }),
+    [pathB]: fileMeta({ title: 'Song B', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 60, loved: false }),
+  }
+
+  await scanAll('force')
+
+  const rowA = get(metadataCache).get('t1')
+  const rowB = get(metadataCache).get('t2')
+  assert.equal(rowA?.webdavPath, pathB, 'pending row keeps its link')
+  assert.equal(rowA?.syncStatus, 'pending_sync', 'pending edit survives')
+  assert.equal(rowA?.rating, 40, 'local rating not clobbered')
+  assert.equal(rowB?.webdavPath, undefined, 'the provably-wrong auto sibling was still released')
+  assert.equal(readCallCount, 1, 'only t2\'s file was heal-read (pending row never re-read)')
+  assert.equal(get(metadataScanState).status, 'complete')
+
+  teardown()
+})
+
+test('a modified scan never runs the heal pass (release is force-scan only)', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', album: 'Album', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', album: 'Album', size: 222 })
+  library.set([t1, t2])
+
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  updateMetadata({
+    trackId: 't1', rating: 60, loved: false, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathB, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+  updateMetadata({
+    trackId: 't2', rating: 80, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathA, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+  mockMeta = {
+    [pathA]: fileMeta({ title: 'Song A', artist: 'Artist', album: 'Album', trackNumber: 1 }),
+    [pathB]: fileMeta({ title: 'Song B', artist: 'Artist', album: 'Album', trackNumber: 1 }),
+  }
+
+  await scanAll('modified')
+
+  // Incremental scans are not the recovery action: unchanged stamps mean the
+  // rows are not re-queued, no forced heal reads run, and the swap survives.
+  assert.equal(get(metadataCache).get('t1')?.webdavPath, pathB, 'modified scan leaves bindings as-is')
+  assert.equal(get(metadataCache).get('t2')?.webdavPath, pathA, 'modified scan leaves bindings as-is')
+  assert.equal(readCallCount, 0, 'no heal reads on an incremental scan')
+  assert.equal(get(metadataScanState).status, 'complete')
+
+  teardown()
+})
+
+test('a released row that cannot re-match keeps its rating and surfaces unresolved', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', album: 'Album', size: 111 })
+  library.set([t1])
+
+  // The auto binding points at a file whose tags name something unrelated and
+  // no library track owns — provably wrong, so it is released; the drain then
+  // cannot re-match it (the file's tags contradict the only track), so the row
+  // stays unbound for File Matching with its rating preserved.
+  const pathX = '/dav/files/user/Completely.flac'
+  updateMetadata({
+    trackId: 't1', rating: 60, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathX, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+
+  mockEntries = [
+    { path: pathX, filename: 'Completely.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+  mockMeta = {
+    [pathX]: fileMeta({ title: 'A Different Song Entirely', artist: 'Someone', album: 'Elsewhere', trackNumber: 1, rating: 0, loved: false }),
+  }
+
+  await scanAll('force')
+
+  const row = get(metadataCache).get('t1')
+  assert.equal(row?.webdavPath, undefined, 'provably-wrong link released')
+  assert.equal(row?.rating, 60, 'rating survives the release (no rebind, no clobber)')
+  assert.equal(row?.loved, true, 'loved survives the release')
+  assert.equal(row?.syncStatus, 'synced', 'row stays synced — surfaced to File Matching, not errored')
+  assert.equal(get(metadataScanState).status, 'complete')
+
+  teardown()
+})
+
+test('File Matching audits matched links from the tag cache: verified / conflict / not-read', async () => {
+  setupMocks()
+  initWebdav()
+  // Let initWebdav's queued stale-index clear settle before refreshIndex
+  // seeds the index snapshot.
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', size: 222 })
+  const t3 = track({ trackId: 't3', title: 'Song C', artist: 'Artist', size: 333 })
+  library.set([t1, t2, t3])
+
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  const pathC = '/dav/files/user/Song C.flac'
+  // All three tracks are auto-bound on the CURRENT server.
+  for (const [id, path] of [['t1', pathA], ['t2', pathB], ['t3', pathC]] as const) {
+    updateMetadata({
+      trackId: id, rating: 0, loved: false, fileType: 'flac', syncStatus: 'synced',
+      lastModifiedLocally: 1, webdavPath: path, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+      webdavBase: 'http://test.com|user',
+    })
+  }
+
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathC, filename: 'Song C.flac', size: 333, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+
+  // Tag evidence lives in the persisted probe cache: A confirms its track, B
+  // contradicts its track, C has never been read. The auditor must judge ALL
+  // of them with ZERO file reads (listUnresolvedMatches never fetches).
+  const base = 'http://test.com|user'
+  const stamp = 'Mon, 01 Jan 2024 00:00:00 GMT'
+  const mkTag = (path: string, meta: Partial<FileMetadata>): FileTagCacheEntry => ({
+    id: `${base}\u0000${path}`,
+    baseKey: base,
+    path,
+    size: path === pathA ? 111 : path === pathB ? 222 : 333,
+    lastModified: stamp,
+    metadata: fileMeta({ rating: 0, loved: false, ...meta }),
+    status: 'ok',
+    probedAt: 1,
+  })
+  await db.webdavFileTags.bulkPut([
+    mkTag(pathA, { title: 'Song A', artist: 'Artist' }),
+    mkTag(pathB, { title: 'Completely Different', artist: 'Someone' }),
+  ])
+
+  await refreshIndex()
+  const result = await listUnresolvedMatches()
+
+  const rowA = result.rows.find((r) => r.trackId === 't1')
+  const rowB = result.rows.find((r) => r.trackId === 't2')
+  const rowC = result.rows.find((r) => r.trackId === 't3')
+  assert.equal(rowA?.kind, 'matched', 't1 stays a matched row')
+  assert.equal(rowA?.verdict, 'verified', 'tags confirming the track verify the link')
+  assert.equal(rowB?.verdict, 'conflict', 'contradicting tags surface as a conflict')
+  assert.equal(rowB?.fileTitle, 'Completely Different', 'conflict reports the file title')
+  assert.equal(rowC?.verdict, 'unknown', 'no evidence → honest unknown, never guessed')
+  assert.equal(rowC?.readState, 'not-probed', 'and it says WHY: never read')
+  assert.equal(result.counts.matched, 3, 'all three stay matched (audit never unlinks)')
+
+  // Audit-worthy rows rank before the verified bulk so the display cap shows
+  // the conflicts, not the healthy majority.
+  const order = result.rows.map((r) => r.trackId)
+  assert.ok(order.indexOf('t2') < order.indexOf('t1'), 'conflict sorts before verified')
+  assert.ok(order.indexOf('t3') < order.indexOf('t1'), 'unknown sorts before verified')
+
+  teardown()
+})
+
+test('File Matching flags exactly the conflicts a rescan will provably fix (`fixable`)', async () => {
+  setupMocks()
+  initWebdav()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', size: 222 })
+  const t3 = track({ trackId: 't3', title: 'Album Track', artist: 'Artist', size: 333 })
+  const t4 = track({ trackId: 't4', title: 'Song D', artist: 'Artist', size: 444 })
+  const t5 = track({ trackId: 't5', title: 'Song E', artist: 'Artist', size: 555 })
+  library.set([t1, t2, t3, t4, t5])
+
+  // Swapped pair: t1 holds B's file, t2 holds A's file — both auto-bound and
+  // BOTH provably wrong (each file's tags name the other track).
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  // Same-release family variant under t3: "(Live)" is plausibly the same
+  // file — the heal deliberately keeps it (D8 live/feat trap).
+  const pathLive = '/dav/files/user/Album Track (Live).flac'
+  // t4 is a MANUAL pick bound to a file tagged as another song (t5's title) —
+  // provable-looking, but manual rows are the user's verdict and never
+  // auto-cleared, so it must NOT be flagged fixable.
+  const pathE = '/dav/files/user/Song E.flac'
+  const stamp = 'Mon, 01 Jan 2024 00:00:00 GMT'
+  const base = 'http://test.com|user'
+  const bindings: Array<{ id: string; path: string; source?: 'auto' | 'manual' }> = [
+    { id: 't1', path: pathB },
+    { id: 't2', path: pathA },
+    { id: 't3', path: pathLive },
+    { id: 't4', path: pathE, source: 'manual' },
+  ]
+  for (const { id, path, source } of bindings) {
+    updateMetadata({
+      trackId: id, rating: 0, loved: false, fileType: 'flac', syncStatus: 'synced',
+      lastModifiedLocally: 1, webdavPath: path, webdavLastModified: stamp,
+      webdavBase: base, matchSource: source,
+    })
+  }
+
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: stamp },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: stamp },
+    { path: pathLive, filename: 'Album Track (Live).flac', size: 333, lastModified: stamp },
+    { path: pathE, filename: 'Song E.flac', size: 444, lastModified: stamp },
+  ]
+  mockComplete = true
+
+  const mkTag = (path: string, size: number, title: string): FileTagCacheEntry => ({
+    id: `${base}\u0000${path}`,
+    baseKey: base,
+    path,
+    size,
+    lastModified: stamp,
+    metadata: fileMeta({ rating: 0, loved: false, title, artist: 'Artist' }),
+    status: 'ok',
+    probedAt: 1,
+  })
+  await db.webdavFileTags.bulkPut([
+    mkTag(pathA, 111, 'Song A'),
+    mkTag(pathB, 222, 'Song B'),
+    mkTag(pathLive, 333, 'Album Track (Live)'),
+    mkTag(pathE, 444, 'Song E'),
+  ])
+
+  await refreshIndex()
+  const result = await listUnresolvedMatches()
+  const byId = new Map(result.rows.map((r) => [r.trackId, r]))
+
+  // Swapped pair: both auto conflicts whose file tags name the other track —
+  // the exact rows the force-scan heal releases (D16). Promise kept.
+  assert.equal(byId.get('t1')?.verdict, 'conflict')
+  assert.equal(byId.get('t1')?.fixable, true, 'auto + file is provably another song → fixable')
+  assert.equal(byId.get('t2')?.fixable, true, 'swap is fixable from either side')
+  // Family variant: conflict, but the heal keeps it → never promised.
+  assert.equal(byId.get('t3')?.verdict, 'conflict')
+  assert.equal(byId.get('t3')?.fixable, undefined, 'family-title conflict is not flagged fixable')
+  // Manual: the user's verdict — never fixable even when the file title names
+  // another library track (t5).
+  assert.equal(byId.get('t4')?.matchSource, 'manual')
+  assert.equal(byId.get('t4')?.verdict, 'conflict')
+  assert.equal(byId.get('t4')?.fixable, undefined, 'manual conflicts are never auto-fixed')
+  assert.equal(result.counts.matched, 4, 'audit still never unlinks anything')
+
+  teardown()
+})
+
 test('ensureTagProbe completes without deadlock when index is not built', async () => {
   setupMocks()
   initWebdav()
@@ -712,6 +1388,210 @@ test('ensureTagProbe completes without deadlock when index is not built', async 
   const result = await ensureTagProbe()
   assert.ok(result instanceof Set, 'probe completes without deadlock')
   assert.equal(buildCallCount, 1, 'probe built the missing index itself')
+
+  teardown()
+})
+
+// ── Reset cancellation (2026-09-06) ─────────────────────────────────────────
+// The wipe-then-relink reset is the longest DESTRUCTIVE operation, so it
+// accepts an `isCancelled` closure checked between phases (pre-wipe, post-wipe,
+// post-scan) and — for the scan phase — through the SAME cancelScan()
+// machinery the scan Cancel button uses. A cancelled reset must land
+// RESUMABLY: scanned files keep their fresh links, the scan state carries the
+// honest "Cancelled — N of M" annotation, and a follow-up Rescan finishes the
+// re-link. A scan stopped by ANY cancel source must never surface as a
+// successful reset (scanAll now resolves { cancelled }).
+
+test('resetMetadataAndRelink: cancel before the wipe runs nothing destructive', async () => {
+  setupMocks()
+  initWebdav()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  library.set([track()])
+
+  updateMetadata({
+    trackId: 't1', rating: 80, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: '/dav/files/user/Song.flac',
+    webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT', webdavBase: 'http://test.com|user',
+  })
+  await db.webdavFileIndex.put({ id: 'main', entries: [entry()], buildTimestamp: 1, complete: true })
+  await db.webdavFileTags.put({
+    id: 'http://test.com|user\u0000/dav/files/user/Song.flac',
+    baseKey: 'http://test.com|user', path: '/dav/files/user/Song.flac',
+    size: 12345, status: 'ok', probedAt: 1,
+  })
+
+  const result = await resetMetadataAndRelink({ isCancelled: () => true })
+
+  assert.equal(result.cancelled, true, 'reset reports the pre-wipe cancellation')
+  assert.equal(buildCallCount, 0, 'no PROPFIND — the re-link scan never started')
+  assert.equal(memStores.localMetadata.size, 1, 'metadata row untouched')
+  assert.equal(memStores.webdavFileIndex.size, 1, 'index snapshot untouched')
+  assert.equal(memStores.webdavFileTags.size, 1, 'tag cache untouched')
+  assert.equal(get(metadataCache).size, 1, 'in-memory cache untouched')
+
+  teardown()
+})
+
+test('resetMetadataAndRelink: mid-scan cancel keeps scanned links, discards in-flight work, and a follow-up scan finishes the re-link', async () => {
+  setupMocks()
+  initWebdav()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', album: 'Album', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', album: 'Album', size: 222 })
+  const t3 = track({ trackId: 't3', title: 'Song C', artist: 'Artist', album: 'Album', size: 333 })
+  library.set([t1, t2, t3])
+
+  // Stale swapped bindings for t1/t2 — exactly the recovery case the reset
+  // exists for; t3 has never been linked.
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  const pathC = '/dav/files/user/Song C.flac'
+  updateMetadata({
+    trackId: 't1', rating: 60, loved: false, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathB, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+  updateMetadata({
+    trackId: 't2', rating: 80, loved: true, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathA, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user',
+  })
+
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathC, filename: 'Song C.flac', size: 333, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+  mockMeta = {
+    [pathA]: fileMeta({ title: 'Song A', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 90, loved: true }),
+    [pathB]: fileMeta({ title: 'Song B', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 60, loved: false }),
+    [pathC]: fileMeta({ title: 'Song C', artist: 'Artist', album: 'Album', trackNumber: 1, rating: 70, loved: false }),
+  }
+
+  // Deterministic mid-scan cancel: the FIRST file read (t1's worker) blocks
+  // on a one-shot gate while the other two workers complete their rows. This
+  // per-test readFile override replaces the shared harness mock so the gate
+  // hits exactly one worker (the shared readGate would freeze all three).
+  let releaseFirst: (() => void) | null = null
+  const firstReadGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+  let firstReadStarted = false
+  let completedReads = 0
+  __setScannerDeps({
+    buildIndex: async () => ({ entries: mockEntries, complete: mockComplete }),
+    readFile: async (_baseUrl: string, filePath: string) => {
+      if (!firstReadStarted) {
+        firstReadStarted = true
+        await firstReadGate
+      }
+      completedReads++
+      const meta = mockMeta[filePath]
+      if (!meta) throw new Error(`No mock metadata for ${filePath}`)
+      return meta
+    },
+  })
+
+  let resetCancelled: boolean | null = null
+  const resetPromise = resetMetadataAndRelink({ isCancelled: () => resetCancelled === true })
+    .then((r) => { resetCancelled = r.cancelled; return r })
+
+  // Wait for the two ungated workers to finish their re-links (the gated
+  // worker holds t1's read in flight).
+  for (let i = 0; i < 500 && completedReads < 2; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1))
+  }
+  assert.equal(completedReads, 2, 'two workers completed their reads before the cancel')
+  assert.equal(get(metadataCache).get('t2')?.webdavPath, pathB, 't2 re-linked while the scan ran')
+  assert.equal(get(metadataCache).get('t3')?.webdavPath, pathC, 't3 bound while the scan ran')
+
+  // Cancel mid-scan: the same two-step the view's Cancel button performs —
+  // set the reset flag AND stop the scan via cancelScan().
+  resetCancelled = true
+  cancelScan()
+  releaseFirst!()
+  const result = await resetPromise
+
+  assert.equal(result.cancelled, true, 'reset reports the mid-scan cancellation')
+  assert.equal(get(metadataCache).get('t2')?.webdavPath, pathB, 't2 keeps its fresh link (processed rows survive)')
+  assert.equal(get(metadataCache).get('t2')?.rating, 60, 't2 rating re-imported from its file before the cancel')
+  assert.equal(get(metadataCache).get('t3')?.webdavPath, pathC, 't3 keeps its fresh binding')
+  assert.equal(get(metadataCache).get('t1'), undefined, 'in-flight row was generation-dropped, not resurrected after the wipe')
+  // The wipe-reset's scan reads files in its INLINE PROBE phase, whose
+  // progress rides tagProbeState; cancelScan()'s gen bump then stops the run
+  // before the drain queue is even built. So the scan-state landing is the
+  // honest "0 of 0" (nothing reached the drain) while the PROBE-side  // bookkeeping (tagProbeState.done) carries the real work count.
+  const scanState = get(metadataScanState)
+  assert.equal(scanState.status, 'complete', 'cancelScan landed an honest complete state')
+  assert.match(scanState.progress.annotation ?? '', /^Cancelled — /, 'annotation reports the cancellation')
+  assert.equal(scanState.progress.total, 0, 'drain total is 0: the probe phase did the binding and the gen bump stopped the rest')
+  assert.equal(get(tagProbeState).done, 2, 'probe-side bookkeeping counted the two completed file reads')
+  assert.equal(scanState.progress.cancelledShape, 'force', 'the landing carries the interrupted scan shape for the Resume affordance')
+
+  // Resumability: the follow-up ordinary scan finishes the re-link — t1's
+  // file is claimable (its binding was wiped) and binds correctly.
+  await scanAll('force')
+  assert.equal(get(metadataCache).get('t1')?.webdavPath, pathA, 'follow-up scan re-links the cancelled track')
+  assert.equal(get(metadataCache).get('t1')?.rating, 90, 't1 rating follows its healed file')
+  assert.equal(get(metadataScanState).status, 'complete', 'follow-up scan completed')
+  assert.equal(get(metadataScanState).progress.cancelledShape, undefined, 'a fresh scan landing clears the resume marker')
+
+  teardown()
+})
+
+test('cancelScan stamps the landing with the scan shape; ordinary scans do not carry it', async () => {
+  setupMocks()
+  initWebdav()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', album: 'Album', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', album: 'Album', size: 222 })
+  library.set([t1, t2])
+
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+  mockMeta = {
+    [pathA]: fileMeta({ title: 'Song A', artist: 'Artist', album: 'Album', trackNumber: 1 }),
+    [pathB]: fileMeta({ title: 'Song B', artist: 'Artist', album: 'Album', trackNumber: 1 }),
+  }
+
+  // A plain MODIFIED scan with nothing cached: everything is unmatched → the
+  // drain runs all rows. Cancel mid-drain via a read gate, then verify the
+  // landing carries the MODIFIED shape (not force).
+  let releaseA: (() => void) | null = null
+  const gateA = new Promise<void>((resolve) => { releaseA = resolve })
+  let gatedOnce = false
+  let completed = 0
+  __setScannerDeps({
+    buildIndex: async () => ({ entries: mockEntries, complete: mockComplete }),
+    readFile: async (_b: string, filePath: string) => {
+      if (!gatedOnce) {
+        gatedOnce = true
+        await gateA
+      }
+      completed++
+      return mockMeta[filePath]!
+    },
+  })
+  const scanPromise = scanAll('modified')
+  for (let i = 0; i < 500 && completed < 1; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1))
+  }
+  assert.equal(completed, 1, 'one row completed before the cancel')
+  cancelScan()
+  releaseA!()
+  const res = await scanPromise
+  assert.equal(res.cancelled, true, 'the modified scan reports cancelled')
+  assert.equal(get(metadataScanState).progress.cancelledShape, 'modified', 'landing carries the modified shape')
+
+  // An ordinary completed scan (no cancel) does NOT carry the marker.
+  await scanAll('modified')
+  assert.equal(get(metadataScanState).progress.cancelledShape, undefined, 'completed scans have no resume marker')
 
   teardown()
 })

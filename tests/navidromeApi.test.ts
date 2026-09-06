@@ -127,3 +127,28 @@ test('cachedConfigMatches: whitespace differences are normalized away', () => {
 test('cachedConfigMatches: a password change alone keeps the identity matching', () => {
   assert.equal(cachedConfigMatches(cacheCfg({ password: 'new' }), 'https://srv.example/', 'u'), true)
 })
+
+test('paginateSearch3 isCancelled: stops BEFORE the next page and returns the partial set', async () => {
+  // The load-cancel token: an in-flight page is awaited (fetch started before
+  // the cancel) but no NEW request begins. The partial page-set is returned
+  // — the CALLER (loadLibraryFromNavidrome) must apply nothing on a cancel.
+  let calls = 0
+  const songs = await paginateSearch3(async (offset) => {
+    calls++
+    return Array.from({ length: 10 }, (_, i) => ({
+      id: `s-${offset + i}`, title: `T${offset + i}`, artist: 'A', album: 'B', duration: 100,
+    }))
+  }, { pageSize: 10, isCancelled: () => calls >= 3 })
+  assert.equal(calls, 3, 'pages 1-3 fetched; the token flips and no page 4 starts')
+  assert.equal(songs.length, 30, 'the partial set is returned, not discarded')
+})
+
+test('paginateSearch3 isCancelled: checked before the FIRST page too', async () => {
+  let calls = 0
+  const songs = await paginateSearch3(async () => {
+    calls++
+    return []
+  }, { isCancelled: () => true })
+  assert.equal(calls, 0, 'an already-cancelled token fetches nothing')
+  assert.equal(songs.length, 0)
+})

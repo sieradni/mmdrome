@@ -1,9 +1,9 @@
 import { get } from "svelte/store"
 import { writable } from "svelte/store"
 import { Capacitor } from "@capacitor/core"
-import { library, metadataCache, metadataScanState, settings, updateMetadata } from "../stores/appState"
+import { library, metadataCache, metadataScanState, settings, updateMetadata, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
 import type { Track } from "../stores/appState"
-import { saveWebdavFileIndex, clearWebdavFileIndex, getWebdavFileIndex, getFileTagsForBase, putFileTag, deleteFileTagsForBase, deleteFileTagsByIds, updateWebdavFileTagFingerprint } from "./db"
+import { saveWebdavFileIndex, clearWebdavFileIndex, clearAllMetadata, clearAllWebdavFileTags, getWebdavFileIndex, getFileTagsForBase, putFileTag, deleteFileTagsForBase, deleteFileTagsByIds, updateWebdavFileTagFingerprint } from "./db"
 import type { LocalMetadataStore, FileTagCacheEntry } from "./db"
 import { buildWebdavFileIndexDetailed, readFileMetadata } from "./metadataReader"
 import {
@@ -24,6 +24,12 @@ import {
   matchFileToTracks,
   canAutoBind,
   pruneTagCacheEntries,
+  selectHealEvictions,
+  bindingReleaseable,
+  buildEffectiveTitleCounts,
+  auditBoundFile,
+  type HealCandidate,
+  type LinkAudit,
 } from "./metadataCore"
 import { filenameHintsTitle, normalizeForHint } from "./matchNormalize"
 import { webdavBaseKey, webdavFetch, authHeaders, buildWebdavUrl, isTempFile } from "./webdavUtils"
@@ -90,6 +96,7 @@ export function __resetScannerState(): void {
   missingCount = 0
   notFoundCount = 0
   ambiguousCount = 0
+  releasedCount = 0
   totalTracks = 0
   tagCacheBaseKey = ""
   tagCacheLastKnownBaseKey = ""
@@ -123,7 +130,7 @@ let activeCount = 0
 let activeDrain: Promise<void> | null = null
 /** Covers the pre-drain scan phase too, so restore probing cannot race a
  * scan that has been scheduled but has not reached its tag phase yet. */
-let activeScanPromise: Promise<void> | null = null
+let activeScanPromise: Promise<{ cancelled: boolean }> | null = null
 /** Serializes index persistence and credential-change invalidation. A stale
  * request that was already writing must finish before the invalidation delete,
  * so it cannot resurrect an old server snapshot after a credential swap. */
@@ -155,6 +162,9 @@ let failedCount = 0
 let missingCount = 0
 let notFoundCount = 0
 let ambiguousCount = 0
+/** AUTO links released by the force-scan heal (D16) this run — surfaced via
+ *  `progress.released` so the scan-complete line reports the healing. */
+let releasedCount = 0
 let totalTracks = 0
 let shape: ScanShape = "modified"
 let activeAnnotation = ""
@@ -573,6 +583,67 @@ function fileTypeOf(filename: string): string {
   return dot > 0 ? filename.slice(dot + 1).toLowerCase() : "mp3"
 }
 
+/** Bound AUTO rows (synced, current-server, never manual/ignored/pending)
+ *  whose bound file has NO fresh tag-cache entry — bindings the heal pass
+ *  cannot judge yet. Force scans force-read exactly these paths through the
+ *  probe (single read/cache boundary) so every bound file ends up judged. */
+function computeHealReadPaths(): string[] {
+  const byPath = new Map(index.map((e) => [e.path, e]))
+  const rows = get(metadataCache)
+  const out = new Set<string>()
+  for (const row of rows.values()) {
+    if (!row.webdavPath || row.webdavBase !== currentIndexKey()) continue
+    if (row.matchSource === 'manual' || row.ignored || row.syncStatus === 'pending_sync') continue
+    const e = byPath.get(row.webdavPath)
+    if (!e || !isAudioFilePath(e.filename)) continue
+    const cached = tagCache.get(e.path)
+    if (cached && tagCacheEntryIsFresh(cached, e.size, e.lastModified)) continue
+    out.add(e.path)
+  }
+  return [...out]
+}
+
+/** Releases AUTO links a full rescan can prove wrong from the file's own
+ *  (fresh) identity tags — see `selectHealEvictions` for the decision rule.
+ *  Returns the number released. Only the binding fields are cleared
+ *  (path/base/matchSource); rating/loved/comments and `synced` are preserved,
+ *  so the drain that follows re-matches each released row from scratch.
+ *  Manual, ignored and pending rows never reach the candidate set. */
+function releaseHealEvictions(): number {
+  const byPath = new Map(index.map((e) => [e.path, e]))
+  const tracks = get(library)
+  const rows = get(metadataCache)
+  const candidates: HealCandidate[] = []
+  for (const row of rows.values()) {
+    if (!row.webdavPath || row.webdavBase !== currentIndexKey()) continue
+    if (row.matchSource === 'manual' || row.ignored || row.syncStatus === 'pending_sync') continue
+    const e = byPath.get(row.webdavPath)
+    if (!e || !isAudioFilePath(e.filename)) continue
+    // Only fresh 'ok' evidence may trigger a release — stale tags, an empty
+    // read, or a failed read prove nothing.
+    const cached = tagCache.get(e.path)
+    if (!cached || !tagCacheEntryIsFresh(cached, e.size, e.lastModified)
+        || cached.status !== 'ok' || !cached.metadata) continue
+    const track = tracks.find((t) => t.trackId === row.trackId)
+    if (!track) continue
+    candidates.push({ track, entry: { ...e, tags: metadataToTags(cached.metadata) } })
+  }
+  const releaseIds = selectHealEvictions(candidates, tracks)
+  if (releaseIds.length === 0) return 0
+  for (const trackId of releaseIds) {
+    const row = rows.get(trackId)
+    if (!row) continue
+    updateMetadata({
+      ...row,
+      webdavPath: undefined,
+      webdavLastModified: undefined,
+      webdavBase: undefined,
+      matchSource: undefined,
+    })
+  }
+  return releaseIds.length
+}
+
 /** Load cached probe results for a server identity into a path-keyed map. */
 async function loadTagCacheFor(key: string): Promise<Map<string, FileTagCacheEntry>> {
   const entries = await getFileTagsForBase(key)
@@ -615,24 +686,28 @@ async function applyCachedTags(): Promise<boolean> {
 }
 
 /**
- * Content-probes UNCLAIMED audio files so matching can use real in-file
- * identity (title/artist/album) instead of only filenames.
+ * Content-probes audio files so matching can use real in-file identity
+ * (title/artist/album) instead of only filenames.
  *
- * Selection: only files that plausibly resolve some unclaimed track — a size
- * hint (same byte size as an unclaimed track) or a filename/title hint. This
+ * Selection: files that plausibly resolve some UNCLAIMED track — a size hint
+ * (same byte size as an unclaimed track) or a filename/title hint. This
  * deliberately never sweeps the entire server: orphan file forests without
  * any hinted candidate are left alone (they cost probe bytes but match
- * nothing). Probed results are cached per `baseKey|path` + size in Dexie and
- * attached to the in-memory index for scoring; successful/empty results are
- * cached until the file size or WebDAV mtime changes, while network and parse
- * failures use separate retry TTLs so a transient outage cannot poison the
- * library forever.
+ * nothing). `forcePaths` (force scans only) additionally reads files that are
+ * already CLAIMED by an auto binding whose tag evidence is missing/stale, so
+ * the heal pass can judge every bound file — reading a claimed file never
+ * reverse-binds it (claim guards), it only refreshes the evidence. Probed
+ * results are cached per `baseKey|path` + size in Dexie and attached to the
+ * in-memory index for scoring; successful/empty results are cached until the
+ * file size or WebDAV mtime changes, while network and parse failures use
+ * separate retry TTLs so a transient outage cannot poison the library
+ * forever.
  *
  * Pauses (waits) while a scan is draining so the two never compete for the
  * connection; a new call (gen bump) cancels a running pass.
  */
-function launchTagProbe(): Promise<Set<string>> {
-  const promise = ensureTagProbe()
+function launchTagProbe(forcePaths?: Set<string>): Promise<Set<string>> {
+  const promise = ensureTagProbe(forcePaths)
   // A probe is evidence enrichment. A failed probe must never turn a valid
   // fresh PROPFIND/filename scan into a failed scan or leave the UI in
   // `scanning` forever; callers receive an empty bind set and the next TTL
@@ -845,7 +920,10 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
     if (t.title) unclaimedTitles.add(normalizeForHint(t.title))
   }
 
-  if (unclaimedTrackCount === 0) return autoBoundTrackIds
+  // A run with nothing unclaimed is normally a no-op, but a force scan may
+  // have FORCED reads of already-claimed files (heal evidence) — those still
+  // need to run.
+  if (unclaimedTrackCount === 0 && !myForce) return autoBoundTrackIds
 
   const pool: WebdavFileEntry[] = []
   const claimedPaths = new Set<string>()
@@ -877,11 +955,15 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
   }
 
   for (const entry of index) {
-    if (claimedPaths.has(entry.path)) continue
     if (!isAudioFilePath(entry.filename)) continue
-    unclaimedAudioFileCount++
-    const cached = tagCache.get(entry.path)
+    const claimed = claimedPaths.has(entry.path)
     const isForced = myForce?.has(entry.path) ?? false
+    // Claimed files only enter the pool when explicitly forced (heal evidence
+    // for auto-bound files) — ordinary probe selection never re-reads a file
+    // another row owns.
+    if (claimed && !isForced) continue
+    if (!claimed) unclaimedAudioFileCount++
+    const cached = tagCache.get(entry.path)
     if (cached && tagCacheEntryIsFresh(cached, entry.size, entry.lastModified) && !isForced) continue // fresh result, including TTL-governed failures
     pool.push(entry)
   }
@@ -1023,19 +1105,157 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
 }
 
 /**
- * Runs a WebDAV metadata scan against the currently-configured credentials.
+ * Drops EVERY locally stored metadata artifact so the library can be re-linked
+ * from a genuinely blank slate: the per-track store (bindings + locally
+ * cached rating/loved/comments + ignored/manual markers + pending edits), the
+ * persisted WebDAV index snapshot, the whole tag-probe cache (all server
+ * bases), and the in-memory metadata cache + scanner index/tag caches. This
+ * is the destructive half of the "Reset metadata & re-link all files"
+ * recovery — credentials/settings (`userSettings` incl. persisted stores), the
+ * Navidrome song catalog cache, the play queue and the scrobble history are
+ * NOT touched. The caller is expected to run a full scan afterwards (see
+ * `resetMetadataAndRelink`); the UI gates this behind a confirmation dialog.
  *
- * 'modified' — the incremental path ("Check Modified Ratings" / post-connect
- * auto-scan): always probes the server (a stale snapshot can never detect
- * remote edits), diffs rows by mtime, and only re-fetches changed files; rows
- * that never matched are only retried when the server file set changed
- * (fingerprint). 'force' — "Rescan All Metadata": rebuilds the index and
- * re-reads every library track regardless of mtime.
- *
- * Both abort into status 'error' when the probe fails and share the same
- * drain/process pipeline; the progress record carries `annotation` describing
- * which shape is running for the status line.
+ * Cancels any in-flight scan/probe (generation bump, then waits for the drain
+ * and probe workers to release — same pattern as `runScan`) and awaits queued
+ * persistence writes, so a stale completion cannot resurrect old rows after
+ * the wipe (mirrors the session-invalidation half of `setWebdavCredentials`).
  */
+export async function wipeMetadataForRelink(): Promise<void> {
+  cancelled = true
+  scanGen++
+  tagProbeGen++
+  // A cancelled scan/probe may still have in-flight reads whose completions
+  // are generation-guarded but not yet settled. Wait for those workers to
+  // release ownership so a completion that already passed its guard cannot
+  // write a row after the wipe below.
+  const previousDrain = activeDrain
+  const previousProbe = tagProbePromise
+  if (previousDrain || previousProbe) {
+    await Promise.all([
+      previousDrain ?? Promise.resolve(),
+      previousProbe ?? Promise.resolve(),
+    ])
+  }
+  index = []
+  indexBuilt = false
+  indexComplete = false
+  indexBaseKey = ""
+  tagCache = new Map()
+  tagCacheBaseKey = ""
+  tagCacheLastKnownBaseKey = ""
+  tagCacheLoaded = false
+  forceProbePaths = null
+  metadataScanState.set({
+    status: 'idle',
+    progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0 },
+  })
+
+  // Wait out any queued index/tag persistence writes before clearing, so a
+  // write that was already in flight cannot land AFTER the wipe and resurrect
+  // old rows (the gen bump above already stops not-yet-started writes).
+  await Promise.all([indexPersistence, tagCachePersistence]).catch(() => {})
+  await clearWebdavFileIndex()
+  await clearAllWebdavFileTags()
+  await clearAllMetadata()
+
+  // Drop the in-memory mirror of the cleared table so views stop showing the
+  // wiped values immediately (a missing row degrades to 0/unloved everywhere).
+  metadataCache.set(new Map())
+}
+
+/**
+ * RECOVERY action behind "Reset metadata & re-link all files": wipes every
+ * locally stored metadata artifact, then immediately re-links the whole
+ * library from scratch (fresh PROPFIND → tag probe → match every track →
+ * re-import file tags).
+ *
+ * Why a plain force rescan can NOT recover a mass-mis-bound library: a file
+ * bound to one track is excluded from every other track's candidate set, so
+ * two tracks whose bindings are swapped (both files exist, both wrong) stay
+ * stuck forever — re-scoring can never see the correct file, it is "taken".
+ * Only clearing every binding at once makes each file claimable again, which
+ * is exactly what this wipe-then-scan does.
+ *
+ * DESTRUCTIVE: drops locally cached rating/loved/comments (including
+ * not-yet-pushed pending edits), ignored/manual markers and bindings, the
+ * persisted index snapshot and the tag-probe cache. PRESERVED: credentials and
+ * settings, the Navidrome song catalog cache, the play queue, scrobble
+ * history. Navidrome-authoritative ratings are re-seeded from the loaded
+ * catalog afterwards (the server always wins in that mode, so file tags must
+ * not replace it). Requires WebDAV credentials.
+ */
+export type ResetRelinkOptions = {
+  /** Polled between steps. Once it returns true the reset stops at the next
+   *  boundary and resolves `{ cancelled: true }` instead of proceeding. */
+  isCancelled?: () => boolean
+}
+
+export type ResetRelinkResult = { cancelled: boolean }
+
+export async function resetMetadataAndRelink(opts: ResetRelinkOptions = {}): Promise<ResetRelinkResult> {
+  // Between-steps cancellation (same contract as runManualWebDAVSync): the
+  // reset has three phases — wipe (fast, atomic), re-link scan (the LONG
+  // phase), seed — and `isCancelled` is checked at each boundary. Cancelling
+  // mid-scan works through the SAME machinery as the scan Cancel button: the
+  // caller flips its flag and calls cancelScan(), whose generation bump stops
+  // the drain and lands an honest "Cancelled — N of M" complete state.
+  if (opts.isCancelled?.()) return { cancelled: true }
+  if (!webdavUrl || !webdavUser || !webdavToken) {
+    throw new Error(CREDENTIALS_MISSING)
+  }
+  if (get(library).length === 0) {
+    // The wipe's only job is to enable a fresh re-link scan, which needs the
+    // loaded library — refuse instead of wiping into a dead end.
+    throw new Error('No library loaded — connect Navidrome first, then reset.')
+  }
+  await wipeMetadataForRelink()
+  // Cancelled after the wipe: bindings are gone and nothing re-links them.
+  // This is a resumable landing (the next Rescan re-links from scratch), but
+  // the caller MUST surface it — a silent stop here looks like a broken
+  // library with no explanation.
+  if (opts.isCancelled?.()) return { cancelled: true }
+  if (get(settings).ratingSource === 'navidrome') {
+    // Navidrome mode: the SERVER is authoritative, so file tags must not
+    // import ratings into the fresh rows. Neutral rows up front make the
+    // scan's server-authoritative branch (preserve the cached value) keep 0s;
+    // the re-seed below then restores the real server values.
+    initMetadataForTracks(get(library))
+  }
+  const scanResult = await scanAll('force')
+  const result = get(metadataScanState)
+  // ERROR before CANCELLED: runScan resolves `false` (→ cancelled: true) for
+  // its infrastructure-failure paths too (index refresh failed, creds gone),
+  // so a cancelled verdict must only be reported once the scan state says the
+  // scan didn't ERROR. The scan reports failure through metadataScanState; the
+  // wipe already happened, so tell the user what that means instead of letting
+  // a success or a plain 'cancelled' hide a dead re-link.
+  if (result.status === 'error') {
+    throw new Error(
+      `Metadata cleared, but the re-link scan failed: ${result.error ?? 'unknown error'}. `
+      + 'Fix the problem, then run Rescan All Metadata to finish re-linking.'
+    )
+  }
+  // A scan stopped by ANY cancel source — the reset's own Cancel (via
+  // cancelScan in requestResetCancel), the Sources/Library scan-stop buttons,
+  // or a credential swap — must never surface as a successful reset, so the
+  // completion check keys off the scan's own verdict, not the flag alone. The
+  // seed below still runs BEFORE reporting the cancel: in navidrome mode the
+  // re-linked rows were zeroed by initMetadataForTracks and the next ordinary
+  // scan's server-authoritative branch would PRESERVE those 0s forever
+  // without it.
+  if (scanResult.cancelled) {
+    seedNavidromeFeedback(get(library))
+    return { cancelled: true }
+  }
+  // After a wipe the scan rebuilt rows from FILE tags; re-seeding replicates
+  // the connect-time semantics for both rating sources (unbound/synced rows
+  // without file feedback pick up server stars; bound webdav rows keep the
+  // file's values; navidrome rows are never downgraded by file tags).
+  seedNavidromeFeedback(get(library))
+  return { cancelled: false }
+}
+
 /** Public entry: runs the scan, then auto-content-probes so that as long as
  *  tracks remain unclaimed, in-file tag identity is harvested in the
  *  background (guarded internally — a no-op while a probe is already active).
@@ -1043,9 +1263,50 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
  *  start a competing PROPFIND/tag pass in the small scheduling window before
  *  metadataScanState becomes `scanning`.
  */
-export function scanAll(shape_: ScanShape = "modified"): Promise<void> {
+/**
+ * User-facing scan cancellation. Bumps `scanGen` so every generation guard
+ * (drain workers, probes, index requests) stops taking new work at its next
+ * check — the same mechanism a credential swap uses — then lands the scan
+ * state on an HONEST terminal instead of leaving it mid-"scanning": rows
+ * already processed keep their results (persisted during the drain), the
+ * rest stay unscanned and are picked up by the next ordinary scan via the
+ * freshness fingerprints. A cancelled scan is therefore RESUMABLE by design,
+ * not rolled back.
+ */
+export function cancelScan(): void {
+  cancelled = true
+  scanGen++
+  tagProbeGen++
+  if (get(metadataScanState).status === "scanning") {
+    const done = scannedCount + failedCount + notFoundCount + missingCount + ambiguousCount
+    metadataScanState.set({
+      status: "complete",
+      progress: {
+        scanned: scannedCount,
+        total: totalTracks,
+        failed: failedCount,
+        notFound: notFoundCount,
+        missing: missingCount,
+        duplicateMatches: ambiguousCount,
+        annotation: `Cancelled — ${done} of ${totalTracks} processed; rescan continues from here`,
+        // The interrupted scan's shape: the Resume affordance re-runs the
+        // SAME shape (a cancelled force scan resumes as force — its heal
+        // pass only runs there).
+        cancelledShape: shape,
+      },
+    })
+  }
+  tagProbeState.update((state) => ({ ...state, active: false, done: state.done, remaining: 0 }))
+}
+
+/** Resolves `{ cancelled }` instead of `void` so orchestrators (the
+ *  wipe-then-relink reset) can distinguish a scan that ran to completion from
+ *  one stopped by cancelScan()/a generation bump — a cancelled re-link must
+ *  never surface as a successful reset. */
+export function scanAll(shape_: ScanShape = "modified"): Promise<{ cancelled: boolean }> {
   const operation = (async () => {
-    await runScan(shape_)
+    const completed = await runScan(shape_)
+    return { cancelled: !completed }
   })()
   activeScanPromise = operation
   void operation.then(() => {
@@ -1102,6 +1363,20 @@ export async function refreshIndexAndProbeForced(forcePaths: string[]): Promise<
   return true
 }
 
+/**
+ * Runs a WebDAV metadata scan against the currently-configured credentials.
+ *
+ * 'modified' — the incremental path ("Check Modified Ratings" / post-connect
+ * auto-scan): always probes the server (a stale snapshot can never detect
+ * remote edits), diffs rows by mtime, and only re-fetches changed files; rows
+ * that never matched are only retried when the server file set changed
+ * (fingerprint). 'force' — "Rescan All Metadata": rebuilds the index and
+ * re-reads every library track regardless of mtime.
+ *
+ * Both abort into status 'error' when the probe fails and share the same
+ * drain/process pipeline; the progress record carries `annotation` describing
+ * which shape is running for the status line.
+ */
 async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
   const previousDrain = activeDrain
   const previousProbe = tagProbePromise
@@ -1115,6 +1390,7 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
   missingCount = 0
   notFoundCount = 0
   ambiguousCount = 0
+  releasedCount = 0
   totalTracks = 0
   shape = shape_
   activeAnnotation = annotationFor(shape)
@@ -1206,10 +1482,37 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
     status: "scanning",
     progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
   })
-  const autoBoundTrackIds = await launchTagProbe()
+  // Heal read-targets (force scans only): files currently held by AUTO
+  // bindings whose tag evidence is missing or stale. They are read through the
+  // probe — the single read/cache boundary — so the heal pass below can judge
+  // every bound file. Without this, a filename-only mis-bind whose file was
+  // never content-probed would be invisible to healing forever.
+  const healReadPaths = shape === "force" ? computeHealReadPaths() : []
   if (scanGen !== myGen) return false
+  const autoBoundTrackIds = healReadPaths.length > 0
+    ? await launchTagProbe(new Set(healReadPaths))
+    : await launchTagProbe()
+  if (scanGen !== myGen) return false
+
+  // Heal pass: release AUTO links whose bound file's own (fresh) identity tags
+  // prove the link wrong (see selectHealEvictions). Released rows are re-matched
+  // by the drain below; anything that stays ambiguous or unmatched surfaces in
+  // File Matching. Manual/pending/ignored rows are never touched.
+  if (shape === "force") {
+    releasedCount = releaseHealEvictions()
+    if (releasedCount > 0) {
+      console.log(`[metadata-heal] force scan released ${releasedCount} provably-wrong auto binding(s); re-linking below`)
+    }
+    if (scanGen !== myGen) return false
+  }
   tagProbeState.update((state) => ({ ...state, resolved: 0 }))
   activeAnnotation = annotationFor(shape)
+  // The heal is the user-visible point of a force rescan: while the drain
+  // re-matches the released rows, the status line says so (this assignment is
+  // deliberately AFTER annotationFor so the reset below survives).
+  if (releasedCount > 0) {
+    activeAnnotation = `Released ${releasedCount} wrong auto link${releasedCount === 1 ? '' : 's'} — re-matching…`
+  }
 
   if (shape !== "force") {
     const tracks = get(library)
@@ -1540,6 +1843,8 @@ function updateScanProgress(): void {
     missing: missingCount,
     duplicateMatches: ambiguousCount,
     annotation: activeAnnotation,
+    // Healed links ride the status line when the heal actually fired.
+    ...(releasedCount > 0 ? { released: releasedCount } : {}),
   }
   if (done >= totalTracks) {
     metadataScanState.set({ status: "complete", progress })
@@ -1566,6 +1871,19 @@ export interface UnresolvedTrack {
   candidates: WebdavFileEntry[]
   /** Why an unmatched row missed, derived from the probe cache + index. */
   reason?: NoMatchReason
+  /** MATCHED rows only: what the bound file's own (fresh, cached) tags say
+   *  about the link — the File Matching auditor. Derived from the probe cache
+   *  (no network reads at list time); never auto-acted on by this view. */
+  verdict?: LinkAudit['verdict']
+  fileTitle?: string
+  readState?: LinkAudit['readState']
+  /** MATCHED AUTO rows only: a `conflict` verdict that the force-scan heal
+   *  (D16) would provably RELEASE — the auditor's promise that "Rescan All
+   *  Metadata re-links this automatically" is true. Computed with the same
+   *  pure predicate as the heal itself so view and scan never disagree.
+   *  False/absent for manual rows (never auto-cleared) and for family-titled
+   *  conflicts ("Song (Live)" under "Song" — likely the same file, kept). */
+  fixable?: boolean
 }
 
 /**
@@ -1630,6 +1948,9 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
 
   const baseKey = session.baseKey
   const indexPaths = new Set(index.map((i) => i.path))
+  // Path→entry lookup so auditing every matched row stays O(rows) even for
+  // five-figure libraries (no per-row linear scan of the index).
+  const entryByPath = new Map(index.map((i) => [i.path, i]))
   // Every bound path across the library — candidates must never include a
   // file another row already targets (an unclaimed file scores once).
   const allBoundPaths = new Set<string>()
@@ -1639,6 +1960,10 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
   const tracks = get(library)
   const cache = get(metadataCache)
   const rows: UnresolvedTrack[] = []
+  // Library-wide effective-title evidence for the auditor's `fixable` flag
+  // (does any other track own this file's exact title?) — same single source
+  // as the heal so the view's promise matches what a rescan will do.
+  const titleCounts = buildEffectiveTitleCounts(tracks)
   const counts: Record<UnresolvedKind, number> = {
     'no-match': 0, ambiguous: 0, 'vanished': 0, 'stale-base': 0, ignored: 0, matched: 0,
   }
@@ -1683,12 +2008,31 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
         // a partial crawl the old current-server binding remains the safest
         // known target and must not be cleared or mislabeled.
         counts.matched++
+        // Auditor verdict: judge the bound file against the track from its
+        // fresh cached tags (zero reads). The audit is presentational — this
+        // view never auto-clears on 'conflict' (that is the force-scan heal's
+        // job for AUTO rows; manual rows are the user's verdict).
+        const boundEntry = entryByPath.get(meta.webdavPath)
+        const audit: LinkAudit = boundEntry
+          ? auditBoundFile(t, boundEntry)
+          : { verdict: 'unknown', readState: 'not-probed' }
+        // `fixable` = this AUTO conflict is one the force-scan heal would
+        // provably release (same pure predicate, D16). Manual rows are never
+        // auto-cleared, so they never get the promise — or the button.
+        const isAuto = (meta.matchSource ?? 'auto') === 'auto'
+        const fixable = isAuto && audit.verdict === 'conflict' && audit.fileTitle
+          ? bindingReleaseable(t.title, audit.fileTitle, titleCounts)
+          : false
         row = {
           ...base,
           kind: 'matched',
           webdavPath: meta.webdavPath,
           matchSource: meta.matchSource ?? 'auto',
           candidates: [],
+          verdict: audit.verdict,
+          fileTitle: audit.fileTitle,
+          readState: audit.readState,
+          ...(fixable ? { fixable: true } : {}),
         }
       } else {
         counts.vanished++
@@ -1723,10 +2067,18 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
   }
 
   // Rank first so the CAP picks the rows that matter: unresolved with a
-  // pending edit (blocked), then unresolved, then resolved audit buckets.
+  // pending edit (blocked), then unresolved, then the AUDIT bucket — matched
+  // rows whose file tags conflict or were never read (the wrong-link
+  // candidates) before the verified bulk — then user-dismissed rows.
   rows.sort((a, b) => {
-    const rankOf = (r: UnresolvedTrack): number =>
-      r.kind === 'matched' || r.kind === 'ignored' ? 2 : (r.pendingPush ? 0 : 1)
+    const rankOf = (r: UnresolvedTrack): number => {
+      if (r.kind === 'matched') {
+        if (r.verdict === 'conflict' || r.verdict === 'unknown') return 2
+        return 3
+      }
+      if (r.kind === 'ignored') return 4
+      return r.pendingPush ? 0 : 1
+    }
     const d = rankOf(a) - rankOf(b)
     if (d !== 0) return d
     return a.title.localeCompare(b.title)

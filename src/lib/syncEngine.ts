@@ -1,10 +1,11 @@
 import { get } from "svelte/store"
-import { webdavFetch, authHeaders, buildWebdavUrl, webdavBaseKey, webdavTempPath } from "./webdavUtils"
+import { webdavFetch, authHeaders, buildWebdavUrl, webdavBaseKey } from "./webdavUtils"
+import { webdavPutAtomic, ConflictError } from "./webdavAtomicWrite"
 import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache, saveSongLibraryCache } from "$lib/db"
 import { modifyMetadataBuffer } from "$lib/tagWriter"
 import { metadataCache, settings, library, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
-import { setWebdavCredentials, scanAll, setServerLastScan } from "./metadataScanner"
-import { shouldKeepPushPending, shouldSkipBeforePut } from "./pushReconcile"
+import { setWebdavCredentials, scanAll, setServerLastScan, cancelScan } from "./metadataScanner"
+import { shouldKeepPushPending, shouldSkipBeforePut, classifyRowForPush } from "./pushReconcile"
 import { cachedLibraryUsable } from "./syncCachePolicy"
 import { planNavidromeLoad } from "./navidromeLoadPlan"
 import {
@@ -24,18 +25,44 @@ import {
 
 const WEBDAV_TIMEOUT = 60000
 
-class ConflictError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = "ConflictError"
-  }
-}
-
 class NotFoundError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "NotFoundError"
   }
+}
+
+/**
+ * Cancellation token for the long orchestrations (Push, Navidrome load).
+ * Each run gets an INDEPENDENT token: loads legitimately run concurrently
+ * (the user's Connect & Load click races the online-gated background
+ * restore), so a newer run must NOT silently invalidate an older one — that
+ * design poisoned the user's run with 'Load cancelled' the moment a
+ * background load started. `activeCancel` holds the LATEST handle, so
+ * `cancelLongOperation` targets the newest run.
+ */
+interface CancelHandle {
+  cancel(): void
+}
+function newCancelHandle(): { handle: CancelHandle; isCancelled: () => boolean } {
+  let cancelled = false
+  return {
+    handle: {
+      cancel: () => {
+        cancelled = true
+      },
+    },
+    isCancelled: () => cancelled,
+  }
+}
+let activeCancel: CancelHandle | null = null
+
+/** Cancel the running long operation (Push, Navidrome load) or the WebDAV
+ *  metadata scan. The operation lands on its own honest terminal: pushed rows
+ *  stay pushed, scanned rows stay scanned, a partial load applies nothing. */
+export function cancelLongOperation(): void {
+  activeCancel?.cancel()
+  cancelScan()
 }
 
 async function webdavGet(
@@ -59,7 +86,15 @@ async function webdavGet(
   }
 }
 
-async function webdavPutAtomic(
+/**
+ * Thin adapter: binds the pure `webdavPutAtomic` (`webdavAtomicWrite.ts`) to
+ * the app's real `webdavFetch` transport (native → CapacitorHttp, web →
+ * fetch, §3.3). All policy — the exactly-once temp cleanup, If-Match
+ * forwarding, ConflictError-on-412 — lives in the pure module and is pinned
+ * by tests/webdavAtomicWrite.test.ts; this wrapper carries no logic of its
+ * own beyond argument order.
+ */
+function webdavPutAtomicViaAppFetch(
   baseUrl: string,
   filePath: string,
   data: ArrayBuffer,
@@ -67,52 +102,7 @@ async function webdavPutAtomic(
   token: string,
   etag?: string,
 ): Promise<void> {
-  const tempPath = webdavTempPath(filePath)
-  const headers = authHeaders(user, token)
-
-  // Write to temp file first — original untouched if this fails
-  const putRes = await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
-    method: "PUT",
-    headers: {
-      ...headers,
-      "Content-Type": "application/octet-stream",
-    },
-    body: data,
-  }, WEBDAV_TIMEOUT)
-  if (!putRes.ok) throw new Error(`WebDAV PUT to temp failed (${putRes.status}) for ${filePath}`)
-
-  // Atomically replace via MOVE with optional concurrency check
-  const destUrl = buildWebdavUrl(baseUrl, filePath)
-  const moveHeaders: Record<string, string> = {
-    ...headers,
-    Destination: destUrl,
-    Overwrite: "T",
-  }
-  if (etag) moveHeaders["If-Match"] = etag
-
-  try {
-    const moveRes = await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
-      method: "MOVE",
-      headers: moveHeaders,
-    }, WEBDAV_TIMEOUT)
-
-    if (!moveRes.ok) {
-      // Clean up temp file on MOVE failure
-      await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
-        method: "DELETE",
-        headers,
-      }, WEBDAV_TIMEOUT).catch(() => {})
-      if (moveRes.status === 412) throw new ConflictError(`File changed since GET for ${filePath}`)
-      throw new Error(`WebDAV MOVE failed (${moveRes.status}) for ${filePath}`)
-    }
-  } catch (err) {
-    // Attempt cleanup on any error (CORS failure, network error, etc.)
-    await webdavFetch(buildWebdavUrl(baseUrl, tempPath), {
-      method: "DELETE",
-      headers,
-    }, WEBDAV_TIMEOUT).catch(() => {})
-    throw err
-  }
+  return webdavPutAtomic(baseUrl, filePath, data, user, token, etag, webdavFetch, WEBDAV_TIMEOUT)
 }
 
 async function getNavidromeConfig(): Promise<NavidromeConfig | null> {
@@ -157,7 +147,10 @@ export async function triggerNavidromeScan(): Promise<void> {
   await navidromeTriggerScan(config)
 }
 
-export async function connectNavidrome(forceRefresh = false): Promise<NavidromeConnectResult> {
+export async function connectNavidrome(
+  forceRefresh = false,
+  opts: { isCancelled?: () => boolean } = {},
+): Promise<NavidromeConnectResult> {
   const config = await getNavidromeConfig()
   if (!config) {
     // Disconnected (empty fields committed): drop the stale config so stream/
@@ -229,7 +222,7 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
     }
   }
 
-  const { songs, result } = await navidromeLoadSongs(config)
+  const { songs, result } = await navidromeLoadSongs(config, { isCancelled: opts.isCancelled })
 
   // The load failed (mid-pagination, auth, transient) and returned nothing
   // usable — fall back to a valid cached snapshot for this server so startup
@@ -262,7 +255,16 @@ export async function connectNavidrome(forceRefresh = false): Promise<NavidromeC
  * automatic incremental WebDAV metadata scan when WebDAV is configured.
  */
 export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<NavidromeConnectResult> {
-  const result = await connectNavidrome(forceRefresh)
+  // Register as THE cancellable operation; the token goes stale if another
+  // long operation starts, so cancel always targets the newest run.
+  const { handle, isCancelled } = newCancelHandle()
+  activeCancel = handle
+  let result: NavidromeConnectResult
+  try {
+    result = await connectNavidrome(forceRefresh, { isCancelled })
+  } finally {
+    if (activeCancel === handle) activeCancel = null
+  }
 
   const s = get(settings)
   const plan = planNavidromeLoad(result, {
@@ -275,6 +277,14 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   // usable songs must NOT replace the in-memory library (setLibrary would
   // reconcile the queue against the empty set and wipe it). A genuinely empty
   // server (connected, clean) still applies — that's the truth.
+  // Cancel extension of the same rule, checked FIRST: a partial page-set
+  // (cancel fired mid-pagination) can have songs.length > 0 and would PASS
+  // the plan's bail rule — it must still never be applied. The existing
+  // library and its metadata stay untouched; the UI learns why via
+  // loadResult.error.
+  if (isCancelled()) {
+    return { ...result, loadResult: { ...result.loadResult, error: 'Load cancelled', cancelled: true } }
+  }
   if (!plan.applyLibrary) return result
 
   setLibrary(plan.tracks)
@@ -297,7 +307,26 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   return result
 }
 
-export async function runManualWebDAVSync(): Promise<{ synced: number; failed: number; skipped: number; wrongServer: number; blindOverwrite: number }> {
+export interface WebdavSyncResult {
+  synced: number
+  failed: number
+  skipped: number
+  wrongServer: number
+  blindOverwrite: number
+  /** True when the run ended because the user cancelled it (not an error).
+   *  Row-atomic by construction: rows pushed before the cancel stay pushed
+   *  and synced; the rest stay pending_sync for the next Push. */
+  cancelled: boolean
+}
+
+export async function runManualWebDAVSync(
+  opts: {
+    /** Called after each row settles (success, skip, or failure) with the
+     *  1-based index and the track title — the dialog's progress line. */
+    onProgress?: (done: number, total: number, title: string) => void
+    isCancelled?: () => boolean
+  } = {},
+): Promise<WebdavSyncResult> {
   const webdavUrl = await getSetting<string>("webdavUrl")
   const webdavUser = await getSetting<string>("webdavUser")
   const webdavToken = await getSetting<string>("webdavToken")
@@ -307,7 +336,10 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   }
 
   const pending = await getPendingSyncMetadata()
-  if (pending.length === 0) return { synced: 0, failed: 0, skipped: 0, wrongServer: 0, blindOverwrite: 0 }
+  if (pending.length === 0) return { synced: 0, failed: 0, skipped: 0, wrongServer: 0, blindOverwrite: 0, cancelled: false }
+  const total = pending.length
+  let settled = 0
+  let cancelledRun = false
 
   // Same derivation as the scan's stamp (webdavUtils.webdavBaseKey) — a raw
   // template here used to diverge on stray whitespace and flag every row
@@ -318,6 +350,8 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   const libTracks = new Map(get(library).map((t) => [t.trackId, t]))
   const fileTypeOf = (trackId: string, fallback: string): string =>
     libTracks.get(trackId)?.fileType ?? fallback
+  // Metadata rows carry no title; the library Track does.
+  const titleOf = (trackId: string): string => libTracks.get(trackId)?.title ?? trackId
   let synced = 0
   let failed = 0
   let skipped = 0
@@ -326,32 +360,32 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
   const pushedPaths = new Set<string>()
 
   for (const track of pending) {
-    // Never fabricate a WebDAV path from the Navidrome id: without a matched
-    // file there is nothing to write to — report it as skipped instead of
-    // failing loudly. Rows without a webdavBase were matched before base
-    // stamping existed — their path's provenance is unknown, so they are
-    // skipped (unverified), while a base that differs from the current server
-    // is counted separately so the UI can say which case happened.
-    if (!track.webdavPath) {
-      skipped++
-      continue
+    // Cancel between rows only: a row in flight always completes (its write
+    // is atomic — temp PUT + MOVE), so a cancel never leaves a half-written
+    // file; rows pushed before the cancel stay pushed, the rest stay pending.
+    if (!cancelledRun && opts.isCancelled?.()) {
+      cancelledRun = true
+      opts.onProgress?.(settled, total, `Cancelled — stopped before "${titleOf(track.trackId)}"`)
     }
-    if (track.ignored) {
-      // User dismissed this track via File Matching ("not on this server") —
-      // never push it, even if a path is still stamped.
-      skipped++
-      continue
-    }
-    if (track.webdavBase !== currentBaseKey) {
-      if (!track.webdavBase) {
-        skipped++
-      } else {
-        wrongServer++
-      }
+    if (cancelledRun) break
+
+    // The ONE classification, shared with the Push confirmation dialog's safe
+    // count (pushReconcile.classifyRowForPush) — buckets and precedence
+    // documented there. no-path / ignored / no-base → skipped; wrong-server
+    // → its own count so the UI can say which case happened.
+    const bucket = classifyRowForPush(track, currentBaseKey)
+    if (bucket !== 'pushable') {
+      // wrong-server gets its own count so the UI can say which case
+      // happened; no-path / ignored / no-base all surface as skipped.
+      if (bucket === 'wrong-server') wrongServer++
+      else skipped++
+      settled++
+      opts.onProgress?.(settled, total, titleOf(track.trackId))
       continue
     }
 
-    const davPath = track.webdavPath
+    // The classifier guarantees a pushable row has a stamped path.
+    const davPath = track.webdavPath!
     // Two rows can still legally target one file (legacy force-binds, or two
     // auto rows resolving to the same path). Once a path was written this
     // run, later rows for it are skipped — otherwise the second PUT would
@@ -359,6 +393,8 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
     // wins; the row stays pending and surfaces again on the next Push.
     if (pushedPaths.has(davPath)) {
       skipped++
+      settled++
+      opts.onProgress?.(settled, total, titleOf(track.trackId))
       continue
     }
     pushedPaths.add(davPath)
@@ -378,11 +414,13 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
       // leaves the MOVE a blind overwrite (no If-Match) — count it so the
       // result line surfaces the loss of concurrency protection (TODO 3.8b).
       const { data: raw, etag } = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)
+      // In-flight event: position = this row's queue slot (settled + 1).
+      opts.onProgress?.(settled + 1, total, titleOf(track.trackId))
       const modified = await modifyMetadataBuffer(raw, track.rating, track.loved, fileTypeOf(track.trackId, track.fileType))
       let blind = !etag
 
       try {
-        await webdavPutAtomic(webdavUrl, davPath, modified, webdavUser, webdavToken, etag)
+        await webdavPutAtomicViaAppFetch(webdavUrl, davPath, modified, webdavUser, webdavToken, etag)
       } catch (err) {
         if (err instanceof ConflictError) {
           // Re-check the live row once more — the retry's re-PUT has the same
@@ -401,7 +439,7 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
             refreshed, track.rating, track.loved, fileTypeOf(track.trackId, track.fileType),
           )
           blind = !newEtag
-          await webdavPutAtomic(webdavUrl, davPath, reModified, webdavUser, webdavToken, newEtag)
+          await webdavPutAtomicViaAppFetch(webdavUrl, davPath, reModified, webdavUser, webdavToken, newEtag)
         } else {
           throw err
         }
@@ -439,8 +477,17 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
       // itself; the next scan will clear the stale path (missing count).
       if (err instanceof NotFoundError) skipped++
       else failed++
+    } finally {
+      // Exactly one settle event per row, whichever way it ended (synced,
+      // skipped, or failed).
+      settled++
+      opts.onProgress?.(settled, total, titleOf(track.trackId))
     }
   }
+
+  // A cancel landing during the LAST row's flight never sees a top-of-loop
+  // check — observe it here so the result still reports the user's intent.
+  if (!cancelledRun && opts.isCancelled?.()) cancelledRun = true
 
   if (synced > 0) {
     try {
@@ -449,5 +496,5 @@ export async function runManualWebDAVSync(): Promise<{ synced: number; failed: n
     }
   }
 
-  return { synced, failed, skipped, wrongServer, blindOverwrite }
+  return { synced, failed, skipped, wrongServer, blindOverwrite, cancelled: cancelledRun }
 }

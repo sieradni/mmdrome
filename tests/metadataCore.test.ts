@@ -27,6 +27,10 @@ import {
   mtimeChanged,
   parseMtimeToEpoch,
   mergeFileComments,
+  selectHealEvictions,
+  bindingReleaseable,
+  buildEffectiveTitleCounts,
+  auditBoundFile,
 } from '../src/lib/metadataCore'
 import type { Track } from '../src/stores/appState'
 import type { LocalMetadataStore, WebdavFileEntry, FileTagCacheEntry } from '../src/lib/db'
@@ -732,4 +736,268 @@ test('canAutoBind: only unbound, clean rows are bindable', () => {
     { bindable: false, reason: 'pending-sync' },
   )
   assert.deepEqual(canAutoBind(track(), metaRow({ ignored: true })), { bindable: false, reason: 'ignored' })
+})
+
+// ── Heal pass: selectHealEvictions (2026-09-05) ────────────────────────────
+// The force-scan heal releases AUTO links whose bound file's own (fresh)
+// identity tags prove the link wrong. Decision rule: titles differ AND (some
+// OTHER track carries the file's exact title OR the titles are not a
+// same-release family). Exact titles, family variants ("Song (Live)" under
+// "Song"), tag-less files, and punctuation-only titles are never released.
+
+test('selectHealEvictions: a swapped pair is released — each file is provably the other track', () => {
+  const a = track({ trackId: 't1', title: 'Song A', artist: 'ArtistA' })
+  const b = track({ trackId: 't2', title: 'Song B', artist: 'ArtistB' })
+  const all = [a, b]
+  const candidates = [
+    // Track A is bound to B's file (its tags name B), and vice versa.
+    { track: a, entry: entry({ path: '/dav/B.flac', filename: 'B.flac', tags: { title: 'Song B', artist: 'ArtistB' } }) },
+    { track: b, entry: entry({ path: '/dav/A.flac', filename: 'A.flac', tags: { title: 'Song A', artist: 'ArtistA' } }) },
+  ]
+  assert.deepEqual(selectHealEvictions(candidates, all).sort(), ['t1', 't2'])
+})
+
+test('selectHealEvictions: ownedElsewhere releases even a family-titled file', () => {
+  // The file is tagged "Song (Live)" and a real track "Song (Live)" exists —
+  // the file is provably THAT song, whatever the prefix relation to the owner.
+  const owner = track({ trackId: 't1', title: 'Song' })
+  const other = track({ trackId: 't2', title: 'Song (Live)' })
+  const candidates = [{
+    track: owner,
+    entry: entry({ path: '/dav/Live.flac', filename: 'Live.flac', tags: { title: 'Song (Live)' } }),
+  }]
+  assert.deepEqual(selectHealEvictions(candidates, [owner, other]), ['t1'])
+})
+
+test('selectHealEvictions: a family title with no other owner is kept (live/feat trap, D8)', () => {
+  // "Song (Live)" under owner "Song" with no track "Song (Live)" in the
+  // library is plausibly the SAME file under a shorter catalog name — unlinking
+  // would orphan a working push target. The family gate exists for this case.
+  const owner = track({ trackId: 't1', title: 'Song' })
+  const candidates = [{
+    track: owner,
+    entry: entry({ path: '/dav/Live.flac', filename: 'Live.flac', tags: { title: 'Song (Live)' } }),
+  }]
+  assert.deepEqual(selectHealEvictions(candidates, [owner]), [])
+})
+
+test('selectHealEvictions: a wholly different title with no other owner is released', () => {
+  // The reverse family direction is NOT a family: "Rainbow" vs "Rain". A file
+  // whose tags name something unrelated under an auto-bound row is a bad link.
+  const owner = track({ trackId: 't1', title: 'Song' })
+  const candidates = [{
+    track: owner,
+    entry: entry({ path: '/dav/Completely.flac', filename: 'Completely.flac', tags: { title: 'A Different Song Entirely' } }),
+  }]
+  assert.deepEqual(selectHealEvictions(candidates, [owner]), ['t1'])
+})
+
+test('selectHealEvictions: exact normalized titles never release (case/punct differences fold)', () => {
+  const owner = track({ trackId: 't1', title: 'Song' })
+  const candidates = [{
+    track: owner,
+    entry: entry({ path: '/dav/Live.flac', filename: 'Live.flac', tags: { title: ' song! ' } }),
+  }]
+  assert.deepEqual(selectHealEvictions(candidates, [owner]), [])
+})
+
+test('selectHealEvictions: tag-less and empty-title files are never judged, let alone released', () => {
+  const owner = track({ trackId: 't1', title: 'Song' })
+  const all = [owner, track({ trackId: 't2', title: 'Other Song' })]
+  const candidates = [
+    { track: owner, entry: entry({ path: '/dav/a.flac', filename: 'a.flac', tags: undefined }) },
+    { track: owner, entry: entry({ path: '/dav/b.flac', filename: 'b.flac', tags: { title: '' } }) },
+  ]
+  // No file title → nothing to compare → no release.
+  assert.deepEqual(selectHealEvictions(candidates, all), [])
+
+  // A punctuation-only FILE title retains identity under effectiveTitle (D13):
+  // it differs from "Song" and no track owns it, so it is a genuine conflict
+  // and the row is released (the drain cannot re-match it either, so the row
+  // surfaces in File Matching for a human verdict — never silent churn).
+  const punct = [{
+    track: owner,
+    entry: entry({ path: '/dav/c.flac', filename: 'c.flac', tags: { title: '///' } }),
+  }]
+  assert.deepEqual(selectHealEvictions(punct, all), ['t1'])
+})
+
+test('selectHealEvictions: an empty owner title is skipped; punctuation-only owners keep identity', () => {
+  // effectiveTitle (D13) gives '///' identity, so a file tagged with a real
+  // different title under it is a genuine conflict — consistent with
+  // verifyEntryAgainstTrack. A truly empty owner title has no identity to
+  // compare, so it is skipped.
+  const punct = track({ trackId: 't1', title: '///' })
+  const empty = track({ trackId: 't2', title: '' })
+  const candidates = [
+    { track: punct, entry: entry({ path: '/dav/a.flac', filename: 'a.flac', tags: { title: 'Something' } }) },
+    { track: empty, entry: entry({ path: '/dav/b.flac', filename: 'b.flac', tags: { title: 'Something' } }) },
+  ]
+  assert.deepEqual(selectHealEvictions(candidates, [punct, empty]), ['t1'])
+})
+
+test('selectHealEvictions: duplicate library titles do not release an exact-owner match', () => {
+  // Both "Song" tracks exist; the file tags say "Song" — it cannot be told
+  // apart from the owner, so it stays (uniqueness is not required for the
+  // ownedElsewhere proof, and here there IS no proof).
+  const a = track({ trackId: 't1', title: 'Song', artist: 'ArtistA' })
+  const b = track({ trackId: 't2', title: 'Song', artist: 'ArtistB' })
+  const candidates = [{
+    track: a,
+    entry: entry({ path: '/dav/Song.flac', filename: 'Song.flac', tags: { title: 'Song', artist: 'ArtistB' } }),
+  }]
+  assert.deepEqual(selectHealEvictions(candidates, [a, b]), [])
+})
+
+// ── Identity-dominance floor (2026-09-05) ──────────────────────────────────
+// The file tags and the Navidrome catalog are parsed from the SAME files, so
+// an exact-title tag match (no duration conflict) IS the song and must outrank
+// the strongest filename-only evidence a competitor can reach (exact-name 100
+// + equal-size bonus 10 = 110). Without the floor, an untagged same-name
+// same-size duplicate was re-linked over the correctly-tagged file.
+
+test('exact-title tag evidence outranks an untagged filename-exact equal-size twin', () => {
+  const tagged = entry({ path: '/dav/Album/Song.flac', filename: 'Song.flac', tags: { title: 'Song' } })
+  const twin = entry({ path: '/dav/Other/Song.flac', filename: 'Song.flac', tags: undefined })
+  const match = matchTrackToWebdav(track(), [twin, tagged])
+  assert.equal(match.ambiguous, false)
+  assert.equal(match.entry?.path, tagged.path)
+})
+
+test('two exact-title tag candidates still tie (identity floor never picks blindly)', () => {
+  const a = entry({ path: '/dav/A/Song.flac', filename: 'Song.flac', tags: { title: 'Song' } })
+  const b = entry({ path: '/dav/B/Song.flac', filename: 'Song.flac', tags: { title: 'Song' } })
+  const match = matchTrackToWebdav(track(), [a, b])
+  assert.equal(match.entry, null)
+  assert.equal(match.ambiguous, true)
+})
+
+// ── Link auditor: auditBoundFile (2026-09-05) ──────────────────────────────
+// The File Matching auditor judges an EXISTING binding from the bound file's
+// own (fresh, cached) identity tags. Pure — callers stamp the entry from the
+// probe cache, so auditing thousands of links costs zero network reads. It
+// never auto-clears anything; it classifies for the human (and the verdict
+// vocabulary is the same one verifyEntryAgainstTrack already returns).
+
+test('auditBoundFile: exact normalized titles verify (case/punct fold away)', () => {
+  const audit = auditBoundFile(
+    track(),
+    entry({ tags: { title: ' song! ', artist: 'Artist' } }),
+  )
+  assert.equal(audit.verdict, 'verified')
+  assert.equal(audit.readState, 'tagged')
+  assert.equal(audit.fileTitle, ' song! ', 'raw file title is preserved for display')
+})
+
+test('auditBoundFile: a differing title is a conflict and reports the file title', () => {
+  const audit = auditBoundFile(
+    track(),
+    entry({ tags: { title: 'Completely Different' } }),
+  )
+  assert.equal(audit.verdict, 'conflict')
+  assert.equal(audit.fileTitle, 'Completely Different')
+  assert.equal(audit.readState, 'tagged')
+})
+
+test('auditBoundFile: never-probed files are unknown + not-probed (not a fake verdict)', () => {
+  const audit = auditBoundFile(track(), entry({ tags: undefined }))
+  assert.deepEqual(audit, { verdict: 'unknown', readState: 'not-probed' })
+})
+
+test('auditBoundFile: read failures are reported honestly, never as "rescan me"', () => {
+  const unreadable = auditBoundFile(
+    track(),
+    entry({ tags: undefined, probeStatus: 'unreadable' }),
+  )
+  assert.equal(unreadable.verdict, 'unknown')
+  assert.equal(unreadable.readState, 'unreadable')
+  const network = auditBoundFile(
+    track(),
+    entry({ tags: undefined, probeStatus: 'network-error' }),
+  )
+  assert.equal(network.verdict, 'unknown')
+  assert.equal(network.readState, 'network-error')
+})
+
+test('auditBoundFile: a probed file without a title is empty (artist-only tags included)', () => {
+  // probeStatus 'ok' means SOME identity was read (e.g. artist-only) — the
+  // title is still missing, so the audit cannot compare and says so.
+  const probedOk = auditBoundFile(
+    track(),
+    entry({ tags: { artist: 'Artist' }, probeStatus: 'ok' }),
+  )
+  assert.equal(probedOk.verdict, 'unknown')
+  assert.equal(probedOk.readState, 'empty')
+  const probedEmpty = auditBoundFile(
+    track(),
+    entry({ tags: { title: '' }, probeStatus: 'empty' }),
+  )
+  assert.equal(probedEmpty.verdict, 'unknown')
+  assert.equal(probedEmpty.readState, 'empty')
+})
+
+test('auditBoundFile: a title-less track cannot be confirmed even when the file has a title', () => {
+  const audit = auditBoundFile(
+    track({ title: '' }),
+    entry({ tags: { title: 'Something' } }),
+  )
+  assert.equal(audit.verdict, 'unknown')
+  assert.equal(audit.readState, 'tagged')
+})
+
+// ── Heal/auditor shared predicate: bindingReleaseable (2026-09-05) ────────
+// The per-row release predicate behind selectHealEvictions, ALSO used by the
+// File Matching auditor's `fixable` flag — one source of truth so the view's
+// "rescan will fix this" promise matches what a rescan actually releases.
+// Raw titles in, effective-title counts map as evidence; normalization happens
+// here so consumers cannot drift.
+
+test('bindingReleaseable: agrees with selectHealEvictions on the release/keep matrix', () => {
+  const counts = buildEffectiveTitleCounts([
+    track({ trackId: 't1', title: 'Song' }),
+    track({ trackId: 't2', title: 'Song B' }),
+  ])
+  // Provable swap: file tags name a track that exists elsewhere.
+  assert.equal(bindingReleaseable('Song', 'Song B', counts), true)
+  // Family variant, no other owner: kept.
+  const solo = buildEffectiveTitleCounts([track({ trackId: 't1', title: 'Song' })])
+  assert.equal(bindingReleaseable('Song', 'Song (Live)', solo), false)
+  // Wholly different title, no other owner: released.
+  assert.equal(bindingReleaseable('Song', 'A Different Song Entirely', solo), true)
+  // Exact (folded) titles never release.
+  assert.equal(bindingReleaseable('Song', ' song! ', solo), false)
+  // Empty either side never releases.
+  assert.equal(bindingReleaseable('Song', '', solo), false)
+  assert.equal(bindingReleaseable('', 'Song', solo), false)
+})
+
+test('bindingReleaseable: ownedElsewhere releases even a family-titled file', () => {
+  const counts = buildEffectiveTitleCounts([
+    track({ trackId: 't1', title: 'Song' }),
+    track({ trackId: 't2', title: 'Song (Live)' }),
+  ])
+  assert.equal(bindingReleaseable('Song', 'Song (Live)', counts), true)
+})
+
+test('bindingReleaseable: duplicate owners of the file title never self-release an exact match', () => {
+  // Both "Song" tracks exist; the file says "Song" — no proof of a wrong link.
+  const counts = buildEffectiveTitleCounts([
+    track({ trackId: 't1', title: 'Song' }),
+    track({ trackId: 't2', title: 'Song' }),
+  ])
+  assert.equal(bindingReleaseable('Song', 'Song', counts), false)
+  // ...but a DIFFERENT owned title is still proof even with duplicates around.
+  const withOther = buildEffectiveTitleCounts([
+    track({ trackId: 't1', title: 'Song' }),
+    track({ trackId: 't2', title: 'Song' }),
+    track({ trackId: 't3', title: 'Other' }),
+  ])
+  assert.equal(bindingReleaseable('Song', 'Other', withOther), true)
+})
+
+test('bindingReleaseable: normalization matches the heal counts (case/punct fold on both sides)', () => {
+  // buildEffectiveTitleCounts keys by the SAME effectiveTitle, so a raw file
+  // title that folds to a library title proves ownership.
+  const counts = buildEffectiveTitleCounts([track({ trackId: 't1', title: 'song' })])
+  assert.equal(bindingReleaseable('Song B', ' SONG! ', counts), true)
 })

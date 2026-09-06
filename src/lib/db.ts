@@ -257,6 +257,20 @@ export async function clearWebdavFileIndex(): Promise<void> {
   await db.webdavFileIndex.delete('main')
 }
 
+/** Drop EVERY per-track metadata row (bindings, rating/loved/comments,
+ *  syncStatus, ignored/manual markers). Recovery-only: the follow-up scan
+ *  rebuilds rows from file tags / the library. */
+export async function clearAllMetadata(): Promise<void> {
+  await db.localMetadata.clear()
+}
+
+/** Drop the whole tag-probe cache across ALL server bases. Recovery-only: a
+ *  metadata reset must not let stale probe evidence (or rows from an old
+ *  server) survive into the re-link scan. */
+export async function clearAllWebdavFileTags(): Promise<void> {
+  await db.webdavFileTags.clear()
+}
+
 export async function getSongLibraryCache(): Promise<SongLibraryCache | undefined> {
   return db.songLibraryCache.get('main')
 }

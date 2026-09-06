@@ -2,13 +2,14 @@
   import { onMount } from 'svelte'
   import { get } from 'svelte/store'
   import { Capacitor } from '@capacitor/core'
-  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, library } from '../stores/appState'
+  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, pushState, library } from '../stores/appState'
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
-  import { runManualWebDAVSync, testWebdavConn, testNavidromeConn, loadLibraryFromNavidrome } from '../lib/syncEngine'
+  import { runManualWebDAVSync, testWebdavConn, testNavidromeConn, loadLibraryFromNavidrome, cancelLongOperation } from '../lib/syncEngine'
   import { webdavBaseKey } from '../lib/webdavUtils'
+  import { buildPushBreakdown, EMPTY_PUSH_BREAKDOWN, type PushBreakdown } from '../lib/pushReconcile'
   import { getPendingSyncMetadata } from '../lib/db'
-  import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, refreshIndexAndProbeForced, reprobeFiles, scanAll, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, refreshIndexAndProbeForced, reprobeFiles, scanAll, resetMetadataAndRelink, cancelScan, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
@@ -37,8 +38,9 @@
 
   let syncing = $state(false)
   let syncResult = $state('')
-  let pendingPushCount = $state(0)
   let confirmPush = $state(false)
+  // The dialog's full picture — bucket counts + the pushable track list.
+  let pushBreakdown = $state<PushBreakdown>(EMPTY_PUSH_BREAKDOWN)
   let reconcileResult = $state('')
   let indexing = $state(false)
   let scrollContainer: HTMLDivElement | null = null
@@ -67,6 +69,10 @@
     if (t === tab) return
     if (scrollContainer) scrollTops[tab] = scrollContainer.scrollTop
     tab = t
+    // A reset result/error belongs to the moment it happened — never carry it
+    // into a later visit to the Library tab where it could be misread.
+    resetResult = ''
+    resetError = ''
     tick().then(() => {
       if (scrollContainer) scrollContainer.scrollTop = scrollTops[t]
     })
@@ -255,6 +261,8 @@
   }
 
   async function startMetadataScan() {
+    resetResult = ''
+    resetError = ''
     await commitCredentials()
     const s = $settings
     if (s.webdavUrl && s.webdavUser && s.webdavToken) {
@@ -265,12 +273,103 @@
   }
 
   async function rescanAllMetadata() {
+    resetResult = ''
+    resetError = ''
     await commitCredentials()
     const s = $settings
     if (s.webdavUrl && s.webdavUser && s.webdavToken) {
       setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
     }
     scanAll('force')
+  }
+
+  // One-click continuation of a CANCELLED scan: the landing state carries the
+  // interrupted scan's shape (cancelledShape), and the resume re-runs exactly
+  // that — a cancelled force scan resumes as force (the heal pass only runs
+  // there), a cancelled modified scan as modified. The scan's own freshness
+  // machinery (index/tag fingerprints, unprobed pool, unmatched set) makes
+  // the continuation genuinely "from where it stopped": processed rows keep
+  // their results and are not re-read.
+  function resumeScan() {
+    const shape = get(metadataScanState).progress.cancelledShape
+    if (shape === 'force') rescanAllMetadata()
+    else startMetadataScan()
+  }
+
+  // ── Recovery: wipe metadata & re-link all files ──────────────────────────
+  // Destructive by design (confirmation-dialog gated): clears every stored
+  // file↔track link and locally cached rating/loved/comment (incl. not-yet-
+  // pushed pending edits), then re-runs a full scan so links and file tags are
+  // rebuilt from scratch. Settings/credentials, the song catalog cache, the
+  // play queue and scrobble history are preserved.
+  let confirmReset = $state(false)
+  let resetPendingCount = $state(0)
+  let resetting = $state(false)
+  let resetResult = $state('')
+  let resetError = $state('')
+  // Set by the Cancel button; read between reset steps AND by the re-link
+  // scan's own cancel path (cancelScan). Mirrors the push contract.
+  let resetCancelRequested = $state(false)
+
+  function requestResetCancel() {
+    // The re-link scan stops via cancelScan()'s generation bump (same
+    // mechanism as the scan section's Cancel button); the reset observes the
+    // flag at its next phase boundary and lands resumably.
+    resetCancelRequested = true
+    cancelScan()
+  }
+
+  // The re-link scan's progress already renders in the Metadata Scan section
+  // while the reset runs; this line adds the reset-specific context on top.
+  function resetProgressText(): string {
+    const s = get(metadataScanState)
+    if (s.status === 'scanning') {
+      if (get(tagProbeState).active) return `Reading file tags — ${tagProbeText()}…`
+      return `Re-linking ${s.progress.scanned}/${s.progress.total}…`
+    }
+    return 'Wiping stored metadata…'
+  }
+
+  async function openResetConfirm() {
+    // Guard the async gap (pending-count fetch) so a double-tap can't open
+    // two dialogs or race a reset that already started.
+    if (confirmReset || resetting) return
+    resetError = ''
+    resetResult = ''
+    await commitCredentials()
+    if (confirmReset || resetting) return
+    // Informational only: how many not-yet-pushed edits the wipe would destroy.
+    const pending = await getPendingSyncMetadata()
+    resetPendingCount = pending.length
+    confirmReset = true
+  }
+
+  async function performReset() {
+    confirmReset = false
+    resetting = true
+    resetCancelRequested = false
+    resetResult = ''
+    resetError = ''
+    try {
+      const s = get(settings)
+      if (!s.webdavUrl || !s.webdavUser || !s.webdavToken) {
+        throw new Error('WebDAV credentials not configured')
+      }
+      setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
+      const res = await resetMetadataAndRelink({ isCancelled: () => resetCancelRequested })
+      // Both cancel landings (mid-wipe or mid-scan) are resumable: the scan
+      // landing carries cancelledShape, so the Resume scan button appears in
+      // the scan result block right below this line.
+      if (res.cancelled) {
+        resetResult = 'Reset cancelled — already re-linked files keep their links. Use Resume scan below to finish re-linking.'
+      } else {
+        resetResult = 'Reset complete — file links were rebuilt and ratings refreshed from your files and server.'
+      }
+    } catch (err) {
+      resetError = err instanceof Error ? err.message : String(err)
+    } finally {
+      resetting = false
+    }
   }
 
   async function connectNavidromeHandler() {
@@ -288,6 +387,7 @@
         failed: result.loadResult.failed,
         error: result.loadResult.error,
         cached: result.loadResult.cached,
+        cancelled: result.loadResult.cancelled,
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -310,21 +410,22 @@
   async function pushChanges() {
     await commitCredentials()
     const pending = await getPendingSyncMetadata()
-    // Ignored rows are never pushed (D5) — they must not inflate the
-    // confirmation count or the unsafe bucket (TODO 3.8c).
-    const pushable = pending.filter((r) => !r.ignored)
     // The same derivation the scan stamp and Push use (webdavBaseKey) — a raw
     // template here would misclassify every row on stray whitespace and could
     // skip the confirmation dialog entirely (TODO 3.5 convention).
     const currentBaseKey = webdavBaseKey($settings.webdavUrl ?? '', $settings.webdavUser ?? '')
-    const safeCount = pushable.filter((r) => r.webdavPath && r.webdavBase === currentBaseKey).length
-    if (safeCount > 0) {
-      pendingPushCount = safeCount
+    // The ONE classification (pushReconcile) — the SAME buckets the push loop
+    // applies, so the dialog can never disagree with what the run will do
+    // (D5; TODO 3.8c). The breakdown shows every bucket + the pushable
+    // track list; the dialog opens only when something is actually pushable.
+    const bd = buildPushBreakdown(pending, currentBaseKey)
+    pushBreakdown = bd
+    if (bd.pushable > 0) {
       confirmPush = true
     }
     // if nothing is safely pushable (all skipped/no-path/wrong-server), just run
     // and report the result so the user sees the "N skipped" state.
-    if (safeCount === 0) {
+    if (bd.pushable === 0) {
       performPush()
     }
   }
@@ -333,9 +434,22 @@
     confirmPush = false
     syncing = true
     syncResult = ''
+    pushState.set({ active: true, done: 0, total: 0, current: 'Starting…' })
     try {
-      const result = await runManualWebDAVSync()
-      const parts = [`Pushed ${result.synced} track(s)`, result.failed ? `${result.failed} failed` : '']
+      const result = await runManualWebDAVSync({
+        onProgress: (done, total, current) => {
+          // Spread the PRIOR state: a bare set would wipe cancelRequested
+          // (set between progress events by the Cancel button) and the run
+          // would never stop.
+          pushState.update((s) => ({ ...s, active: true, done, total, current }))
+        },
+        isCancelled: () => get(pushState).cancelRequested === true,
+      })
+      const parts = [
+        ...(result.cancelled ? ['Push cancelled'] : []),
+        `Pushed ${result.synced} track(s)`,
+        result.failed ? `${result.failed} failed` : '',
+      ]
       if (result.skipped) parts.push(`${result.skipped} skipped (no pushable WebDAV file)`)
       if (result.wrongServer) parts.push(`${result.wrongServer} on a different server`)
       if (result.blindOverwrite) parts.push(`${result.blindOverwrite} written without ETag protection (server sent no ETag)`)
@@ -344,7 +458,17 @@
       syncResult = `Push failed: ${err instanceof Error ? err.message : String(err)}`
     } finally {
       syncing = false
+      pushState.set({ active: false, done: 0, total: 0, current: '', cancelRequested: false })
     }
+  }
+
+  function requestPushCancel() {
+    // Sets the flag the run's isCancelled reads; the loop exits between rows.
+    pushState.update((s) => ({ ...s, cancelRequested: true }))
+  }
+
+  function cancelLongOps() {
+    cancelLongOperation()
   }
 
   // ── File Matching ──────────────────────────────────────────────────────
@@ -390,7 +514,10 @@
   let searching = $state(false)
   let conflict = $state<{ trackId: string; path: string; conflictTitle: string } | null>(null)
   let showIgnored = $state(false)
-  let showMatched = $state(false)
+  // Matched links are audit rows now (the point of File Matching is to verify
+  // them), so they are visible by default — sorted after unresolved rows and
+  // capped like everything else. Hide them to focus on unresolved work.
+  let showMatched = $state(true)
   let unresolvedCounts = $state<Record<UnresolvedTrack['kind'], number>>({ 'no-match': 0, ambiguous: 0, 'vanished': 0, 'stale-base': 0, matched: 0, ignored: 0 })
   let blockedCount = $state(0)
   let bindError = $state<{ trackId: string; message: string } | null>(null)
@@ -413,6 +540,79 @@
     if (bits.length === 0) return ''
     const line = `Unresolved — ${bits.join(', ')}`
     return blockedCount > 0 ? `${line}; ${blockedCount} blocked by pending edits` : line
+  }
+
+  // Matched-link audit summary (the auditor half of this view). Exact — rows
+  // hold the full uncapped set, and every matched row carries a verdict.
+  const matchedAudit = $derived.by(() => {
+    let total = 0
+    let verified = 0
+    let conflict = 0
+    let unknown = 0
+    let fixable = 0
+    for (const r of unresolvedRows) {
+      if (r.kind !== 'matched') continue
+      total++
+      if (r.verdict === 'conflict') {
+        conflict++
+        if (r.fixable) fixable++
+      } else if (r.verdict === 'unknown') unknown++
+      else verified++
+    }
+    return { total, verified, conflict, unknown, fixable }
+  })
+
+  function matchedChip(row: UnresolvedTrack): { label: string; cls: string } {
+    // The chip tells the user what the bound file's own tags say about the
+    // link. Manual picks stay green ('Your pick') — that row is audited by
+    // definition — but a conflicting file title is still surfaced below.
+    if (row.verdict === 'conflict') return { label: 'Tags conflict', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' }
+    if (row.verdict === 'unknown') return { label: 'Not verified', cls: 'bg-orange-500/20 text-orange-300 ring-orange-500/30' }
+    if (row.matchSource === 'manual') return { label: 'Your pick', cls: 'bg-green-500/20 text-green-300 ring-green-500/30' }
+    return { label: 'Verified', cls: 'bg-green-500/20 text-green-300 ring-green-500/30' }
+  }
+
+  function matchedEvidence(row: UnresolvedTrack): string {
+    if (row.verdict === 'conflict') {
+      const fileTitle = row.fileTitle ?? 'something else'
+      // fixable = the force-scan heal will provably release this AUTO link
+      // (same pure predicate as the scan — never promised for manual rows).
+      if (row.fixable) {
+        return `The file's tags say “${fileTitle}” — a different song. Rescan All Metadata re-links this automatically.`
+      }
+      if (row.matchSource === 'manual') {
+        return `The file's tags say “${fileTitle}” — a different title from “${row.title}”. Rescan never changes manual picks: if this is wrong, clear it and pick the right file.`
+      }
+      return `The file's tags say “${fileTitle}” — not provably a different song (same release family). Rescan keeps this link; if it's actually the wrong file, clear it and pick another.`
+    }
+    if (row.verdict === 'unknown') {
+      switch (row.readState) {
+        case 'not-probed':
+          return row.matchSource === 'manual'
+            ? 'This file has not been read for tags yet — read it now or run Rescan All Metadata to confirm your pick.'
+            : 'This file has not been read for tags yet — read it now or run Rescan All Metadata.'
+        case 'empty':
+          return 'The file has tags but no title to compare against this track.'
+        case 'unreadable':
+          return "The file's tags could not be read — it is retried automatically later."
+        case 'network-error':
+          return "The file's tags could not be read right now — it is retried automatically."
+        default:
+          return 'This track has no title to compare against the file.'
+      }
+    }
+    return ''
+  }
+
+  // Auditor bulk action for provably-wrong AUTO links (rows with `fixable`):
+  // the force scan IS the heal (D16) — it releases exactly those links and
+  // re-matches them in the same drain. Manual picks and same-release family
+  // variants are never touched. Scan progress/annotation shows in the Metadata
+  // Scan section above; the probe-revision effect refreshes these rows when
+  // the scan settles.
+  async function fixWrongLinks() {
+    if ($metadataScanState.status === 'scanning') return
+    await rescanAllMetadata()
   }
 
   function tagProbeText(): string {
@@ -524,6 +724,22 @@
     retryingTrackId = row.trackId
     try {
       await reprobeFiles(paths)
+      await refreshUnresolved()
+    } catch (err) {
+      bindError = { trackId: row.trackId, message: err instanceof Error ? err.message : String(err) }
+    } finally {
+      retryingTrackId = null
+    }
+  }
+
+  // Auditor per-row action: force a fresh tag read of a MATCHED row's bound
+  // file (its cache evidence is missing/stale — a verdict can only be judged
+  // from current tags). reprobeFiles bypasses the TTL for exactly this path.
+  async function doReadBoundFile(row: UnresolvedTrack) {
+    if (!row.webdavPath) return
+    retryingTrackId = row.trackId
+    try {
+      await reprobeFiles([row.webdavPath])
       await refreshUnresolved()
     } catch (err) {
       bindError = { trackId: row.trackId, message: err instanceof Error ? err.message : String(err) }
@@ -755,6 +971,12 @@
                 Connect & Load Songs
               {/if}
             </button>
+            {#if $navidromeLoadStatus.loading}
+              <button
+                onclick={cancelLongOps}
+                class="flex w-full items-center justify-center rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+              >Stop loading — your current library stays unchanged</button>
+            {/if}
             {#if $navidromeConnection.connected}
               <p class="text-sm text-green-400">
                 Connected{$navidromeConnection.serverVersion ? ' (' + $navidromeConnection.serverVersion + ')' : ''}
@@ -762,7 +984,15 @@
             {:else if $navidromeConnection.error}
               <p class="text-sm text-red-400">{$navidromeConnection.error}</p>
             {/if}
-            {#if $navidromeLoadStatus.loaded > 0 || $navidromeLoadStatus.error}
+            {#if $navidromeLoadStatus.cancelled}
+              <!-- A cancelled load's landing: HONEST COPY ONLY, no button.
+                   Continuation-affordance rule (AGENTS §4.C): add a button
+                   only when the natural next click is absent, ambiguous, or
+                   mislabeled — "Connect & Load Songs" above already calls the
+                   same handler, nothing partial survives a load cancel, and
+                   "Resume" would imply progress exists to continue. -->
+              <p class="text-sm text-yellow-300">Load cancelled — your current library is unchanged. Press Connect &amp; Load Songs to try again.</p>
+            {:else if $navidromeLoadStatus.loaded > 0 || $navidromeLoadStatus.error}
               <p class="text-sm text-muted">
                 {$navidromeLoadStatus.error
                   ? `Error: ${$navidromeLoadStatus.error}`
@@ -843,17 +1073,40 @@
                 Rescan All Metadata
               {/if}
             </button>
+            <p class="text-xs text-muted">Rescanning re-reads tags and re-links files it can prove are bound to the wrong song — manual links are never changed. If files are matched wrong and the tags can't prove it, use <span class="text-red-300">Reset metadata &amp; re-link all files</span> on the Library tab.</p>
+            {#if $metadataScanState.status === 'scanning'}
+              <button
+                onclick={cancelLongOps}
+                class="flex w-full items-center justify-center gap-2 rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+              >Stop scanning — already-processed files keep their results</button>
+            {/if}
             {#if $metadataScanState.status === 'complete'}
               {#if $metadataScanState.error}
                 <p class="text-sm text-red-400">{$metadataScanState.error}</p>
               {:else}
-                <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
-                {#if $metadataScanState.progress.total === 0 && $metadataScanState.progress.scanned === 0}
+                {#if $metadataScanState.progress.cancelledShape}
+                  <!-- A CANCELLED scan's landing: honest counts + a one-click
+                       continuation that re-runs the SAME shape. -->
+                  <p class="text-sm text-yellow-300">{$metadataScanState.progress.annotation ?? 'Scan cancelled'}</p>
+                  <p class="text-sm text-muted">{$metadataScanState.progress.scanned} of {$metadataScanState.progress.total} processed — already-read files keep their results.</p>
+                  <!-- No remaining-count on the button: the reset's re-link
+                       work rides the inline probe phase, where the drain's
+                       scanned/total are honestly 0 — a count there would
+                       mislead. The processed line below carries the numbers. -->
+                  <button
+                    onclick={resumeScan}
+                    disabled={$tagProbeState.active}
+                    class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                  >Resume scan</button>
+                {:else if $metadataScanState.progress.total === 0 && $metadataScanState.progress.scanned === 0}
+                  <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}{$metadataScanState.progress.released ? `, ${$metadataScanState.progress.released} wrong link${$metadataScanState.progress.released === 1 ? '' : 's'} healed` : ''}</p>
                   {#if $metadataScanState.progress.annotation?.startsWith('Matched')}
                     <p class="text-sm text-muted">{$metadataScanState.progress.annotation} — see File Matching.</p>
                   {:else}
                     <p class="text-sm text-muted">No changes on server — see File Matching for remaining unmatched tracks.</p>
                   {/if}
+                {:else}
+                  <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}{$metadataScanState.progress.released ? `, ${$metadataScanState.progress.released} wrong link${$metadataScanState.progress.released === 1 ? '' : 's'} healed` : ''}</p>
                 {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
@@ -1125,6 +1378,24 @@
                 Push Changes
               {/if}
             </button>
+            {#if $pushState.active}
+              <!-- Live progress lives in the section (the modal closes when
+                   the run starts) — bar + current row + cancel-between-rows. -->
+              <div class="space-y-2">
+                <div class="h-1.5 w-full overflow-hidden rounded-full bg-surface-hover">
+                  <div
+                    class="h-full rounded-full bg-primary transition-all"
+                    style="width: {$pushState.total > 0 ? Math.round(($pushState.done / $pushState.total) * 100) : 0}%"
+                  ></div>
+                </div>
+                <p class="text-sm text-muted">{$pushState.current}</p>
+                <button
+                  onclick={requestPushCancel}
+                  disabled={$pushState.cancelRequested}
+                  class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80 disabled:opacity-50"
+                >{$pushState.cancelRequested ? 'Cancelling…' : 'Cancel push'}</button>
+              </div>
+            {/if}
             {#if syncResult}
               <p class="text-sm text-muted">{syncResult}</p>
             {/if}
@@ -1133,11 +1404,36 @@
 
         {#if confirmPush}
           <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-            <div class="w-full max-w-sm rounded-xl bg-surface-raised p-4">
+            <div class="max-h-[85vh] w-full max-w-sm overflow-y-auto rounded-xl bg-surface-raised p-4">
               <h4 class="mb-2 text-base font-medium text-primary">Write ratings to WebDAV files?</h4>
-              <p class="mb-4 text-sm text-muted">
-                This will download and rewrite tags (rating and loved heart) on {pendingPushCount} file(s) on your WebDAV server. A wrong file link gives the rating to a different file. Open File Matching to verify the file paths first.
+              <p class="mb-3 text-sm text-muted">
+                Downloads each file, rewrites its tags (rating and loved heart), and writes it back atomically. A wrong file link gives the rating to a different file — check the list below against File Matching.
               </p>
+              <!-- Bucket breakdown — the same classifier the run uses, so this
+                   picture cannot disagree with what Push will actually do. -->
+              <div class="mb-3 space-y-1 text-sm">
+                <p class="font-medium text-primary">{pushBreakdown.pushable} file{pushBreakdown.pushable === 1 ? '' : 's'} will be updated:</p>
+                <ul class="ml-4 max-h-40 list-disc space-y-0.5 overflow-y-auto">
+                  {#each pushBreakdown.tracks as t (t.trackId)}
+                    <li class="text-muted">
+                      {t.title}
+                      <span class="text-xs opacity-60">→ {t.webdavPath}</span>
+                    </li>
+                  {/each}
+                </ul>
+                {#if pushBreakdown.wrongServer > 0}
+                  <p class="text-amber-300">{pushBreakdown.wrongServer} skipped — matched on a different server.</p>
+                {/if}
+                {#if pushBreakdown.noBase > 0}
+                  <p class="text-amber-300">{pushBreakdown.noBase} skipped — unverified file link (matched before server verification existed). Re-link via File Matching.</p>
+                {/if}
+                {#if pushBreakdown.ignored > 0}
+                  <p class="text-muted">{pushBreakdown.ignored} dismissed — will not be pushed.</p>
+                {/if}
+                {#if pushBreakdown.noPath > 0}
+                  <p class="text-muted">{pushBreakdown.noPath} without a matched file — nothing to write.</p>
+                {/if}
+              </div>
               <div class="flex justify-end gap-2">
                 <button
                   onclick={() => { confirmPush = false }}
@@ -1186,7 +1482,7 @@
                 {scanButtonText()}
               {:else}
                 <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 8H5v11h14V8zm0-2c1.1 0 2 .9 2 2v11c0 1.1-.9 2-2 2H5c-1.1 0-2-.9-2-2V8c0-1.1.9-2 2-2h14zm-7 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3z"/></svg>
-                Rescan all (re-reads all tags)
+                Rescan All Metadata (re-reads all tags)
               {/if}
             </button>
             <button
@@ -1200,17 +1496,43 @@
                 Rebuild WebDAV File Index
               {/if}
             </button>
+            {#if ($metadataScanState.status === 'scanning' || $tagProbeState.active) && !resetting}
+              <!-- Hidden while a reset runs: the reset section's own Cancel is
+                   the one affordance (it cancels scan AND reset together —
+                   a bare scan-stop mid-reset would leave the reset
+                   reporting success over a half-done re-link). -->
+              <button
+                onclick={cancelScan}
+                class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+              >Stop scanning — already-processed files keep their results</button>
+            {/if}
             {#if $metadataScanState.status === 'complete'}
               {#if $metadataScanState.error}
                 <p class="text-sm text-red-400">{$metadataScanState.error}</p>
               {:else}
-                <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}</p>
-                {#if $metadataScanState.progress.total === 0 && $metadataScanState.progress.scanned === 0}
+                {#if $metadataScanState.progress.cancelledShape}
+                  <!-- A CANCELLED scan's landing: honest counts + a one-click
+                       continuation that re-runs the SAME shape. -->
+                  <p class="text-sm text-yellow-300">{$metadataScanState.progress.annotation ?? 'Scan cancelled'}</p>
+                  <p class="text-sm text-muted">{$metadataScanState.progress.scanned} of {$metadataScanState.progress.total} processed — already-read files keep their results.</p>
+                  <!-- No remaining-count on the button: the reset's re-link
+                       work rides the inline probe phase, where the drain's
+                       scanned/total are honestly 0 — a count there would
+                       mislead. The processed line below carries the numbers. -->
+                  <button
+                    onclick={resumeScan}
+                    disabled={$tagProbeState.active}
+                    class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                  >Resume scan</button>
+                {:else if $metadataScanState.progress.total === 0 && $metadataScanState.progress.scanned === 0}
+                  <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}{$metadataScanState.progress.released ? `, ${$metadataScanState.progress.released} wrong link${$metadataScanState.progress.released === 1 ? '' : 's'} healed` : ''}</p>
                   {#if $metadataScanState.progress.annotation?.startsWith('Matched')}
                     <p class="text-sm text-muted">{$metadataScanState.progress.annotation} — see File Matching.</p>
                   {:else}
                     <p class="text-sm text-muted">No changes on server — see File Matching for remaining unmatched tracks.</p>
                   {/if}
+                {:else}
+                  <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}{$metadataScanState.progress.released ? `, ${$metadataScanState.progress.released} wrong link${$metadataScanState.progress.released === 1 ? '' : 's'} healed` : ''}</p>
                 {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
@@ -1236,7 +1558,7 @@
             >{forceRefreshing ? 'Retrying…' : 'Refresh'}</button>
           </div>
           <p class="mb-2 text-sm text-muted">
-            Shows songs the scanner could not safely link to a file on your WebDAV server. Link them manually so Push Changes can write their ratings, or mark them as not on this server.
+            Songs without a file come first; every matched link is then checked against its file's own tags. Fix links here so Push writes ratings to the right file — your manual picks are never changed automatically.
           </p>
           {#if unresolvedLoaded && !unresolvedIndexComplete}
             <p class="mb-2 text-sm text-yellow-300">The WebDAV index is incomplete because one or more directories could not be read. These suggestions are partial; automatic matching and removed-file decisions are paused until the index can be rebuilt completely.</p>
@@ -1248,6 +1570,24 @@
           {/if}
           {#if countTotal() > 0}
             <p class="mb-2 text-sm text-muted">{countLine()}</p>
+          {/if}
+          {#if matchedAudit.total > 0}
+            <div class="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1.5" data-testid="fm-audit-summary">
+              <p class="text-sm text-muted">
+                Matched links: <span class="text-green-300">{matchedAudit.verified} verified</span>{#if matchedAudit.conflict > 0}<span class="text-red-300">, {matchedAudit.conflict} tag conflict{matchedAudit.conflict === 1 ? '' : 's'}</span>{/if}{#if matchedAudit.unknown > 0}, {matchedAudit.unknown} not yet verified{/if}
+              </p>
+              {#if matchedAudit.fixable > 0}
+                <button
+                  data-testid="fm-fix"
+                  onclick={() => void fixWrongLinks()}
+                  disabled={$metadataScanState.status === 'scanning' || $tagProbeState.active || unresolvedLoading}
+                  class="rounded-lg bg-red-500/10 px-3 py-1.5 text-sm font-medium text-red-300 ring-1 ring-red-500/30 transition-opacity hover:opacity-80 disabled:opacity-50"
+                >Fix {matchedAudit.fixable} wrong link{matchedAudit.fixable === 1 ? '' : 's'} automatically</button>
+              {/if}
+            </div>
+            {#if matchedAudit.fixable > 0 && $metadataScanState.status === 'scanning'}
+              <p class="mb-2 text-xs text-muted">Rescanning — these links will re-link automatically, then the list refreshes.</p>
+            {/if}
           {/if}
           {#if unresolvedCounts['stale-base'] > 0}
             <div class="mb-2 flex items-center gap-2">
@@ -1262,11 +1602,19 @@
             </div>
           {/if}
           {#if unresolvedError}
-            <p class="text-sm text-red-400">{unresolvedError}</p>
+            <div class="flex flex-wrap items-center gap-2">
+              <p class="text-sm text-red-400">{unresolvedError}</p>
+              {#if unresolvedError === 'WebDAV credentials not configured'}
+                <button
+                  onclick={() => switchTab('sources')}
+                  class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                >Open Sources</button>
+              {/if}
+            </div>
           {:else if unresolvedRows.length > 0}
             <div class:opacity-50={unresolvedLoading}>
             {#each visibleRows as row (row.trackId)}
-              <div class="mb-2 rounded-lg bg-surface px-3 py-2">
+              <div class="mb-2 rounded-lg bg-surface px-3 py-2" data-testid={`fm-row-${row.trackId}`}>
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
                     <p class="truncate text-sm text-primary">{row.title}</p>
@@ -1275,9 +1623,13 @@
                       <p class="mt-1 text-xs text-yellow-300/70">{reasonText(row)}</p>
                     {/if}
                   </div>
-                  <span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 {kindBadges[row.kind].cls}">
-                    {row.kind === 'matched' && row.matchSource === 'manual' ? 'Manually bound' : kindBadges[row.kind].label}
-                  </span>
+                  {#if row.kind === 'matched' && row.verdict}
+                    <span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 {matchedChip(row).cls}">{matchedChip(row).label}</span>
+                  {:else}
+                    <span class="mt-0.5 shrink-0 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 {kindBadges[row.kind].cls}">
+                      {row.kind === 'matched' && row.matchSource === 'manual' ? 'Manually bound' : kindBadges[row.kind].label}
+                    </span>
+                  {/if}
                 </div>
                 {#if row.pendingPush && row.kind !== 'matched'}
                   <p class="mt-1 text-xs text-yellow-300">
@@ -1297,6 +1649,9 @@
                 {#if row.webdavPath}
                   <p class="mt-1 truncate text-xs text-muted">{row.webdavPath}</p>
                 {/if}
+                {#if row.kind === 'matched' && row.verdict && row.verdict !== 'verified'}
+                  <p class="mt-1 text-xs {row.verdict === 'conflict' ? 'text-red-300/90' : 'text-yellow-300/70'}">{matchedEvidence(row)}</p>
+                {/if}
                 {#if row.kind === 'stale-base'}
                   <div class="mt-2 flex gap-2">
                     <button
@@ -1313,10 +1668,25 @@
                     >Clear file link</button>
                   </div>
                 {:else if row.kind === 'matched'}
-                  <button
-                    onclick={() => doUnbind(row.trackId)}
-                    class="mt-2 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
-                  >Clear match</button>
+                  <div class="mt-2 flex flex-wrap gap-2">
+                    {#if row.verdict === 'conflict' || row.verdict === 'unknown'}
+                      <button
+                        onclick={() => openPicker(row.trackId)}
+                        class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-80"
+                      >Select correct file…</button>
+                      {#if row.verdict === 'unknown' && row.readState === 'not-probed'}
+                        <button
+                          onclick={() => doReadBoundFile(row)}
+                          disabled={retryingTrackId === row.trackId || $tagProbeState.active || $metadataScanState.status === 'scanning'}
+                          class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                        >{retryingTrackId === row.trackId ? 'Reading…' : 'Re-read file tags'}</button>
+                      {/if}
+                    {/if}
+                    <button
+                      onclick={() => doUnbind(row.trackId)}
+                      class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                    >Clear match</button>
+                  </div>
                 {:else if row.kind === 'ignored'}
                   <button
                     onclick={() => doUnignore(row.trackId)}
@@ -1446,6 +1816,44 @@
           {/if}
         </section>
 
+        <!-- Reset metadata & re-link (recovery — LAST RESORT, destructive) -->
+        <section class="bg-red-500/5 px-4 py-4">
+          <h3 class="mb-1 text-base font-medium text-red-300">Reset Metadata &amp; Re-link Files</h3>
+          <p class="mb-2 text-sm text-muted">Last resort when file links are wrong and rescans can't prove it. Clears every stored file↔track link and cached rating/loved/comment — including not-yet-pushed edits — plus the file index and tag cache, then re-links every song by re-reading its files.</p>
+          <p class="mb-3 text-xs text-muted">Kept: credentials &amp; settings, song catalog, play queue, scrobble history. This cannot be undone.</p>
+          <div class="space-y-3">
+            <button
+              onclick={openResetConfirm}
+              disabled={$metadataScanState.status === 'scanning' || $tagProbeState.active || resetting}
+              class="flex w-full items-center justify-center gap-2 rounded-lg bg-red-500/10 px-4 py-3 text-base font-medium text-red-300 ring-1 ring-red-500/30 transition-opacity hover:opacity-80 disabled:opacity-50"
+            >
+              {#if resetting}
+                <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" />
+                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Resetting — {resetProgressText()}
+              {:else}
+                <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                Reset metadata &amp; re-link all files
+              {/if}
+            </button>
+            {#if resetting}
+              <button
+                onclick={requestResetCancel}
+                disabled={resetCancelRequested}
+                class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80 disabled:opacity-50"
+              >{resetCancelRequested ? 'Cancelling…' : 'Cancel reset'}</button>
+            {/if}
+            {#if resetResult}
+              <p class="text-sm text-green-400">{resetResult}</p>
+            {/if}
+            {#if resetError}
+              <p class="text-sm text-red-400">{resetError}</p>
+            {/if}
+          </div>
+        </section>
+
         {#if conflict}
           <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
             <div class="w-full max-w-sm rounded-xl bg-surface-raised p-4">
@@ -1496,4 +1904,30 @@
       {/if}
     </div>
   </div>
+
+  {#if confirmReset}
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div class="w-full max-w-sm rounded-xl bg-surface-raised p-4">
+        <h4 class="mb-2 text-base font-medium text-red-300">Reset metadata and re-link all files?</h4>
+        <p class="mb-3 text-sm text-muted">
+          This clears every stored file↔track link and locally cached rating/loved/comment
+          {#if resetPendingCount > 0}
+            — including <span class="text-yellow-300">{resetPendingCount} local edit{resetPendingCount === 1 ? '' : 's'} not yet written to files</span>
+          {/if}
+          — plus the file index and tag cache, then immediately re-links every song by re-reading its file's tags.
+        </p>
+        <p class="mb-4 text-xs text-muted">Kept: server credentials &amp; settings, song catalog, play queue, scrobble history. This cannot be undone.</p>
+        <div class="flex justify-end gap-2">
+          <button
+            onclick={() => { confirmReset = false }}
+            class="rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+          >Cancel</button>
+          <button
+            onclick={performReset}
+            class="rounded-lg bg-red-500/90 px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-80"
+          >Reset &amp; re-link</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
