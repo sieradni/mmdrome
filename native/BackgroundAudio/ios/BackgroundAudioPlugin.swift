@@ -32,7 +32,8 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setSleepTimer", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setEq", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getDebugState", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "getDebugState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getNetworkState", returnType: CAPPluginReturnPromise)
     ]
 
     private let engine = NativeAudioEngine()
@@ -59,6 +60,18 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc override public func load() {
         super.load()
+
+        // Low data mode (PR-C): the network path monitor publishes cellular /
+        // OS-Low-Data-Mode state to JS. Starts once; the initial path update
+        // fires the first event, so JS also gets the boot snapshot via the
+        // event channel (plus the on-demand getNetworkState below).
+        NetworkMonitor.shared.onNetworkChanged = { [weak self] isExpensive, isConstrained in
+            self?.notifyListeners("networkStateChanged", data: [
+                "isExpensive": isExpensive,
+                "isConstrained": isConstrained
+            ])
+        }
+        NetworkMonitor.shared.startIfNeeded()
 
         session.configure(
             onPause: { [weak self] in self?.performOnMain { self?.engine.pause() } },
@@ -362,6 +375,17 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let self else { call.resolve(); return }
             call.resolve(self.engine.debugState())
         }
+    }
+
+    /// Low data mode (PR-C): the current NWPathMonitor snapshot. The monitor
+    /// runs on its own queue; the snapshot values are lock-guarded so a read
+    /// from the bridge queue cannot race a path update.
+    @objc func getNetworkState(_ call: CAPPluginCall) {
+        NetworkMonitor.shared.startIfNeeded()
+        call.resolve([
+            "isExpensive": NetworkMonitor.shared.isExpensive,
+            "isConstrained": NetworkMonitor.shared.isConstrained
+        ])
     }
 
     // MARK: - Now Playing

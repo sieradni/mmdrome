@@ -3,15 +3,22 @@
   import { getCoverUrl } from '../lib/coverArtCache'
   import { coverConfig } from '../lib/navidromeApi'
   import { requestThumb, cancelThumb } from '../lib/thumbLoader'
+  import { effectiveLowData } from '../lib/networkMode'
+  import { effectiveThumbSize } from '../lib/transcodePolicy'
   import type { Track } from '../stores/appState'
 
-  let { track, wrapperClass = '' }: { track: Track; wrapperClass?: string } = $props()
+  let { track, wrapperClass = '', size = 128 }: { track: Track; wrapperClass?: string; size?: 96 | 128 | 256 | 512 } = $props()
 
   let visible = $state(false)
   let failed = $state(false)
   let container: HTMLDivElement
 
   const fallbackIcon = `${import.meta.env.BASE_URL}icon-192.png`
+
+  // LDM steps the thumbnail down one canonical level (512→256→128→96); the
+  // derived chain re-derives the URL when the effective mode flips.
+  let lowDataActive = $derived($effectiveLowData)
+  let effectiveSize = $derived(effectiveThumbSize({ size, lowDataActive }))
 
   onMount(() => {
     const obs = new IntersectionObserver(
@@ -33,7 +40,7 @@
 <div bind:this={container} class="{wrapperClass} overflow-hidden bg-surface-hover">
   {#if visible && $coverConfig && !failed}
     <img
-      src={getCoverUrl(track, $coverConfig)}
+      src={getCoverUrl(track, $coverConfig, effectiveSize)}
       alt=""
       class="h-full w-full object-cover"
       loading="lazy"

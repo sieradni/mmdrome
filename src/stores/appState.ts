@@ -93,6 +93,24 @@ export interface SettingsMap {
   /** BYO Last.fm API credentials override the compiled defaults. */
   lastfmApiKey?: string
   lastfmApiSecret?: string
+  /** Low data mode: suppress ALL automatic network work (scans, probes,
+   *  auto-preload, scrobble flush, Navidrome scrobbles). Explicit user
+   *  actions, streaming, and thumbnails are never gated. */
+  lowDataMode?: boolean
+  /** Auto-engage low data mode when the connection is cellular/metered
+   *  (native: exact via NWPathMonitor; web: Network Information API hint,
+   *  never engages on Safari). */
+  lowDataOnCellular?: boolean
+  /** Server-side transcoding: 'off' | 'lowData' | 'always' (default off). */
+  transcodeMode?: 'off' | 'lowData' | 'always'
+  /** Target format — free string: the built-ins (opus/mp3/aac/flac) plus any
+   *  custom ffmpeg format the server admin defines. Default opus. */
+  transcodeFormat?: string
+  /** Bitrate cap in kbps for transcoded streams (default 128). */
+  transcodeBitrate?: number
+  /** Per-format capability-probe verdicts ('ok' | 'unsupported'), persisted
+   *  because the probe DOM element never survives a reload. */
+  transcodeProbe?: Record<string, 'ok' | 'unsupported'>
 }
 
 export const currentTrack = writable<Track | null>(null)
@@ -372,7 +390,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'lastfmApiKey', 'lastfmApiSecret']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'lastfmApiKey', 'lastfmApiSecret', 'lowDataMode', 'lowDataOnCellular', 'transcodeMode', 'transcodeFormat', 'transcodeBitrate', 'transcodeProbe']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]

@@ -70,6 +70,7 @@ interface BackgroundAudioPlugin {
   setEq(options: { filters: NativeFilterSnapshot[]; bypassed: boolean }): Promise<void>
   getState(): Promise<NativeEngineState>
   getDebugState(): Promise<Record<string, unknown>>
+  getNetworkState(): Promise<{ isExpensive: boolean; isConstrained: boolean }>
   addListener(
     eventName: 'trackChanged',
     listenerFunc: (data: { trackId: string }) => void
@@ -81,6 +82,10 @@ interface BackgroundAudioPlugin {
   addListener(eventName: 'ended', listenerFunc: () => void): Promise<PluginListenerHandle>
   addListener(eventName: 'error', listenerFunc: (data: { message: string }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'sleepTimerFired', listenerFunc: () => void): Promise<PluginListenerHandle>
+  addListener(
+    eventName: 'networkStateChanged',
+    listenerFunc: (data: { isExpensive: boolean; isConstrained: boolean }) => void
+  ): Promise<PluginListenerHandle>
   addListener(eventName: string, listenerFunc: (data: unknown) => void): Promise<PluginListenerHandle>
 }
 

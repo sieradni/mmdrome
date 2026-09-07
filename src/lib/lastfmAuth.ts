@@ -43,6 +43,13 @@ export function getCachedLfmSession(): LfmSession | null {
   return cachedSession
 }
 
+/** Test hook (the `__setScannerDeps` precedent): seeds the in-memory session
+ *  cache directly so destination-wiring tests can exercise the LFM legs
+ *  without driving the full token→poll→getWebService flow over the network. */
+export function __setLfmSessionForTests(session: LfmSession | null): void {
+  cachedSession = session
+}
+
 export const lastfmAuthPhase = writable<'idle' | 'awaiting' | 'connected'>('idle')
 
 /**

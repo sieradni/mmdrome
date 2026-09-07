@@ -76,7 +76,7 @@
     {#if $currentTrack}
       <div class="flex flex-col items-center">
         <div class="aspect-square w-48 overflow-hidden rounded-2xl bg-surface-hover shadow-xl">
-          <LazyThumb track={$currentTrack} wrapperClass="h-full w-full" />
+          <LazyThumb track={$currentTrack} size={512} wrapperClass="h-full w-full" />
         </div>
 
         <h2 class="mt-4 text-lg font-bold text-primary text-center truncate max-w-full">{$currentTrack.title}</h2>

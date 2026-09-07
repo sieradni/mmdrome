@@ -8,6 +8,7 @@ import { setWebdavCredentials, scanAll, setServerLastScan, cancelScan } from "./
 import { shouldKeepPushPending, shouldSkipBeforePut, classifyRowForPush } from "./pushReconcile"
 import { cachedLibraryUsable } from "./syncCachePolicy"
 import { planNavidromeLoad } from "./navidromeLoadPlan"
+import { effectiveLowData } from "./networkMode"
 import {
   testNavidromeConnection as navidromeTestConnection,
   loadNavidromeSongs as navidromeLoadSongs,
@@ -271,6 +272,9 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
     mapSong: navidromeSongToTrack,
     webdavConfigured: !!(s.webdavUrl && s.webdavUser && s.webdavToken),
     online: typeof navigator === 'undefined' || navigator.onLine !== false,
+    // The effective low-data gate (manual toggle OR cellular OR OS Low Data
+    // Mode) suppresses the automatic incremental scan — never the load itself.
+    lowData: get(effectiveLowData),
   })
 
   // The planner encodes the bail rule: a disconnected/failed load with no

@@ -132,6 +132,10 @@ export class ScrobbleFlushEngine {
   private failures = 0
   private lastFailureWasRateLimit = false
   private lastErrorMessage: string | null = null
+  /** Low data mode: the automatic flush ticks/kicks are suspended. Rows stay
+   *  in the durable queue — nothing is lost; `runNow` (and the kick on the
+   *  LDM lift edge) still work for explicit delivery. */
+  private autoFlushEnabled = true
 
   private store: FlushStore
   private deps: SubmitDeps
@@ -153,10 +157,18 @@ export class ScrobbleFlushEngine {
     })
     window.addEventListener('online', () => this.kick())
     setInterval(() => {
+      if (!this.autoFlushEnabled) return
       let pending = 0
       scrobbleFlushStatus.subscribe((s) => { pending = s.pending })()
       if (pending > 0) this.kick()
     }, FLUSH_TICK_MS)
+  }
+
+  /** Low data mode gate (PR-B): suspended = the periodic tick and the
+   *  enqueue/online `kick()`s no-op. Explicit `runNow` is unaffected, and the
+   *  LDM lift edge kicks once via `setAutoFlushEnabled(true)`. */
+  setAutoFlushEnabled(enabled: boolean): void {
+    this.autoFlushEnabled = enabled
   }
 
   /**
@@ -189,6 +201,7 @@ export class ScrobbleFlushEngine {
   }
 
   kick(): void {
+    if (!this.autoFlushEnabled) return
     void this.flushCycle()
   }
 

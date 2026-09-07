@@ -85,7 +85,7 @@
       {@const meta = $metadataCache.get($currentTrack.trackId)}
       <div class="flex flex-col items-center pt-2 pb-4">
         <div class="aspect-square w-40 overflow-hidden rounded-xl bg-surface-hover shadow-lg">
-          <LazyThumb track={$currentTrack} wrapperClass="h-full w-full" />
+          <LazyThumb track={$currentTrack} size={512} wrapperClass="h-full w-full" />
         </div>
         <h2 class="mt-3 text-lg font-bold text-primary text-center truncate max-w-full">{$currentTrack.title}</h2>
         <p class="text-sm text-muted text-center truncate max-w-full">{$currentTrack.artist}</p>

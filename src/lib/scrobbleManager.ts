@@ -6,6 +6,7 @@ import { effectiveLfmCreds, getCachedLfmSession } from './lastfmAuth'
 import { lfmUpdateNowPlaying } from './lastfmApi'
 import { lbSubmitListen } from './listenbrainzApi'
 import { scrobbleFlushEngine } from './scrobbleFlush'
+import { effectiveLowData } from './networkMode'
 
 /**
  * Client-side listening tracker. Feeds Navidrome's Subsonic `scrobble` endpoint
@@ -84,6 +85,17 @@ export function shouldNavidromeScrobble(trackId: string, s: Pick<SettingsMap, 's
   return trackId.startsWith('navidrome-')
 }
 
+/**
+ * Low data mode gate (plan PR-B) for the DIRECT Navidrome HTTP calls
+ * (now-playing + submission). The Last.fm/ListenBrainz legs are NOT gated
+ * here — they are DURABLE (the flush engine queues rows offline, A11) and the
+ * manager itself stays gate-free beyond the shared accrual threshold. This
+ * pure function exists so the LDM suppression is pinned without stores.
+ */
+export function lowDataSuppressesNavidromeScrobble(lowDataActive: boolean): boolean {
+  return lowDataActive
+}
+
 export function shouldLastfmScrobble(
   s: Pick<SettingsMap, 'lastfmScrobbling'>,
   session: unknown,
@@ -105,6 +117,11 @@ function defaultDestinations(): ScrobbleDestinations {
   return {
     navidromeScrobble(track, startedAtMs) {
       if (!shouldNavidromeScrobble(track.trackId, get(settings))) return
+      // Low data mode: the Navidrome leg is the one DIRECT (non-durable)
+      // destination — suppressed while engaged (documented tradeoff: LDM
+      // listens stay out of the server's play history; Last.fm/LB legs keep
+      // enqueueing durably).
+      if (lowDataSuppressesNavidromeScrobble(get(effectiveLowData))) return
       const config = getCachedConfig()
       if (!config) return
       void submitScrobble(config, stripPrefix(track.trackId), startedAtMs).catch(() => {
@@ -114,6 +131,7 @@ function defaultDestinations(): ScrobbleDestinations {
     },
     navidromeNowPlaying(track) {
       if (!shouldNavidromeScrobble(track.trackId, get(settings))) return
+      if (lowDataSuppressesNavidromeScrobble(get(effectiveLowData))) return
       const config = getCachedConfig()
       if (!config) return
       void submitNowPlaying(config, stripPrefix(track.trackId)).catch(() => {

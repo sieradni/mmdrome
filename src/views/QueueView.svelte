@@ -452,7 +452,7 @@ function seek(e: Event) {
         onkeydown={(e) => { if (e.key === 'Enter') onclose() }}
       >
         <div class="flex items-center gap-3">
-          <LazyThumb track={$currentTrack} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
+          <LazyThumb track={$currentTrack} size={128} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
           <div class="min-w-0 flex-1">
             <p class="truncate text-sm font-medium text-primary">{$currentTrack.title}</p>
             <p class="truncate text-xs text-muted">{$currentTrack.artist}</p>
@@ -555,7 +555,7 @@ function seek(e: Event) {
               </svg>
             </div>
 
-            <LazyThumb track={item.track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
+            <LazyThumb track={item.track} size={128} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
 
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm text-primary">{item.track.title}</p>
@@ -729,7 +729,7 @@ function seek(e: Event) {
               </svg>
             </div>
 
-            <LazyThumb track={item.track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
+            <LazyThumb track={item.track} size={128} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
 
             <div class="min-w-0 flex-1">
               <p class="truncate text-sm text-primary">{item.track.title}</p>
@@ -793,7 +793,7 @@ function seek(e: Event) {
     class="pointer-events-none fixed z-50 flex items-center gap-2.5 rounded-lg bg-surface/95 px-3 py-2 text-primary shadow-2xl ring-1 ring-white/20 backdrop-blur-md opacity-95 transition-transform duration-75"
     style="left: {pointerX - dragOffsetX}px; top: {pointerY - dragOffsetY}px; width: {dragProxyWidth}px; transform-origin: top left; transform: scale(1.02);"
   >
-    <LazyThumb track={draggedTrack} wrapperClass="h-10 w-10 flex-shrink-0 rounded shadow" />
+    <LazyThumb track={draggedTrack} size={128} wrapperClass="h-10 w-10 flex-shrink-0 rounded shadow" />
     <div class="min-w-0 flex-1">
       <p class="truncate text-sm font-semibold text-primary">{draggedTrack.title}</p>
       <p class="truncate text-xs text-muted">{draggedTrack.artist}</p>

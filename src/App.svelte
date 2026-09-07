@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { Capacitor, SystemBars, SystemBarType, SystemBarsStyle } from '@capacitor/core'
-  import { currentTrack, queue, playbackState, initStores, settings, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, effectiveDuration, toggleShuffle, loopMode, sleepTimer } from './stores/appState'
+  import { currentTrack, queue, playbackState, initStores, settings, library, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, effectiveDuration, toggleShuffle, loopMode, sleepTimer } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
   import { sleepTimerManager } from './lib/sleepTimer'
   import { loadLibraryFromNavidrome } from './lib/syncEngine'
@@ -13,6 +13,9 @@
   import { audioManager } from './lib/audioManager'
   import { engine } from './lib/engineFacade'
   import { getTagLib } from './lib/taglibSingleton'
+  import { initNetworkMode, effectiveLowData } from './lib/networkMode'
+  import { ensureFormatProbe } from './lib/formatProbe'
+  import { get } from 'svelte/store'
   import SongsView from './views/SongsView.svelte'
   import AlbumsView from './views/AlbumsView.svelte'
   import ArtistsView from './views/ArtistsView.svelte'
@@ -78,10 +81,22 @@
       return
     }
 
+    // Network state FIRST (native: the plugin's NWPathMonitor snapshot; web:
+    // the Network Information API hint) so every automatic operation below is
+    // gated on the effective low-data mode before it can fire. Everything
+    // above this line is local-only (Dexie + session restores).
+    await initNetworkMode()
+
     // Direct-scrobbler wiring: restore the Last.fm session before the playback
     // manager enables the tracker, and start the durable flush engine.
     await restoreLfmSession()
     scrobbleFlushEngine.init()
+    // Low data mode suspends the automatic flush (rows stay queued durably);
+    // lifting it kicks one drain via the manager's LDM edge subscription.
+    scrobbleFlushEngine.setAutoFlushEnabled(!get(effectiveLowData))
+    effectiveLowData.subscribe((active) => {
+      scrobbleFlushEngine.setAutoFlushEnabled(!active)
+    })
 
     const s = $settings
     if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {
@@ -105,6 +120,14 @@
         navidromeConnection.set({ connected: false, error: msg, checking: false })
         navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0, error: msg })
       }
+      // Fire-and-forget codec capability probe for the chosen transcode
+      // format (opus default), using a real song id — a fake one would 404
+      // and read as decode failure. Verdicts persist in the settings store;
+      // a failed probe auto-falls back to mp3 and surfaces a settings notice.
+      const probeTrack = get(library).find((t) => t.trackId.startsWith('navidrome-'))
+      if (probeTrack) {
+        void ensureFormatProbe($settings.transcodeFormat ?? 'opus', probeTrack.trackId.replace(/^navidrome-/, '')).catch(() => {})
+      }
     }
 
     // Restore the tag-evidence cache in the background when a library was
@@ -112,7 +135,8 @@
     // lifecycle; the helper waits for that scan/tail and deduplicates through
     // the probe mutex. Offline startup is intentionally a no-op.
     if ($settings.webdavUrl && $settings.webdavUser && $settings.webdavToken
-        && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        && (typeof navigator === 'undefined' || navigator.onLine !== false)
+        && !get(effectiveLowData)) {
       void ensureTagProbeAfterRestore().catch((err) => {
         console.warn('[metadata] restore tag probe failed:', err)
       })
@@ -314,7 +338,7 @@ function seek(e: Event) {
       class="flex cursor-pointer items-center gap-3 border-t border-white/10 bg-surface px-4 py-2.5 text-left transition-colors hover:bg-surface-hover"
     >
       {#if $currentTrack}
-        <LazyThumb track={$currentTrack} wrapperClass="h-12 w-12 flex-shrink-0 rounded-md" />
+        <LazyThumb track={$currentTrack} size={128} wrapperClass="h-12 w-12 flex-shrink-0 rounded-md" />
         <div class="min-w-0 flex-1">
           <p class="truncate text-base font-medium text-primary">{$currentTrack.title}</p>
           <p class="truncate text-sm text-muted">{$currentTrack.artist}</p>
@@ -381,7 +405,7 @@ function seek(e: Event) {
       <!-- Album Art -->
       <div class="flex flex-1 items-center justify-center px-8">
         <div class="aspect-square w-full max-w-sm overflow-hidden rounded-2xl bg-surface-hover shadow-2xl">
-          <LazyThumb track={$currentTrack} wrapperClass="h-full w-full" />
+          <LazyThumb track={$currentTrack} size={512} wrapperClass="h-full w-full" />
         </div>
       </div>
 

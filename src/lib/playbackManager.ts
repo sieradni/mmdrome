@@ -7,11 +7,14 @@ import { nativeEngine, BackgroundAudio, type NativeTrackSnapshot } from './nativ
 import { queueManager } from './queueManager'
 import { advanceTargetIndex } from './queueMutation'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
-import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc } from './preloader'
+import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc, sweepStaleTranscodeEntries } from './preloader'
 import { setupMediaSession } from './mediaSession'
 import { getCoverUrl } from './coverArtCache'
 import { getCachedConfig, buildStreamUrl, buildCoverArtUrl, resolveCoverArtId } from './navidromeApi'
 import { scrobbleManager } from './scrobbleManager'
+import { scrobbleFlushEngine } from './scrobbleFlush'
+import { effectiveLowData } from './networkMode'
+import { transcodeParams, type TranscodeParams } from './transcodePolicy'
 import { sleepTimerManager } from './sleepTimer'
 import { WebTransport } from './playbackCore/webTransport'
 import { WebBgTransport, type BgFacts, type LoadDecision } from './playbackCore/webBgTransport'
@@ -42,6 +45,7 @@ import {
 } from '../stores/appState'
 import { saveQueue } from './db'
 import { currentEqState, eqBypassed } from './eq/eqStore'
+import { cancelScan } from './metadataScanner'
 import type { Track } from '../stores/appState'
 
 export class PlaybackManager {
@@ -270,7 +274,7 @@ export class PlaybackManager {
     // the engine in the required order (snap tolerance before pitch).
     this._applyPlaybackParams()
     this._engine.setCrossfade(s.crossfadeDuration ?? 0)
-    BackgroundAudio.setPreloadCount({ count: s.preloadTracks ?? 0 }).catch(() => {})
+    this._syncNativePreload()
     this._engine.pushNativeEqFromStore()
 
     BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode ?? 'off' }).catch(() => {})
@@ -279,6 +283,19 @@ export class PlaybackManager {
     this._unsubscribers.push(loopMode.subscribe((m) => {
       transport.setLoopMode(m).catch(() => {})
     }))
+  }
+
+  /** The effective preload count: the user setting, zeroed while low data
+   *  mode is engaged (auto-preload is automatic network work — the plan's LDM
+   *  table gates it). Shared by every native push site so the engage/lift
+   *  edges stay in one place. */
+  private _effectivePreloadCount(): number {
+    if (get(effectiveLowData)) return 0
+    return get(settings).preloadTracks ?? 0
+  }
+
+  private _syncNativePreload(): void {
+    BackgroundAudio.setPreloadCount({ count: this._effectivePreloadCount() }).catch(() => {})
   }
 
   /**
@@ -307,10 +324,32 @@ export class PlaybackManager {
     // `_applyPlaybackParams`, so their persistence + engine echo no longer live
     // here. The `_initialized` guard skips the immediate fire for the
     // track-scoped replay-gain apply (no track is loaded yet at subscribe time).
+    let prevTranscodeKey = ''
     unsubs.push(settings.subscribe((s) => {
       this._engine.setCrossfade(s.crossfadeDuration ?? 0)
+      // Transcode-affecting change (mode/format/bitrate/probe verdict): the
+      // ARMED crossfade target and the native snapshot hold URLs built with
+      // the OLD params. Dropping the web arm lets the next monitor tick re-arm
+      // with fresh params; the native queue sync rebuilds every snapshot URL.
+      // The CURRENT track is deliberately never re-fetched mid-play — a new
+      // bitrate applies from the next track (restarting audio for a cosmetic
+      // bitrate change is not worth the interruption).
+      const transcodeKey = `${s.transcodeMode ?? 'off'}|${s.transcodeFormat ?? 'opus'}|${s.transcodeBitrate ?? 128}|${s.transcodeProbe?.[s.transcodeFormat ?? 'opus'] ?? ''}`
+      if (transcodeKey !== prevTranscodeKey) {
+        const first = prevTranscodeKey === ''
+        prevTranscodeKey = transcodeKey
+        if (!first) {
+          if (this.isNative()) {
+            this._scheduleNativeQueueSync()
+          } else {
+            this._webTransport?.cancelNext()
+            this._rearmCrossfadeTarget()
+            void sweepStaleTranscodeEntries().catch(() => {})
+          }
+        }
+      }
       if (this.isNative()) {
-        BackgroundAudio.setPreloadCount({ count: s.preloadTracks ?? 0 }).catch(() => {})
+        this._syncNativePreload()
         if (s.replayGainMode) {
           BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode }).catch(() => {})
         }
@@ -413,7 +452,46 @@ export class PlaybackManager {
       this._rearmCrossfadeTarget()
     }))
 
+    // Low-data engage/lift edges. ENGAGE: cancel an in-flight scan (D4 —
+    // resumable, honest "Cancelled" landing; a non-scanning cancelScan is a
+    // harmless gen bump, reset by the next runScan) and re-push the native
+    // preload count (→ 0). LIFT: restore the preload count and kick one flush
+    // cycle — there is deliberately NO make-up scan (no suppressed-op backlog
+    // exists by design; the next natural scan trigger covers it).
+    let prevLowData = false
+    unsubs.push(effectiveLowData.subscribe((active) => {
+      if (!this._initialized) {
+        prevLowData = active
+        return
+      }
+      if (active === prevLowData) return
+      prevLowData = active
+      if (active) {
+        if (get(metadataScanState).status === 'scanning') cancelScan()
+      } else {
+        scrobbleFlushEngine.kick()
+      }
+      if (this.isNative()) this._syncNativePreload()
+    }))
+
     return unsubs
+  }
+
+  /** The transcode params for THIS load (null = legacy raw URL), read from
+   *  the settings store + the effective low-data gate + the persisted probe
+   *  verdict for the chosen format. Pure resolution lives in transcodePolicy. */
+  private _activeTranscode(): TranscodeParams | null {
+    const s = get(settings)
+    return transcodeParams(
+      {
+        mode: s.transcodeMode,
+        lowDataActive: get(effectiveLowData),
+        hasConfig: !!getCachedConfig(),
+        probeFailed: s.transcodeProbe?.[s.transcodeFormat ?? 'opus'] === 'unsupported',
+      },
+      s.transcodeFormat,
+      s.transcodeBitrate,
+    )
   }
 
   private _resolveUrl(trackId: string): string {
@@ -421,7 +499,7 @@ export class PlaybackManager {
     if (!config) return ''
     const track = this._qm.findTrack(trackId)
     if (!track) return ''
-    return buildStreamUrl(config, track.trackId.replace(/^navidrome-/, ''))
+    return buildStreamUrl(config, track.trackId.replace(/^navidrome-/, ''), this._activeTranscode() ?? undefined)
   }
 
   // MARK: - Native engine path
@@ -429,6 +507,9 @@ export class PlaybackManager {
   /** Builds a full queue snapshot (current combined queue) for the native engine. */
   private _buildSnapshot(combined: string[]): NativeTrackSnapshot[] {
     const config = getCachedConfig()
+    // One transcode decision per snapshot build — every row shares the same
+    // mode/format/bitrate (the mode is per-session, not per-track).
+    const transcode = this._activeTranscode()
     return combined.map((id, index) => {
       const track = this._qm.findTrack(id)
       const snapshot: NativeTrackSnapshot = {
@@ -438,7 +519,7 @@ export class PlaybackManager {
         artist: track?.artist ?? '',
         album: track?.album ?? '',
         duration: track?.duration ?? 0,
-        url: config ? buildStreamUrl(config, id.replace(/^navidrome-/, '')) : '',
+        url: config ? buildStreamUrl(config, id.replace(/^navidrome-/, ''), transcode ?? undefined) : '',
       }
       if (track) {
         if (config) snapshot.coverUrl = buildCoverArtUrl(config, resolveCoverArtId(track), 512)

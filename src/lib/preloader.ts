@@ -1,6 +1,7 @@
 import { get } from 'svelte/store'
 import { settings, currentTrack, queue } from '../stores/appState'
 import { advanceTargetIndex } from './queueMutation'
+import { effectiveLowData } from './networkMode'
 
 const CACHE_NAME = 'mmdrome-preload-cache'
 const MAX_CACHE_ENTRIES = 50
@@ -74,9 +75,34 @@ export async function cleanup(url: string): Promise<void> {
   } catch {}
 }
 
+/**
+ * A transcode-affecting settings change (mode/format/bitrate/probe fallback)
+ * rewrites the stream-URL query, so preloaded entries keyed by the OLD URLs
+ * can never match again — dead cache slots the FIFO would only evict after 50
+ * new fills. Swept (fire-and-forget) from the manager's transcode-change edge;
+ * web-only (the native loader has its own disk cache). No-op without the
+ * Cache Storage API (old browsers / Node tests).
+ */
+export async function sweepStaleTranscodeEntries(): Promise<void> {
+  try {
+    if (typeof caches === 'undefined') return
+    const cache = await caches.open(CACHE_NAME)
+    const keys = await cache.keys()
+    await Promise.all(keys.map((req) => {
+      const u = new URL(req.url)
+      // Entries WITHOUT a format param are current raw URLs; entries WITH one
+      // are transcode-era keys — stale once the params changed.
+      return u.searchParams.has('format') ? cache.delete(req) : Promise.resolve()
+    }))
+  } catch {}
+}
+
 function poll(): void {
    const el = getAudioEl?.()
    if (!el || el.paused || preloading || !urlForTrack) return
+   // Low data mode: the preloader's automatic downloads are suppressed
+   // entirely (the plan's LDM table gates the preloader — A13).
+   if (get(effectiveLowData)) return
    const metaDur = get(currentTrack)?.duration ?? 0
    if (!metaDur) return
    const remaining = metaDur - el.currentTime

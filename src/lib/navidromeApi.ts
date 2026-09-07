@@ -363,7 +363,7 @@ export async function paginateSearch3(
   return songs
 }
 
-export function buildStreamUrl(config: NavidromeConfig, songId: string): string {
+export function buildStreamUrl(config: NavidromeConfig, songId: string, transcode?: { format: string; maxBitRate: number }): string {
   const params = buildAuthParams(config.username, config.password)
   params.id = songId
 
@@ -371,6 +371,15 @@ export function buildStreamUrl(config: NavidromeConfig, songId: string): string 
   Object.entries(params).forEach(([key, value]) => {
     url.searchParams.set(key, String(value))
   })
+  if (transcode) {
+    // Subsonic transcode params (Navidrome semantics verified 2026-09-06:
+    // an explicit format forces a transcode profile at maxBitRate; a source
+    // at/below the cap direct-plays raw; estimateContentLength makes the
+    // Content-Length an estimate for transcoded responses instead of absent).
+    url.searchParams.set('format', transcode.format)
+    url.searchParams.set('maxBitRate', String(transcode.maxBitRate))
+    url.searchParams.set('estimateContentLength', 'true')
+  }
   return url.toString()
 }
 

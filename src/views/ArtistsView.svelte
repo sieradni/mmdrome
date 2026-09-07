@@ -209,7 +209,7 @@
       <div class="grid grid-cols-2 gap-4 px-4 py-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
         {#each visibleGroups as group (group.artist)}
           <button onclick={() => selectedArtist = group.artist} data-artist={group.artist} class="group text-left transition-transform hover:scale-[1.02]">
-            <LazyThumb track={group.tracks.find(t => t.trackId === group.thumbnailTrackId) || group.tracks[0]} wrapperClass="mb-2 aspect-square w-full rounded-lg" />
+            <LazyThumb track={group.tracks.find(t => t.trackId === group.thumbnailTrackId) || group.tracks[0]} size={256} wrapperClass="mb-2 aspect-square w-full rounded-lg" />
             <p class="truncate text-sm font-bold text-primary">{group.artist}</p>
             <p class="truncate text-xs text-muted">{group.tracks.length} tracks</p>
           </button>

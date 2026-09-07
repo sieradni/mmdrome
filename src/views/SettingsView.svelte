@@ -15,6 +15,9 @@
   import { reconcileToNavidrome } from '../lib/feedbackService'
   import { connectLfm, disconnectLfm, lastfmAuthPhase, pendingAuthUrl, getCachedLfmSession } from '../lib/lastfmAuth'
   import { scrobbleFlushStatus } from '../lib/scrobbleFlush'
+  import { networkStatusStore } from '../lib/networkMode'
+  import { BUILTIN_TRANSCODE_FORMATS, isLosslessTranscodeFormat } from '../lib/transcodePolicy'
+  import { ensureFormatProbe } from '../lib/formatProbe'
   import { lbValidateToken } from '../lib/listenbrainzApi'
   import { getCachedConfig, setCachedConfig, cachedConfigMatches } from '../lib/navidromeApi'
   import { tick } from 'svelte'
@@ -86,6 +89,44 @@
 
   function setPreload(val: number) {
     updateSetting('preloadTracks', val)
+  }
+
+  function setLowDataMode() {
+    updateSetting('lowDataMode', !($settings.lowDataMode ?? false))
+  }
+
+  function setLowDataOnCellular() {
+    updateSetting('lowDataOnCellular', !($settings.lowDataOnCellular ?? false))
+  }
+
+  function setTranscodeMode(val: 'off' | 'lowData' | 'always') {
+    updateSetting('transcodeMode', val)
+  }
+
+  function setTranscodeFormat(val: string) {
+    updateSetting('transcodeFormat', val)
+    // Probe the newly chosen format NOW (fire-and-forget) so the mp3-fallback
+    // notice reflects reality this session, not next boot.
+    const probeTrack = get(library).find((t) => t.trackId.startsWith('navidrome-'))
+    if (probeTrack) {
+      void ensureFormatProbe(val, probeTrack.trackId.replace(/^navidrome-/, '')).catch(() => {})
+    }
+  }
+
+  function setTranscodeBitrate(val: number) {
+    updateSetting('transcodeBitrate', val)
+  }
+
+  function isCustomFormat(fmt: string): boolean {
+    return !(BUILTIN_TRANSCODE_FORMATS as readonly string[]).includes(fmt)
+  }
+
+  /** Custom server-defined format (any target the admin's ffmpeg command
+   *  produces). Lightly sanitized — lowercase, URL-safe — but never blocked:
+   *  an unknown format degrades server-side to the server's own default. */
+  function setTranscodeFormatInput(e: Event) {
+    const val = (e.target as HTMLInputElement).value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+    if (val) updateSetting('transcodeFormat', val)
   }
 
   function setCrossfade(e: Event) {
@@ -1302,6 +1343,35 @@
       {/if}
 
       {#if tab === 'playback'}
+        <!-- Data & Network -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Data &amp; Network</h3>
+          <div class="space-y-3">
+            <label class="flex cursor-pointer items-center gap-3">
+              <input type="checkbox" checked={$settings.lowDataMode ?? false} onchange={setLowDataMode} class="accent-yellow-500" />
+              <div>
+                <p class="text-base text-primary">Low data mode</p>
+                <p class="text-sm text-muted">Pauses automatic background traffic: metadata scans, tag probes, preloading, and scrobble uploads (queued instead of sent). Streaming, cover art, and everything you tap yourself are never affected.</p>
+              </div>
+            </label>
+            <label class="flex cursor-pointer items-center gap-3">
+              <input type="checkbox" checked={$settings.lowDataOnCellular ?? false} onchange={setLowDataOnCellular} class="accent-yellow-500" />
+              <div>
+                <p class="text-base text-primary">Low data mode on cellular</p>
+                <p class="text-sm text-muted">
+                  {#if $networkStatusStore.source === 'native'}
+                    Detects cellular exactly on this device (including hotspots and the system Low Data Mode setting).
+                  {:else if $networkStatusStore.known}
+                    Uses approximate browser network hints — good Wi-Fi may be misread as cellular; Safari cannot detect cellular at all.
+                  {:else}
+                    This browser cannot detect cellular; only the manual toggle applies.
+                  {/if}
+                </p>
+              </div>
+            </label>
+          </div>
+        </section>
+
         <!-- Preload -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Preloading</h3>
@@ -1335,6 +1405,76 @@
             />
             <span class="w-10 text-right text-sm text-muted">{($settings.crossfadeDuration ?? 0)}s</span>
           </div>
+        </section>
+
+        <!-- Transcoding (server-side, Navidrome) -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Streaming Quality</h3>
+          <p class="mb-2 text-sm text-muted">Let your Navidrome server transcode on the fly (requires ffmpeg on the server).</p>
+          <div class="flex gap-2">
+            {#each ['off', 'lowData', 'always'] as mode}
+              <button
+                onclick={() => setTranscodeMode(mode as 'off' | 'lowData' | 'always')}
+                class="rounded-lg px-4 py-2.5 text-sm font-medium transition-colors"
+                class:bg-primary={($settings.transcodeMode ?? 'off') === mode}
+                class:text-background={($settings.transcodeMode ?? 'off') === mode}
+                class:bg-surface-hover={($settings.transcodeMode ?? 'off') !== mode}
+                class:text-muted={($settings.transcodeMode ?? 'off') !== mode}
+              >{mode === 'off' ? 'Off' : mode === 'lowData' ? 'Low Data' : 'Always'}</button>
+            {/each}
+          </div>
+          {#if ($settings.transcodeMode ?? 'off') !== 'off'}
+            <div class="mt-3 space-y-3">
+              <div>
+                <p class="mb-2 text-sm text-muted">Format</p>
+                <div class="flex flex-wrap gap-2">
+                  {#each BUILTIN_TRANSCODE_FORMATS as fmt}
+                    <button
+                      onclick={() => setTranscodeFormat(fmt)}
+                      class="rounded-lg px-4 py-2 text-sm font-medium uppercase transition-colors"
+                      class:bg-primary={($settings.transcodeFormat ?? 'opus') === fmt}
+                      class:text-background={($settings.transcodeFormat ?? 'opus') === fmt}
+                      class:bg-surface-hover={($settings.transcodeFormat ?? 'opus') !== fmt}
+                      class:text-muted={($settings.transcodeFormat ?? 'opus') !== fmt}
+                    >{fmt}</button>
+                  {/each}
+                </div>
+                <input
+                  type="text"
+                  placeholder="Custom… (server-defined format)"
+                  value={isCustomFormat($settings.transcodeFormat ?? 'opus') ? ($settings.transcodeFormat ?? '') : ''}
+                  oninput={setTranscodeFormatInput}
+                  class="mt-2 w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                />
+                {#if isCustomFormat($settings.transcodeFormat ?? 'opus')}
+                  <p class="mt-1 text-sm text-muted">Custom format “{$settings.transcodeFormat}” — the server must have a transcode command for it, otherwise it falls back to its own default.</p>
+                {/if}
+              </div>
+              {#if !isLosslessTranscodeFormat($settings.transcodeFormat ?? 'opus')}
+                <div>
+                  <p class="mb-2 text-sm text-muted">Bitrate</p>
+                  <div class="flex flex-wrap gap-2">
+                    {#each [64, 96, 128, 192, 256, 320] as rate}
+                      <button
+                        onclick={() => setTranscodeBitrate(rate)}
+                        class="rounded-lg px-3.5 py-2 text-sm font-medium transition-colors"
+                        class:bg-primary={($settings.transcodeBitrate ?? 128) === rate}
+                        class:text-background={($settings.transcodeBitrate ?? 128) === rate}
+                        class:bg-surface-hover={($settings.transcodeBitrate ?? 128) !== rate}
+                        class:text-muted={($settings.transcodeBitrate ?? 128) !== rate}
+                      >{rate}</button>
+                    {/each}
+                  </div>
+                </div>
+              {:else}
+                <p class="text-sm text-muted">Lossless format — the server ignores the bitrate setting.</p>
+              {/if}
+              {#if ($settings.transcodeProbe?.[$settings.transcodeFormat ?? 'opus']) === 'unsupported'}
+                <p class="text-sm text-yellow-500/90">This device can't decode {$settings.transcodeFormat ?? 'opus'} — MP3 is used instead. The check reruns next time the app starts.</p>
+              {/if}
+              <p class="text-sm text-muted">Applies from the next track. A server without ffmpeg silently streams original files; an unsupported custom format falls back to the server's own default.</p>
+            </div>
+          {/if}
         </section>
 
         <!-- Replay Gain -->

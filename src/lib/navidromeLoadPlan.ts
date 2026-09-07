@@ -31,6 +31,9 @@ export interface NavidromeLoadContext {
   webdavConfigured: boolean
   /** Device is online; the scan is skipped when offline. */
   online: boolean
+  /** Low data mode is effective — the automatic scan is suppressed
+   *  (like offline; manual scans stay available from the Library tab). */
+  lowData?: boolean
 }
 
 export function planNavidromeLoad(result: NavidromeConnectResult, ctx: NavidromeLoadContext): NavidromeLoadPlan {
@@ -50,6 +53,8 @@ export function planNavidromeLoad(result: NavidromeConnectResult, ctx: Navidrome
     seedFeedback: applyLibrary && result.songs.length > 0 && shouldSeedFeedback(result.loadResult),
     lastScan: applyLibrary ? result.lastScan : undefined,
     configureWebdav,
-    scanWebdav: configureWebdav && ctx.online,
+    // Suppressed identically to offline: low data mode treats automatic
+    // network work the same way (the user can always scan manually).
+    scanWebdav: configureWebdav && ctx.online && !ctx.lowData,
   }
 }
