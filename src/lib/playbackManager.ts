@@ -1057,7 +1057,13 @@ export class PlaybackManager {
   private async _bgLoad(track: Track): Promise<void> {
     // Record the in-flight target so an exit-race reload resolves it.
     this._pendingBgTrack = track
-    const url = this._resolveUrl(track.trackId)
+    // Cache-first (parity with _loadAndPlay/_setupNextTrack): a preloaded
+    // track resolves to its blob URL so the advance plays OFFLINE. The bg
+    // element bypasses the HTTP cache's ability to hide a dead connection
+    // (a stalled range request fires no 'error'), so a raw-URL load over a
+    // dropped connection would hang in 'waiting' forever — exactly the
+    // "preloaded song doesn't play when I lose connection" report.
+    const url = await resolveSrc(this._resolveUrl(track.trackId))
     if (!url) {
       this._bgTransport!.abortBgLoad()
       return

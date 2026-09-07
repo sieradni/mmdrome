@@ -33,7 +33,8 @@ import { audioManager } from '../src/lib/audioManager'
 import { queueManager } from '../src/lib/queueManager'
 import { sleepTimerManager } from '../src/lib/sleepTimer'
 import { get } from 'svelte/store'
-import { setCachedConfig } from '../src/lib/navidromeApi'
+import { setCachedConfig, buildStreamUrl } from '../src/lib/navidromeApi'
+import { __resetForTests as resetPreloader } from '../src/lib/preloader'
 import type { WebTransport } from '../src/lib/playbackCore/webTransport'
 import type { WebBgTransport, BgFacts, LoadDecision } from '../src/lib/playbackCore/webBgTransport'
 
@@ -436,4 +437,56 @@ test('_handleBgLoad fg load failure clears the track and stops', async () => {
 
   assert.equal(get(currentTrack), null)
   assert.equal(get(playbackState), 'stopped')
+})
+
+// --- preloaded-track offline routing (the "preloaded song doesn't play
+// when I lose connection" fix) --------------------------------------------
+
+/** Installs an in-memory Cache API so resolveSrc can serve blob URLs. Real
+ *  Blobs are required: Node's own URL.createObjectURL throws on fakes. */
+function installPreloadCache(trackIds: string[]): void {
+  const store = new Map<string, string>()
+  for (const id of trackIds) {
+    const url = buildStreamUrl({ baseUrl: 'https://srv.example', username: 'u', password: 'p' }, id.replace(/^navidrome-/, ''))
+    store.set(url, id)
+  }
+  const cache = {
+    async match(u: string) {
+      if (!store.has(u)) return undefined
+      return { bodyUsed: false, async blob() { return new Blob([`audio-${store.get(u)}`]) } }
+    },
+    async put(u: string) { store.set(u, u) },
+    async delete(u: string) { return store.delete(u) },
+    async keys() { return [...store.keys()].map((u2) => ({ url: u2 })) },
+  }
+  ;(globalThis as unknown as { caches: unknown }).caches = { open: async () => cache }
+}
+
+test('a PRELOADED next track advances offline: _bgLoad serves the blob, not the stream URL', async () => {
+  const h = makeHarness()
+  resetStores()
+  installPreloadCache(['navidrome-t2'])
+  seed(h, ['navidrome-t2', 'navidrome-t3'], [t2, t3], 0)
+  await h.m._bgLoad(t2)
+
+  const urlCall = h.bg.calls[0]
+  assert.match(urlCall, /^startBgLoad:blob:/, 'the bg element gets the offline-capable blob URL')
+  assert.ok(!urlCall.includes('stream.view'), 'the dead-connection-prone stream URL is bypassed entirely')
+  ;(globalThis as unknown as { caches?: unknown }).caches = undefined
+  resetPreloader()
+})
+
+test('a PRELOADED next track advances offline: the fg advance also serves the blob', async () => {
+  const h = makeHarness()
+  resetStores()
+  installPreloadCache(['navidrome-t2'])
+  seed(h, ['navidrome-t2', 'navidrome-t3'], [t2, t3], 0)
+  h.qm.nextTrack = t2
+  await h.m._handleBgLoad('fg', 'advance')
+
+  const elSrc = String(h.am.activeElement.src)
+  assert.ok(elSrc.startsWith('blob:'), `fg advance loads the blob URL, got: ${elSrc}`)
+  assert.ok(!elSrc.includes('stream.view'), 'the dead-connection-prone stream URL is bypassed entirely')
+  ;(globalThis as unknown as { caches?: unknown }).caches = undefined
+  resetPreloader()
 })

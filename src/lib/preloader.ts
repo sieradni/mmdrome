@@ -5,6 +5,15 @@ import { effectiveLowData } from './networkMode'
 
 const CACHE_NAME = 'mmdrome-preload-cache'
 const MAX_CACHE_ENTRIES = 50
+/** One fetch per tick: the queue's order IS the priority (the next track must
+ *  never wait behind track 5's download on a slow connection), and a tick
+ *  cadence of 1 s re-attempts the head after a failure — offline blips and
+ *  captive portals self-heal on a later tick without any event wiring. */
+const FETCH_TIMEOUT_MS = 15000
+/** Non-ok responses are the SERVER's verdict (unlike a fetch exception, which
+ *  is the network's) — two of them mark the row dead for the session so one
+ *  vanished file can't head-of-line block the whole preload window. */
+const NON_OK_DEAD_THRESHOLD = 2
 
 export type TrackUrlResolver = (trackId: string) => string
 
@@ -15,6 +24,10 @@ let unsubCurrentTrack: (() => void) | null = null
 let unsubSettings: (() => void) | null = null
 let blobUrls: Map<string, string> = new Map()
 let preloading = false
+/** Per-URL count of NON-OK responses this session; entries past the
+ *  threshold move to `deadUrls` and are skipped by every later fill. */
+const nonOkFailures: Map<string, number> = new Map()
+const deadUrls: Set<string> = new Set()
 
 export function setup(getEl: () => HTMLAudioElement, resolver: TrackUrlResolver): void {
   teardown()
@@ -50,6 +63,14 @@ export function teardown(): void {
   urlForTrack = null
 }
 
+/**
+ * Cache-first src resolution. A cache HIT returns a blob URL — that track
+ * plays fully offline. A MISS returns the ORIGINAL URL: the element still
+ * streams (a miss must never hard-fail a load), but over a dead connection
+ * it fires the transport's error/retry chain instead of playing silently.
+ * The cache key is the exact URL the resolver produces, so this only hits
+ * when the preloader warmed THAT url (transcode params included).
+ */
 export async function resolveSrc(url: string): Promise<string> {
   try {
     const cache = await caches.open(CACHE_NAME)
@@ -98,20 +119,64 @@ export async function sweepStaleTranscodeEntries(): Promise<void> {
 }
 
 function poll(): void {
-   const el = getAudioEl?.()
-   if (!el || el.paused || preloading || !urlForTrack) return
-   // Low data mode: the preloader's automatic downloads are suppressed
-   // entirely (the plan's LDM table gates the preloader — A13).
-   if (get(effectiveLowData)) return
-   const metaDur = get(currentTrack)?.duration ?? 0
-   if (!metaDur) return
-   const remaining = metaDur - el.currentTime
-  if (remaining > 30) return
+  void pollOnce()
+}
+
+/** The element holds the whole current file: the range containing the
+ *  playhead extends to (metadata) duration − ε. Measured from the PLAYHEAD's
+ *  range — a buffered tail behind a gap doesn't count (the element still
+ *  fetches the gap when the playhead reaches it). ε covers encoder padding:
+ *  metadata duration can exceed the real file by a moment. */
+function bufferCoversEnd(el: HTMLAudioElement, metaDur: number): boolean {
+  try {
+    const b = el.buffered
+    for (let i = 0; i < b.length; i++) {
+      if (b.start(i) <= el.currentTime && el.currentTime <= b.end(i)) {
+        return b.end(i) >= metaDur - 0.75
+      }
+    }
+  } catch { /* TimeRanges on a torn-down element */ }
+  return false
+}
+
+/** The poll body, awaitable for tests (the `__setScannerDeps` hook precedent)
+ *  — production callers go through `poll` (fire-and-forget). */
+async function pollOnce(): Promise<void> {
+  const el = getAudioEl?.()
+  if (!el || el.paused || preloading || !urlForTrack) return
+  // Low data mode: the preloader's automatic downloads are suppressed
+  // entirely (the plan's LDM table gates the preloader — A13).
+  if (get(effectiveLowData)) return
+  const metaDur = get(currentTrack)?.duration ?? 0
+  if (!metaDur) return
+  const remaining = metaDur - el.currentTime
+  // Fill-start policy: near the end (the classic bandwidth-sharing guard) OR
+  // as soon as the element has ALREADY buffered the whole current file — full
+  // coverage means streaming the current track needs no more bandwidth, so
+  // the serialized window fill is free bandwidth and the offline buffer
+  // starts minutes earlier than the 30 s rule on connections that download
+  // ahead. Browsers that cap their buffer below the file length never
+  // satisfy the coverage check and fall back to the time rule.
+  if (remaining > 30 && !bufferCoversEnd(el, metaDur)) return
 
   const n = get(settings).preloadTracks ?? 0
   if (n === 0) return
 
-  preloadNext(n)
+  await preloadNext(n)
+}
+
+/** Test hook: runs the full poll body (gates included) and resolves when the
+ *  fill attempt has settled — deterministic tests without timer juggling. */
+export function __pollForTests(): Promise<void> {
+  return pollOnce()
+}
+
+/** Test hook: clears the session-lifetime failure books (production keeps
+ *  them for the whole session; tests need per-test isolation). */
+export function __resetForTests(): void {
+  nonOkFailures.clear()
+  deadUrls.clear()
+  blobUrls.clear()
 }
 
 async function enforceCacheLimit(): Promise<void> {
@@ -130,9 +195,59 @@ async function enforceCacheLimit(): Promise<void> {
   } catch {}
 }
 
+/** One serial fetch: the head of the upcoming window, skipping rows already
+ *  cached or marked dead. Called once per poll tick, so the queue order becomes
+ *  the priority order (the next track fills first) and a failed fetch is
+ *  naturally retried by the next tick. Returns the fetched id, or null. */
+async function fillOne(
+  nextIds: string[],
+  cache: Cache,
+  resolver: TrackUrlResolver,
+): Promise<string | null> {
+  for (const id of nextIds) {
+    const url = resolver(id)
+    if (!url) return null
+    if (deadUrls.has(url)) continue
+    const exists = await cache.match(url)
+    if (exists) continue
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+    try {
+      const res = await fetch(url, { signal: controller.signal })
+      if (res.ok) {
+        await cache.put(url, res)
+        nonOkFailures.delete(url)
+        return id
+      }
+      // The server answered and said no. Count it; past the threshold the row
+      // is dead for the session (a vanished/404 file must not block every
+      // later row in the window head-of-line). Network EXCEPTIONS never count
+      // — those self-heal when the connection returns.
+      const fails = (nonOkFailures.get(url) ?? 0) + 1
+      nonOkFailures.set(url, fails)
+      if (fails >= NON_OK_DEAD_THRESHOLD) deadUrls.add(url)
+    } catch {
+      // Abort/timeout/network: leave the slot uncached — the next tick's
+      // window recomputes (a changed queue just re-ranks the priorities) and
+      // retries this row only if it still belongs.
+    } finally {
+      clearTimeout(timer)
+    }
+    // A non-ok response also stops this tick's fill; the next tick retries
+    // (unless the row went dead).
+    return null
+  }
+  return null
+}
+
 async function preloadNext(n: number): Promise<void> {
   preloading = true
   try {
+    // Bail when playback stopped mid-fill: a paused element means the poll
+    // gate would block further work anyway, and the LDM check keeps the
+    // window from re-evaluating while the mode is engaged.
+    const el = getAudioEl?.()
+    if (!el || el.paused) return
     const q = get(queue)
     const ids = [...q.userQueue, ...q.autoQueue]
     // Playing-track-aware start (advanceTargetIndex) — the SAME function the
@@ -146,23 +261,10 @@ async function preloadNext(n: number): Promise<void> {
     const nextIds = ids.slice(idx, idx + n)
     if (nextIds.length === 0) return
     const cache = await caches.open(CACHE_NAME)
-    let didPut = false
     const resolver = urlForTrack
     if (!resolver) return
-    await Promise.all(nextIds.map(async id => {
-      const url = resolver(id)
-      if (!url) return
-      const exists = await cache.match(url)
-      if (exists) return
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 15000)
-      const res = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer))
-      if (res.ok) {
-        await cache.put(url, res)
-        didPut = true
-      }
-    }))
-    if (didPut) await enforceCacheLimit()
+    const filled = await fillOne(nextIds, cache, resolver)
+    if (filled) await enforceCacheLimit()
   } catch {} finally {
     preloading = false
   }
