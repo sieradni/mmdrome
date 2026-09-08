@@ -528,7 +528,7 @@ function seek(e: Event) {
           <button
             onclick={() => toggleShuffle()}
             class="rounded-full p-2 text-muted transition-colors hover:text-primary"
-            class:text-yellow-400={$shuffleEnabled}
+            class:text-accent={$shuffleEnabled}
             class:text-muted={!$shuffleEnabled}
             aria-label="Toggle shuffle"
           >
@@ -595,7 +595,7 @@ function seek(e: Event) {
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(item.track.trackId, itemIndex) }}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (isCurrentTrack(itemIndex) ? 'bg-white/10 ' : 'hover:bg-surface-hover ') +
-              (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-yellow-500/50 bg-yellow-500/10 ' : '')
+              (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
             data-combined-index={itemIndex}
             data-track-id={item.track.trackId}
@@ -684,11 +684,11 @@ function seek(e: Event) {
     <!-- === AUTO QUEUE === -->
     {#if previewAutoItems.length > 0}
       <div class="mx-4 mb-1 flex items-center gap-2 px-1" role="heading" aria-level="2" data-boundary>
-        <span class="text-[11px] font-semibold uppercase tracking-widest" class:text-yellow-400={isConvertingUserToAuto} class:text-muted={!isConvertingUserToAuto}>Auto</span>
+        <span class="text-[11px] font-semibold uppercase tracking-widest" class:text-accent={isConvertingUserToAuto} class:text-muted={!isConvertingUserToAuto}>Auto</span>
         <span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted">{previewAutoItems.length}</span>
         <div class="h-0.5 flex-1 rounded-full bg-white/25"></div>
         {#if isConvertingUserToAuto}
-          <span class="text-xs font-medium uppercase tracking-wider text-yellow-400">Release to convert to User Queue</span>
+          <span class="text-xs font-medium uppercase tracking-wider text-accent">Release to convert to User Queue</span>
         {/if}
       </div>
       <div class="mx-2 space-y-0.5" role="group" aria-label="Auto queue">
@@ -702,7 +702,7 @@ function seek(e: Event) {
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(item.track.trackId, itemCombinedIndex) }}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (isCurrentTrack(itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-surface-hover ') +
-              (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-yellow-500/50 bg-yellow-500/10 ' : '')
+              (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
             data-combined-index={itemCombinedIndex}
             data-track-id={item.track.trackId}
@@ -880,15 +880,15 @@ function seek(e: Event) {
         <div>
           <span class="text-sm font-medium text-muted">Rating range</span>
           <div class="mt-1 flex items-center gap-2">
-            <input type="range" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24 accent-yellow-500" />
+            <input type="range" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24" />
             <input data-testid="min-rating" type="number" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', ratingBound((e.target as HTMLInputElement).value, 0))} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
             <span class="text-sm text-muted">–</span>
             <input data-testid="max-rating" type="number" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', ratingBound((e.target as HTMLInputElement).value, 100))} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
-            <input type="range" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24 accent-yellow-500" />
+            <input type="range" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24" />
           </div>
         </div>
         <label class="flex cursor-pointer items-center gap-2 text-sm text-muted">
-          <input type="checkbox" checked={$autoQueueFilterFields.lovedOnly} onchange={(e) => setFilter('lovedOnly', (e.target as HTMLInputElement).checked)} class="accent-yellow-500" />
+          <input type="checkbox" checked={$autoQueueFilterFields.lovedOnly} onchange={(e) => setFilter('lovedOnly', (e.target as HTMLInputElement).checked)} />
           Loved tracks only
         </label>
         {#if genres.length > 0}

@@ -21,6 +21,7 @@
   import { scrobbleFlushStatus } from '../lib/scrobbleFlush'
   import { networkStatusStore } from '../lib/networkMode'
   import { BUILTIN_TRANSCODE_FORMATS, isLosslessTranscodeFormat } from '../lib/transcodePolicy'
+  import { accentHue, appFont, ACCENT_HUES, FONT_OPTIONS, NEUTRAL_ACCENT } from '../lib/appearance'
   import { ensureFormatProbe } from '../lib/formatProbe'
   import { lbValidateToken } from '../lib/listenbrainzApi'
   import { getCachedConfig, setCachedConfig, cachedConfigMatches } from '../lib/navidromeApi'
@@ -28,18 +29,19 @@
   import type { SettingsMap } from '../stores/appState'
   import type { WebdavFileEntry } from '../lib/db'
 
-  type SettingsTab = 'sources' | 'scrobbling' | 'playback' | 'library' | 'about'
+  type SettingsTab = 'sources' | 'scrobbling' | 'playback' | 'library' | 'appearance' | 'about'
 
   const savedSettingsState = restoreViewStateSession<{ tab?: SettingsTab; scrollTops?: Record<string, number> }>('settings')
 
   let tab = $state<SettingsTab>(savedSettingsState?.tab ?? 'sources')
-  let scrollTops = $state<Record<string, number>>({ sources: 0, scrobbling: 0, playback: 0, library: 0, about: 0, ...(savedSettingsState?.scrollTops ?? {}) })
+  let scrollTops = $state<Record<string, number>>({ sources: 0, scrobbling: 0, playback: 0, library: 0, appearance: 0, about: 0, ...(savedSettingsState?.scrollTops ?? {}) })
 
   const tabs: { id: SettingsTab; label: string }[] = [
     { id: 'sources', label: 'Sources' },
     { id: 'scrobbling', label: 'Scrobble' },
     { id: 'playback', label: 'Playback' },
     { id: 'library', label: 'Library' },
+    { id: 'appearance', label: 'Appearance' },
     { id: 'about', label: 'About' },
   ]
 
@@ -1271,7 +1273,7 @@
             {#if ($settings.ratingSource ?? 'webdav') === 'navidrome'}
               <p class="text-sm text-muted">Navidrome is the authoritative store. Ratings are pushed straight to the server.</p>
               <label class="flex cursor-pointer items-center gap-3">
-                <input type="checkbox" checked={$settings.writeTagsInNavidromeMode ?? false} onchange={setWriteTagsInNavidromeMode} class="accent-yellow-500" />
+                <input type="checkbox" checked={$settings.writeTagsInNavidromeMode ?? false} onchange={setWriteTagsInNavidromeMode} />
                 <div>
                   <p class="text-base text-primary">Also write tags to your files</p>
                   <p class="text-sm text-muted">Keep file tags in sync with the server so MusicBee sees phone edits (pushed with Push Changes).</p>
@@ -1279,7 +1281,7 @@
               </label>
             {:else}
               <label class="flex cursor-pointer items-center gap-3">
-                <input type="checkbox" checked={$settings.syncToNavidrome ?? false} onchange={setSyncToNavidrome} class="accent-yellow-500" />
+                <input type="checkbox" checked={$settings.syncToNavidrome ?? false} onchange={setSyncToNavidrome} />
                 <div>
                   <p class="text-base text-primary">Also mirror ratings to Navidrome</p>
                   <p class="text-sm text-muted">Mirror every rating/loved change to the server while keeping your files as the source of truth.</p>
@@ -1299,7 +1301,7 @@
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Navidrome</h3>
           <label class="flex cursor-pointer items-center gap-3">
-            <input type="checkbox" checked={$settings.scrobbling ?? false} onchange={setScrobbling} class="accent-yellow-500" />
+            <input type="checkbox" checked={$settings.scrobbling ?? false} onchange={setScrobbling} />
             <div>
               <p class="text-base text-primary">Scrobble to Navidrome</p>
               <p class="text-sm text-muted">Report plays and now-playing to your server (bumps its play counts). Navidrome can forward these to Last.fm / ListenBrainz if configured server-side.</p>
@@ -1347,7 +1349,7 @@
                 <p class="text-sm text-red-400">{lfmError}</p>
               {/if}
               <label class="flex cursor-pointer items-center gap-3">
-                <input type="checkbox" checked={$settings.lastfmScrobbling ?? false} onchange={setLastfmScrobbling} class="accent-yellow-500" />
+                <input type="checkbox" checked={$settings.lastfmScrobbling ?? false} onchange={setLastfmScrobbling} />
                 <div>
                   <p class="text-base text-primary">Scrobble and sync hearts to Last.fm</p>
                   <p class="text-sm text-muted">Plays queue up and are retried while offline; heart changes mirror outward.</p>
@@ -1386,7 +1388,7 @@
                 {/if}
               </div>
               <label class="flex cursor-pointer items-center gap-3">
-                <input type="checkbox" checked={$settings.listenbrainzScrobbling ?? false} onchange={setListenbrainzScrobbling} class="accent-yellow-500" />
+                <input type="checkbox" checked={$settings.listenbrainzScrobbling ?? false} onchange={setListenbrainzScrobbling} />
                 <div>
                   <p class="text-base text-primary">Scrobble to ListenBrainz</p>
                   <p class="text-sm text-muted">Same durable offline queue as Last.fm.</p>
@@ -1437,14 +1439,14 @@
           <h3 class="mb-3 text-base font-medium text-primary">Data &amp; Network</h3>
           <div class="space-y-3">
             <label class="flex cursor-pointer items-center gap-3">
-              <input data-testid="low-data-mode" type="checkbox" checked={$settings.lowDataMode ?? false} onchange={setLowDataMode} class="accent-yellow-500" />
+              <input data-testid="low-data-mode" type="checkbox" checked={$settings.lowDataMode ?? false} onchange={setLowDataMode} />
               <div>
                 <p class="text-base text-primary">Low data mode</p>
                 <p class="text-sm text-muted">Pauses automatic background traffic: metadata scans, tag probes, and scrobble uploads (queued instead of sent). Streaming, cover art, preloading (it keeps your next tracks buffered — that's what makes low data mode work), and everything you tap yourself are never affected.</p>
               </div>
             </label>
             <label class="flex cursor-pointer items-center gap-3">
-              <input type="checkbox" checked={$settings.lowDataOnCellular ?? false} onchange={setLowDataOnCellular} class="accent-yellow-500" />
+              <input type="checkbox" checked={$settings.lowDataOnCellular ?? false} onchange={setLowDataOnCellular} />
               <div>
                 <p class="text-base text-primary">Low data mode on cellular</p>
                 <p class="text-sm text-muted">
@@ -1490,7 +1492,7 @@
               step="0.5"
               value={$settings.crossfadeDuration ?? 0}
               oninput={setCrossfade}
-              class="h-1 flex-1 accent-yellow-500"
+              class="flex-1"
             />
             <span class="w-10 text-right text-sm text-muted">{($settings.crossfadeDuration ?? 0)}s</span>
           </div>
@@ -2096,6 +2098,54 @@
             </div>
           </div>
         {/if}
+      {/if}
+
+      {#if tab === 'appearance'}
+        <section class="px-4 py-6">
+          <h3 class="mb-4 text-base font-medium text-primary">Appearance</h3>
+
+          <div class="mb-6">
+            <p class="mb-2 text-sm font-medium text-muted">Accent</p>
+            <div class="flex flex-wrap items-center gap-2">
+              {#each ACCENT_HUES as hue (hue)}
+                <button
+                  onclick={() => accentHue.set(hue)}
+                  aria-label="Accent hue {hue}"
+                  aria-pressed={$accentHue === hue}
+                  class="h-8 w-8 rounded-full ring-2 transition-transform hover:scale-110"
+                  class:ring-white={$accentHue === hue}
+                  class:ring-transparent={$accentHue !== hue}
+                  style="background: hsl({hue} 70% 62%)"
+                ></button>
+              {/each}                <button
+                  onclick={() => accentHue.set(NEUTRAL_ACCENT)}
+                  aria-label="Neutral accent"
+                  aria-pressed={$accentHue === NEUTRAL_ACCENT}
+                class="h-8 w-8 rounded-full bg-white ring-2 transition-transform hover:scale-110"
+                class:ring-white={$accentHue === NEUTRAL_ACCENT}
+                class:ring-transparent={$accentHue !== NEUTRAL_ACCENT}
+              ></button>
+            </div>
+          </div>
+
+          <div>
+            <p class="mb-2 text-sm font-medium text-muted">Font</p>
+            <div class="space-y-1">
+              {#each FONT_OPTIONS as f (f.id)}
+                <button
+                  onclick={() => appFont.set(f.id)}
+                  class="flex w-full items-center justify-between rounded px-3 py-2 text-sm transition-colors"
+                  class:bg-surface-hover={$appFont === f.id}
+                  class:text-primary={$appFont === f.id}
+                  class:text-muted={$appFont !== f.id}
+                >
+                  <span style="font-family: {f.stack}">{f.label}</span>
+                  {#if $appFont === f.id}<span class="text-accent">●</span>{/if}
+                </button>
+              {/each}
+            </div>
+          </div>
+        </section>
       {/if}
 
       {#if tab === 'about'}

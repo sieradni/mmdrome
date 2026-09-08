@@ -116,7 +116,7 @@
             max="100"
             value={$libraryFilters.minRating}
             oninput={(e) => libraryFilters.update((f) => ({ ...f, minRating: Number((e.target as HTMLInputElement).value) }))}
-            class="h-1 w-24 accent-yellow-500"
+            class="h-1 w-20"
           />
           <input
             type="number"
@@ -141,7 +141,7 @@
             max="100"
             value={$libraryFilters.maxRating}
             oninput={(e) => libraryFilters.update((f) => ({ ...f, maxRating: Number((e.target as HTMLInputElement).value) }))}
-            class="h-1 w-24 accent-yellow-500"
+            class="h-1 w-20"
           />
         </div>
       </div>
@@ -151,7 +151,7 @@
           type="checkbox"
           checked={$libraryFilters.lovedOnly}
           onchange={(e) => libraryFilters.update((f) => ({ ...f, lovedOnly: (e.target as HTMLInputElement).checked }))}
-          class="accent-yellow-500"
+
         />
         Loved tracks only
       </label>
@@ -260,8 +260,7 @@
           class:text-muted={$libraryFilters.sortBy !== k}
         >
           <span>{sortLabels[k]}</span>
-          {#if $libraryFilters.sortBy === k}
-            <span class="text-yellow-500">{$libraryFilters.sortAsc ? '↑' : '↓'}</span>
+          {#if $libraryFilters.sortBy === k}              <span class="text-accent">{$libraryFilters.sortAsc ? '↑' : '↓'}</span>
           {/if}
         </button>
       {/each}

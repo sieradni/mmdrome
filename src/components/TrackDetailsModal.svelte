@@ -144,7 +144,7 @@
             oninput={onRatingInput}
             onchange={onRatingRelease}
             onblur={onRatingBlur}
-            class="h-1 flex-1 accent-yellow-500"
+            class="flex-1"
           />
           <span class="w-8 text-right text-xs text-muted">{rating}</span>
         </div>

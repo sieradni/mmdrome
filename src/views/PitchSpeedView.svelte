@@ -151,7 +151,7 @@
         <button
           onclick={toggleTape}
           aria-label={tapeMode ? 'Disable tape mode' : 'Enable tape mode'}
-          class={"relative h-6 w-11 rounded-full transition-colors" + (tapeMode ? ' bg-yellow-500' : ' bg-white/20')}
+          class={"relative h-6 w-11 rounded-full transition-colors" + (tapeMode ? ' bg-accent' : ' bg-white/20')}
         >
           <span class={"absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white transition-transform" + (tapeMode ? ' translate-x-5' : '')}></span>
         </button>

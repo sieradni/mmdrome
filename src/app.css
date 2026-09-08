@@ -7,6 +7,107 @@
   --color-surface-raised: #2a2a2a;
   --color-primary: #ffffff;
   --color-muted: #a3a3a3;
+  /* Accent is user-configurable (Appearance tab) — runtime CSS variables set
+     by src/lib/appearance.ts on :root; defaults here = neutral white. */
+  --color-accent: var(--app-accent, #ffffff);
+  --color-accent-soft: var(--app-accent-soft, rgb(255 255 255 / 0.15));
+  --color-accent-ring: var(--app-accent-ring, rgb(255 255 255 / 0.3));
+}
+
+/* App-wide font — a bundled monospace (Appearance tab offers the choice).
+   Set on :root so every Tailwind `font-sans` default resolves through it. */
+:root {
+  --app-font: 'JetBrains Mono Variable', ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, monospace;
+  font-family: var(--app-font);
+}
+
+body {
+  font-family: var(--app-font);
+}
+
+/* Modern form controls: quiet dark fields, soft focus, comfortable radii.
+   The native look (beveled number spinners, default select chrome) reads
+   dated — restyled once here for every input in the app. */
+input[type="text"],
+input[type="search"],
+input[type="number"],
+input[type="password"],
+input[type="url"],
+textarea,
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 0.5rem;
+  background: rgb(255 255 255 / 0.06);
+  border: 1px solid rgb(255 255 255 / 0.1);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+input[type="text"]:focus,
+input[type="search"]:focus,
+input[type="number"]:focus,
+input[type="password"]:focus,
+input[type="url"]:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+  border-color: var(--app-accent-ring, rgb(255 255 255 / 0.3));
+  background: rgb(255 255 255 / 0.09);
+}
+
+/* Number inputs: hide the dated native spinners (users type or use the
+   paired slider). */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Selects: restore a custom chevron (appearance:none removed it). */
+select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a3a3a3' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: 1rem;
+  padding-right: 1.75rem;
+}
+
+/* Checkboxes: rounded, accent-tinted check. */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 1.1rem;
+  height: 1.1rem;
+  border-radius: 0.375rem;
+  border: 1px solid rgb(255 255 255 / 0.25);
+  background: rgb(255 255 255 / 0.06);
+  display: inline-grid;
+  place-content: center;
+  transition: background-color 120ms ease, border-color 120ms ease;
+  flex-shrink: 0;
+}
+
+input[type="checkbox"]::before {
+  content: '';
+  width: 0.6rem;
+  height: 0.6rem;
+  transform: scale(0);
+  transition: transform 100ms ease-in-out;
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  background: #000;
+}
+
+input[type="checkbox"]:checked {
+  background: var(--app-accent, #ffffff);
+  border-color: var(--app-accent, #ffffff);
+}
+
+input[type="checkbox"]:checked::before {
+  transform: scale(1);
 }
 
 /* iOS Safari safe-area helpers (activated by viewport-fit=cover) */
@@ -38,9 +139,22 @@ select {
   font-size: 16px;
 }
 
-/* Dark border on all sliders */
+/* Sliders: accent-tinted thumb (the one place accent chrome is desired on a
+   control itself), dark track border kept for contrast on black. */
 input[type="range"] {
   border: 1px solid rgb(255 255 255 / 0.15);
   border-radius: 9999px;
   background: transparent;
+  accent-color: var(--app-accent, #ffffff);
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: var(--app-accent, #ffffff);
+  border: none;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6);
 }
