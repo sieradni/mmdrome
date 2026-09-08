@@ -6,6 +6,7 @@ import type { Track } from "../stores/appState"
 import { saveWebdavFileIndex, clearWebdavFileIndex, clearAllMetadata, clearAllWebdavFileTags, getWebdavFileIndex, getFileTagsForBase, putFileTag, deleteFileTagsForBase, deleteFileTagsByIds, updateWebdavFileTagFingerprint } from "./db"
 import type { LocalMetadataStore, FileTagCacheEntry } from "./db"
 import { buildWebdavFileIndexDetailed, readFileMetadata } from "./metadataReader"
+import { parseSearchQuery, fieldsMatchQuery } from "./searchCore"
 import {
   matchTrackToWebdav,
   matchTrackToWebdavCandidates,
@@ -2086,13 +2087,26 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
   return { rows, counts, indexComplete, pendingBlocked }
 }
 
-/** Path/filename substring search over the in-memory index (extension-filtered). */
+/**
+ * Keyword-token search over the in-memory index (extension-filtered),
+ * routed through the shared `searchCore` — whitespace tokens (quoted
+ * phrases kept whole), AND-across-tokens / OR-across-[path, filename],
+ * folded via `normalizeForSearch` (case, punctuation, diacritics; CJK
+ * voicing preserved).
+ *
+ * Semantics deliberately WIDENED from the old whole-query substring: each
+ * token may hit a DIFFERENT field (`01 beatles` matches
+ * `/Beatles/01 - Hey Jude.mp3` — token 1 in the path, token 2 in the
+ * filename). No relevance weighting — the picker stays path-sorted
+ * (`localeCompare`), the file picker's ordering is not a music-metadata
+ * ranking.
+ */
 export function searchWebdavFiles(query: string, fileType: string): WebdavFileEntry[] {
-  const q = query.trim().toLowerCase()
-  if (!q) return []
+  const tokens = parseSearchQuery(query)
+  if (tokens.length === 0) return []
   const matches = index.filter(
     (e) => e.filename.toLowerCase().endsWith(`.${fileType}`)
-      && (e.path.toLowerCase().includes(q) || e.filename.toLowerCase().includes(q)),
+      && fieldsMatchQuery([e.path, e.filename], tokens),
   )
   matches.sort((a, b) => a.path.localeCompare(b.path))
   return matches.slice(0, 50)

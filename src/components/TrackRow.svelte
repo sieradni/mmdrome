@@ -3,11 +3,13 @@
   import { metadataCache } from '../stores/appState'
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
+  import { highlightSegments, type HighlightSegment } from '../lib/searchCore'
+  import { foldMapForSearch } from '../lib/matchNormalize'
   import type { Track } from '../stores/appState'
   import LazyThumb from './LazyThumb.svelte'
   import TrackOptionsDropdown from './TrackOptionsDropdown.svelte'
 
-  let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, dataTrackId, ondetails, onplay }: {
+  let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, dataTrackId, ondetails, onplay, highlightTokens = [] }: {
     track: Track
     showAlbum?: boolean
     showDuration?: boolean
@@ -15,7 +17,19 @@
     dataTrackId?: string
     ondetails?: () => void
     onplay?: (trackId: string) => void
+    /** Search tokens to bold in title/artist/album — empty = plain render. */
+    highlightTokens?: string[]
   } = $props()
+
+  /**
+   * Best-effort highlight segments for one field (searchCore's
+   * `highlightSegments` + the fold map). The verify-gate degrades to plain
+   * text on any map/fold mismatch, so highlights can never be wrong.
+   */
+  function fieldSegs(text: string): HighlightSegment[] {
+    const { folded, mapStart, mapEnd } = foldMapForSearch(text)
+    return highlightSegments(text, folded, highlightTokens, mapStart, mapEnd)
+  }
 
   function formatDuration(s: number): string {
     const m = Math.floor(s / 60)
@@ -76,10 +90,21 @@
 >
   <LazyThumb {track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
   <div class="min-w-0 flex-1">
-    <p class="truncate text-sm text-primary">{track.title}</p>
+    <p class="truncate text-sm text-primary">
+      {#if highlightTokens.length > 0}
+        {#each fieldSegs(track.title) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
+      {:else}
+        {track.title}
+      {/if}
+    </p>
     <p class="truncate text-xs text-muted">
-      {track.artist}
-      {#if showAlbum} · {track.album}{/if}
+      {#if highlightTokens.length > 0}
+        {#each fieldSegs(track.artist) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
+        {#if showAlbum} · {#each fieldSegs(track.album) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}{/if}
+      {:else}
+        {track.artist}
+        {#if showAlbum} · {track.album}{/if}
+      {/if}
       {#if showAlbum && track.year !== undefined && track.year !== null} · {track.year}{/if}
       {#if showDuration} · {formatDuration(track.duration)}{/if}
     </p>

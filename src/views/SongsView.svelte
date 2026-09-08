@@ -3,6 +3,7 @@
   import { library, metadataCache, currentTrack } from '../stores/appState'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import { libraryFilters, trackMatchesGenre } from '../lib/libraryFilters'
+  import { parseSearchQuery, rankTrackMatch } from '../lib/searchCore'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import TrackRow from '../components/TrackRow.svelte'
@@ -90,18 +91,22 @@
     return getMeta(trackId)?.loved ?? false
   }
 
+  /** The active query's tokens — empty when not searching (plain render). */
+  let searchTokens = $derived(parseSearchQuery(searchQuery))
+
   let processed = $derived.by(() => {
     const f = $libraryFilters
     let list = $library
-    const q = searchQuery.trim().toLowerCase()
-    if (q) {
-      list = list.filter(
-        (t) =>
-          t.title.toLowerCase().includes(q) ||
-          t.artist.toLowerCase().includes(q) ||
-          t.album.toLowerCase().includes(q) ||
-          (t.composer ?? '').toLowerCase().includes(q)
-      )
+    const tokens = searchTokens
+    if (tokens.length > 0) {
+      // Relevance order while searching (rank 0 = no match). Array.sort is
+      // stable, so score ties keep library order; an active shared sort
+      // below overrides the relevance order by re-sorting afterward.
+      const scored = list
+        .map((t) => ({ t, rank: rankTrackMatch(t, tokens) }))
+        .filter((s) => s.rank > 0)
+      scored.sort((a, b) => b.rank - a.rank)
+      list = scored.map((s) => s.t)
     }
     list = list.filter((t) => {
       const r = getRating(t.trackId)
@@ -183,7 +188,7 @@ let visible = $derived(processed.slice(0, limit))
        onscroll={() => { if (listContainer) saveViewState(viewName, { scrollTop: listContainer.scrollTop }) }}>
     <div class="px-4 py-2">
       {#each visible as track (track.trackId)}
-        <TrackRow {track} showAlbum={false} ondetails={() => detailsTrack = track} />
+        <TrackRow {track} showAlbum={false} ondetails={() => detailsTrack = track} highlightTokens={searchTokens} />
       {/each}
 
       <div bind:this={sentinelEl} class="py-6 text-center">

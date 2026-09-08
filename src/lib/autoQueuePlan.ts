@@ -1,4 +1,5 @@
 import { trackMatchesGenre, type LibraryFilterState } from './libraryFilters'
+import { parseSearchQuery, trackMatchesQuery } from './searchCore'
 import type { Track, AutoQueueFilters, AutoQueueFilterFields } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
 
@@ -49,7 +50,9 @@ export interface AutoQueueFillPlan {
  * `filters`? Rating/recency come from the metadata cache (unrated = 0); year
  * and length bounds reject tracks with missing values (unknown year fails
  * BOTH fromYear and toYear via the ?? 0 / ?? 9999 fallbacks); album/artist
- * scopes match exactly; genre and search are substring/token matches.
+ * scopes match exactly; genre is a shared token match; the search filter is
+ * the keyword-token core (`searchCore`) — every whitespace/quoted token must
+ * substring-hit one of title/artist/album/composer/albumArtist.
  */
 export function matchesAutoQueueFilters(
   track: Track,
@@ -77,15 +80,8 @@ export function matchesAutoQueueFilters(
   if (filters.genre && !trackMatchesGenre(track, filters.genre)) return false
 
   if (filters.searchQuery) {
-    const sq = filters.searchQuery.trim().toLowerCase()
-    if (sq) {
-      const matches =
-        track.title.toLowerCase().includes(sq) ||
-        track.artist.toLowerCase().includes(sq) ||
-        track.album.toLowerCase().includes(sq) ||
-        (track.composer ?? '').toLowerCase().includes(sq)
-      if (!matches) return false
-    }
+    const tokens = parseSearchQuery(filters.searchQuery)
+    if (tokens.length > 0 && !trackMatchesQuery(track, tokens)) return false
   }
 
   return true

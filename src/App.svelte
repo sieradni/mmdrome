@@ -33,6 +33,14 @@
   let queueOpen = $state(false)
   let overlay: 'trackOptions' | 'pitchSpeed' | 'eq' | 'volume' | 'detail' | null = $state(null)
   let searchQuery = $state('')
+  let searchQueryDebounced = $state('')
+  // Debounce the header search: every keystroke re-filters the active view,
+  // so coalesce the burst (120ms) before it reaches the views.
+  $effect(() => {
+    const q = searchQuery
+    const timer = setTimeout(() => { searchQueryDebounced = q }, 120)
+    return () => clearTimeout(timer)
+  })
   let view = $state<'songs' | 'albums' | 'artists' | 'settings'>('songs')
   let initError = $state('')
   /** Set only after onMount's async boot chain resolves — the deterministic
@@ -317,11 +325,11 @@ function seek(e: Event) {
   <!-- ─── Main View Container ─── -->
   <main class="flex min-h-0 flex-1 flex-col overflow-hidden">
     {#if view === 'songs'}
-      <SongsView {searchQuery} />
+      <SongsView searchQuery={searchQueryDebounced} />
     {:else if view === 'albums'}
-      <AlbumsView {searchQuery} />
+      <AlbumsView searchQuery={searchQueryDebounced} />
     {:else if view === 'artists'}
-      <ArtistsView {searchQuery} />
+      <ArtistsView searchQuery={searchQueryDebounced} />
     {:else if view === 'settings'}
       <SettingsView />
     {/if}

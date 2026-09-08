@@ -110,6 +110,26 @@ test('searchQuery matches title/artist/album/composer substrings, case- and trim
   assert.equal(matchesAutoQueueFilters(track('t6'), filters({ searchQuery: undefined }), meta), true)
 })
 
+test('searchQuery is keyword-token based: every token must hit some field, order-free', () => {
+  const meta = metaOf([])
+  const t = track('t1', { title: 'Hey Jude', artist: 'The Beatles', album: 'Abbey Road' })
+  assert.equal(matchesAutoQueueFilters(t, filters({ searchQuery: 'hey beatles' }), meta), true)
+  assert.equal(matchesAutoQueueFilters(t, filters({ searchQuery: 'beatles jude' }), meta), true)
+  assert.equal(matchesAutoQueueFilters(t, filters({ searchQuery: 'beat abbey' }), meta), true, 'tokens are field substrings')
+  assert.equal(matchesAutoQueueFilters(t, filters({ searchQuery: 'hey stones' }), meta), false, 'every token must match somewhere')
+  assert.equal(matchesAutoQueueFilters(t, filters({ searchQuery: '"hey jude" beatles' }), meta), true, 'quoted phrase stays one token')
+  assert.equal(matchesAutoQueueFilters(t, filters({ searchQuery: '"jude hey" beatles' }), meta), false, 'a phrase must be contiguous within one field')
+})
+
+test('searchQuery folds punctuation and diacritics; all-symbol tokens pass everything', () => {
+  const meta = metaOf([])
+  assert.equal(matchesAutoQueueFilters(track('t1', { title: "Don't Stop Me Now" }), filters({ searchQuery: 'dont stop' }), meta), true)
+  assert.equal(matchesAutoQueueFilters(track('t2', { artist: 'Beyoncé' }), filters({ searchQuery: 'beyonce' }), meta), true)
+  assert.equal(matchesAutoQueueFilters(track('t3', { artist: 'AC/DC' }), filters({ searchQuery: 'ac dc' }), meta), true)
+  assert.equal(matchesAutoQueueFilters(track('t4', { title: 'バビロン' }), filters({ searchQuery: 'バビロン' }), meta), true, 'CJK voicing preserved')
+  assert.equal(matchesAutoQueueFilters(track('t5', { title: 'Anything' }), filters({ searchQuery: '!!!' }), meta), true, 'all-symbol tokens are dropped (never a vacuous includes(""))')
+})
+
 // ── filterRangesValid ──────────────────────────────────────────────────
 
 test('filterRangesValid: inverted ranges are invalid; one-sided bounds are fine', () => {

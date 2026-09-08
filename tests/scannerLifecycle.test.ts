@@ -35,6 +35,7 @@ import {
   resetMetadataAndRelink,
   tagProbeState,
   listUnresolvedMatches,
+  searchWebdavFiles,
 } from '../src/lib/metadataScanner'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -599,6 +600,55 @@ test('refreshIndex builds index and populates live store', async () => {
   const ok = await refreshIndex()
   assert.equal(ok, true)
   assert.equal(buildCallCount, 1, 'buildIndex called once')
+
+  teardown()
+})
+
+// ── searchWebdavFiles: keyword-token semantics (searchCore adoption) ────
+
+test('searchWebdavFiles: each token may hit a different field (path OR filename), folding applies', async () => {
+  setupMocks()
+  mockEntries = [
+    entry({ path: '/dav/files/user/Beatles/01 - Hey Jude.flac', filename: '01 - Hey Jude.flac' }),
+    entry({ path: '/dav/files/user/Beach Boys/01 - Good Vibrations.flac', filename: '01 - Good Vibrations.flac' }),
+  ]
+  mockComplete = true
+  initWebdav()
+  await refreshIndex()
+
+  // Widened semantics: token 1 hits the path, token 2 hits the filename.
+  assert.deepEqual(
+    searchWebdavFiles('beatles jude', 'flac').map((e) => e.filename),
+    ['01 - Hey Jude.flac'],
+    'cross-field token hits — the old whole-query substring could never match this',
+  )
+  // Every token must hit somewhere: 'stones' has no home → no match.
+  assert.deepEqual(searchWebdavFiles('beatles stones', 'flac'), [])
+  // Folding: punctuation-stripped field vs tokenized query.
+  assert.equal(searchWebdavFiles('hey jude', 'flac').length, 1, 'multi-token hits one field')
+  // Extension filter still applies.
+  assert.deepEqual(searchWebdavFiles('jude', 'mp3'), [])
+  // Path-sorted, capped at 50.
+  assert.deepEqual(
+    searchWebdavFiles('beatles', 'flac').map((e) => e.path),
+    ['/dav/files/user/Beatles/01 - Hey Jude.flac'],
+  )
+
+  teardown()
+})
+
+test('searchWebdavFiles: quoted phrase stays one token; empty/all-symbol query yields nothing', async () => {
+  setupMocks()
+  mockEntries = [entry({ path: '/dav/files/user/AC-DC/Back In Black.mp3', filename: 'Back In Black.mp3' })]
+  mockComplete = true
+  initWebdav()
+  await refreshIndex()
+
+  assert.deepEqual(searchWebdavFiles('"back in black"', 'mp3').length, 1, 'quoted phrase is one token, contiguous within the filename')
+  assert.deepEqual(searchWebdavFiles('"black in back"', 'mp3'), [], 'a phrase must appear contiguously — reversed it does not match')
+  assert.deepEqual(searchWebdavFiles('in back', 'mp3').length, 1, 'UNQUOTED tokens are order-free and may split across fields')
+  assert.deepEqual(searchWebdavFiles('!!!', 'mp3'), [], 'all-symbol tokens are dropped → empty result, never the whole index')
+  assert.deepEqual(searchWebdavFiles('   ', 'mp3'), [], 'whitespace-only query yields nothing')
 
   teardown()
 })

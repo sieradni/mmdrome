@@ -69,8 +69,9 @@ test('File Matching audits real auto-binds; a manual wrong link is protected, th
   await expect(auditSummary(page)).toContainText('1 verified')
   await s1.getByRole('button', { name: 'Select correct file…' }).click()
   const picker = s1.getByPlaceholder('Search all files…')
+  // Search-as-you-type: results appear after the 120 ms debounce — no
+  // Search button anymore.
   await picker.fill('Two')
-  await s1.getByRole('button', { name: 'Search' }).click()
   await s1.getByRole('button', { name: /Song Two\.mp3/ }).click()
   await expect(page.getByText('File already bound')).toBeVisible()
   await page.getByRole('button', { name: 'Bind anyway' }).click()

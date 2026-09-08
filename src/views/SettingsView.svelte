@@ -10,6 +10,8 @@
   import { buildPushBreakdown, EMPTY_PUSH_BREAKDOWN, type PushBreakdown } from '../lib/pushReconcile'
   import { getPendingSyncMetadata } from '../lib/db'
   import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, refreshIndexAndProbeForced, reprobeFiles, scanAll, resetMetadataAndRelink, cancelScan, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
+  import { parseSearchQuery, highlightSegments, type HighlightSegment } from '../lib/searchCore'
+  import { foldMapForSearch } from '../lib/matchNormalize'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
@@ -552,7 +554,15 @@
   let deferredProbeRefresh = false
   let searchQuery = $state('')
   let searchResults = $state<WebdavFileEntry[]>([])
-  let searching = $state(false)
+  // The query whose (possibly empty) results are on screen — the no-match
+  // copy reports THIS, not the live input, so it can never contradict the
+  // displayed results while the user keeps typing.
+  let searchedQuery = $state('')
+  let searchTimer: ReturnType<typeof setTimeout> | null = null
+  // Highlight tokens for the LAST RUN search — the input text keeps editing
+  // freely while results are on screen, so deriving from the live input would
+  // highlight for a query the results no longer answer.
+  let highlightTokens = $state<string[]>([])
   let conflict = $state<{ trackId: string; path: string; conflictTitle: string } | null>(null)
   let showIgnored = $state(false)
   // Matched links are audit rows now (the point of File Matching is to verify
@@ -815,21 +825,42 @@
 
   function openPicker(trackId: string) {
     pickerTrackId = pickerTrackId === trackId ? null : trackId
+    if (searchTimer) { clearTimeout(searchTimer); searchTimer = null }
     searchQuery = ''
+    searchedQuery = ''
     searchResults = []
+    highlightTokens = []
     bindError = null
   }
 
-  async function runSearch() {
+  // Search-as-you-type: every input event (re)schedules the in-memory
+  // filter 120 ms out (the header-search debounce); Enter flushes
+  // immediately. The search itself is synchronous over the live index —
+  // the debounce coalesces the per-keystroke filter + fold-map renders.
+  function scheduleSearch() {
+    if (searchTimer) clearTimeout(searchTimer)
+    searchTimer = setTimeout(performSearch, 120)
+  }
+
+  function performSearch() {
+    searchTimer = null
     if (!pickerTrackId) return
     const row = unresolvedRows.find((r) => r.trackId === pickerTrackId)
     if (!row) return
-    searching = true
-    try {
-      searchResults = searchWebdavFiles(searchQuery, row.fileType)
-    } finally {
-      searching = false
-    }
+    highlightTokens = parseSearchQuery(searchQuery)
+    searchedQuery = searchQuery
+    searchResults = searchWebdavFiles(searchQuery, row.fileType)
+  }
+
+  /**
+   * Best-effort highlight segments for a picker path (see searchCore's
+   * `highlightSegments`). The fold map is built per render call; the
+   * verify-gate degrades to plain text whenever the map disagrees with the
+   * canonical fold, so this can never render WRONG highlights.
+   */
+  function pathSegments(path: string): HighlightSegment[] {
+    const { folded, mapStart, mapEnd } = foldMapForSearch(path)
+    return highlightSegments(path, folded, highlightTokens, mapStart, mapEnd)
   }
 
   async function doBind(trackId: string, path: string, force = false) {
@@ -1883,21 +1914,16 @@
                         type="text"
                         placeholder="Search all files…"
                         value={searchQuery}
-                        oninput={(e) => { searchQuery = (e.target as HTMLInputElement).value }}
-                        onkeydown={(e) => { if (e.key === 'Enter') runSearch() }}
+                        oninput={(e) => { searchQuery = (e.target as HTMLInputElement).value; scheduleSearch() }}
+                        onkeydown={(e) => { if (e.key === 'Enter') { if (searchTimer) { clearTimeout(searchTimer); searchTimer = null } performSearch() } }}
                         class="min-w-0 flex-1 rounded-lg bg-surface-hover px-3 py-1.5 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
                       />
-                      <button
-                        onclick={runSearch}
-                        disabled={searching || !searchQuery.trim()}
-                        class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
-                      >Search</button>
                     </div>
                     {#if searchResults.length > 0}
                       <div class="max-h-40 space-y-1 overflow-y-auto">
                         {#each searchResults as cand (cand.path)}
                           <button onclick={() => doBind(row.trackId, cand.path)} class="block w-full text-left">
-                            <span class="block truncate rounded-lg bg-surface-hover px-3 py-1.5 text-xs text-primary transition-opacity hover:opacity-80">{cand.path}</span>
+                            <span class="block truncate rounded-lg bg-surface-hover px-3 py-1.5 text-xs text-primary transition-opacity hover:opacity-80">{#each pathSegments(cand.path) as seg, si (si)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
                             {#if cand.tags?.title}
                               <span class="block truncate px-1 text-[11px] text-muted">
                                 ¶ {cand.tags.title}{cand.tags.artist ? ` — ${cand.tags.artist}` : ''}{cand.tags.album ? ` — ${cand.tags.album}` : ''}
@@ -1906,10 +1932,8 @@
                           </button>
                         {/each}
                       </div>
-                    {:else if searching}
-                      <p class="text-xs text-muted">Searching…</p>
-                    {:else if searchQuery.trim()}
-                      <p class="text-xs text-muted">No matches for “{searchQuery.trim()}”.</p>
+                    {:else if searchedQuery.trim()}
+                      <p class="text-xs text-muted">No matches for “{searchedQuery.trim()}”.</p>
                     {/if}
                   </div>
                 {/if}

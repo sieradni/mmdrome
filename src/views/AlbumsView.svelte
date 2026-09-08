@@ -3,6 +3,9 @@
   import { library, metadataCache, autoQueueScope, currentTrack } from '../stores/appState'
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import { libraryFilters, applyFilterSort, makeGroupAggregates } from '../lib/libraryFilters'
+  import { parseSearchQuery, fieldsMatchQuery, trackMatchesQuery, highlightSegments, type HighlightSegment } from '../lib/searchCore'
+  import { foldMapForSearch } from '../lib/matchNormalize'
+
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
   import type { Track } from '../stores/appState'
@@ -13,6 +16,15 @@
   import JumpToCurrentButton from '../components/JumpToCurrentButton.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
+
+  /** The active query's tokens — empty when not searching (plain render). */
+  let searchTokens = $derived(parseSearchQuery(searchQuery))
+
+  /** Best-effort highlight segments for a group field (verify-gated — never wrong). */
+  function fieldSegs(text: string): HighlightSegment[] {
+    const { folded, mapStart, mapEnd } = foldMapForSearch(text)
+    return highlightSegments(text, folded, searchTokens, mapStart, mapEnd)
+  }
 
   const viewName = 'albums'
 
@@ -60,8 +72,16 @@
     }
     result.sort((a, b) => a.album.localeCompare(b.album))
 
-    const q = searchQuery.trim().toLowerCase()
-    if (q) return result.filter(g => g.album.toLowerCase().includes(q) || g.artist.toLowerCase().includes(q))
+    const tokens = parseSearchQuery(searchQuery)
+    if (tokens.length > 0) {
+      // Group fields OR any contained track matches — searching a song title
+      // surfaces the album holding it.
+      return result.filter(
+        (g) =>
+          fieldsMatchQuery([g.album, g.artist], tokens) ||
+          g.tracks.some((t) => trackMatchesQuery(t, tokens))
+      )
+    }
     return result
   })
 
@@ -189,7 +209,7 @@
          onscroll={() => { if (detailScrollContainer) saveViewState(viewName, { detailScrollTop: detailScrollContainer.scrollTop }) }}>
 <div class="px-4 py-2">
         {#each selectedTracks as track (track.trackId)}
-          <TrackRow {track} ondetails={() => detailsTrack = track} showAlbumArtist onplay={handlePlayFromAlbum} />
+          <TrackRow {track} ondetails={() => detailsTrack = track} showAlbumArtist onplay={handlePlayFromAlbum} highlightTokens={searchTokens} />
         {/each}
       </div>
     </div>
@@ -211,8 +231,21 @@
         {#each visibleGroups as group (group.album)}
           <button onclick={() => selectedAlbum = group.album} data-album={group.album} class="group text-left transition-transform hover:scale-[1.02]">
             <LazyThumb track={group.tracks.find(t => t.trackId === group.thumbnailTrackId) || group.tracks[0]} size={256} wrapperClass="mb-2 aspect-square w-full rounded-lg" />
-            <p class="truncate text-sm font-bold text-primary">{group.album}</p>
-            <p class="truncate text-xs text-muted">{group.artist} · {group.tracks.length} tracks</p>
+            <p class="truncate text-sm font-bold text-primary">
+              {#if searchTokens.length > 0}
+                {#each fieldSegs(group.album) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
+              {:else}
+                {group.album}
+              {/if}
+            </p>
+            <p class="truncate text-xs text-muted">
+              {#if searchTokens.length > 0}
+                {#each fieldSegs(group.artist) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
+              {:else}
+                {group.artist}
+              {/if}
+              · {group.tracks.length} tracks
+            </p>
           </button>
         {/each}
       </div>
