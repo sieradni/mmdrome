@@ -46,6 +46,11 @@ export interface TrackMatchResult {
   entry: WebdavFileEntry | null
   /** True when several candidates tied for the best score — never guess. */
   ambiguous: boolean
+  /** Why no confident match happened — the SAME taxonomy the File Matching
+   *  rows show (`NoMatchReason`), null when the track bound. The scanner
+   *  aggregates these per scan so the completion line can say WHY rows are
+   *  unmatched instead of a bare "N no safe match". */
+  reason: NoMatchReason | null
 }
 
 interface ScoredEntry {
@@ -449,8 +454,18 @@ export function matchTrackToWebdav(
 ): TrackMatchResult {
   const scored = scoreTrackMatches(track, index, excludePaths)
   const verdict = classifyScoredTrackMatch(scored)
-  if (verdict === 'bind') return { entry: scored[0].entry, ambiguous: false }
-  return { entry: null, ambiguous: verdict === 'ambiguous' }
+  if (verdict === 'bind') return { entry: scored[0].entry, ambiguous: false, reason: null }
+  const allCandidates = index.filter(
+    (e) => e.filename.toLowerCase().endsWith(`.${track.fileType}`)
+      && !excludePaths?.has(e.path),
+  )
+  if (verdict === 'ambiguous') {
+    // Same derivation as matchTrackToWebdavCandidates' ambiguous reason —
+    // a duration conflict attached to the top score is the more specific label.
+    const reason: NoMatchReason = scored[0].tagDurationConflict ? 'duration-conflict' : 'ambiguous'
+    return { entry: null, ambiguous: true, reason }
+  }
+  return { entry: null, ambiguous: false, reason: deriveNoMatchReason(scored, allCandidates) }
 }
 
 export interface MatchCandidates {

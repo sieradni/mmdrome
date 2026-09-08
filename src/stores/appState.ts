@@ -1,5 +1,6 @@
 import { writable, get, derived } from 'svelte/store'
 import type { LocalMetadataStore } from '$lib/db'
+import type { NoMatchReason } from '$lib/metadataCore'
 import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
 import { persisted, type PersistedValue } from '$lib/persistedStore'
 import { sanitizeRecent } from '$lib/recentWindow'
@@ -53,6 +54,16 @@ export interface MetadataScanProgress {
   missing: number
   /** Rows with multiple equally-scored candidates — left untouched. */
   duplicateMatches: number
+  /** Tracks auto-bound by the scan's tag-probe phase (in-file identity tags
+   *  matched before the drain ran). These rows never enter the drain queue,
+   *  so without this count a probe-heavy scan reads as "0 scanned". Set only
+   *  when > 0. */
+  probeMatched?: number
+  /** NoMatchReason → count over the scan's no-safe-match rows — the WHY
+   *  breakdown behind `notFound` (tags-contradict / not-probed / weak-evidence
+   *  / …), the same taxonomy the File Matching rows show. Set only when
+   *  non-empty. */
+  noMatchReasons?: Partial<Record<NoMatchReason, number>>
   /** AUTO links a FORCE scan released because the bound file's own tags proved
    *  them wrong (D16 heal), then re-matched by the same scan. Set only when > 0. */
   released?: number

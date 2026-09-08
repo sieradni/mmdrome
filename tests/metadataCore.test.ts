@@ -92,6 +92,7 @@ test('an exact filename match auto-binds', () => {
   const match = matchTrackToWebdav(track(), [entry()])
   assert.equal(match.ambiguous, false)
   assert.equal(match.entry?.path, '/dav/files/user/Song.flac')
+  assert.equal(match.reason, null, 'a bound row carries no no-match reason')
 })
 
 test('a size-only lead (nameScore 40) NEVER auto-binds — gate requires real evidence', () => {
@@ -102,7 +103,7 @@ test('a size-only lead (nameScore 40) NEVER auto-binds — gate requires real ev
     tags: undefined,
   })
   const match = matchTrackToWebdav(track({ title: 'Song', size: 12345 }), [sizeOnly])
-  assert.deepEqual(match, { entry: null, ambiguous: false })
+  assert.deepEqual(match, { entry: null, ambiguous: false, reason: 'not-probed' })
 })
 
 test('the size-only file still surfaces as a near-miss suggestion in the picker', () => {
@@ -121,7 +122,7 @@ test('a size-only TIE counts no-match in BOTH views (count-line parity)', () => 
   const s1 = entry({ path: '/dav/a/X.flac', filename: 'X.flac', size: 12345, tags: undefined })
   const s2 = entry({ path: '/dav/b/Y.flac', filename: 'Y.flac', size: 12345, tags: undefined })
   const match = matchTrackToWebdav(track({ title: 'Song', size: 12345 }), [s1, s2])
-  assert.deepEqual(match, { entry: null, ambiguous: false })
+  assert.deepEqual(match, { entry: null, ambiguous: false, reason: 'not-probed' })
   const cand = matchTrackToWebdavCandidates(track({ title: 'Song', size: 12345 }), [s1, s2])
   assert.equal(cand.status, 'none', 'never ambiguous — the scanner and the count line agree')
 })
@@ -134,7 +135,7 @@ test('a same-size file whose PROBED tags contradict the track gets no size fallb
     tags: { title: 'Wrong', artist: 'Other' },
   })
   const match = matchTrackToWebdav(track({ title: 'Song', size: 12345 }), [contradicting])
-  assert.deepEqual(match, { entry: null, ambiguous: false })
+  assert.deepEqual(match, { entry: null, ambiguous: false, reason: 'tags-contradict' })
 })
 
 // ── Ambiguity ties ───────────────────────────────────────────────────────
@@ -143,7 +144,7 @@ test('two files with the same top score are ambiguous — never guess (duplicate
   const a = entry({ path: '/dav/A/01 - Intro.flac', filename: '01 - Intro.flac', tags: undefined })
   const b = entry({ path: '/dav/B/01 - Intro.flac', filename: '01 - Intro.flac', tags: undefined })
   const match = matchTrackToWebdav(track({ title: 'Intro' }), [a, b])
-  assert.deepEqual(match, { entry: null, ambiguous: true })
+  assert.deepEqual(match, { entry: null, ambiguous: true, reason: 'ambiguous' })
   const cand = matchTrackToWebdavCandidates(track({ title: 'Intro' }), [a, b])
   assert.equal(cand.status, 'ambiguous')
   assert.deepEqual(cand.promptCandidates.map((e) => e.path), ['/dav/A/01 - Intro.flac', '/dav/B/01 - Intro.flac'])
@@ -174,7 +175,7 @@ test('a shared exact title WITHOUT artist agreement is ambiguous — artist is t
   const a = entry({ path: '/dav/a/Song.flac', filename: 'a.flac', size: 1, tags: { title: 'Song' } })
   const b = entry({ path: '/dav/b/Song.flac', filename: 'b.flac', size: 1, tags: { title: 'Song', artist: 'Other' } })
   const match = matchTrackToWebdav(track({ artist: 'Artist' }), [a, b])
-  assert.deepEqual(match, { entry: null, ambiguous: true })
+  assert.deepEqual(match, { entry: null, ambiguous: true, reason: 'ambiguous' })
   const cand = matchTrackToWebdavCandidates(track({ artist: 'Artist' }), [a, b])
   assert.equal(cand.status, 'ambiguous')
 })
@@ -183,7 +184,7 @@ test('a same-title rival with a partial artist match never auto-binds the non-ce
   const a = entry({ path: '/dav/a/Song.flac', filename: 'a.flac', size: 1, tags: { title: 'Song' } })
   const b = entry({ path: '/dav/b/Song.flac', filename: 'b.flac', size: 1, tags: { title: 'Song', artist: 'B' } })
   const match = matchTrackToWebdav(track({ artist: 'Artist B' }), [a, b])
-  assert.deepEqual(match, { entry: null, ambiguous: true })
+  assert.deepEqual(match, { entry: null, ambiguous: true, reason: 'ambiguous' })
 })
 
 test('a certain tag match (exact title AND artist) auto-binds even with a weak filename', () => {
@@ -208,7 +209,7 @@ test('6.4: a duration mismatch beyond ±2s DEMOTES certainty (never binds)', () 
     tags: { title: 'Song', artist: 'Artist', album: 'Album', trackNumber: 1, duration: 205 },
   })
   const match = matchTrackToWebdav(track({ duration: 200 }), [version])
-  assert.deepEqual(match, { entry: null, ambiguous: true })
+  assert.deepEqual(match, { entry: null, ambiguous: true, reason: 'duration-conflict' })
   const cand = matchTrackToWebdavCandidates(track({ duration: 200 }), [version])
   assert.equal(cand.status, 'ambiguous')
 })
@@ -219,7 +220,7 @@ test('6.4: ±2s is the inclusive boundary — 2s corroborates, 2.1s demotes', ()
   // 2s still within tolerance → certain → binds.
   assert.equal(matchTrackToWebdav(track({ duration: 200 }), [within]).ambiguous, false)
   // 2.1s is a different version → demoted → ambiguous.
-  assert.deepEqual(matchTrackToWebdav(track({ duration: 200 }), [justOver]), { entry: null, ambiguous: true })
+  assert.deepEqual(matchTrackToWebdav(track({ duration: 200 }), [justOver]), { entry: null, ambiguous: true, reason: 'duration-conflict' })
 })
 
 test('6.4: duration conflict is not bypassed by an exact filename when the tag is title-only', () => {
@@ -231,7 +232,7 @@ test('6.4: duration conflict is not bypassed by an exact filename when the tag i
   })
   assert.deepEqual(
     matchTrackToWebdav(track({ duration: 200 }), [wrongVersion]),
-    { entry: null, ambiguous: true },
+    { entry: null, ambiguous: true, reason: 'duration-conflict' },
   )
 })
 
@@ -284,7 +285,7 @@ test('6.5b: probed tags that contradict the track suppress the filename evidence
     tags: { title: 'Completely Different', artist: 'Other' },
   })
   const match = matchTrackToWebdav(track({ title: 'Song', artist: 'Artist' }), [mislabeled])
-  assert.deepEqual(match, { entry: null, ambiguous: false })
+  assert.deepEqual(match, { entry: null, ambiguous: false, reason: 'tags-contradict' })
 })
 
 test('6.5b: a file with NO identity tags is not a contradiction and still binds on filename', () => {
@@ -319,7 +320,7 @@ test('CJK titles match CJK filenames (normalizeForMatch is script-safe)', () => 
 test('CJK titles never near-match an unrelated ASCII filename', () => {
   const ascii = entry({ path: '/dav/x/Something.flac', filename: 'Something.flac', tags: undefined })
   const match = matchTrackToWebdav(track({ title: 'バビロン' }), [ascii])
-  assert.deepEqual(match, { entry: null, ambiguous: false })
+  assert.deepEqual(match, { entry: null, ambiguous: false, reason: 'not-probed' })
 })
 
 // ── Scoring detail: substring names and excluded paths ───────────────────
@@ -334,7 +335,7 @@ test('a filename containing the title still auto-binds (substring score > 40)', 
 test('excludePaths removes already-bound files from scoring', () => {
   const claimed = entry({ path: '/dav/claimed/Song.flac' })
   const match = matchTrackToWebdav(track(), [claimed], new Set([claimed.path]))
-  assert.deepEqual(match, { entry: null, ambiguous: false })
+  assert.deepEqual(match, { entry: null, ambiguous: false, reason: 'no-file-on-server' })
 })
 
 // ── No-match reasons (File Matching row labels) ──────────────────────────

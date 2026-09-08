@@ -240,3 +240,32 @@ export function clearQueue(q: QueueState): QueueMutation | null {
   const currentId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : null
   return { userQueue: currentId ? [currentId] : [], autoQueue: [] }
 }
+
+/**
+ * Removes user-queue rows ABOVE the active row. B8 keeps played rows listed,
+ * so "above" is the played/passed-over pile — this is the clean-up affordance
+ * for it. The active row and everything after it are untouched; the AUTO
+ * queue is never touched (the buttons are user-queue-scoped by design).
+ * An active row in the auto section means every user row sits above it —
+ * all of them go. Null when nothing is active or nothing sits above.
+ * The anti-repeat window is preserved (an explicit edit, like clearQueue).
+ */
+export function clearUserAboveActive(q: QueueState): QueueMutation | null {
+  if (q.activeIndex < 0) return null
+  const cut = q.activeIndex < q.userQueue.length ? q.activeIndex : q.userQueue.length
+  if (cut === 0) return null
+  return { userQueue: q.userQueue.slice(cut) }
+}
+
+/**
+ * Removes user-queue rows BELOW the active row (everything the user queued
+ * after the playing track). The active row and everything before it are
+ * untouched; the AUTO queue is never touched. Null when nothing is active,
+ * the active row sits in the auto section (no user row is below it), or
+ * nothing sits below. The anti-repeat window is preserved.
+ */
+export function clearUserBelowActive(q: QueueState): QueueMutation | null {
+  if (q.activeIndex < 0 || q.activeIndex >= q.userQueue.length) return null
+  const userQueue = q.userQueue.slice(0, q.activeIndex + 1)
+  return userQueue.length === q.userQueue.length ? null : { userQueue }
+}

@@ -13,6 +13,8 @@
   import { parseSearchQuery, highlightSegments, type HighlightSegment } from '../lib/searchCore'
   import { foldMapForSearch } from '../lib/matchNormalize'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
+  import type { MetadataScanProgress } from '../stores/appState'
+  import type { NoMatchReason } from '../lib/metadataCore'
   import { setSetting } from '../lib/db'
   import { reconcileToNavidrome } from '../lib/feedbackService'
   import { connectLfm, disconnectLfm, lastfmAuthPhase, pendingAuthUrl, getCachedLfmSession } from '../lib/lastfmAuth'
@@ -535,6 +537,28 @@
     return row.reason ? reasonLabels[row.reason](row) : ''
   }
 
+  // Short human labels for the scan-complete WHY breakdown (no row context).
+  const reasonShortLabels: Record<NoMatchReason, string> = {
+    'no-file-on-server': 'no file of this type on server',
+    'tags-contradict': 'file tags name a different song',
+    'not-probed': 'file tags not read yet',
+    'read-failed': 'file tags could not be read',
+    'no-identity-tags': 'file has no identity tags',
+    'duration-conflict': 'different version (duration differs)',
+    'weak-evidence': 'below auto-match confidence',
+    'ambiguous': 'multiple files match equally',
+  }
+
+  function scanReasonBits(p: MetadataScanProgress): string {
+    const r = p.noMatchReasons
+    if (!r) return ''
+    const bits: string[] = []
+    for (const [reason, count] of Object.entries(r) as [NoMatchReason, number][]) {
+      if (count > 0) bits.push(`${count} ${reasonShortLabels[reason]}`)
+    }
+    return bits.join('; ')
+  }
+
   const kindBadges: Record<UnresolvedTrack['kind'], { label: string; cls: string }> = {
     'ambiguous': { label: 'Multiple matches', cls: 'bg-yellow-500/20 text-yellow-300 ring-yellow-500/30' },
     'no-match': { label: 'No safe match', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' },
@@ -863,6 +887,17 @@
     return highlightSegments(path, folded, highlightTokens, mapStart, mapEnd)
   }
 
+  // Suggested candidates were chosen by matching the TRACK's identity, so
+  // highlight the track's own title/artist tokens in their paths — the user
+  // sees WHY each file was suggested. The verify-gate degrades to plain text
+  // whenever the fold map disagrees, so paths sharing no tokens with the
+  // track render unhighlighted rather than wrong.
+  function suggestionSegments(row: UnresolvedTrack, path: string): HighlightSegment[] {
+    const tokens = parseSearchQuery([row.title, row.artist].filter(Boolean).join(' '))
+    const { folded, mapStart, mapEnd } = foldMapForSearch(path)
+    return highlightSegments(path, folded, tokens, mapStart, mapEnd)
+  }
+
   async function doBind(trackId: string, path: string, force = false) {
     bindError = null
     const res = await bindTrackToFile(trackId, path, force)
@@ -963,6 +998,23 @@
     await refreshUnresolved()
   }
 </script>
+
+<!-- The scan-complete summary: one shared snippet so the Metadata tab and the
+     Library tab's reset section can never drift apart (there were FOUR copies
+     of this line). Reports the probe's auto-binds (rows the drain never saw)
+     and the WHY breakdown behind "no safe match" — the same taxonomy the
+     File Matching rows show — so the user can tell a healthy scan from one
+     with a real matching problem. -->
+{#snippet scanSummary()}
+  {@const p = $metadataScanState.progress}
+  <p class="text-sm text-green-400">
+    Scan complete — {p.scanned} scanned{p.probeMatched ? `, ${p.probeMatched} matched via tags` : ''}, {p.notFound} no safe match, {p.failed} failed{p.missing > 0 ? `, ${p.missing} files missing` : ''}{p.duplicateMatches > 0 ? `, ${p.duplicateMatches} ambiguous` : ''}{p.released ? `, ${p.released} wrong link${p.released === 1 ? '' : 's'} healed` : ''}
+  </p>
+  {#if scanReasonBits(p)}
+    <p class="mt-1 text-xs text-muted">Why tracks didn't auto-match: {scanReasonBits(p)}.</p>
+    <p class="mt-0.5 text-xs text-muted">Open File Matching below to resolve them — each row explains its own reason.</p>
+  {/if}
+{/snippet}
 
 <div class="flex h-full flex-col">
   <div class="border-b border-white/10 px-4 py-3">
@@ -1171,14 +1223,14 @@
                     class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
                   >Resume scan</button>
                 {:else if $metadataScanState.progress.total === 0 && $metadataScanState.progress.scanned === 0}
-                  <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}{$metadataScanState.progress.released ? `, ${$metadataScanState.progress.released} wrong link${$metadataScanState.progress.released === 1 ? '' : 's'} healed` : ''}</p>
+                  {@render scanSummary()}
                   {#if $metadataScanState.progress.annotation?.startsWith('Matched')}
                     <p class="text-sm text-muted">{$metadataScanState.progress.annotation} — see File Matching.</p>
                   {:else}
                     <p class="text-sm text-muted">No changes on server — see File Matching for remaining unmatched tracks.</p>
                   {/if}
                 {:else}
-                  <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}{$metadataScanState.progress.released ? `, ${$metadataScanState.progress.released} wrong link${$metadataScanState.progress.released === 1 ? '' : 's'} healed` : ''}</p>
+                  {@render scanSummary()}
                 {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
@@ -1696,14 +1748,14 @@
                     class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
                   >Resume scan</button>
                 {:else if $metadataScanState.progress.total === 0 && $metadataScanState.progress.scanned === 0}
-                  <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}{$metadataScanState.progress.released ? `, ${$metadataScanState.progress.released} wrong link${$metadataScanState.progress.released === 1 ? '' : 's'} healed` : ''}</p>
+                  {@render scanSummary()}
                   {#if $metadataScanState.progress.annotation?.startsWith('Matched')}
                     <p class="text-sm text-muted">{$metadataScanState.progress.annotation} — see File Matching.</p>
                   {:else}
                     <p class="text-sm text-muted">No changes on server — see File Matching for remaining unmatched tracks.</p>
                   {/if}
                 {:else}
-                  <p class="text-sm text-green-400">Scan complete — {$metadataScanState.progress.scanned} scanned, {$metadataScanState.progress.notFound} no safe match, {$metadataScanState.progress.failed} failed{$metadataScanState.progress.missing > 0 ? `, ${$metadataScanState.progress.missing} files missing` : ''}{$metadataScanState.progress.duplicateMatches > 0 ? `, ${$metadataScanState.progress.duplicateMatches} ambiguous` : ''}{$metadataScanState.progress.released ? `, ${$metadataScanState.progress.released} wrong link${$metadataScanState.progress.released === 1 ? '' : 's'} healed` : ''}</p>
+                  {@render scanSummary()}
                 {/if}
               {/if}
             {:else if $metadataScanState.status === 'scanning'}
@@ -1900,7 +1952,7 @@
                           onclick={() => doBind(row.trackId, cand.path)}
                           class="block w-full text-left"
                         >
-                          <span class="block truncate rounded-lg bg-surface-hover px-3 py-1.5 text-xs text-primary transition-opacity hover:opacity-80">{cand.path}</span>
+                          <span class="block truncate rounded-lg bg-surface-hover px-3 py-1.5 text-xs text-primary transition-opacity hover:opacity-80">{#each suggestionSegments(row, cand.path) as seg, si (si)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}</span>
                           {#if cand.tags?.title}
                             <span class="block truncate px-1 text-[11px] text-muted">
                               ¶ {cand.tags.title}{cand.tags.artist ? ` — ${cand.tags.artist}` : ''}{cand.tags.album ? ` — ${cand.tags.album}` : ''}

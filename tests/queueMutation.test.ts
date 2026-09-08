@@ -5,6 +5,8 @@ import {
   advanceTargetIndex,
   applyQueueMutation,
   clearQueue,
+  clearUserAboveActive,
+  clearUserBelowActive,
   moveToEnd,
   moveToNext,
   playNext,
@@ -235,6 +237,42 @@ test('clearQueue keeps the active track at user[0] and preserves the recency win
   assert.deepEqual(r2.userQueue, [])
   assert.deepEqual(r2.autoQueue, [])
   assert.equal(r2.activeIndex, -1)
+})
+
+test('clearUserAboveActive removes the played pile above the active row, anchor follows, auto untouched', () => {
+  const s = q(['a', 'b', 'c'], ['d', 'e'], 1)
+  const r = applyQueueMutation(s, (x) => clearUserAboveActive(x))!
+  assert.deepEqual(r.userQueue, ['b', 'c'])
+  assert.deepEqual(r.autoQueue, ['d', 'e'], 'the auto queue is never touched')
+  assert.equal(r.activeIndex, 0, 'the anchor follows the active id')
+  assert.deepEqual(combined(r).slice(0, 1), ['b'])
+})
+
+test('clearUserAboveActive with the active row in the auto section clears every user row', () => {
+  const s = q(['a', 'b'], ['c'], 2)
+  const r = applyQueueMutation(s, (x) => clearUserAboveActive(x))!
+  assert.deepEqual(r.userQueue, [])
+  assert.equal(r.activeIndex, 0, 'the active id re-anchors to the auto row')
+})
+
+test('clearUserAboveActive: nothing above, nothing active → null no-op', () => {
+  assert.equal(applyQueueMutation(q(['a', 'b'], ['c'], 0), (x) => clearUserAboveActive(x)), null, 'active at index 0 has no rows above')
+  assert.equal(applyQueueMutation(q([], ['c'], 0), (x) => clearUserAboveActive(x)), null, 'empty user section')
+  assert.equal(applyQueueMutation(q(['a'], ['c'], -1), (x) => clearUserAboveActive(x)), null, 'nothing is playing')
+})
+
+test('clearUserBelowActive removes everything queued after the playing row', () => {
+  const s = q(['a', 'b', 'c', 'd'], ['e'], 1)
+  const r = applyQueueMutation(s, (x) => clearUserBelowActive(x))!
+  assert.deepEqual(r.userQueue, ['a', 'b'])
+  assert.deepEqual(r.autoQueue, ['e'])
+  assert.equal(r.activeIndex, 1, 'the playing row keeps its slot')
+})
+
+test('clearUserBelowActive: active in auto, active last, nothing active → null no-op', () => {
+  assert.equal(applyQueueMutation(q(['a'], ['b'], 1), (x) => clearUserBelowActive(x)), null, 'active row in the auto section')
+  assert.equal(applyQueueMutation(q(['a', 'b'], ['c'], 1), (x) => clearUserBelowActive(x)), null, 'active row is the last user row')
+  assert.equal(applyQueueMutation(q(['a'], ['b'], -1), (x) => clearUserBelowActive(x)), null, 'nothing is playing')
 })
 
 test('a null mutation produces no state change (no store write)', () => {

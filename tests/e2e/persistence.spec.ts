@@ -15,11 +15,11 @@ import { bootApp } from './boot'
 async function openQueueFilter(page: Page): Promise<void> {
   // The mini-player bar (empty-state text is present with no track loaded)
   // opens the now-playing overlay; its header holds the queue button. The
-  // queue view's Filter button is scoped to its label group — the base
-  // SongsView behind the overlay has a Filter button of its own.
+  // queue view's Filter button now lives in the floating dock, scoped by its
+  // aria-label — the base SongsView has a plain "Filter" button of its own.
   await page.getByText('Not playing').first().click()
   await page.getByRole('button', { name: 'Open queue' }).click()
-  await page.getByLabel('Auto queue boundary').getByRole('button', { name: 'Filter' }).click()
+  await page.getByRole('button', { name: 'Auto queue filters' }).first().click()
 }
 
 test('queue filter rating inputs snap cleared fields to their boundary and persist', async ({ page }) => {

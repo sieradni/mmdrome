@@ -526,6 +526,38 @@ test('hint-gated probing rotates: unhinted files are read even when hints matche
   teardown()
 })
 
+test('scan-complete line reports the probe-matched count and the no-match WHY breakdown', async () => {
+  setupMocks()
+  initWebdav()
+
+  // Two tracks: one the probe auto-binds by its tags (secondary matching —
+  // it never enters the drain queue), one whose only candidate's tags name a
+  // different song (a no-safe-match with a derivable reason).
+  library.set([track({ trackId: 't1', title: 'Tagged Song' }), track({ trackId: 't2', title: 'Lost Song' })])
+  mockEntries = [
+    entry({ path: '/dav/files/user/Tagged.flac', filename: 'Tagged.flac', size: 1 }),
+    entry({ path: '/dav/files/user/Wrong.flac', filename: 'Wrong.flac', size: 2 }),
+  ]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/Tagged.flac': fileMeta({ title: 'Tagged Song', artist: 'Artist' }),
+    '/dav/files/user/Wrong.flac': fileMeta({ title: 'Completely Different', artist: 'Other' }),
+  }
+
+  await scanAll('modified')
+  const s = get(metadataScanState)
+  assert.equal(s.status, 'complete')
+  // The probe bound t1 by tags BEFORE the drain; t2 hit the drain and missed.
+  assert.equal(s.progress.probeMatched, 1, 'the probe auto-bind is reported as its own outcome')
+  assert.equal(s.progress.notFound, 1)
+  assert.equal(s.progress.noMatchReasons?.['tags-contradict'], 1, 'the WHY breakdown rides the completion')
+  // t1 is really bound — the count is not cosmetic.
+  assert.equal(get(metadataCache).get('t1')?.webdavPath, '/dav/files/user/Tagged.flac')
+  assert.equal(get(metadataCache).get('t2')?.webdavPath, undefined)
+
+  teardown()
+})
+
 test('modified scan re-queues unmatched rows while unprobed files remain, even with stable fingerprints (2026-08-21)', async () => {
   setupMocks()
   initWebdav()

@@ -24,13 +24,19 @@
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
-  import JumpToCurrentButton from '../components/JumpToCurrentButton.svelte'
 
   let { onclose, oncloseall }: { onclose: () => void; oncloseall: () => void } = $props()
 
   let filterOpen = $state(false)
   let detailsTrack: Track | null = $state(null)
   let genres = $derived(distinctGenres($library))
+
+  // Whether the active row sits in the user section (the clear-above/below
+  // buttons only apply there — B2's position anchor is a user-queue concept).
+  let activeInUser = $derived($queue.activeIndex >= 0 && $queue.activeIndex < $queue.userQueue.length)
+  // Rows the clear buttons would remove (0 = button disabled/hidden).
+  let aboveCount = $derived(activeInUser ? $queue.activeIndex : $queue.userQueue.length)
+  let belowCount = $derived(activeInUser ? $queue.userQueue.length - $queue.activeIndex - 1 : 0)
 
   // Filter fields live in the persisted `autoQueueFilterFields` store — the
   // single source of truth. The store layer persists changes, and the
@@ -73,6 +79,7 @@
   let listContainerEl = $state<HTMLElement | null>(null)
 
   let jumpScrollPending = $state(false)
+  let jumpBoundaryPending = $state(false)
 
   function jumpToCurrent() {
     jumpScrollPending = true
@@ -90,6 +97,23 @@
         const el = listContainerEl?.querySelector(`[data-track-id="${CSS.escape(id)}"]`)
         if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
         jumpScrollPending = false
+      })
+    })
+  })
+
+  // Jump to the user/auto boundary row (the first auto row) — the floating
+  // dock's compass action. No-ops when there is no boundary row.
+  $effect(() => {
+    if (!jumpBoundaryPending || !listContainerEl) return
+    if ($queue.userQueue.length === 0) {
+      jumpBoundaryPending = false
+      return
+    }
+    tick().then(() => {
+      requestAnimationFrame(() => {
+        const el = listContainerEl?.querySelector('[data-boundary]')
+        if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        jumpBoundaryPending = false
       })
     })
   })
@@ -417,6 +441,20 @@ function seek(e: Event) {
     queueManager.clearQueue()
     queueManager.replenishAutoQueue()
   }
+
+  function clearAbove() {
+    queueManager.clearUserAboveActive()
+    queueManager.replenishAutoQueue()
+  }
+
+  function clearBelow() {
+    queueManager.clearUserBelowActive()
+    queueManager.replenishAutoQueue()
+  }
+
+  function jumpToBoundary() {
+    jumpBoundaryPending = true
+  }
 </script>
 
 <div class="relative flex h-full flex-col bg-background select-none">
@@ -440,9 +478,10 @@ function seek(e: Event) {
     </button>
   </div>
 
-  <!-- Now Playing Section (pinned, always visible) -->
-  {#if $currentTrack}
-    <div class="shrink-0 px-4 pb-3 pt-3">
+  <!-- Now Playing island (pinned, ALWAYS visible — an empty state mirrors
+       the home view's island so the layout never jumps) -->
+  <div class="shrink-0 px-4 pb-3 pt-3">
+    {#if $currentTrack}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="rounded-lg bg-surface/50 px-3 py-2.5 ring-1 ring-white/10"
@@ -507,8 +546,20 @@ function seek(e: Event) {
           <span class="w-5"></span>
         </div>
       </div>
-    </div>
-  {/if}
+    {:else}
+      <!-- Empty island: same silhouette as the home mini-player's empty
+           state so the two surfaces read as one design. -->
+      <div class="flex items-center gap-3 rounded-lg bg-surface/50 px-3 py-2.5 ring-1 ring-white/10">
+        <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-surface-hover">
+          <svg class="h-5 w-5 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+        </div>
+        <div class="min-w-0 flex-1">
+          <p class="truncate text-sm font-medium text-primary">Not playing</p>
+          <p class="truncate text-xs text-muted">{$queue.userQueue.length + $queue.autoQueue.length > 0 ? 'Press play on a track below' : 'Queue is empty'}</p>
+        </div>
+      </div>
+    {/if}
+  </div>
 
   <!-- Queue List Scroll Container -->
   <div bind:this={listContainerEl} class="flex-1 overflow-y-auto pb-4 touch-pan-y" onscroll={() => { if (listContainerEl) saveViewState('queue', { scrollTop: listContainerEl.scrollTop }) }}>
@@ -520,9 +571,9 @@ function seek(e: Event) {
 
     <!-- === USER QUEUE === -->
     {#if previewUserItems.length > 0}
-      <div class="mx-4 mb-1 mt-2 flex items-center gap-2 px-1">
-        <div class="h-px flex-1 bg-white/10"></div>
-        <span class="text-[10px] font-medium uppercase tracking-wider text-muted/50">User Queue</span>
+      <div class="mx-4 mb-1 mt-3 flex items-center gap-2 px-1" role="heading" aria-level="2">
+        <span class="text-[11px] font-semibold uppercase tracking-widest text-muted">Up next</span>
+        <span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted">{previewUserItems.length}</span>
         <div class="h-px flex-1 bg-white/10"></div>
       </div>
 
@@ -608,21 +659,17 @@ function seek(e: Event) {
       </div>
     {/if}
 
-    <!-- ── Boundary Indicator ── -->
+    <!-- ── Boundary Indicator (the user/auto seam; Filter moved to the dock) ── -->
     <div
       class={"mx-4 my-2 flex items-center gap-2 px-1 transition-all duration-200 " + (isConvertingUserToAuto ? 'opacity-100 scale-[1.01]' : 'opacity-60')}
       role="separator"
       aria-label="Auto queue boundary"
+      data-boundary
     >
       <div class={"h-0.5 flex-1 rounded-full transition-colors duration-200 " + (isConvertingUserToAuto ? 'bg-yellow-500 shadow-sm shadow-yellow-500/50' : 'bg-white/30')}></div>
       {#if isConvertingUserToAuto}
         <span class="text-xs font-medium uppercase tracking-wider text-yellow-400">Release to convert to User Queue</span>
       {/if}
-      <button
-        onclick={() => filterOpen = !filterOpen}
-        class={"rounded-lg px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-primary transition-colors " + (filterOpen ? 'bg-surface-raised' : 'bg-surface-hover')}
-      >Filter</button>
-      <div class={"h-0.5 flex-1 rounded-full transition-colors duration-200 " + (isConvertingUserToAuto ? 'bg-yellow-500 shadow-sm shadow-yellow-500/50' : 'bg-white/30')}></div>
     </div>
 
     {#if $queueWrapNotice && previewAutoItems.length > 0}
@@ -633,72 +680,13 @@ function seek(e: Event) {
       <p class="mx-4 mb-1 text-center text-[11px] text-yellow-500/80">Auto queue is empty — nothing left to add from the current filters</p>
     {/if}
 
-    {#if filterOpen}
-      <div class="mx-4 mb-2 rounded-lg border border-white/10 bg-surface/50 px-3 py-3">
-        <div class="space-y-3">
-          <div>
-            <span class="text-sm font-medium text-muted">Search Query</span>
-            <div class="mt-1">
-              <input
-                type="search"
-                placeholder="Fuzzy search title, artist, album..."
-                value={$autoQueueFilterFields.searchQuery ?? ''}
-                oninput={(e) => setFilter('searchQuery', (e.target as HTMLInputElement).value)}
-                class="w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted outline-none focus:ring-white/20"
-              />
-            </div>
-          </div>
-
-          <div>
-            <span class="text-sm font-medium text-muted">Rating range</span>
-            <div class="mt-1 flex items-center gap-2">
-              <input type="range" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24 accent-yellow-500" />
-              <input data-testid="min-rating" type="number" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', ratingBound((e.target as HTMLInputElement).value, 0))} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
-              <span class="text-sm text-muted">–</span>
-              <input data-testid="max-rating" type="number" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', ratingBound((e.target as HTMLInputElement).value, 100))} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
-              <input type="range" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24 accent-yellow-500" />
-            </div>
-          </div>
-          <label class="flex cursor-pointer items-center gap-2 text-sm text-muted">
-            <input type="checkbox" checked={$autoQueueFilterFields.lovedOnly} onchange={(e) => setFilter('lovedOnly', (e.target as HTMLInputElement).checked)} class="accent-yellow-500" />
-            Loved tracks only
-          </label>
-          {#if genres.length > 0}
-            <div>
-              <span class="text-sm font-medium text-muted">Genre</span>
-              <select value={$autoQueueFilterFields.genre ?? ''} onchange={(e) => setFilter('genre', (e.target as HTMLSelectElement).value)} class="mt-1 block w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 outline-none">
-                <option value="">All genres</option>
-                {#each genres as g}
-                  <option value={g}>{g}</option>
-                {/each}
-              </select>
-            </div>
-          {/if}
-          <div>
-            <span class="text-sm font-medium text-muted">Year</span>
-            <div class="mt-1 flex items-center gap-2">
-              <input type="number" placeholder="From" value={$autoQueueFilterFields.fromYear} oninput={(e) => setFilter('fromYear', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
-              <span class="text-sm text-muted">to</span>
-              <input type="number" placeholder="To" value={$autoQueueFilterFields.toYear} oninput={(e) => setFilter('toYear', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
-            </div>
-          </div>
-          <div>
-            <span class="text-sm font-medium text-muted">Length (seconds)</span>
-            <div class="mt-1 flex items-center gap-2">
-              <input type="number" placeholder="Min" value={$autoQueueFilterFields.minLength} oninput={(e) => setFilter('minLength', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
-              <span class="text-sm text-muted">to</span>
-              <input type="number" placeholder="Max" value={$autoQueueFilterFields.maxLength} oninput={(e) => setFilter('maxLength', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
-            </div>
-          </div>
-          {#if !filterRangesValid($autoQueueFilterFields)}
-            <p class="text-[11px] text-yellow-500/80">Ranges are inverted — no track can match both bounds</p>
-          {/if}
-        </div>
-      </div>
-    {/if}
-
     <!-- === AUTO QUEUE === -->
     {#if previewAutoItems.length > 0}
+      <div class="mx-4 mb-1 flex items-center gap-2 px-1" role="heading" aria-level="2">
+        <span class="text-[11px] font-semibold uppercase tracking-widest text-muted/70">Auto</span>
+        <span class="rounded-full bg-white/5 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted/70">{previewAutoItems.length}</span>
+        <div class="h-px flex-1 bg-white/10"></div>
+      </div>
       <div class="mx-2 space-y-0.5" role="group" aria-label="Auto queue">
         {#each previewAutoItems as item, idx (item.key)}
           {@const itemCombinedIndex = previewUserItems.length + idx}
@@ -784,8 +772,146 @@ function seek(e: Event) {
     {/if}
   </div>
 
-  <JumpToCurrentButton show={!!$currentTrack} onclick={jumpToCurrent} />
+  <!-- Floating action dock: navigation (left) + destructive clears (right).
+       One anchor, safe-area aware — replaces the old lone jump button and
+       the Filter button that used to ride the boundary separator. -->
+  <div class="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex items-end justify-between px-4 pb-1">
+    <div class="pointer-events-auto flex items-center gap-1 rounded-full bg-surface/95 p-1 shadow-lg ring-1 ring-white/10 backdrop-blur-md">
+      <button
+        onclick={jumpToCurrent}
+        disabled={!$currentTrack}
+        class="rounded-full p-2.5 text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
+        aria-label="Jump to currently playing track"
+      >
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-13v5.59l3.95 3.95 1.41-1.41L13 11.17V7h-2z"/></svg>
+      </button>
+      <button
+        onclick={jumpToBoundary}
+        disabled={$queue.userQueue.length === 0 || previewAutoItems.length === 0}
+        class="rounded-full p-2.5 text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
+        aria-label="Jump to the user and auto queue boundary"
+      >
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+      </button>
+      <button
+        onclick={() => filterOpen = !filterOpen}
+        class={"rounded-full p-2.5 transition-colors hover:bg-surface-hover " + (filterOpen ? 'bg-primary text-background' : 'text-muted hover:text-primary')}
+        aria-label="Auto queue filters"
+      >
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
+      </button>
+    </div>
+    <div class="pointer-events-auto flex items-center gap-1 rounded-full bg-surface/95 p-1 shadow-lg ring-1 ring-white/10 backdrop-blur-md">
+      <button
+        onclick={clearAbove}
+        disabled={aboveCount === 0}
+        class="group relative rounded-full p-2.5 text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30"
+        aria-label={`Clear ${aboveCount} played track${aboveCount === 1 ? '' : 's'} above the current song`}
+      >
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
+        {#if aboveCount > 0}
+          <span class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500/80 px-1 text-[9px] font-bold text-white tabular-nums">{aboveCount}</span>
+        {/if}
+      </button>
+      <button
+        onclick={clearBelow}
+        disabled={belowCount === 0}
+        class="group relative rounded-full p-2.5 text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30"
+        aria-label={`Clear ${belowCount} track${belowCount === 1 ? '' : 's'} below the current song`}
+      >
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+        {#if belowCount > 0}
+          <span class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500/80 px-1 text-[9px] font-bold text-white tabular-nums">{belowCount}</span>
+        {/if}
+      </button>
+    </div>
+  </div>
 </div>
+
+<!-- Auto-queue filter popup: a bottom sheet over the queue, so the big
+     numeric/range controls get room and the list stays unobstructed. -->
+{#if filterOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div
+    class="absolute inset-0 z-30 flex flex-col justify-end bg-black/40"
+    onclick={() => filterOpen = false}
+    role="presentation"
+  >
+    <div
+      class="max-h-[75%] overflow-y-auto rounded-t-2xl bg-surface px-4 pb-8 pt-4 shadow-2xl ring-1 ring-white/10"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-label="Auto queue filters"
+      tabindex="-1"
+    >
+      <div class="mb-3 flex items-center justify-between">
+        <span class="text-base font-medium text-primary">Auto queue filters</span>
+        <button onclick={() => filterOpen = false} class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Close filters">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+      <div class="space-y-4 pb-2">
+        <div>
+          <span class="text-sm font-medium text-muted">Search Query</span>
+          <div class="mt-1">
+            <input
+              type="search"
+              placeholder="Fuzzy search title, artist, album..."
+              value={$autoQueueFilterFields.searchQuery ?? ''}
+              oninput={(e) => setFilter('searchQuery', (e.target as HTMLInputElement).value)}
+              class="w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted outline-none focus:ring-white/20"
+            />
+          </div>
+        </div>
+
+        <div>
+          <span class="text-sm font-medium text-muted">Rating range</span>
+          <div class="mt-1 flex items-center gap-2">
+            <input type="range" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24 accent-yellow-500" />
+            <input data-testid="min-rating" type="number" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', ratingBound((e.target as HTMLInputElement).value, 0))} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
+            <span class="text-sm text-muted">–</span>
+            <input data-testid="max-rating" type="number" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', ratingBound((e.target as HTMLInputElement).value, 100))} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
+            <input type="range" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24 accent-yellow-500" />
+          </div>
+        </div>
+        <label class="flex cursor-pointer items-center gap-2 text-sm text-muted">
+          <input type="checkbox" checked={$autoQueueFilterFields.lovedOnly} onchange={(e) => setFilter('lovedOnly', (e.target as HTMLInputElement).checked)} class="accent-yellow-500" />
+          Loved tracks only
+        </label>
+        {#if genres.length > 0}
+          <div>
+            <span class="text-sm font-medium text-muted">Genre</span>
+            <select value={$autoQueueFilterFields.genre ?? ''} onchange={(e) => setFilter('genre', (e.target as HTMLSelectElement).value)} class="mt-1 block w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 outline-none">
+              <option value="">All genres</option>
+              {#each genres as g}
+                <option value={g}>{g}</option>
+              {/each}
+            </select>
+          </div>
+        {/if}
+        <div>
+          <span class="text-sm font-medium text-muted">Year</span>
+          <div class="mt-1 flex items-center gap-2">
+            <input type="number" placeholder="From" value={$autoQueueFilterFields.fromYear} oninput={(e) => setFilter('fromYear', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
+            <span class="text-sm text-muted">to</span>
+            <input type="number" placeholder="To" value={$autoQueueFilterFields.toYear} oninput={(e) => setFilter('toYear', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
+          </div>
+        </div>
+        <div>
+          <span class="text-sm font-medium text-muted">Length (seconds)</span>
+          <div class="mt-1 flex items-center gap-2">
+            <input type="number" placeholder="Min" value={$autoQueueFilterFields.minLength} oninput={(e) => setFilter('minLength', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
+            <span class="text-sm text-muted">to</span>
+            <input type="number" placeholder="Max" value={$autoQueueFilterFields.maxLength} oninput={(e) => setFilter('maxLength', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
+          </div>
+        </div>
+        {#if !filterRangesValid($autoQueueFilterFields)}
+          <p class="text-[11px] text-yellow-500/80">Ranges are inverted — no track can match both bounds</p>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
 
 <!-- Floating Drag Proxy (Ghost) -->
 {#if isDragging && draggedTrack}

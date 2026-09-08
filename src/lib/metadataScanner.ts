@@ -98,6 +98,8 @@ export function __resetScannerState(): void {
   notFoundCount = 0
   ambiguousCount = 0
   releasedCount = 0
+  noMatchReasons = new Map()
+  probeMatchedCount = 0
   totalTracks = 0
   tagCacheBaseKey = ""
   tagCacheLastKnownBaseKey = ""
@@ -166,6 +168,15 @@ let ambiguousCount = 0
 /** AUTO links released by the force-scan heal (D16) this run — surfaced via
  *  `progress.released` so the scan-complete line reports the healing. */
 let releasedCount = 0
+/** NoMatchReason → count, aggregated from the drain's per-row match verdicts.
+ *  Feeds the scan-complete line so "N no safe match" becomes a WHY breakdown
+ *  (tags-contradict / not-probed / weak-evidence / …) instead of a bare count. */
+let noMatchReasons = new Map<NoMatchReason, number>()
+/** Tracks auto-bound by the scan's tag-probe phase (the "secondary matching"
+ *  that runs BEFORE the drain) — these never enter the drain queue, so without
+ *  this the completion line could say "0 scanned" while the probe silently
+ *  linked half the library. Surfaced as `progress.probeMatched` when > 0. */
+let probeMatchedCount = 0
 let totalTracks = 0
 let shape: ScanShape = "modified"
 let activeAnnotation = ""
@@ -1304,6 +1315,8 @@ export function cancelScan(): void {
         missing: missingCount,
         duplicateMatches: ambiguousCount,
         annotation: `Cancelled — ${done} of ${totalTracks} processed; rescan continues from here`,
+        ...(probeMatchedCount > 0 ? { probeMatched: probeMatchedCount } : {}),
+        ...(noMatchReasons.size > 0 ? { noMatchReasons: Object.fromEntries(noMatchReasons) } : {}),
         // The interrupted scan's shape: the Resume affordance re-runs the
         // SAME shape (a cancelled force scan resumes as force — its heal
         // pass only runs there).
@@ -1406,6 +1419,8 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
   notFoundCount = 0
   ambiguousCount = 0
   releasedCount = 0
+  noMatchReasons = new Map()
+  probeMatchedCount = 0
   totalTracks = 0
   shape = shape_
   activeAnnotation = annotationFor(shape)
@@ -1508,6 +1523,12 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
     ? await launchTagProbe(new Set(healReadPaths))
     : await launchTagProbe()
   if (scanGen !== myGen) return false
+  // The probe's auto-binds ARE scan results — they never enter the drain
+  // queue (excluded below), so the completion line must report them or a
+  // probe-resolved scan reads as "0 scanned, N no safe match" while half the
+  // work was silently done. NOT recomputed by the drain (the drain never
+  // touches these rows).
+  probeMatchedCount = autoBoundTrackIds.size
 
   // Heal pass: release AUTO links whose bound file's own (fresh) identity tags
   // prove the link wrong (see selectHealEvictions). Released rows are re-matched
@@ -1577,7 +1598,11 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
     const completeAnnotation = autoBoundTrackIds.size > 0 ? `Matched ${autoBoundTrackIds.size} via tags` : activeAnnotation
     metadataScanState.set({
       status: "complete",
-      progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: completeAnnotation },
+      progress: {
+        scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0,
+        annotation: completeAnnotation,
+        ...(autoBoundTrackIds.size > 0 ? { probeMatched: autoBoundTrackIds.size } : {}),
+      },
       error: tracks.length === 0 ? "No library loaded — connect Navidrome first" : undefined,
     })
     return true
@@ -1773,6 +1798,13 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
       })
     } else {
       notFoundCount++
+      // Aggregate WHY this row is unmatched — the same taxonomy the File
+      // Matching rows show. Only the terminal no-safe-match bucket
+      // aggregates; a vanished path is its own honest bucket (missingCount)
+      // and ambiguous rows are reported as duplicateMatches.
+      if (match.reason) {
+        noMatchReasons.set(match.reason, (noMatchReasons.get(match.reason) ?? 0) + 1)
+      }
     }
     updateScanProgress()
     return
@@ -1860,6 +1892,10 @@ function updateScanProgress(): void {
     annotation: activeAnnotation,
     // Healed links ride the status line when the heal actually fired.
     ...(releasedCount > 0 ? { released: releasedCount } : {}),
+    // The probe's auto-binds + the no-match WHY breakdown ride every update so
+    // the completion line can reconcile "0 scanned" with the real work done.
+    ...(probeMatchedCount > 0 ? { probeMatched: probeMatchedCount } : {}),
+    ...(noMatchReasons.size > 0 ? { noMatchReasons: Object.fromEntries(noMatchReasons) } : {}),
   }
   if (done >= totalTracks) {
     metadataScanState.set({ status: "complete", progress })

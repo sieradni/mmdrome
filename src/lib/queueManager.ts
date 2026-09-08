@@ -236,6 +236,16 @@ class QueueManager {
     this._mutateQueue((q) => queueMutation.clearQueue(q))
   }
 
+  /** Removes user-queue rows above the active row (the played pile). */
+  clearUserAboveActive(): void {
+    this._mutateQueue((q) => queueMutation.clearUserAboveActive(q))
+  }
+
+  /** Removes user-queue rows below the active row (everything queued after). */
+  clearUserBelowActive(): void {
+    this._mutateQueue((q) => queueMutation.clearUserBelowActive(q))
+  }
+
   /**
    * Replaces both queue sections wholesale — the drag-reorder path (QueueView
    * `applyDrop`). The active row is re-anchored by its id (first surviving

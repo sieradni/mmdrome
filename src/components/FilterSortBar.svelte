@@ -26,11 +26,60 @@
     })
     onopen?.()
   }
+
+  function clearFilters() {
+    libraryFilters.update((f) => ({
+      ...f,
+      minRating: 0,
+      maxRating: 100,
+      lovedOnly: false,
+      genre: '',
+      fromYear: '',
+      toYear: '',
+      minLength: '',
+      maxLength: '',
+    }))
+  }
+
+  // Whether any filter is non-default — drives the Filter pill's active dot so
+  // a set-but-closed filter is never invisible.
+  const filterActive = $derived(
+    $libraryFilters.minRating > 0
+      || $libraryFilters.maxRating < 100
+      || $libraryFilters.lovedOnly
+      || $libraryFilters.genre !== ''
+      || $libraryFilters.fromYear !== ''
+      || $libraryFilters.toYear !== ''
+      || $libraryFilters.minLength !== ''
+      || $libraryFilters.maxLength !== '',
+  )
 </script>
 
 {#if $libraryFilters.filterOpen}
-  <div class="border-b border-white/10 bg-surface/50 px-4 py-3">
-    <div class="space-y-3">
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div
+    class="absolute inset-0 z-30 flex flex-col justify-end bg-black/40"
+    onclick={() => libraryFilters.update((f) => ({ ...f, filterOpen: false }))}
+    role="presentation"
+  >
+    <div
+      class="max-h-[75%] overflow-y-auto rounded-t-2xl bg-surface px-4 pb-8 pt-4 shadow-2xl ring-1 ring-white/10"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-label="Library filters"
+      tabindex="-1"
+    >
+      <div class="mb-3 flex items-center justify-between">
+        <span class="text-base font-medium text-primary">Filters</span>
+        <button
+          onclick={() => libraryFilters.update((f) => ({ ...f, filterOpen: false }))}
+          class="rounded-full p-1.5 text-muted transition-colors hover:text-primary"
+          aria-label="Close filters"
+        >
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+    <div class="space-y-4 pb-2">
       <div>
         <span class="text-sm font-medium text-muted">Rating range</span>
         <div class="mt-1 flex items-center gap-2">
@@ -137,14 +186,42 @@
           />
         </div>
       </div>
+
+      {#if filterActive}
+        <button onclick={clearFilters} class="w-full rounded px-2 py-1.5 text-sm text-muted transition-colors hover:text-primary">
+          Clear all filters
+        </button>
+      {/if}
+    </div>
     </div>
   </div>
 {/if}
 
 {#if $libraryFilters.sortOpen}
-  <div class="border-b border-white/10 bg-surface/50 px-4 py-3">
-    <p class="mb-2 text-sm font-medium text-muted">Sort by</p>
-    <div class="space-y-1">
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div
+    class="absolute inset-0 z-30 flex flex-col justify-end bg-black/40"
+    onclick={() => libraryFilters.update((f) => ({ ...f, sortOpen: false }))}
+    role="presentation"
+  >
+    <div
+      class="max-h-[75%] overflow-y-auto rounded-t-2xl bg-surface px-4 pb-8 pt-4 shadow-2xl ring-1 ring-white/10"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-label="Library sort"
+      tabindex="-1"
+    >
+      <div class="mb-3 flex items-center justify-between">
+        <span class="text-base font-medium text-primary">Sort by</span>
+        <button
+          onclick={() => libraryFilters.update((f) => ({ ...f, sortOpen: false }))}
+          class="rounded-full p-1.5 text-muted transition-colors hover:text-primary"
+          aria-label="Close sort"
+        >
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+    <div class="space-y-1 pb-2">
       {#each ['rating', 'loved', 'year', 'length'] as key (key)}
         {@const k = key as LibrarySortKey}
         <button
@@ -167,16 +244,24 @@
         >Clear sort</button>
       {/if}
     </div>
+    </div>
   </div>
 {/if}
 
 <div class="absolute bottom-5 left-4 z-20 flex gap-2">
   <button
     onclick={toggleFilter}
-    class={"rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 " + ($libraryFilters.filterOpen ? 'bg-surface-raised ring-white/20' : 'bg-surface-hover ring-white/10')}
-  >Filter</button>
+    aria-expanded={$libraryFilters.filterOpen}
+    class={"flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 " + ($libraryFilters.filterOpen ? 'bg-surface-raised ring-white/20' : 'bg-surface-hover ring-white/10')}
+  >
+    Filter
+    {#if filterActive}
+      <span class="h-1.5 w-1.5 rounded-full bg-yellow-500" aria-hidden="true"></span>
+    {/if}
+  </button>
   <button
     onclick={toggleSort}
+    aria-expanded={$libraryFilters.sortOpen}
     class={"rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 " + ($libraryFilters.sortOpen ? 'bg-surface-raised ring-white/20' : 'bg-surface-hover ring-white/10')}
   >Sort{$libraryFilters.sortBy ? `: ${sortLabels[$libraryFilters.sortBy]} ${$libraryFilters.sortAsc ? '↑' : '↓'}` : ''}</button>
 </div>
