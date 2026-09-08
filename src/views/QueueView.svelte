@@ -33,9 +33,17 @@
 
   // Whether the active row sits in the user section (the clear-above/below
   // buttons only apply there — B2's position anchor is a user-queue concept).
+  // NOTHING active (`activeIndex < 0`) means "above/below current" is
+  // undefined — both counts read 0 so the buttons disable instead of showing
+  // a badge the tap would silently no-op on (the mutation returns null when
+  // nothing is active).
   let activeInUser = $derived($queue.activeIndex >= 0 && $queue.activeIndex < $queue.userQueue.length)
-  // Rows the clear buttons would remove (0 = button disabled/hidden).
-  let aboveCount = $derived(activeInUser ? $queue.activeIndex : $queue.userQueue.length)
+  // Rows the clear buttons would remove (0 = button disabled/hidden). When the
+  // active row sits in the AUTO section, every user row is above it — the
+  // auto-queue-promote invariant keeps user rows out of the tail, so the
+  // active auto row is always the LAST user row's successor and clear-below
+  // has nothing to remove (0).
+  let aboveCount = $derived($queue.activeIndex < 0 ? 0 : activeInUser ? $queue.activeIndex : $queue.userQueue.length)
   let belowCount = $derived(activeInUser ? $queue.userQueue.length - $queue.activeIndex - 1 : 0)
 
   // Filter fields live in the persisted `autoQueueFilterFields` store — the
@@ -484,7 +492,7 @@ function seek(e: Event) {
     {#if $currentTrack}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
-        class="rounded-lg bg-surface/50 px-3 py-2.5 ring-1 ring-white/10"
+        class="rounded-lg bg-surface/50 px-3 py-2.5 ring-2 ring-white/25"
         role="button"
         tabindex="0"
         onclick={onclose}
@@ -574,7 +582,7 @@ function seek(e: Event) {
       <div class="mx-4 mb-1 mt-3 flex items-center gap-2 px-1" role="heading" aria-level="2">
         <span class="text-[11px] font-semibold uppercase tracking-widest text-muted">Up next</span>
         <span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted">{previewUserItems.length}</span>
-        <div class="h-px flex-1 bg-white/10"></div>
+        <div class="h-0.5 flex-1 rounded-full bg-white/25"></div>
       </div>
 
       <div class="mx-2 space-y-0.5" role="group" aria-label="User queue">
@@ -659,18 +667,11 @@ function seek(e: Event) {
       </div>
     {/if}
 
-    <!-- ── Boundary Indicator (the user/auto seam; Filter moved to the dock) ── -->
-    <div
-      class={"mx-4 my-2 flex items-center gap-2 px-1 transition-all duration-200 " + (isConvertingUserToAuto ? 'opacity-100 scale-[1.01]' : 'opacity-60')}
-      role="separator"
-      aria-label="Auto queue boundary"
-      data-boundary
-    >
-      <div class={"h-0.5 flex-1 rounded-full transition-colors duration-200 " + (isConvertingUserToAuto ? 'bg-yellow-500 shadow-sm shadow-yellow-500/50' : 'bg-white/30')}></div>
-      {#if isConvertingUserToAuto}
-        <span class="text-xs font-medium uppercase tracking-wider text-yellow-400">Release to convert to User Queue</span>
-      {/if}
-    </div>
+    <!-- ── Boundary ── the user/auto seam is now the line under the "Up next"
+         header; the old separator row between the sections is gone. The
+         jump-to-boundary scroll target rides the AUTO header (the first auto
+         row is the boundary), and the drag-over-seam conversion banner lives
+         there too so the seam affordance survives without a dedicated row. -->
 
     {#if $queueWrapNotice && previewAutoItems.length > 0}
       <p class="mx-4 mb-1 text-center text-[11px] text-muted/60">Continuing from the top of the sort order</p>
@@ -682,10 +683,13 @@ function seek(e: Event) {
 
     <!-- === AUTO QUEUE === -->
     {#if previewAutoItems.length > 0}
-      <div class="mx-4 mb-1 flex items-center gap-2 px-1" role="heading" aria-level="2">
-        <span class="text-[11px] font-semibold uppercase tracking-widest text-muted/70">Auto</span>
-        <span class="rounded-full bg-white/5 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted/70">{previewAutoItems.length}</span>
-        <div class="h-px flex-1 bg-white/10"></div>
+      <div class="mx-4 mb-1 flex items-center gap-2 px-1" role="heading" aria-level="2" data-boundary>
+        <span class="text-[11px] font-semibold uppercase tracking-widest" class:text-yellow-400={isConvertingUserToAuto} class:text-muted={!isConvertingUserToAuto}>Auto</span>
+        <span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted">{previewAutoItems.length}</span>
+        <div class="h-0.5 flex-1 rounded-full bg-white/25"></div>
+        {#if isConvertingUserToAuto}
+          <span class="text-xs font-medium uppercase tracking-wider text-yellow-400">Release to convert to User Queue</span>
+        {/if}
       </div>
       <div class="mx-2 space-y-0.5" role="group" aria-label="Auto queue">
         {#each previewAutoItems as item, idx (item.key)}
@@ -776,81 +780,90 @@ function seek(e: Event) {
        One anchor, safe-area aware — replaces the old lone jump button and
        the Filter button that used to ride the boundary separator. -->
   <div class="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex items-end justify-between px-4 pb-1">
-    <div class="pointer-events-auto flex items-center gap-1 rounded-full bg-surface/95 p-1 shadow-lg ring-1 ring-white/10 backdrop-blur-md">
+    <div class="pointer-events-auto flex items-end gap-1 rounded-2xl bg-surface/95 p-1.5 shadow-lg ring-1 ring-white/10 backdrop-blur-md">
       <button
         onclick={jumpToCurrent}
         disabled={!$currentTrack}
-        class="rounded-full p-2.5 text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
+        class="flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
         aria-label="Jump to currently playing track"
       >
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-13v5.59l3.95 3.95 1.41-1.41L13 11.17V7h-2z"/></svg>
+        <span class="text-[10px] font-medium leading-none">Current</span>
       </button>
       <button
         onclick={jumpToBoundary}
         disabled={$queue.userQueue.length === 0 || previewAutoItems.length === 0}
-        class="rounded-full p-2.5 text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
+        class="flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
         aria-label="Jump to the user and auto queue boundary"
       >
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+        <span class="text-[10px] font-medium leading-none">Boundary</span>
       </button>
       <button
         onclick={() => filterOpen = !filterOpen}
-        class={"rounded-full p-2.5 transition-colors hover:bg-surface-hover " + (filterOpen ? 'bg-primary text-background' : 'text-muted hover:text-primary')}
+        class={"flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 transition-colors hover:bg-surface-hover " + (filterOpen ? 'bg-primary text-background' : 'text-muted hover:text-primary')}
         aria-label="Auto queue filters"
       >
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
+        <span class="text-[10px] font-medium leading-none">Filters</span>
       </button>
     </div>
-    <div class="pointer-events-auto flex items-center gap-1 rounded-full bg-surface/95 p-1 shadow-lg ring-1 ring-white/10 backdrop-blur-md">
+    <div class="pointer-events-auto flex items-end gap-1 rounded-2xl bg-surface/95 p-1.5 shadow-lg ring-1 ring-white/10 backdrop-blur-md">
       <button
         onclick={clearAbove}
         disabled={aboveCount === 0}
-        class="group relative rounded-full p-2.5 text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30"
+        class="flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30"
         aria-label={`Clear ${aboveCount} played track${aboveCount === 1 ? '' : 's'} above the current song`}
       >
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
-        {#if aboveCount > 0}
-          <span class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500/80 px-1 text-[9px] font-bold text-white tabular-nums">{aboveCount}</span>
-        {/if}
+        <span class="relative">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
+          {#if aboveCount > 0}
+            <span class="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500/80 px-1 text-[9px] font-bold text-white tabular-nums">{aboveCount}</span>
+          {/if}
+        </span>
+        <span class="text-[10px] font-medium leading-none">Clear above</span>
       </button>
       <button
         onclick={clearBelow}
         disabled={belowCount === 0}
-        class="group relative rounded-full p-2.5 text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30"
+        class="flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30"
         aria-label={`Clear ${belowCount} track${belowCount === 1 ? '' : 's'} below the current song`}
       >
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
-        {#if belowCount > 0}
-          <span class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500/80 px-1 text-[9px] font-bold text-white tabular-nums">{belowCount}</span>
-        {/if}
+        <span class="relative">
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+          {#if belowCount > 0}
+            <span class="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500/80 px-1 text-[9px] font-bold text-white tabular-nums">{belowCount}</span>
+          {/if}
+        </span>
+        <span class="text-[10px] font-medium leading-none">Clear below</span>
       </button>
     </div>
   </div>
 </div>
 
-<!-- Auto-queue filter popup: a bottom sheet over the queue, so the big
-     numeric/range controls get room and the list stays unobstructed. -->
+<!-- Auto-queue filter popup: a centered modal (TrackDetailsModal idiom) —
+     closes via Esc, backdrop, X, or Done; never demands a precise click. -->
 {#if filterOpen}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
-    class="absolute inset-0 z-30 flex flex-col justify-end bg-black/40"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
     onclick={() => filterOpen = false}
     role="presentation"
   >
     <div
-      class="max-h-[75%] overflow-y-auto rounded-t-2xl bg-surface px-4 pb-8 pt-4 shadow-2xl ring-1 ring-white/10"
+      class="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-xl border border-white/10 bg-surface shadow-2xl"
       onclick={(e) => e.stopPropagation()}
       role="dialog"
       aria-label="Auto queue filters"
       tabindex="-1"
     >
-      <div class="mb-3 flex items-center justify-between">
-        <span class="text-base font-medium text-primary">Auto queue filters</span>
+      <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
+        <span class="text-base font-bold text-primary">Auto queue filters</span>
         <button onclick={() => filterOpen = false} class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Close filters">
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
       </div>
-      <div class="space-y-4 pb-2">
+      <div class="space-y-4 px-5 py-4">
         <div>
           <span class="text-sm font-medium text-muted">Search Query</span>
           <div class="mt-1">
@@ -912,6 +925,8 @@ function seek(e: Event) {
     </div>
   </div>
 {/if}
+
+<svelte:window onkeydown={(e) => { if (e.key === 'Escape' && filterOpen) filterOpen = false }} />
 
 <!-- Floating Drag Proxy (Ghost) -->
 {#if isDragging && draggedTrack}

@@ -663,9 +663,15 @@
     if (row.verdict === 'unknown') {
       switch (row.readState) {
         case 'not-probed':
+          // The rescan promise is SOURCE-DEPENDENT: a force rescan's heal
+          // pass force-reads AUTO-bound files lacking fresh evidence (D16),
+          // but deliberately never touches MANUAL links — for those the
+          // per-row "Re-read file tags" button is the only path. A fresh
+          // FAILED read is TTL-governed and retried by the probe's own next
+          // pass (expired failures re-enter the probe pool).
           return row.matchSource === 'manual'
-            ? 'This file has not been read for tags yet — read it now or run Rescan All Metadata to confirm your pick.'
-            : 'This file has not been read for tags yet — read it now or run Rescan All Metadata.'
+            ? 'This file has not been read for tags yet — read it now to confirm your pick (rescans never re-read manual links).'
+            : 'This file has not been read for tags yet — read it now or run Rescan All Metadata to verify the link.'
         case 'empty':
           return 'The file has tags but no title to compare against this track.'
         case 'unreadable':

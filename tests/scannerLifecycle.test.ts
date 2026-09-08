@@ -1679,6 +1679,62 @@ test('resetMetadataAndRelink: mid-scan cancel keeps scanned links, discards in-f
   teardown()
 })
 
+test('probe re-annotates CLAIMED files from fresh cache and re-reads claimed files whose failed read expired its TTL', async () => {
+  setupMocks()
+  initWebdav()
+  // One bound (claimed) row — the "fully matched library" shape where the old
+  // early-return and claimed-skip left the bound entry unannotated forever.
+  const t1 = track({ trackId: 't1', title: 'Song', artist: 'Artist', album: 'Album', size: 12345 })
+  library.set([t1])
+  updateMetadata({
+    trackId: 't1', rating: 80, loved: false, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: '/dav/files/user/Song.flac',
+    webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT', webdavBase: 'http://test.com|user',
+  })
+  mockEntries = [entry()]
+  mockComplete = true
+  // A FRESH 'ok' cache entry exists for the bound file — no network read is
+  // owed, but the annotation must land.
+  await db.webdavFileTags.put({
+    id: 'http://test.com|user\u0000/dav/files/user/Song.flac',
+    baseKey: 'http://test.com|user',
+    path: '/dav/files/user/Song.flac',
+    size: 12345,
+    lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    status: 'ok',
+    probedAt: Date.now(),
+    metadata: { rating: 0, loved: false, title: 'Song', artist: 'Artist', album: 'Album', trackNumber: 1 },
+  })
+  mockMeta = { '/dav/files/user/Song.flac': fileMeta({ title: 'Song', artist: 'Artist' }) }
+
+  await refreshIndex()
+  readCallCount = 0
+  await ensureTagProbe()
+
+  assert.equal(readCallCount, 0, 'fresh cache evidence means no network read')
+  assert.equal(get(tagProbeState).resolved, 0, 'a claimed file is never re-bound')
+
+  // Now flip the cache entry to a FAILED read whose TTL has EXPIRED — the
+  // probe owes this file a re-read (the LinkAudit copy's "retried
+  // automatically" promise).
+  await db.webdavFileTags.put({
+    id: 'http://test.com|user\u0000/dav/files/user/Song.flac',
+    baseKey: 'http://test.com|user',
+    path: '/dav/files/user/Song.flac',
+    size: 12345,
+    lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    status: 'network-error',
+    probedAt: Date.now() - 6 * 60 * 1000, // past the 5-min network-error TTL
+  })
+  readCallCount = 0
+  await ensureTagProbe()
+
+  assert.equal(readCallCount, 1, 'the expired failed read of the bound file was re-read')
+  assert.equal(get(metadataCache).get('t1')?.webdavPath, '/dav/files/user/Song.flac', 'the binding survives the re-read')
+
+  teardown()
+})
+
 test('cancelScan stamps the landing with the scan shape; ordinary scans do not carry it', async () => {
   setupMocks()
   initWebdav()

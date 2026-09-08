@@ -17,6 +17,14 @@
     onopen?.()
   }
 
+  function closeFilter() {
+    libraryFilters.update((f) => ({ ...f, filterOpen: false }))
+  }
+
+  function closeSort() {
+    libraryFilters.update((f) => ({ ...f, sortOpen: false }))
+  }
+
   function setSort(key: LibrarySortKey) {
     libraryFilters.update((f) => {
       if (f.sortBy === key) {
@@ -25,6 +33,13 @@
       return { ...f, sortBy: key, sortAsc: key === 'length' || key === 'year' }
     })
     onopen?.()
+  }
+
+  // Picking a sort option applies it AND closes — the common case is
+  // pick-one-and-go, so the menu never traps the user.
+  function applySort(key: LibrarySortKey) {
+    setSort(key)
+    closeSort()
   }
 
   function clearFilters() {
@@ -53,24 +68,36 @@
       || $libraryFilters.minLength !== ''
       || $libraryFilters.maxLength !== '',
   )
+
+  // Mouse-free close: Escape closes whichever popup is open. Window-level so
+  // it works no matter where focus sits (inputs, selects, nowhere).
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return
+    if ($libraryFilters.filterOpen || $libraryFilters.sortOpen) {
+      libraryFilters.update((f) => ({ ...f, filterOpen: false, sortOpen: false }))
+    }
+  }
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 {#if $libraryFilters.filterOpen}
+  <!-- Centered modal (TrackDetailsModal idiom): Esc, backdrop, X, or Done. -->
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
-    class="absolute inset-0 z-30 flex flex-col justify-end bg-black/40"
-    onclick={() => libraryFilters.update((f) => ({ ...f, filterOpen: false }))}
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+    onclick={closeFilter}
     role="presentation"
   >
     <div
-      class="max-h-[75%] overflow-y-auto rounded-t-2xl bg-surface px-4 pb-8 pt-4 shadow-2xl ring-1 ring-white/10"
+      class="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-xl border border-white/10 bg-surface shadow-2xl"
       onclick={(e) => e.stopPropagation()}
       role="dialog"
       aria-label="Library filters"
       tabindex="-1"
     >
-      <div class="mb-3 flex items-center justify-between">
-        <span class="text-base font-medium text-primary">Filters</span>
+      <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
+        <span class="text-base font-bold text-primary">Filters</span>
         <button
           onclick={() => libraryFilters.update((f) => ({ ...f, filterOpen: false }))}
           class="rounded-full p-1.5 text-muted transition-colors hover:text-primary"
@@ -79,7 +106,7 @@
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
       </div>
-    <div class="space-y-4 pb-2">
+    <div class="space-y-4 px-5 py-4">
       <div>
         <span class="text-sm font-medium text-muted">Rating range</span>
         <div class="mt-1 flex items-center gap-2">
@@ -198,21 +225,22 @@
 {/if}
 
 {#if $libraryFilters.sortOpen}
+  <!-- Centered modal: a tap on an option applies and closes; Esc/backdrop too. -->
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
-    class="absolute inset-0 z-30 flex flex-col justify-end bg-black/40"
-    onclick={() => libraryFilters.update((f) => ({ ...f, sortOpen: false }))}
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+    onclick={closeSort}
     role="presentation"
   >
     <div
-      class="max-h-[75%] overflow-y-auto rounded-t-2xl bg-surface px-4 pb-8 pt-4 shadow-2xl ring-1 ring-white/10"
+      class="max-h-[80vh] w-full max-w-xs overflow-y-auto rounded-xl border border-white/10 bg-surface shadow-2xl"
       onclick={(e) => e.stopPropagation()}
       role="dialog"
       aria-label="Library sort"
       tabindex="-1"
     >
-      <div class="mb-3 flex items-center justify-between">
-        <span class="text-base font-medium text-primary">Sort by</span>
+      <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
+        <span class="text-base font-bold text-primary">Sort by</span>
         <button
           onclick={() => libraryFilters.update((f) => ({ ...f, sortOpen: false }))}
           class="rounded-full p-1.5 text-muted transition-colors hover:text-primary"
@@ -221,11 +249,11 @@
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
       </div>
-    <div class="space-y-1 pb-2">
+    <div class="space-y-1 px-3 py-3">
       {#each ['rating', 'loved', 'year', 'length'] as key (key)}
         {@const k = key as LibrarySortKey}
         <button
-          onclick={() => setSort(k)}
+          onclick={() => applySort(k)}
           class="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm transition-colors"
           class:bg-surface-hover={$libraryFilters.sortBy === k}
           class:text-primary={$libraryFilters.sortBy === k}
@@ -239,7 +267,7 @@
       {/each}
       {#if $libraryFilters.sortBy}
         <button
-          onclick={() => libraryFilters.update((f) => ({ ...f, sortBy: null }))}
+          onclick={() => { libraryFilters.update((f) => ({ ...f, sortBy: null })); closeSort() }}
           class="mt-2 w-full rounded px-2 py-1 text-sm text-muted transition-colors hover:text-primary"
         >Clear sort</button>
       {/if}
@@ -256,7 +284,7 @@
   >
     Filter
     {#if filterActive}
-      <span class="h-1.5 w-1.5 rounded-full bg-yellow-500" aria-hidden="true"></span>
+      <span class="h-1.5 w-1.5 rounded-full bg-white/70" aria-hidden="true"></span>
     {/if}
   </button>
   <button

@@ -932,10 +932,13 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
     if (t.title) unclaimedTitles.add(normalizeForHint(t.title))
   }
 
-  // A run with nothing unclaimed is normally a no-op, but a force scan may
-  // have FORCED reads of already-claimed files (heal evidence) — those still
-  // need to run.
-  if (unclaimedTrackCount === 0 && !myForce) return autoBoundTrackIds
+  // A run with nothing unclaimed is normally a no-op, BUT the probe can still
+  // have work: fresh cached evidence needs re-annotating onto the index (free,
+  // no network — what makes a fully-matched run useful at all), and claimed
+  // files whose failed tag read has expired its retry TTL are owed a re-read
+  // (the LinkAudit copy promises "retried automatically" — the probe IS that
+  // retry). Only a genuinely empty workload exits early; a force scan's forced
+  // reads ride `myForce` below either way.
 
   const pool: WebdavFileEntry[] = []
   const claimedPaths = new Set<string>()
@@ -946,15 +949,22 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
 
   // Revisit fresh cached metadata before selecting new network reads. This is
   // essential after a scan harvested tags while reverse binding was disabled,
-  // and it also makes a restored cache converge without requiring another
-  // GET. The same live guards and synchronous claims apply.
+  // and it also makes a restored cache converge without requiring another GET.
+  // EVERY fresh status is re-annotated, claimed files included: the File
+  // Matching audit reads its verdict off these annotations, and after a reload
+  // the restored index carries none — matched rows then sat at "not yet
+  // verified"/"not probed" until a manual per-row re-read (2026-09-08 rescan
+  // report: 2402 verified / 37 stuck not-yet-verified that no rescan healed).
+  // The same live guards and synchronous claims apply.
   for (const entry of index) {
-    if (claimedPaths.has(entry.path) || !isAudioFilePath(entry.filename)) continue
+    if (!isAudioFilePath(entry.filename)) continue
     const cached = tagCache.get(entry.path)
-    if (!cached || !tagCacheEntryIsFresh(cached, entry.size, entry.lastModified)
-        || cached.status !== 'ok' || !cached.metadata) continue
+    if (!cached || !tagCacheEntryIsFresh(cached, entry.size, entry.lastModified)) continue
     entry.probeStatus = cached.status
-    entry.tags = metadataToTags(cached.metadata)
+    if (cached.metadata) entry.tags = metadataToTags(cached.metadata)
+    // Binds still require successful identity evidence; claimed files never
+    // re-bind here (their owner row is already linked).
+    if (claimedPaths.has(entry.path) || cached.status !== 'ok' || !cached.metadata) continue
     const boundTrackId = maybeAutoBindFromProbe(
       entry,
       cached.metadata,
@@ -966,17 +976,38 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
     if (boundTrackId) autoBoundTrackIds.add(boundTrackId)
   }
 
+  // Claimed files whose failed tag read has EXPIRED its retry TTL are owed a
+  // re-read on every probe pass (claimed files otherwise never enter the
+  // pool). While the evidence is fresh (any status) the file is skipped:
+  // evidence exists and re-reading it would only burn bandwidth. Force scans
+  // additionally force-read heal targets through `myForce`.
+  const retryableClaimedPaths = new Set(index.filter((e) => {
+    if (!isAudioFilePath(e.filename)) return false
+    const cached = tagCache.get(e.path)
+    return !!cached && !tagCacheEntryIsFresh(cached, e.size, e.lastModified)
+  }).map((e) => e.path))
+
+  // Early exit only when there is genuinely no work: no unclaimed tracks, no
+  // force reads, no expired failed reads owed a retry. Cached-revisit binds
+  // must still be visible in the store (a converge-only run reports them).
+  if (unclaimedTrackCount === 0 && !myForce && retryableClaimedPaths.size === 0) {
+    tagProbeState.update((state) => ({ ...state, resolved: autoBoundTrackIds.size }))
+    return autoBoundTrackIds
+  }
+
   for (const entry of index) {
     if (!isAudioFilePath(entry.filename)) continue
     const claimed = claimedPaths.has(entry.path)
     const isForced = myForce?.has(entry.path) ?? false
+    const isRetry = retryableClaimedPaths.has(entry.path)
     // Claimed files only enter the pool when explicitly forced (heal evidence
-    // for auto-bound files) — ordinary probe selection never re-reads a file
-    // another row owns.
-    if (claimed && !isForced) continue
+    // for auto-bound files) or when their failed read's retry TTL has expired
+    // (the automatic retry the audit copy promises). While the evidence is
+    // fresh, ordinary probe selection never re-reads a file another row owns.
+    if (claimed && !isForced && !isRetry) continue
     if (!claimed) unclaimedAudioFileCount++
     const cached = tagCache.get(entry.path)
-    if (cached && tagCacheEntryIsFresh(cached, entry.size, entry.lastModified) && !isForced) continue // fresh result, including TTL-governed failures
+    if (cached && tagCacheEntryIsFresh(cached, entry.size, entry.lastModified) && !isForced && !isRetry) continue // fresh result, including TTL-governed failures
     pool.push(entry)
   }
 
