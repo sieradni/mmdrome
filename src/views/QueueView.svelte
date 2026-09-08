@@ -570,7 +570,7 @@ function seek(e: Event) {
   </div>
 
   <!-- Queue List Scroll Container -->
-  <div bind:this={listContainerEl} class="flex-1 overflow-y-auto pb-4 touch-pan-y" onscroll={() => { if (listContainerEl) saveViewState('queue', { scrollTop: listContainerEl.scrollTop }) }}>
+  <div bind:this={listContainerEl} class="min-h-0 flex-1 overflow-y-auto pb-4 touch-pan-y" onscroll={() => { if (listContainerEl) saveViewState('queue', { scrollTop: listContainerEl.scrollTop }) }}>
     {#if $queue.userQueue.length === 0 && $queue.autoQueue.length === 0}
       <div class="flex h-full items-center justify-center">
         <p class="text-sm text-muted">Queue is empty</p>
@@ -776,11 +776,12 @@ function seek(e: Event) {
     {/if}
   </div>
 
-  <!-- Floating action dock: navigation (left) + destructive clears (right).
-       One anchor, safe-area aware — replaces the old lone jump button and
-       the Filter button that used to ride the boundary separator. -->
-  <div class="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex items-end justify-between px-4 pb-1">
-    <div class="pointer-events-auto flex items-end gap-1 rounded-2xl bg-surface/95 p-1.5 shadow-lg ring-1 ring-white/10 backdrop-blur-md">
+  <!-- Action bar: navigation (left) + destructive clears (right). In flow
+       BELOW the list — the old floating dock overlayed the last rows, so
+       bottom content was unreachable without scrolling blind past it. -->
+  <div class="shrink-0 border-t border-white/10 bg-surface px-4 pb-1 pt-1.5 safe-area-bottom">
+    <div class="flex items-start justify-between">
+    <div class="flex items-start gap-1">
       <button
         onclick={jumpToCurrent}
         disabled={!$currentTrack}
@@ -808,7 +809,7 @@ function seek(e: Event) {
         <span class="text-[10px] font-medium leading-none">Filters</span>
       </button>
     </div>
-    <div class="pointer-events-auto flex items-end gap-1 rounded-2xl bg-surface/95 p-1.5 shadow-lg ring-1 ring-white/10 backdrop-blur-md">
+    <div class="flex items-start gap-1">
       <button
         onclick={clearAbove}
         disabled={aboveCount === 0}
@@ -837,6 +838,7 @@ function seek(e: Event) {
         </span>
         <span class="text-[10px] font-medium leading-none">Clear below</span>
       </button>
+    </div>
     </div>
   </div>
 </div>

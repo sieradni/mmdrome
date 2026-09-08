@@ -15,10 +15,15 @@
 }
 
 /* App-wide font — a bundled monospace (Appearance tab offers the choice).
-   Set on :root so every Tailwind `font-sans` default resolves through it. */
+   Set on :root so every Tailwind `font-sans` default resolves through it.
+   The root font-size runs at 93.75% (15px): monospace glyphs are wider and
+   taller than the sans fallback the UI was designed around, so at 16px
+   everything reads one size too big — the uniform root reduction restores
+   the original density across all rem-based Tailwind sizes and spacing. */
 :root {
   --app-font: 'JetBrains Mono Variable', ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, monospace;
   font-family: var(--app-font);
+  font-size: 93.75%;
 }
 
 body {
@@ -157,4 +162,34 @@ input[type="range"]::-webkit-slider-thumb {
   background: var(--app-accent, #ffffff);
   border: none;
   box-shadow: 0 0 0 1px rgb(0 0 0 / 0.6);
+}
+
+/* ── Themed scrollbars ── the default light chrome clashes with the dark
+   theme. Firefox gets the standard properties; WebKit/Blink gets the
+   pseudo-element styling (thin, translucent, rounded — hover brightens). */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(255 255 255 / 0.2) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(255 255 255 / 0.2);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(255 255 255 / 0.32);
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }

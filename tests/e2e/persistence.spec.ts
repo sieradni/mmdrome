@@ -1,25 +1,30 @@
 import { test, expect, type Page } from '@playwright/test'
 import { bootApp } from './boot'
+import { installNavidromeMock, seedMockCredentials } from './navidromeMock'
 
 // Exercises the persisted-store layer (AGENTS.md C6/A10) in the real
 // production bundle: the stores persist to IndexedDB on change and restore
 // once at boot. The smoke spec only boots the shell — these pin the
 // browser-level wiring the Node suites can't see: a value set through the UI
 // must take effect immediately, and a non-default value must survive a
-// reload. Runs without a Navidrome server (empty library), so it targets
-// state that renders regardless of the queue: the QueueView filter panel and
-// the now-playing shuffle toggle (the Controls row renders with no track
-// loaded — the loop toggle does not, it sits in the currentTrack-only
-// Utility Row).
+// reload. The queue filter targets run with no server (empty library), so
+// they exercise the IDLE flow: the mini-player tap opens the queue directly
+// (the detail overlay is guarded behind an active track). The shuffle spec
+// runs against the Navidrome mock, because the shuffle toggle lives in the
+// Now Playing detail controls, which need an ACTIVE track.
+
+async function openQueue(page: Page): Promise<void> {
+  // The mini-player bar (empty-state text is present with no track loaded)
+  // opens the queue directly when nothing is active — the detail overlay is
+  // guarded. The queue view's Filter button is scoped by its aria-label —
+  // the base SongsView has a plain "Filter" button of its own.
+  await page.getByText('Not playing').first().click()
+  await page.getByRole('button', { name: 'Close queue' }).waitFor({ state: 'visible' })
+}
 
 async function openQueueFilter(page: Page): Promise<void> {
-  // The mini-player bar (empty-state text is present with no track loaded)
-  // opens the now-playing overlay; its header holds the queue button. The
-  // queue view's Filter button now lives in the floating dock, scoped by its
-  // aria-label — the base SongsView has a plain "Filter" button of its own.
-  await page.getByText('Not playing').first().click()
-  await page.getByRole('button', { name: 'Open queue' }).click()
-  await page.getByRole('button', { name: 'Auto queue filters' }).first().click()
+  await openQueue(page)
+  await page.getByRole('button', { name: 'Auto queue filters' }).click()
 }
 
 test('queue filter rating inputs snap cleared fields to their boundary and persist', async ({ page }) => {
@@ -55,10 +60,38 @@ test('queue filter rating inputs snap cleared fields to their boundary and persi
   await expect(page.getByTestId('min-rating')).toHaveValue('0')
 })
 
-test('shuffle mode round-trips through a reload', async ({ page }) => {
-  await bootApp(page)
+async function openDetailFromMiniBar(page: Page): Promise<void> {
+  // The mini bar's role name collides with the Songs-view row (getByRole name
+  // matching is substring-based). Count-wait first: 2 matches = row + bar —
+  // this is the ONLY deterministic signal the bar has swapped in (a plain
+  // waitFor on .last() is vacuous: it resolves to the already-visible row).
+  // Then .last() is the bar, and clicking its title area opens the detail
+  // overlay (the bar's center is the Play/Pause button — avoid it).
+  const nameMatch = page.getByRole('button', { name: 'Midnight Drive The Orbitals' })
+  await expect(nameMatch).toHaveCount(2)
+  await nameMatch.last().click()
+}
 
-  await page.getByText('Not playing').first().click()
+test('shuffle mode round-trips through a reload', async ({ page }) => {
+  // The shuffle toggle sits in the Now Playing detail controls — reachable
+  // only with an ACTIVE track, so this spec runs against the Navidrome mock.
+  // First boot creates the Dexie schema; credentials are seeded into it, and
+  // the reload re-boots the pipeline against the mock.
+  await installNavidromeMock(page)
+  await bootApp(page)
+  await seedMockCredentials(page)
+  await page.reload({ waitUntil: 'networkidle' })
+  await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })
+
+  // Boot loads the library from the mock. Tap a track row to make it active
+  // (the app attempts playback; on failure the track stays active+paused —
+  // exactly the state the toggle needs).
+  await page.getByText('Midnight Drive').first().click()
+  await expect(page.getByText('Midnight Drive')).toHaveCount(2, { timeout: 10_000 })
+
+  // The active mini-player bar opens the detail overlay.
+  await openDetailFromMiniBar(page)
+
   const shuffle = page.getByRole('button', { name: 'Toggle shuffle' })
   // Default: shuffle off (the `text-muted` state class, distinct from the
   // always-present `hover:text-primary`).
@@ -72,7 +105,10 @@ test('shuffle mode round-trips through a reload', async ({ page }) => {
   await page.waitForTimeout(250)
   await page.reload({ waitUntil: 'networkidle' })
   await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })
-  await page.getByText('Not playing').first().click()
+  // Boot restores the queue but deliberately does NOT auto-activate a track
+  // (no autoplay), so re-activate it before re-opening the detail overlay.
+  await page.getByText('Midnight Drive').first().click()
+  await openDetailFromMiniBar(page)
   await expect(page.getByRole('button', { name: 'Toggle shuffle' })).toHaveClass(
     /(^|\s)text-primary($|\s)/,
   )

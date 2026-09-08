@@ -169,7 +169,10 @@
   }
 
   function closeQueue() {
-    queueOpen = false; nowPlayingOpen = true
+    queueOpen = false
+    // The queue can stay open while the last track plays out; closing it must
+    // not land on an empty detail view — return to the library instead.
+    if ($currentTrack) nowPlayingOpen = true
   }
 
   function openTrackOptions() {
@@ -181,7 +184,8 @@
   }
 
   function closeToNowPlaying() {
-    overlay = null; nowPlayingOpen = true
+    overlay = null
+    if ($currentTrack) nowPlayingOpen = true
   }
 
   function navigateTo(page: 'pitchSpeed' | 'eq' | 'volume' | 'detail' | 'settings') {
@@ -294,6 +298,10 @@ function seek(e: Event) {
 
   function miniPlayerTap() {
     if (nowPlayingOpen || overlay) { closeAll(); return }
+    // The detail controls describe the ACTIVE track — with nothing playing
+    // they have nothing to show, so go straight to the queue instead (the
+    // mini-player tap is the queue's only entry from the idle state).
+    if (!$currentTrack) { openQueue(); return }
     toggleNowPlaying()
   }
 </script>
