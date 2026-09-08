@@ -45,7 +45,7 @@ import {
 } from '../stores/appState'
 import { saveQueue } from './db'
 import { currentEqState, eqBypassed } from './eq/eqStore'
-import { cancelScan } from './metadataScanner'
+import { cancelScan, cancelTagProbeIfActive } from './metadataScanner'
 import type { Track } from '../stores/appState'
 
 export class PlaybackManager {
@@ -285,12 +285,14 @@ export class PlaybackManager {
     }))
   }
 
-  /** The effective preload count: the user setting, zeroed while low data
-   *  mode is engaged (auto-preload is automatic network work — the plan's LDM
-   *  table gates it). Shared by every native push site so the engage/lift
-   *  edges stay in one place. */
+  /** The native preload depth — the persisted setting, UNCONDITIONAL. The LDM
+   *  plan's Principle (docs/plans/2026-09-06, §2) keeps auto-preload ON under
+   *  low data mode: bounded to the next few tracks, serialized, and it is
+   *  what makes LDM streaming viable on a marginal connection. (The 2026-09-06
+   *  commit gated this to 0 against the plan's own Principle — its §4 table
+   *  row 4; corrected 2026-09-07, parity with the web preloader's un-gating.)
+   *  Shared by every native push site so the edges stay in one place. */
   private _effectivePreloadCount(): number {
-    if (get(effectiveLowData)) return 0
     return get(settings).preloadTracks ?? 0
   }
 
@@ -452,12 +454,20 @@ export class PlaybackManager {
       this._rearmCrossfadeTarget()
     }))
 
-    // Low-data engage/lift edges. ENGAGE: cancel an in-flight scan (D4 —
-    // resumable, honest "Cancelled" landing; a non-scanning cancelScan is a
-    // harmless gen bump, reset by the next runScan) and re-push the native
-    // preload count (→ 0). LIFT: restore the preload count and kick one flush
-    // cycle — there is deliberately NO make-up scan (no suppressed-op backlog
-    // exists by design; the next natural scan trigger covers it).
+    // Low-data engage/lift edges — ALL mid-session transitions in ONE place.
+    // ENGAGE: cancel an in-flight scan (D4 — resumable, honest "Cancelled"
+    // landing; a non-scanning cancelScan is a harmless gen bump, reset by the
+    // next runScan) AND an in-flight standalone tag probe (the post-scan tail
+    // and the boot/restore probe both run while the scan state is terminal,
+    // so the scan-status guard alone misses them — they are exactly the
+    // automatic background network work LDM exists to stop). Also suspend the
+    // flush engine's automatic delivery (the boot-time set lives in App.svelte
+    // before the manager exists; the TRANSITION belongs here so the gate
+    // flip is observable and ordered with the kick below).
+    // LIFT: re-enable the flush gate, then kick ONE drain (order matters —
+    // the kick is a no-op while the gate is still false). There is
+    // deliberately NO make-up scan or probe (no suppressed-op backlog exists
+    // by design; the next natural trigger covers it).
     let prevLowData = false
     unsubs.push(effectiveLowData.subscribe((active) => {
       if (!this._initialized) {
@@ -468,7 +478,10 @@ export class PlaybackManager {
       prevLowData = active
       if (active) {
         if (get(metadataScanState).status === 'scanning') cancelScan()
+        cancelTagProbeIfActive()
+        scrobbleFlushEngine.setAutoFlushEnabled(false)
       } else {
+        scrobbleFlushEngine.setAutoFlushEnabled(true)
         scrobbleFlushEngine.kick()
       }
       if (this.isNative()) this._syncNativePreload()

@@ -50,8 +50,8 @@ Exposed as a derived store from the new `src/lib/networkMode.ts`. **All consumer
 |---|---|---|
 | 1 | Boot auto-scan (`scanAll('modified')` after connect) | `planNavidromeLoad` gains a `lowData` input → `scanWebdav: false` (pure-planner change, test-pinnable). Library connect itself still runs — it's essential and user-configured. |
 | 2 | Boot tag probe (`ensureTagProbeAfterRestore`) | Skip when `effectiveLowData` at that moment. |
-| 3 | Web preloader | Settings subscription additionally gates the poll timer on `!$effectiveLowData` — timer stops on engage, restarts on lift. |
-| 4 | Native prefetch | `setPreloadCount(0)` while engaged (existing settings-subscription push site; extend to react to `effectiveLowData`), restore after. |
+| 3 | Web preloader | ~~Settings subscription additionally gates the poll timer on `!$effectiveLowData` — timer stops on engage, restarts on lift.~~ **CORRECTED 2026-09-07: NOT gated.** The §2 Principle ("stays ON in LDM — it's what makes LDM streaming viable on a marginal connection") overrides this row; the shipped gate was removed. |
+| 4 | Native prefetch | ~~`setPreloadCount(0)` while engaged...~~ **CORRECTED 2026-09-07: NOT gated** (same Principle override; `_effectivePreloadCount` is the unconditional setting, web/native parity). |
 | 5 | Scrobble flush auto-drain | `ScrobbleFlushEngine.setAutoFlushEnabled(false)`: `kick()` no-ops, 60 s tick skips. Rows stay in the durable `pendingScrobbles` queue — nothing is lost. |
 | 6 | Navidrome scrobbles (now-playing + submission) | Gated in the `scrobbleManager` destination fan-out on `effectiveLowData`. LDM listens won't appear in server history — documented tradeoff. |
 
@@ -66,7 +66,7 @@ Streaming, explicit scan/push/matching buttons, queue mutations, File Matching R
 - Failure mode is cosmetic-only (blurry large art if LDM shrinks now-playing too far — so it doesn't), and the existing `onerror` → brand-icon fallback is unaffected. `crossorigin=anonymous` behavior unchanged (same endpoint).
 
 ### Transitions
-- **Toggled ON mid-session**: cancel an in-flight scan via `cancelScan()` (D4-resumable — processed rows keep results; the cancelled landing's honest copy + Resume scan button already exist). A user-initiated Push in flight is **left to finish** (don't cancel work the user just asked for). Preload stops; native count → 0; flush disabled.
+- **Toggled ON mid-session**: cancel an in-flight scan via `cancelScan()` (D4-resumable — processed rows keep results; the cancelled landing's honest copy + Resume scan button already exist). A user-initiated Push in flight is **left to finish** (don't cancel work the user just asked for). ~~Preload stops; native count → 0~~ **CORRECTED 2026-09-07: preload continues (both platforms) — §2 Principle**; flush disabled.
 - **Lifted (manual off, or cell→Wi-Fi with `lowDataOnCellular`)**: **no automatic make-up scan** — no suppressed-op backlog exists by design (same reasoning as C7: a state-change-triggered scan would also surprise the user mid-session). Preload resumes; flush resumes on the next tick (kick once on the transition).
 - No resume buttons needed anywhere — the suppressed ops are all re-derived on their next natural trigger.
 

@@ -15,6 +15,7 @@ import { get } from 'svelte/store'
 import { settings, metadataScanState, type Track } from '../src/stores/appState'
 import { effectiveLowData, __setNetworkStatus } from '../src/lib/networkMode'
 import { PlaybackManager } from '../src/lib/playbackManager'
+import { tagProbeState } from '../src/lib/metadataScanner'
 import { engine } from '../src/lib/engineFacade'
 import { queueManager } from '../src/lib/queueManager'
 import { ScrobbleFlushEngine, scrobbleFlushEngine, scrobbleFlushStatus, type FlushStore } from '../src/lib/scrobbleFlush'
@@ -260,6 +261,39 @@ test('LDM engage with NO active scan leaves the scan state untouched', () => {
   }
 })
 
+test('LDM engage aborts an ACTIVE standalone tag probe (the tail runs after the scan state lands)', () => {
+  resetLowDataState()
+  const h = makeManager()
+  h.priv._initialized = true
+  // Observable-effect pin: the post-scan tail and the boot/restore probe both
+  // run while metadataScanState is already terminal, so the scan-status guard
+  // alone misses them — engage must abort the probe itself. The probe's
+  // `active` flag is the user-visible signal the edge's cancel resets
+  // (the gen-bump abort semantics are pinned in scannerLifecycle.test.ts).
+  const idle = { active: false, done: 0, remaining: 0, revision: 0, resolved: 0 }
+  // The lift edge kicks the module-singleton engine — patch it out so the
+  // real Dexie-backed kick never fires in Node (the lift-kick behavior is
+  // pinned separately below).
+  const singleton = scrobbleFlushEngine as unknown as { kick(): void }
+  const realKick = singleton.kick
+  singleton.kick = () => {}
+  try {
+    subscribeShared(h)
+
+    tagProbeState.set({ active: true, done: 3, remaining: 5, revision: 1, resolved: 0 })
+    settings.set({ lowDataMode: true }) // engage
+    assert.equal(get(tagProbeState).active, false, 'engage aborts the active probe')
+
+    // Lift must NOT re-probe (no make-up): the state stays idle.
+    settings.set({ lowDataMode: false })
+    assert.deepEqual(get(tagProbeState), { ...idle, revision: 1 }, 'lift leaves the probe idle — no make-up')
+  } finally {
+    singleton.kick = realKick
+    tagProbeState.set(idle)
+    h.cleanup()
+  }
+})
+
 test('LDM lift kicks the flush engine exactly once', () => {
   resetLowDataState()
   const h = makeManager()
@@ -278,6 +312,80 @@ test('LDM lift kicks the flush engine exactly once', () => {
     settings.set({ lowDataMode: false }) // lift → one kick
     assert.equal(kicks, 1, 'the lift edge kicks exactly one flush cycle')
   } finally {
+    singleton.kick = realKick
+    h.cleanup()
+  }
+})
+
+// Mid-session TRANSITIONS on the REAL engine (fresh instance + memory store,
+// not the Dexie singleton): the engage edge flips autoFlushEnabled and the
+// lift edge's enable-then-kick order actually delivers a row that was
+// enqueued while suspended — the full held-then-delivered cycle.
+test('flush engine mid-session: rows enqueued under LDM deliver on the lift edge', async () => {
+  resetLowDataState()
+  const store = memoryStore()
+  const { submitted, deps } = spyDeps()
+  const eng = new ScrobbleFlushEngine(store, deps, { autoKick: false })
+  const h = makeManager()
+  h.priv._initialized = true
+  // Route the manager's edges into the FRESH engine instead of the Dexie
+  // singleton (patch-at-call-time convention; restored in finally).
+  const singleton = scrobbleFlushEngine as unknown as Record<string, unknown>
+  const realSet = singleton.setAutoFlushEnabled
+  const realKick = singleton.kick
+  singleton.setAutoFlushEnabled = (v: boolean) => eng.setAutoFlushEnabled(v)
+  singleton.kick = () => eng.kick()
+  try {
+    subscribeShared(h)
+
+    settings.set({ lowDataMode: true }) // engage — the edge suspends the gate
+    assert.equal(get(effectiveLowData), true)
+    await eng.enqueue('lfm-scrobble', 'Artist', 'Track')
+    await new Promise((r) => setTimeout(r, 0))
+    assert.equal(submitted.length, 0, 'nothing delivers while LDM is engaged')
+    assert.equal(store.rows.length, 1, 'the row stays queued durably')
+
+    settings.set({ lowDataMode: false }) // lift — flip THEN kick, in order
+    await new Promise((r) => setTimeout(r, 0))
+    assert.deepEqual(submitted, ['Track'], 'the lift edge delivers the held row')
+    assert.equal(store.rows.length, 0)
+  } finally {
+    singleton.setAutoFlushEnabled = realSet
+    singleton.kick = realKick
+    h.cleanup()
+  }
+})
+
+test('flush engine mid-session: the engage edge suspends a running auto-drain', async () => {
+  resetLowDataState()
+  const store = memoryStore()
+  const { submitted, deps } = spyDeps()
+  const eng = new ScrobbleFlushEngine(store, deps, { autoKick: false })
+  const h = makeManager()
+  h.priv._initialized = true
+  const singleton = scrobbleFlushEngine as unknown as Record<string, unknown>
+  const realSet = singleton.setAutoFlushEnabled
+  const realKick = singleton.kick
+  singleton.setAutoFlushEnabled = (v: boolean) => eng.setAutoFlushEnabled(v)
+  singleton.kick = () => eng.kick()
+  try {
+    subscribeShared(h)
+
+    // Row present, gate ON (boot-time state): a kick delivers normally.
+    await eng.enqueue('lfm-scrobble', 'Artist', 'Track')
+    eng.kick()
+    await new Promise((r) => setTimeout(r, 0))
+    assert.deepEqual(submitted, ['Track'], 'the engine works before any LDM edge')
+
+    // Engage mid-session: the edge flips the gate — subsequent kicks no-op.
+    settings.set({ lowDataMode: true })
+    await eng.enqueue('lfm-scrobble', 'Artist', 'Track2')
+    eng.kick()
+    await new Promise((r) => setTimeout(r, 0))
+    assert.equal(submitted.length, 1, 'no delivery while suspended')
+    assert.equal(store.rows.length, 1, 'the second row waits durably')
+  } finally {
+    singleton.setAutoFlushEnabled = realSet
     singleton.kick = realKick
     h.cleanup()
   }

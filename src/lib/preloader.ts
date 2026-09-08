@@ -1,7 +1,12 @@
 import { get } from 'svelte/store'
 import { settings, currentTrack, queue } from '../stores/appState'
 import { advanceTargetIndex } from './queueMutation'
-import { effectiveLowData } from './networkMode'
+// NOTE: the preloader deliberately does NOT read effectiveLowData — the LDM
+// plan's Principle (docs/plans/2026-09-06, §2) keeps auto-preload ON under
+// low data mode: it is bounded to the next few tracks, serialized one-fetch-
+// per-tick, and is exactly what makes LDM streaming viable on a marginal
+// connection. The 2026-09-06 commit shipped a poll bail against the plan's
+// own Principle (its §4 table row 3); corrected 2026-09-07.
 
 const CACHE_NAME = 'mmdrome-preload-cache'
 const MAX_CACHE_ENTRIES = 50
@@ -144,9 +149,6 @@ function bufferCoversEnd(el: HTMLAudioElement, metaDur: number): boolean {
 async function pollOnce(): Promise<void> {
   const el = getAudioEl?.()
   if (!el || el.paused || preloading || !urlForTrack) return
-  // Low data mode: the preloader's automatic downloads are suppressed
-  // entirely (the plan's LDM table gates the preloader — A13).
-  if (get(effectiveLowData)) return
   const metaDur = get(currentTrack)?.duration ?? 0
   if (!metaDur) return
   const remaining = metaDur - el.currentTime

@@ -7,7 +7,9 @@
 //     forever (two strikes mark the row dead so it can't head-of-line block);
 //  3. cache-first src resolution — a preloaded track plays OFFLINE via blob;
 //     a miss falls back to the raw URL (never a hard load failure);
-//  4. the LDM gate bails the poll before any fetch;
+//  4. LDM does NOT gate the fill — the plan's Principle keeps auto-preload ON
+//     under low data mode (bounded, serialized; it is what makes LDM streaming
+//     viable on a marginal connection);
 //  5. the fill-start gate: remaining>30 s defers, UNLESS the element has
 //     already buffered the whole current file (the current track then needs
 //     no bandwidth, so preloading is free — coverage is measured from the
@@ -204,13 +206,30 @@ test('cache keys are exact URLs — a transcode-param drift misses instead of se
   assert.notEqual(drifted, urlOf('t2'), 'the param-changed URL does NOT hit the old entry')
 })
 
-// 4. LDM gate -----------------------------------------------------------------
+// 4. LDM does NOT gate the fill ------------------------------------------------
+//    The plan's Principle (docs/plans/2026-09-06 §2): "Auto-preload is
+//    borderline → stays ON in LDM (it's bounded to the next few tracks and is
+//    what makes LDM streaming viable on a marginal connection)." The 2026-09-06
+//    commit shipped a poll bail against the plan's own Principle (§4 table row
+//    3); corrected 2026-09-07 — preload is the counter to intermittent
+//    connections, exactly the condition LDM describes.
 
-test('the poll bails before fetching when low data mode is engaged', async () => {
+test('the fill CONTINUES while low data mode is engaged (stays ON per the plan Principle)', async () => {
   __setNetworkStatus({ known: true, isCellular: false, osLowData: true })
   await tick()
-  assert.deepEqual(fetchLog, [], 'LDM suppresses the automatic fill entirely')
-  assert.equal(cacheStore.size, 0)
+  assert.deepEqual(fetchLog, [urlOf('t2')], 'LDM does not suppress the automatic fill')
+  assert.equal(cacheStore.size, 1)
+  // The serialized cadence still holds: one fetch per tick even under LDM.
+  await tick()
+  assert.deepEqual(fetchLog, [urlOf('t2'), urlOf('t3')], 'still one fetch per tick under LDM')
+})
+
+test('LDM engages mid-fill: the NEXT tick keeps filling (no engage-edge freeze)', async () => {
+  await tick()
+  assert.deepEqual(fetchLog, [urlOf('t2')])
+  __setNetworkStatus({ known: true, isCellular: false, osLowData: true })
+  await tick()
+  assert.deepEqual(fetchLog, [urlOf('t2'), urlOf('t3')], 'engaging LDM mid-window does not freeze the fill')
 })
 
 test('a paused element stops the fill (preloading is for continuous playback)', async () => {

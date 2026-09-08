@@ -1264,6 +1264,20 @@ export async function resetMetadataAndRelink(opts: ResetRelinkOptions = {}): Pro
  *  start a competing PROPFIND/tag pass in the small scheduling window before
  *  metadataScanState becomes `scanning`.
  */
+/** Low-data-mode engage edge: abort an ACTIVE standalone tag probe the same
+ *  way cancelScan aborts a scan. The gen bump is UNCONDITIONAL (a probe
+ *  between its start and its first state write — e.g. waiting on the index
+ *  refresh — has `active:false` but must still be aborted at its next guard),
+ *  while the state reset mirrors the credential-swap reset. The next natural
+ *  trigger (scan tail, File Matching open, restore probe) re-probes — no
+ *  make-up backlog exists, matching the A13 no-make-up rule. */
+export function cancelTagProbeIfActive(): void {
+  tagProbeGen++
+  if (get(tagProbeState).active) {
+    tagProbeState.update((state) => ({ ...state, active: false, done: 0, remaining: 0 }))
+  }
+}
+
 /**
  * User-facing scan cancellation. Bumps `scanGen` so every generation guard
  * (drain workers, probes, index requests) stops taking new work at its next

@@ -111,6 +111,13 @@ test('WebDAV credentials re-point but the scan is skipped when offline', () => {
   assert.equal(plan.scanWebdav, false)
 })
 
+test('LDM suppresses the automatic scan exactly like offline — never the load (A13)', () => {
+  const plan = planNavidromeLoad(result(), ctx({ webdavConfigured: true, online: true, lowData: true }))
+  assert.equal(plan.applyLibrary, true, 'the library load itself is essential and never gated')
+  assert.equal(plan.configureWebdav, true)
+  assert.equal(plan.scanWebdav, false, 'the automatic scan is suppressed like offline')
+})
+
 test('WebDAV is untouched on a bail (disconnected/empty)', () => {
   const plan = planNavidromeLoad(
     result({ connection: { connected: false }, songs: [], loadResult: { loaded: 0, failed: 0, error: 'x' } }),

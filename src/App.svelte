@@ -99,12 +99,11 @@
     // manager enables the tracker, and start the durable flush engine.
     await restoreLfmSession()
     scrobbleFlushEngine.init()
-    // Low data mode suspends the automatic flush (rows stay queued durably);
-    // lifting it kicks one drain via the manager's LDM edge subscription.
+    // Low data mode suspends the automatic flush — the BOOT-TIME gate read
+    // only (LDM may already be engaged when the engine inits). The engage/lift
+    // TRANSITIONS live in the playback manager's LDM edge subscription, which
+    // owns the flip + the one-kick-on-lift in the correct order.
     scrobbleFlushEngine.setAutoFlushEnabled(!get(effectiveLowData))
-    effectiveLowData.subscribe((active) => {
-      scrobbleFlushEngine.setAutoFlushEnabled(!active)
-    })
 
     const s = $settings
     if (s.navidromeUrl && s.navidromeUser && s.navidromePassword) {

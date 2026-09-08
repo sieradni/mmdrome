@@ -1379,10 +1379,10 @@
           <h3 class="mb-3 text-base font-medium text-primary">Data &amp; Network</h3>
           <div class="space-y-3">
             <label class="flex cursor-pointer items-center gap-3">
-              <input type="checkbox" checked={$settings.lowDataMode ?? false} onchange={setLowDataMode} class="accent-yellow-500" />
+              <input data-testid="low-data-mode" type="checkbox" checked={$settings.lowDataMode ?? false} onchange={setLowDataMode} class="accent-yellow-500" />
               <div>
                 <p class="text-base text-primary">Low data mode</p>
-                <p class="text-sm text-muted">Pauses automatic background traffic: metadata scans, tag probes, preloading, and scrobble uploads (queued instead of sent). Streaming, cover art, and everything you tap yourself are never affected.</p>
+                <p class="text-sm text-muted">Pauses automatic background traffic: metadata scans, tag probes, and scrobble uploads (queued instead of sent). Streaming, cover art, preloading (it keeps your next tracks buffered — that's what makes low data mode work), and everything you tap yourself are never affected.</p>
               </div>
             </label>
             <label class="flex cursor-pointer items-center gap-3">

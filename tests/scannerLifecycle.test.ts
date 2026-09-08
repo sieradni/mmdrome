@@ -28,6 +28,7 @@ import {
   __resetScannerState,
   refreshIndex,
   ensureTagProbe,
+  cancelTagProbeIfActive,
   scanAll,
   setWebdavCredentials,
   cancelScan,
@@ -330,6 +331,63 @@ test('partial index allows auto-binds with tag verification', async () => {
   assert.equal(bound?.matchSource, undefined, 'auto-bind is not a manual binding')
 
   teardown()
+})
+
+// ── LDM mid-session transitions (A13) ──────────────────────────────────────
+// The engage edge aborts an ACTIVE probe (the boot/restore probe and the
+// post-scan tail both run while metadataScanState is terminal, so the
+// scan-status guard alone misses them); the lift edge does NOT re-probe —
+// no make-up backlog exists, the next natural trigger covers it.
+test('LDM engage aborts an ACTIVE tag probe mid-flight', async () => {
+  setupMocks()
+  initWebdav()
+  library.set([track()])
+  mockEntries = [entry()]
+  mockMeta = {
+    '/dav/files/user/Song.flac': fileMeta({ title: 'Song', artist: 'Artist' }),
+  }
+
+  try {
+    // Hold the tag READ so the probe parks mid-flight (past its build and
+    // state write, inside the read loop) when the cancel lands. `active`
+    // flips true only AFTER the index build completes, so poll for it.
+    readGate = new Promise((resolve) => { releaseRead = resolve })
+    const p = ensureTagProbe()
+    for (let i = 0; i < 50 && !get(tagProbeState).active; i++) await new Promise((r) => setTimeout(r, 0))
+    assert.equal(get(tagProbeState).active, true, 'probe is mid-flight')
+
+    cancelTagProbeIfActive()
+
+    // The in-flight read still completes (the gate release), but the probe's
+    // generation guard rejects the result — no bind, state reset to idle.
+    releaseRead!()
+    await p
+    assert.equal(get(tagProbeState).active, false, 'probe reported idle after the cancel')
+    assert.equal(get(metadataCache).get('t1')?.webdavPath, undefined, 'the aborted probe must not auto-bind')
+  } finally {
+    teardown()
+  }
+})
+
+test('LDM lift does NOT re-probe — the next natural trigger does (no make-up)', async () => {
+  setupMocks()
+  initWebdav()
+  library.set([track()])
+
+  try {
+    cancelTagProbeIfActive() // the lift edge's only scanner action is nothing
+    assert.equal(buildCallCount, 0, 'no probe was started on lift')
+
+    // The next natural trigger (a scan tail / File Matching open) probes again.
+    mockEntries = [entry()]
+    mockMeta = {
+      '/dav/files/user/Song.flac': fileMeta({ title: 'Song', artist: 'Artist' }),
+    }
+    await ensureTagProbe()
+    assert.equal(buildCallCount, 1, 'a natural trigger still probes after LDM')
+  } finally {
+    teardown()
+  }
 })
 
 test('probe publishes resolved count for tag auto-binds, reset per run', async () => {
