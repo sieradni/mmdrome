@@ -98,6 +98,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" ./mmdrome.ipa \
+          # Diagnostics ride a step annotation (public API) because job logs
+          # need auth. Newlines are %0A-encoded for the annotation command.
+          AUTH_OUT=$(gh auth status 2>&1)
+          echo "::notice title=gh-auth-status::${AUTH_OUT//$'\n'/%0A}"
+          set +e
+          CREATE_OUT=$(gh release create "${{ github.ref_name }}" ./mmdrome.ipa \
             --title "mmdrome iOS ${{ github.ref_name }}" \
-            --notes "Unsigned IPA for SideStore (source auto-signs on install). Add the source once in SideStore, then install / update from there."
+            --notes "Unsigned IPA for SideStore (source auto-signs on install). Add the source once in SideStore, then install / update from there." 2>&1)
+          CODE=$?
+          echo "::notice title=gh-release-create-exit-${CODE}::${CREATE_OUT//$'\n'/%0A}"
+          exit $CODE
