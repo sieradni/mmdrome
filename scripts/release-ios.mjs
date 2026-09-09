@@ -31,7 +31,7 @@ const ICON_URL = `${SITE}/icon-512.png`
 const TINT = '8E8E93'
 
 function usage() {
-  console.error('usage: node scripts/release-ios.mjs <x.y.z> [notes...] [--build N]')
+  console.error('usage: node scripts/release-ios.mjs <x.y.z> [notes...] [--build N] [--size N]')
   process.exit(1)
 }
 
@@ -42,6 +42,15 @@ if (buildFlag !== -1) {
   buildOverride = rawArgs[buildFlag + 1]
   if (!buildOverride || !/^\d+$/.test(buildOverride)) usage()
   rawArgs.splice(buildFlag, 2)
+}
+// --size N stamps the IPA byte size into the version entry (known only after
+// CI builds; omit when unknown — clients tolerate a missing size).
+let sizeOverride = null
+const sizeFlag = rawArgs.indexOf('--size')
+if (sizeFlag !== -1) {
+  sizeOverride = rawArgs[sizeFlag + 1]
+  if (!sizeOverride || !/^\d+$/.test(sizeOverride)) usage()
+  rawArgs.splice(sizeFlag, 2)
 }
 const [version, ...noteParts] = rawArgs
 if (!version || !/^\d+\.\d+\.\d+$/.test(version)) usage()
@@ -76,7 +85,20 @@ mkdirSync(dir, { recursive: true })
 const appsPath = join(dir, 'apps.json')
 let source = null
 if (existsSync(appsPath)) source = JSON.parse(readFileSync(appsPath, 'utf8'))
-const versionEntry = { version, versionDate, versionDescription: notes, downloadURL }
+// versions[] entries use the NEW key names (date, localizedDescription,
+// buildVersion) — NOT the legacy flat-app keys (versionDate,
+// versionDescription). SideStore's decoder requires `date` and throws
+// "no value associated with key date" otherwise (2026-09-09). The flat
+// legacy keys stay on the app object for old clients.
+const versionEntry = {
+  version,
+  buildVersion: String(build),
+  date: versionDate,
+  localizedDescription: notes,
+  downloadURL,
+  minOSVersion: '15.0',
+  ...(sizeOverride ? { size: Number(sizeOverride) } : {}),
+}
 const versions = [versionEntry, ...((source?.apps?.[0]?.versions ?? []).filter((v) => v.version !== version))]
 const news = [
   { title: `mmdrome ${version}`, identifier: tag, caption: notes.slice(0, 140), date: versionDate, tintColor: TINT, imageURL: ICON_URL },

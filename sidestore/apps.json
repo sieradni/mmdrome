@@ -23,9 +23,12 @@
       "versions": [
         {
           "version": "1.1.0",
-          "versionDate": "2026-09-09T09:56:49.027Z",
-          "versionDescription": "File Matching redesign: attention buckets, Confirm-this-is-correct, row search and filters. iOS Audio Mixing mode (play alongside other apps).",
-          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.1.0/mmdrome.ipa"
+          "buildVersion": "2",
+          "date": "2026-09-09T09:56:49.027Z",
+          "localizedDescription": "File Matching redesign: attention buckets, Confirm-this-is-correct, row search and filters. iOS Audio Mixing mode (play alongside other apps).",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.1.0/mmdrome.ipa",
+          "size": 4819832,
+          "minOSVersion": "15.0"
         }
       ]
     }
