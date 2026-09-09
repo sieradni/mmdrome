@@ -68,9 +68,9 @@
 </script>
 
 <div class="flex h-full flex-col bg-background">
-  <div class="flex items-center justify-between px-4 py-3">
+  <div class="flex items-center justify-between px-4 py-2">
     <span class="text-sm font-medium text-primary">Details</span>
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-1">
       <button onclick={oncloseall} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Library">
         <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
       </button>

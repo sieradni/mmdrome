@@ -186,7 +186,7 @@ let visible = $derived(processed.slice(0, limit))
 
   <div bind:this={listContainer} class="flex-1 overflow-y-auto pb-24"
        onscroll={() => { if (listContainer) saveViewState(viewName, { scrollTop: listContainer.scrollTop }) }}>
-    <div class="px-4 py-2">
+    <div class="px-4 pt-2 pb-1">
       {#each visible as track (track.trackId)}
         <TrackRow {track} showAlbum={false} ondetails={() => detailsTrack = track} highlightTokens={searchTokens} />
       {/each}

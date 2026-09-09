@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { bootApp } from './boot'
+import { openSettingsSection } from './libraryHarness'
 
 /**
  * The browser-level pin of the preload offline-buffer contract (AGENTS §4.A14)
@@ -151,8 +152,7 @@ function lastMediaTime(page: Page): Promise<number> {
  * with track 1 streaming (raw URL) and its playhead moving.
  */
 async function bootAndPlay(page: Page, preloadCount: number): Promise<void> {
-  await page.getByRole('button', { name: 'Settings' }).click()
-  await expect(page.getByTestId('navidrome-url')).toBeAttached()
+  await openSettingsSection(page, 'sources')
   await page.getByTestId('navidrome-url').fill(NAV_BASE)
   await page.getByTestId('navidrome-user').fill('user')
   await page.getByTestId('navidrome-password').fill('pass')
@@ -160,7 +160,7 @@ async function bootAndPlay(page: Page, preloadCount: number): Promise<void> {
   await page.getByRole('button', { name: 'Connect & Load Songs' }).click()
   await expect(page.getByText('Loaded 6 song(s), 0 failed')).toBeVisible({ timeout: 30_000 })
 
-  await page.getByRole('button', { name: 'Playback' }).click()
+  await openSettingsSection(page, 'playback')
   await page.getByRole('button', { name: String(preloadCount), exact: true }).click()
 
   await page.getByRole('button', { name: 'Songs', exact: true }).click()
@@ -316,8 +316,7 @@ test('a transcode-mode change sweeps format-bearing cache entries and raw URLs s
 
   // Flip transcode mode ON (Settings → Streaming Quality → Always) — the
   // manager's transcode-change edge fires the sweep.
-  await page.getByRole('button', { name: 'Settings' }).click()
-  await page.getByRole('button', { name: 'Playback' }).click()
+  await openSettingsSection(page, 'playback')
   await page.getByRole('button', { name: 'Always', exact: true }).click()
 
   // The format-bearing entry is GONE; the raw entries (no format param) are
@@ -397,8 +396,7 @@ test('engaging low data mode mid-fill does not stop the preload window from fill
   // Wait for the FIRST fill to land (s2), then engage LDM through the real
   // Settings toggle while the window is still filling (s3..s6 pending).
   await expect.poll(() => preloadCacheHas(page, 'id=s2'), { timeout: 20_000, intervals: [500, 1_000] }).toBe(true)
-  await page.getByRole('button', { name: 'Settings' }).click()
-  await page.getByRole('button', { name: 'Playback' }).click()
+  await openSettingsSection(page, 'playback')
   await page.getByTestId('low-data-mode').click()
   await expect(page.getByTestId('low-data-mode')).toBeChecked()
 

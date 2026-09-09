@@ -467,19 +467,19 @@ function seek(e: Event) {
 
 <div class="relative flex h-full flex-col bg-background select-none">
   <!-- Header -->
-  <div class="grid grid-cols-3 items-center border-b border-white/10 px-4 py-2.5">
+  <div class="grid grid-cols-3 items-center border-b border-white/10 px-4 py-1.5">
     <div class="flex items-center gap-1">
-      <button onclick={oncloseall} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Library">
-        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
+      <button onclick={oncloseall} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Library">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
       </button>
-      <button onclick={onclose} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Close queue">
-        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+      <button onclick={onclose} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Close queue">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
     </div>
     <span class="text-center text-base font-medium text-muted">Queue</span>
     <button
       onclick={handleClearQueue}
-      class="justify-self-end rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-colors hover:text-red-400"
+      class="justify-self-end rounded-lg bg-surface-hover px-3 py-1 text-sm font-medium text-primary transition-colors hover:text-red-400"
       aria-label="Clear queue"
     >
       Clear
@@ -488,11 +488,11 @@ function seek(e: Event) {
 
   <!-- Now Playing island (pinned, ALWAYS visible — an empty state mirrors
        the home view's island so the layout never jumps) -->
-  <div class="shrink-0 px-4 pb-3 pt-3">
+  <div class="shrink-0 px-4 pb-2.5 pt-2">
     {#if $currentTrack}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
-        class="rounded-lg bg-surface/50 px-3 py-2.5 ring-2 ring-white/25"
+        class="rounded-2xl bg-surface/50 px-3 py-2.5 ring-1 ring-white/10"
         role="button"
         tabindex="0"
         onclick={onclose}
@@ -557,7 +557,7 @@ function seek(e: Event) {
     {:else}
       <!-- Empty island: same silhouette as the home mini-player's empty
            state so the two surfaces read as one design. -->
-      <div class="flex items-center gap-3 rounded-lg bg-surface/50 px-3 py-2.5 ring-1 ring-white/10">
+      <div class="flex items-center gap-3 rounded-2xl bg-surface/50 px-3 py-2.5 ring-1 ring-white/10">
         <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-surface-hover">
           <svg class="h-5 w-5 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
         </div>
@@ -776,73 +776,62 @@ function seek(e: Event) {
     {/if}
   </div>
 
-  <!-- Action island: navigation (left) + destructive clears (right). In flow
-       BELOW the list — the old floating dock overlayed the last rows, so
-       bottom content was unreachable without scrolling blind past it. Shaped
-       like the now-playing island above (rounded card, ring, margins) so the
-       two read as one design language. -->
-  <div class="shrink-0 px-4 pb-4 safe-area-bottom">
-    <div class="rounded-2xl bg-surface/60 px-2 py-1.5 ring-1 ring-white/10">
-    <div class="flex items-start justify-between">
-    <div class="flex items-start gap-1">
+  <!-- Action island: quiet pills (icon + label + live count) in a
+       space-between row that wraps on narrow screens. In flow BELOW the
+       list — the old floating dock overlayed the last rows, so bottom
+       content was unreachable without scrolling blind past it. Shaped like
+       the now-playing island above (rounded card, ring, margins) so the two
+       read as one design language. Counts sit inline in the pill text — a
+       red corner badge read as an OS notification (it is a destructive
+       count, not an alert), so it died. -->
+  <div style="--safe-area-extra: 12px" class="shrink-0 px-4 pt-1 safe-area-bottom">
+    <div class="flex flex-wrap items-center justify-between gap-1.5 rounded-2xl bg-surface/60 px-2 py-1.5 ring-1 ring-white/10">
       <button
         onclick={jumpToCurrent}
         disabled={!$currentTrack}
-        class="flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
+        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
         aria-label="Jump to currently playing track"
       >
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-13v5.59l3.95 3.95 1.41-1.41L13 11.17V7h-2z"/></svg>
-        <span class="text-[10px] font-medium leading-none">Current</span>
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-13v5.59l3.95 3.95 1.41-1.41L13 11.17V7h-2z"/></svg>
+        <span class="font-medium">Current</span>
       </button>
       <button
         onclick={jumpToBoundary}
         disabled={$queue.userQueue.length === 0 || previewAutoItems.length === 0}
-        class="flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
+        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
         aria-label="Jump to the user and auto queue boundary"
       >
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
-        <span class="text-[10px] font-medium leading-none">Boundary</span>
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+        <span class="font-medium">Boundary</span>
       </button>
       <button
         onclick={() => filterOpen = !filterOpen}
-        class={"flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 transition-colors hover:bg-surface-hover " + (filterOpen ? 'chip-on' : 'text-muted hover:text-primary')}
+        class={"flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm transition-colors hover:bg-surface-hover " + (filterOpen ? 'chip-on' : 'text-muted hover:text-primary')}
         aria-label="Auto queue filters"
+        aria-expanded={filterOpen}
       >
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
-        <span class="text-[10px] font-medium leading-none">Filters</span>
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
+        <span class="font-medium">Filters</span>
       </button>
-    </div>
-    <div class="flex items-start gap-1">
+      <span class="mx-0.5 hidden h-6 w-px bg-white/10 sm:block"></span>
       <button
         onclick={clearAbove}
         disabled={aboveCount === 0}
-        class="flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30"
+        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent"
         aria-label={`Clear ${aboveCount} played track${aboveCount === 1 ? '' : 's'} above the current song`}
       >
-        <span class="relative">
-          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
-          {#if aboveCount > 0}
-            <span class="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500/80 px-1 text-[9px] font-bold text-white tabular-nums">{aboveCount}</span>
-          {/if}
-        </span>
-        <span class="text-[10px] font-medium leading-none">Clear above</span>
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
+        <span class="font-medium">Clear above{#if aboveCount > 0}<span class="tabular-nums opacity-60">&nbsp;{aboveCount}</span>{/if}</span>
       </button>
       <button
         onclick={clearBelow}
         disabled={belowCount === 0}
-        class="flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30"
+        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent"
         aria-label={`Clear ${belowCount} track${belowCount === 1 ? '' : 's'} below the current song`}
       >
-        <span class="relative">
-          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
-          {#if belowCount > 0}
-            <span class="absolute -right-2 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500/80 px-1 text-[9px] font-bold text-white tabular-nums">{belowCount}</span>
-          {/if}
-        </span>
-        <span class="text-[10px] font-medium leading-none">Clear below</span>
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+        <span class="font-medium">Clear below{#if belowCount > 0}<span class="tabular-nums opacity-60">&nbsp;{belowCount}</span>{/if}</span>
       </button>
-    </div>
-    </div>
     </div>
   </div>
 </div>

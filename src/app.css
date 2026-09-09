@@ -127,7 +127,11 @@ input[type="checkbox"]:checked::before {
 }
 
 .safe-area-bottom {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
+  /* Composable: extra local padding rides --safe-area-extra so a consumer
+     can add breathing room on top of the device inset (a plain pb-* utility
+     would be overridden by this env() padding — the queue dock's flush
+     bottom was exactly that bug). */
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + var(--safe-area-extra, 0px));
 }
 
 /* Notch/hairline insets in landscape (inset-left/right are 0 in portrait) */

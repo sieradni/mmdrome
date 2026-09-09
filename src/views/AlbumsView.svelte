@@ -195,19 +195,18 @@
 
 {#if selectedAlbum}
   <div class="relative flex h-full flex-col">
-    <div class="flex items-center gap-3 border-b border-white/10 px-4 py-2.5">
+    <div class="flex items-center gap-3 border-b border-white/10 px-4 py-2">
       <button onclick={() => selectedAlbum = null} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Back">
         <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
       <h2 class="truncate text-lg font-bold text-primary">{selectedAlbum}</h2>
-      <button onclick={playAll} class="ml-auto flex items-center gap-1.5 rounded-full bg-surface-hover px-4 py-2 text-sm font-medium text-primary transition-opacity hover:opacity-80" aria-label="Play all">
+      <button onclick={playAll} class="ml-auto flex items-center gap-1.5 rounded-full bg-surface-hover px-4 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80" aria-label="Play all">
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         Play All
       </button>
     </div>
     <div bind:this={detailScrollContainer} class="flex-1 overflow-y-auto pb-24"
-         onscroll={() => { if (detailScrollContainer) saveViewState(viewName, { detailScrollTop: detailScrollContainer.scrollTop }) }}>
-<div class="px-4 py-2">
+         onscroll={() => { if (detailScrollContainer) saveViewState(viewName, { detailScrollTop: detailScrollContainer.scrollTop }) }}>    <div class="px-4 pt-2 pb-1">
         {#each selectedTracks as track (track.trackId)}
           <TrackRow {track} ondetails={() => detailsTrack = track} showAlbumArtist onplay={handlePlayFromAlbum} highlightTokens={searchTokens} />
         {/each}

@@ -308,7 +308,7 @@ function seek(e: Event) {
   <!-- ─── Sticky Header ─── -->
   {#if view !== 'settings'}
     <header class="sticky top-0 z-30 flex flex-col bg-background">
-      <div class="flex items-center gap-2 px-4 py-3">
+      <div class="flex items-center gap-2 px-4 py-1.5">
         <div class="relative flex-1">
           <input
             type="search"
@@ -408,13 +408,13 @@ function seek(e: Event) {
 {#if nowPlayingOpen}
   <div class="fixed inset-0 z-40 flex flex-col bg-background safe-area-full">
     <!-- Header -->
-    <div class="flex items-center justify-between px-4 py-3">
-      <button onclick={toggleNowPlaying} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Close player">
-        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+    <div class="flex items-center justify-between px-4 py-2">
+      <button onclick={toggleNowPlaying} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Close player">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
-      <span class="text-base font-medium text-muted">Now Playing</span>
-      <button onclick={openQueue} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Open queue">
-        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+      <span class="text-sm font-medium text-muted">Now Playing</span>
+      <button onclick={openQueue} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Open queue">
+        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
       </button>
     </div>
 
