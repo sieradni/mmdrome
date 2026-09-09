@@ -776,61 +776,60 @@ function seek(e: Event) {
     {/if}
   </div>
 
-  <!-- Action island: quiet pills (icon + label + live count) in a
-       space-between row that wraps on narrow screens. In flow BELOW the
-       list — the old floating dock overlayed the last rows, so bottom
-       content was unreachable without scrolling blind past it. Shaped like
-       the now-playing island above (rounded card, ring, margins) so the two
-       read as one design language. Counts sit inline in the pill text — a
-       red corner badge read as an OS notification (it is a destructive
-       count, not an alert), so it died. -->
+  <!-- Action island: outlined, icon-over-label buttons that GROW to fill
+       ONE row (flex-1 + truncate — never wraps, no precise-tap targets).
+       In flow BELOW the list — the old floating dock overlayed the last
+       rows, so bottom content was unreachable without scrolling blind past
+       it. Shaped like the now-playing island above (rounded card, ring,
+       margins) so the two read as one design language. Counts sit inline in
+       the label text — a red corner badge read as an OS notification (it is
+       a destructive count, not an alert), so it died. -->
   <div style="--safe-area-extra: 12px" class="shrink-0 px-4 pt-1 safe-area-bottom">
-    <div class="flex flex-wrap items-center justify-between gap-1.5 rounded-2xl bg-surface/60 px-2 py-1.5 ring-1 ring-white/10">
+    <div class="flex items-stretch gap-1.5 rounded-2xl bg-surface/60 p-1.5 ring-1 ring-white/10">
       <button
         onclick={jumpToCurrent}
         disabled={!$currentTrack}
-        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
+        class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-muted ring-1 ring-white/10 transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
         aria-label="Jump to currently playing track"
       >
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-13v5.59l3.95 3.95 1.41-1.41L13 11.17V7h-2z"/></svg>
-        <span class="font-medium">Current</span>
+        <svg class="h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-13v5.59l3.95 3.95 1.41-1.41L13 11.17V7h-2z"/></svg>
+        <span class="w-full truncate text-center text-[10px] font-medium leading-none">Current</span>
       </button>
       <button
         onclick={jumpToBoundary}
         disabled={$queue.userQueue.length === 0 || previewAutoItems.length === 0}
-        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
+        class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-muted ring-1 ring-white/10 transition-colors hover:bg-surface-hover hover:text-primary disabled:opacity-30"
         aria-label="Jump to the user and auto queue boundary"
       >
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
-        <span class="font-medium">Boundary</span>
+        <svg class="h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+        <span class="w-full truncate text-center text-[10px] font-medium leading-none">Boundary</span>
       </button>
       <button
         onclick={() => filterOpen = !filterOpen}
-        class={"flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm transition-colors hover:bg-surface-hover " + (filterOpen ? 'chip-on' : 'text-muted hover:text-primary')}
+        class={"flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 transition-colors hover:bg-surface-hover " + (filterOpen ? 'chip-on' : 'text-muted ring-1 ring-white/10 hover:text-primary')}
         aria-label="Auto queue filters"
         aria-expanded={filterOpen}
       >
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
-        <span class="font-medium">Filters</span>
+        <svg class="h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
+        <span class="w-full truncate text-center text-[10px] font-medium leading-none">Filters</span>
       </button>
-      <span class="mx-0.5 hidden h-6 w-px bg-white/10 sm:block"></span>
       <button
         onclick={clearAbove}
         disabled={aboveCount === 0}
-        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent"
+        class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-muted ring-1 ring-white/10 transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent"
         aria-label={`Clear ${aboveCount} played track${aboveCount === 1 ? '' : 's'} above the current song`}
       >
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
-        <span class="font-medium">Clear above{#if aboveCount > 0}<span class="tabular-nums opacity-60">&nbsp;{aboveCount}</span>{/if}</span>
+        <svg class="h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
+        <span class="w-full truncate text-center text-[10px] font-medium leading-none">Clear above{#if aboveCount > 0}&nbsp;{aboveCount}{/if}</span>
       </button>
       <button
         onclick={clearBelow}
         disabled={belowCount === 0}
-        class="flex items-center gap-1.5 rounded-full px-3 py-1.5 text-sm text-muted transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent"
+        class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-muted ring-1 ring-white/10 transition-colors hover:bg-surface-hover hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent"
         aria-label={`Clear ${belowCount} track${belowCount === 1 ? '' : 's'} below the current song`}
       >
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
-        <span class="font-medium">Clear below{#if belowCount > 0}<span class="tabular-nums opacity-60">&nbsp;{belowCount}</span>{/if}</span>
+        <svg class="h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
+        <span class="w-full truncate text-center text-[10px] font-medium leading-none">Clear below{#if belowCount > 0}&nbsp;{belowCount}{/if}</span>
       </button>
     </div>
   </div>

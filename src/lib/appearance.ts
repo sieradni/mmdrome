@@ -76,7 +76,10 @@ export const FONT_OPTIONS: { id: AppFont; label: string; stack: string }[] = [
 ]
 
 const _accentHue = persisted<number | typeof NEUTRAL_ACCENT>('appearanceAccentHue', NEUTRAL_ACCENT)
-const _appFont = persisted<AppFont>('appearanceFont', 'jetbrains')
+// Default face: Space Grotesk (proportional) — user choice 2026-09-08.
+// Existing users with a persisted value keep theirs; only fresh installs
+// resolve the new default (persisted-store semantics).
+const _appFont = persisted<AppFont>('appearanceFont', 'space')
 
 export const accentHue = _accentHue.store
 export const appFont = _appFont.store
@@ -105,7 +108,7 @@ export function applyAppearance(): void {
   root.style.setProperty('--app-accent', accent)
   root.style.setProperty('--app-accent-soft', soft)
   root.style.setProperty('--app-accent-ring', ring)
-  const font = FONT_OPTIONS.find((f) => f.id === (get(_appFont.store) || 'jetbrains')) ?? FONT_OPTIONS[0]
+  const font = FONT_OPTIONS.find((f) => f.id === (get(_appFont.store) || 'space')) ?? FONT_OPTIONS.find((f) => f.id === 'space') ?? FONT_OPTIONS[0]
   root.style.setProperty('--app-font', font.stack)
   // The 93.75% root size compensates for monospace's larger apparent size;
   // proportional faces read true to size, so they run at the normal 100%.

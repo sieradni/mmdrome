@@ -74,6 +74,8 @@ test('transcodeParams: undefined bitrate defaults to 128 (opus server default)',
 
 test('resolveTranscodeFormat: default is opus (Navidrome DefaultDownsamplingFormat parity)', () => {
   assert.equal(resolveTranscodeFormat(undefined, false), 'opus')
+  // The Custom chip persists '' until the user types — empty is the default, never a bare `format=`.
+  assert.equal(resolveTranscodeFormat('', false), 'opus')
 })
 
 test('resolveTranscodeFormat: custom server format passes through verbatim', () => {

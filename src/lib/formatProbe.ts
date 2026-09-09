@@ -20,7 +20,7 @@ import { getCachedConfig, buildStreamUrl } from './navidromeApi'
  * `updateSetting` so the persisted settings row stays the single source.
  */
 
-export type FormatVerdict = 'ok' | 'unsupported' | 'unknown'
+export type FormatVerdict = 'ok' | 'unsupported' | 'network' | 'unknown'
 
 export interface FormatProbeDeps {
   audioFactory: () => HTMLAudioElement
@@ -40,11 +40,47 @@ export interface ProbeOutcome {
   format: string
 }
 
+/**
+ * TWO-PHASE probe (2026-09-08): the old single-shot design fed the stream URL
+ * straight to an Audio element, so a NETWORK failure (offline boot, captive
+ * portal, server down) or an ERROR-JSON body (stale song id after a server
+ * switch) fired the element's `error` event and got branded 'unsupported' —
+ * a permanent false "this device can't decode X" for devices that play X
+ * fine every day. Phase 1 fetches the tiny sample with plain fetch (Navidrome
+ * is CORS-enabled, §3.3) and classifies transport problems as 'network'
+ * (never persisted → retried next boot); a JSON-looking body (a Subsonic
+ * error payload, not media) is 'network' too. Phase 2 hands the RECEIVED
+ * bytes to the element via a blob URL — only an `error` after real media
+ * bytes is a genuine decode failure ('unsupported').
+ */
 async function probeFormatOnce(format: string, songId: string, deps: FormatProbeDeps): Promise<FormatVerdict> {
   const config = getCachedConfig()
   if (!config || !songId) return 'unknown'
   const audio = deps.audioFactory()
   if (!audio) return 'unknown'
+
+  // Phase 1 — transport: fetch the sample bytes ourselves.
+  const controller = new AbortController()
+  const fetchTimer = window.setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS)
+  let blob: Blob
+  try {
+    const res = await fetch(buildStreamUrl(config, songId, { format, maxBitRate: 16 }), {
+      signal: controller.signal,
+    })
+    if (!res.ok) return 'network'
+    blob = await res.blob()
+  } catch {
+    return 'network'
+  } finally {
+    window.clearTimeout(fetchTimer)
+  }
+  // A Subsonic error payload is JSON, not media — a server problem, not a
+  // device codec gap. (The element would fire `error` on it; do not persist.)
+  const head = new Uint8Array(await blob.slice(0, 1).arrayBuffer())
+  if (head[0] === 0x7b /* { */ || head[0] === 0x5b /* [ */) return 'network'
+
+  // Phase 2 — decode: real bytes in the element. `error` here IS the device.
+  const objectUrl = URL.createObjectURL(blob)
   return new Promise<FormatVerdict>((resolve) => {
     let settled = false
     const finish = (verdict: FormatVerdict) => {
@@ -53,17 +89,13 @@ async function probeFormatOnce(format: string, songId: string, deps: FormatProbe
       window.clearTimeout(timer)
       audio.removeAttribute('src')
       try { audio.load() } catch { /* element already torn down */ }
+      try { URL.revokeObjectURL(objectUrl) } catch { /* already revoked */ }
       resolve(verdict)
     }
     const timer = window.setTimeout(() => finish('unknown'), PROBE_TIMEOUT_MS)
     audio.addEventListener('canplay', () => finish('ok'), { once: true })
     audio.addEventListener('error', () => finish('unsupported'), { once: true })
-    // The raw URL (no resolveTranscodeFormat fallback wrap — this probe asks
-    // the SERVER for the format too) needs a REAL song id: a fake one would
-    // 404 and the element's `error` would falsely read as decode failure.
-    // With a real id, 'ok' means the whole path works (even a server without
-    // ffmpeg passes — it returns raw bytes, which IS playable end-to-end).
-    audio.src = buildStreamUrl(config, songId, { format, maxBitRate: 16 })
+    audio.src = objectUrl
     void audio.load()
   })
 }
@@ -79,15 +111,18 @@ export async function ensureFormatProbe(
   rawSongId = '',
   deps: FormatProbeDeps = defaultDeps(),
 ): Promise<ProbeOutcome> {
+  if (!format) return { verdict: 'unknown', format }
   const probeMap = get(settings).transcodeProbe
   const existing = probeMap?.[format]
   if (existing === 'ok' || existing === 'unsupported') {
     return { verdict: existing, format }
   }
   const verdict = await probeFormatOnce(format, rawSongId, deps)
-  // A `probe` (0 s timeout) is deliberately NOT persisted — a slow server on
-  // one boot shouldn't pin a permanent mp3 fallback.
-  if (verdict !== 'unknown') {
+  // `unknown` (0 s timeout) and `network` (offline boot / server down / error
+  // JSON) are deliberately NOT persisted — a slow server on one boot, or a
+  // captive portal, must not pin a permanent mp3 fallback. Only a verdict
+  // backed by real received bytes that the ELEMENT rejected is 'unsupported'.
+  if (verdict !== 'unknown' && verdict !== 'network') {
     updateSetting('transcodeProbe', { ...(get(settings).transcodeProbe ?? {}), [format]: verdict })
   }
   return { verdict, format }

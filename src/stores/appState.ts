@@ -366,6 +366,7 @@ export async function initStores(): Promise<void> {
     getAllMetadata(),
   ])
   await loadSettings()
+  applyDefaultSettings()
 
   if (q) {
     // `?? q.historyQueue` tolerates rows persisted by app versions that still
@@ -430,6 +431,19 @@ export function updateSetting<K extends keyof SettingsMap>(key: K, value: Settin
     setSetting(key, value as string | number | boolean | object)
     return { ...s, [key]: value }
   })
+}
+
+/** Defaults for settings rows that were never persisted. Written back into
+ *  the store once at boot (after loadSettings) so EVERY reader sees one
+ *  consistent value without spreading `?? fallback` expressions further.
+ *  2026-09-08 user tuning: replay gain track mode, 6 s crossfade.
+ *  `[not test-pinned]` */
+export function applyDefaultSettings(): void {
+  settings.update((s) => ({
+    replayGainMode: s.replayGainMode ?? 'track',
+    crossfadeDuration: s.crossfadeDuration ?? 6,
+    ...s,
+  }))
 }
 
 export function updateMetadata(meta: LocalMetadataStore): void {

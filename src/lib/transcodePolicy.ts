@@ -61,10 +61,13 @@ export function transcodeParams(input: TranscodeInput, chosenFormat: string | un
  * Resolves the EFFECTIVE stream format: the user's choice, or mp3 when the
  * capability probe failed for it on this device (probe state carried by the
  * caller; `probeFailed` is only ever true after a real failed probe — no
- * probe pass, no fallback, ever).
+ * probe pass, no fallback, ever). An EMPTY choice (the Custom chip persists
+ * '' until the user types) resolves as the opus default — a bare `format=`
+ * would be a malformed stream request.
  */
 export function resolveTranscodeFormat(chosen: string | undefined, probeFailed: boolean): string {
-  const fmt = (chosen ?? 'opus').trim().toLowerCase()
+  const fmt = (chosen ?? '').trim().toLowerCase()
+  if (fmt === '') return 'opus'
   if (probeFailed && fmt !== 'mp3') return 'mp3'
   return fmt
 }

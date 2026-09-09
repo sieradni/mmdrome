@@ -147,7 +147,10 @@
 
   /** Custom server-defined format (any target the admin's ffmpeg command
    *  produces). Lightly sanitized — lowercase, URL-safe — but never blocked:
-   *  an unknown format degrades server-side to the server's own default. */
+   *  an unknown format degrades server-side to the server's own default.
+   *  Empty keystrokes are ignored (NOT persisted) so the previous custom
+   *  value survives while the user retypes; the input only renders when a
+   *  custom format is already active. */
   function setTranscodeFormatInput(e: Event) {
     const val = (e.target as HTMLInputElement).value.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
     if (val) updateSetting('transcodeFormat', val)
@@ -1571,15 +1574,21 @@
                       class:text-muted={($settings.transcodeFormat ?? 'opus') !== fmt}
                     >{fmt}</button>
                   {/each}
+                  <button
+                    onclick={() => setTranscodeFormat(isCustomFormat($settings.transcodeFormat ?? 'opus') ? ($settings.transcodeFormat ?? 'opus') : '')}
+                    class="btn-sm border border-white/15 hover:bg-white/5"
+                    class:chip-on={isCustomFormat($settings.transcodeFormat ?? 'opus')}
+                    class:text-muted={!isCustomFormat($settings.transcodeFormat ?? 'opus')}
+                  >Custom</button>
                 </div>
-                <input
-                  type="text"
-                  placeholder="Custom… (server-defined format)"
-                  value={isCustomFormat($settings.transcodeFormat ?? 'opus') ? ($settings.transcodeFormat ?? '') : ''}
-                  oninput={setTranscodeFormatInput}
-                  class="mt-2 w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-                />
                 {#if isCustomFormat($settings.transcodeFormat ?? 'opus')}
+                  <input
+                    type="text"
+                    placeholder="Custom… (server-defined format)"
+                    value={$settings.transcodeFormat ?? ''}
+                    oninput={setTranscodeFormatInput}
+                    class="mt-2 w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                  />
                   <p class="mt-1 text-sm text-muted">Custom format “{$settings.transcodeFormat}” — the server must have a transcode command for it, otherwise it falls back to its own default.</p>
                 {/if}
               </div>
@@ -1601,7 +1610,7 @@
                 <p class="text-sm text-muted">Lossless format — the server ignores the bitrate setting.</p>
               {/if}
               {#if ($settings.transcodeProbe?.[$settings.transcodeFormat ?? 'opus']) === 'unsupported'}
-                <p class="text-sm text-yellow-500/90">This device can't decode {$settings.transcodeFormat ?? 'opus'} — MP3 is used instead. The check reruns next time the app starts.</p>
+                <p class="text-sm text-yellow-500/90">This device couldn't decode {$settings.transcodeFormat ?? 'opus'} during a test — MP3 is used until it passes. If your files play fine, tap the {$settings.transcodeFormat ?? 'opus'} button to re-test.</p>
               {/if}
               <p class="text-sm text-muted">Applies from the next track. A server without ffmpeg silently streams original files; an unsupported custom format falls back to the server's own default.</p>
             </div>
