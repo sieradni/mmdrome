@@ -344,7 +344,7 @@ function seek(e: Event) {
   <div class="flex flex-col overflow-hidden">
     <!-- Mini-player island: rounded card floating on a padded strip (matching
          the queue view's action island) instead of an edge-to-edge band. -->
-    <div class="px-3 pb-2 pt-1">
+    <div class="px-3 pb-2.5 pt-1">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       onclick={miniPlayerTap}
@@ -483,10 +483,10 @@ function seek(e: Event) {
                     class="w-20 rounded bg-surface-hover px-2 py-1.5 text-sm text-primary ring-1 ring-white/10 outline-none"
                   />
                   <span class="text-sm text-muted">minutes</span>
-                  <button onclick={askSleepTimer} class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-background hover:opacity-80">Start</button>
+                  <button onclick={askSleepTimer} class="btn-primary btn-sm">Start</button>
                 </div>
                 <div class="flex items-center gap-2">
-                  <button onclick={sleepEndOfTrack} class="flex-1 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary hover:opacity-80">End of Track</button>
+                  <button onclick={sleepEndOfTrack} class="btn-secondary btn-sm flex-1">End of Track</button>
                   {#if $sleepTimer.active}
                     <button onclick={cancelSleepTimer} class="rounded-lg px-3 py-1.5 text-sm font-medium text-red-400 hover:bg-surface-hover">Cancel</button>
                   {/if}

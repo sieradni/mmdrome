@@ -1117,7 +1117,7 @@
               <button
                 onclick={testNavidrome}
                 disabled={$navidromeConnection.checking || $navidromeLoadStatus.loading}
-                class="flex items-center justify-center gap-2 rounded-lg bg-surface-hover px-5 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                class="btn-secondary btn-md"
               >
                 {#if $navidromeConnection.checking}
                   <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -1133,7 +1133,7 @@
             <button
               onclick={connectNavidromeHandler}
               disabled={$navidromeConnection.checking || $navidromeLoadStatus.loading}
-              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
+              class="btn-primary btn-lg w-full"
             >
               {#if $navidromeConnection.checking || $navidromeLoadStatus.loading}
                 <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -1148,7 +1148,7 @@
             {#if $navidromeLoadStatus.loading}
               <button
                 onclick={cancelLongOps}
-                class="flex w-full items-center justify-center rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+                class="btn-secondary btn-md w-full"
               >Stop loading — your current library stays unchanged</button>
             {/if}
             {#if $navidromeConnection.connected}
@@ -1210,7 +1210,7 @@
               <button
                 onclick={testWebdav}
                 disabled={$webdavConnection.checking}
-                class="flex items-center justify-center gap-2 rounded-lg bg-surface-hover px-5 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                class="btn-secondary btn-md"
               >
                 {#if $webdavConnection.checking}
                   <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -1231,7 +1231,7 @@
             <button
               onclick={rescanAllMetadata}
               disabled={$metadataScanState.status === 'scanning' || $tagProbeState.active}
-              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
+              class="btn-primary btn-lg w-full"
             >
               {#if $metadataScanState.status === 'scanning'}
                 <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -1304,11 +1304,9 @@
               {#each [{ id: 'webdav', label: 'Your Files' }, { id: 'navidrome', label: 'Navidrome' }] as opt}
                 <button
                   onclick={() => setRatingSource(opt.id as 'webdav' | 'navidrome')}
-                  class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors"
-                  class:bg-primary={($settings.ratingSource ?? 'webdav') === opt.id}
-                  class:text-background={($settings.ratingSource ?? 'webdav') === opt.id}
-                  class:bg-surface-hover={($settings.ratingSource ?? 'webdav') !== opt.id}
-                  class:text-muted={($settings.ratingSource ?? 'webdav') !== opt.id}
+                  class="btn-sm border border-white/15 hover:bg-white/5"
+                  class:chip-on={($settings.ratingSource ?? 'webdav') === opt.id}
+                  class:text-muted={($settings.ratingSource ?? 'webdav') !== opt.id} 
                 >{opt.label}</button>
               {/each}
             </div>
@@ -1384,7 +1382,7 @@
               {:else}
                 <button
                   onclick={connectLastfm}
-                  class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-background transition-opacity hover:opacity-80"
+                  class="btn-primary btn-md w-full"
                 >Connect Last.fm</button>
               {/if}
               {#if lfmError}
@@ -1413,7 +1411,7 @@
                 <button
                   onclick={testListenBrainzToken}
                   disabled={lbChecking}
-                  class="flex items-center justify-center gap-2 rounded-lg bg-surface-hover px-5 py-2.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                  class="btn-secondary btn-md"
                 >
                   {#if lbChecking}
                     <svg class="h-3 w-3 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -1521,10 +1519,8 @@
             {#each [0, 1, 2, 3, 5] as n}
               <button
                 onclick={() => setPreload(n)}
-                class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors"
-                class:bg-primary={($settings.preloadTracks ?? 0) === n}
-                class:text-background={($settings.preloadTracks ?? 0) === n}
-                class:bg-surface-hover={($settings.preloadTracks ?? 0) !== n}
+                class="btn-sm border border-white/15 hover:bg-white/5"
+                class:chip-on={($settings.preloadTracks ?? 0) === n}
                 class:text-muted={($settings.preloadTracks ?? 0) !== n}
               >{n === 0 ? 'Off' : n}</button>
             {/each}
@@ -1556,10 +1552,8 @@
             {#each ['off', 'lowData', 'always'] as mode}
               <button
                 onclick={() => setTranscodeMode(mode as 'off' | 'lowData' | 'always')}
-                class="rounded-lg px-4 py-2.5 text-sm font-medium transition-colors"
-                class:bg-primary={($settings.transcodeMode ?? 'off') === mode}
-                class:text-background={($settings.transcodeMode ?? 'off') === mode}
-                class:bg-surface-hover={($settings.transcodeMode ?? 'off') !== mode}
+                class="btn-sm border border-white/15 hover:bg-white/5"
+                class:chip-on={($settings.transcodeMode ?? 'off') === mode}
                 class:text-muted={($settings.transcodeMode ?? 'off') !== mode}
               >{mode === 'off' ? 'Off' : mode === 'lowData' ? 'Low Data' : 'Always'}</button>
             {/each}
@@ -1572,10 +1566,8 @@
                   {#each BUILTIN_TRANSCODE_FORMATS as fmt}
                     <button
                       onclick={() => setTranscodeFormat(fmt)}
-                      class="rounded-lg px-4 py-2 text-sm font-medium uppercase transition-colors"
-                      class:bg-primary={($settings.transcodeFormat ?? 'opus') === fmt}
-                      class:text-background={($settings.transcodeFormat ?? 'opus') === fmt}
-                      class:bg-surface-hover={($settings.transcodeFormat ?? 'opus') !== fmt}
+                      class="btn-sm uppercase border border-white/15 hover:bg-white/5"
+                      class:chip-on={($settings.transcodeFormat ?? 'opus') === fmt}
                       class:text-muted={($settings.transcodeFormat ?? 'opus') !== fmt}
                     >{fmt}</button>
                   {/each}
@@ -1598,10 +1590,8 @@
                     {#each [64, 96, 128, 192, 256, 320] as rate}
                       <button
                         onclick={() => setTranscodeBitrate(rate)}
-                        class="rounded-lg px-3.5 py-2 text-sm font-medium transition-colors"
-                        class:bg-primary={($settings.transcodeBitrate ?? 128) === rate}
-                        class:text-background={($settings.transcodeBitrate ?? 128) === rate}
-                        class:bg-surface-hover={($settings.transcodeBitrate ?? 128) !== rate}
+                        class="btn-sm border border-white/15 hover:bg-white/5"
+                        class:chip-on={($settings.transcodeBitrate ?? 128) === rate}
                         class:text-muted={($settings.transcodeBitrate ?? 128) !== rate}
                       >{rate}</button>
                     {/each}
@@ -1626,10 +1616,8 @@
             {#each ['off', 'track', 'album'] as mode}
               <button
                 onclick={() => setReplayGainMode(mode as 'off' | 'track' | 'album')}
-                class="rounded-lg px-5 py-2.5 text-sm font-medium transition-colors"
-                class:bg-primary={($settings.replayGainMode ?? 'off') === mode}
-                class:text-background={($settings.replayGainMode ?? 'off') === mode}
-                class:bg-surface-hover={($settings.replayGainMode ?? 'off') !== mode}
+                class="btn-sm border border-white/15 hover:bg-white/5"
+                class:chip-on={($settings.replayGainMode ?? 'off') === mode}
                 class:text-muted={($settings.replayGainMode ?? 'off') !== mode}
               >{mode === 'off' ? 'Off' : mode === 'track' ? 'Track Gain' : 'Album Gain'}</button>
             {/each}
@@ -1646,7 +1634,7 @@
             <button
               onclick={pushChanges}
               disabled={syncing}
-              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
+              class="btn-primary btn-lg w-full"
             >
               {#if syncing}
                 <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -1718,11 +1706,11 @@
               <div class="flex justify-end gap-2">
                 <button
                   onclick={() => { confirmPush = false }}
-                  class="rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+                  class="btn-secondary btn-md"
                 >Cancel</button>
                 <button
                   onclick={performPush}
-                  class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-80"
+                  class="btn-primary btn-md"
                 >Write to files</button>
               </div>
             </div>
@@ -1737,7 +1725,7 @@
             <button
               onclick={startMetadataScan}
               disabled={$metadataScanState.status === 'scanning' || $tagProbeState.active}
-              class="flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-3 text-base font-medium text-background transition-opacity hover:opacity-80 disabled:opacity-50"
+              class="btn-primary btn-lg w-full"
             >
               {#if $metadataScanState.status === 'scanning'}
                 <svg class="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -1835,7 +1823,7 @@
             <button
               onclick={() => refreshUnresolved(true)}
               disabled={unresolvedLoading || $metadataScanState.status === 'scanning' || $tagProbeState.active || forceRefreshing}
-              class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+              class="btn-secondary btn-sm"
             >{forceRefreshing ? 'Retrying…' : 'Refresh'}</button>
           </div>
           <p class="mb-2 text-sm text-muted">
@@ -1875,7 +1863,7 @@
               <button
                 onclick={doReverify}
                 disabled={reverifyState.running || unresolvedLoading || $metadataScanState.status === 'scanning'}
-                class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                class="btn-secondary btn-sm"
               >{reverifyState.running ? 'Re-verifying…' : 'Re-verify file links'}</button>
               {#if reverifyState.result}
                 <p class="text-xs text-muted">{reverifyState.result}</p>
@@ -1888,7 +1876,7 @@
               {#if unresolvedError === 'WebDAV credentials not configured'}
                 <button
                   onclick={() => switchTab('sources')}
-                  class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                  class="btn-secondary btn-sm"
                 >Open Sources</button>
               {/if}
             </div>
@@ -1937,15 +1925,15 @@
                   <div class="mt-2 flex gap-2">
                     <button
                       onclick={() => doRestamp(row)}
-                      class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                      class="btn-secondary btn-sm"
                     >Update file link</button>
                     <button
                       onclick={() => openPicker(row.trackId)}
-                      class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                      class="btn-secondary btn-sm"
                   >Search for file…</button>
                     <button
                       onclick={() => doUnbind(row.trackId)}
-                      class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+                      class="btn-secondary btn-sm"
                     >Clear file link</button>
                   </div>
                 {:else if row.kind === 'matched'}
@@ -1953,41 +1941,41 @@
                     {#if row.verdict === 'conflict' || row.verdict === 'unknown'}
                       <button
                         onclick={() => openPicker(row.trackId)}
-                        class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-80"
+                        class="btn-primary btn-sm"
                       >Select correct file…</button>
                       {#if row.verdict === 'unknown' && row.readState === 'not-probed'}
                         <button
                           onclick={() => doReadBoundFile(row)}
                           disabled={retryingTrackId === row.trackId || $tagProbeState.active || $metadataScanState.status === 'scanning'}
-                          class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                          class="btn-secondary btn-sm"
                         >{retryingTrackId === row.trackId ? 'Reading…' : 'Re-read file tags'}</button>
                       {/if}
                     {/if}
                     <button
                       onclick={() => doUnbind(row.trackId)}
-                      class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                      class="btn-secondary btn-sm"
                     >Clear match</button>
                   </div>
                 {:else if row.kind === 'ignored'}
                   <button
                     onclick={() => doUnignore(row.trackId)}
-                    class="mt-2 rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80"
+                    class="btn-secondary btn-sm mt-2"
                   >Un-ignore</button>
                 {:else}
                   <div class="mt-2 flex flex-wrap gap-2">
                     <button
                       onclick={() => openPicker(row.trackId)}
-                      class="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-background transition-opacity hover:opacity-80"
+                      class="btn-primary btn-sm"
                     >Select correct file…</button>
                     <button
                       onclick={() => doIgnore(row.trackId)}
-                      class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+                      class="btn-secondary btn-sm"
                     >Not on this server</button>
                     {#if row.reason === 'no-identity-tags' && row.candidates.length > 0}
                       <button
                         onclick={() => doRetryRow(row)}
                         disabled={retryingTrackId === row.trackId || $tagProbeState.active || $metadataScanState.status === 'scanning'}
-                        class="rounded-lg bg-surface-hover px-3 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80 disabled:opacity-50"
+                        class="btn-secondary btn-sm"
                       >{retryingTrackId === row.trackId ? 'Retrying…' : 'Retry read'}</button>
                     {/if}
                   </div>
@@ -2138,11 +2126,11 @@
               <div class="flex justify-end gap-2">
                 <button
                   onclick={() => conflict = null}
-                  class="rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+                  class="btn-secondary btn-md"
                 >Cancel</button>
                 <button
                   onclick={() => { if (conflict) doBind(conflict.trackId, conflict.path, true) }}
-                  class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-80"
+                  class="btn-primary btn-md"
                 >Bind anyway</button>
               </div>
             </div>
@@ -2219,7 +2207,7 @@
                   location.reload()
                 } catch {}
               }}
-              class="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-background hover:opacity-80"
+              class="btn-quiet btn-md"
             >Toggle Debug HUD</button>
           </div>
         </section>
@@ -2243,11 +2231,11 @@
         <div class="flex justify-end gap-2">
           <button
             onclick={() => { confirmReset = false }}
-            class="rounded-lg bg-surface-hover px-4 py-2 text-sm font-medium text-muted transition-opacity hover:opacity-80"
+            class="btn-secondary btn-md"
           >Cancel</button>
           <button
             onclick={performReset}
-            class="rounded-lg bg-red-500/90 px-4 py-2 text-sm font-medium text-background transition-opacity hover:opacity-80"
+            class="btn-primary btn-md bg-red-500/90"
           >Reset &amp; re-link</button>
         </div>
       </div>

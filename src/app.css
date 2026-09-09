@@ -199,3 +199,85 @@ input[type="range"]::-webkit-slider-thumb {
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* ═════════════════════════════════════════════════════════════════
+   Attention system + control scale
+   Three visual levels so solid white means ONE thing (the primary
+   action in view) instead of competing with selections:
+
+   • btn-primary  — solid accent bg, dark text. At most one per view:
+                    the action that advances the flow (Connect & Load,
+                    Push Changes, Start timer). Transport play buttons
+                    and the filter's active state also use it.
+   • btn-secondary — quiet fill + hairline border. Confirmations and
+                    other important-but-not-primary actions (Test
+                    Connection, Rescan, Disconnect, Reset & re-link's
+                    Cancel). Reads as a peer to primary, not a spotlight.
+   • btn-quiet    — transparent, borderless. Tertiary/rare actions
+                    (debug HUD toggle).
+   Selected pills (preload counts, formats, bitrates, sort options)
+   use .chip-on: soft accent wash + ring, never solid — selection is
+   state, not an action, and must not out-shout the primary button.
+
+   Sizes (2 radii, 3 control heights, all px pads adjacent):
+   • btn-sm  h-8  (28px) rounded-md  — chips, small actions
+   • btn-md  h-10 (40px) rounded-lg  — standard buttons
+   • btn-lg  h-12 (48px) rounded-xl  — full-width primaries
+   ═════════════════════════════════════════════════════════════════ */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  background: var(--app-accent);
+  color: #000;
+  border-radius: 0.5rem;
+  transition: opacity 0.15s;
+}
+.btn-primary:hover { opacity: 0.85; }
+.btn-primary:disabled { opacity: 0.5; cursor: default; }
+
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  background: rgb(255 255 255 / 0.06);
+  color: #fff;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 0.5rem;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn-secondary:hover {
+  background: rgb(255 255 255 / 0.12);
+  border-color: rgb(255 255 255 / 0.3);
+}
+.btn-secondary:disabled { opacity: 0.5; cursor: default; }
+
+.btn-quiet {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  font-weight: 500;
+  background: transparent;
+  color: rgb(255 255 255 / 0.6);
+  border-radius: 0.5rem;
+  transition: background 0.15s, color 0.15s;
+}
+.btn-quiet:hover {
+  background: rgb(255 255 255 / 0.06);
+  color: #fff;
+}
+
+.btn-sm { height: 2rem; padding: 0 0.75rem; font-size: 0.8125rem; border-radius: 0.375rem; }
+.btn-md { height: 2.5rem; padding: 0 1rem; font-size: 0.875rem; }
+.btn-lg { height: 3rem; padding: 0 1.25rem; font-size: 1rem; border-radius: 0.75rem; }
+
+.chip-on {
+  background: var(--app-accent-soft);
+  color: var(--app-accent);
+  border: 1px solid var(--app-accent-ring);
+}

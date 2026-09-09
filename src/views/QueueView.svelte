@@ -781,7 +781,7 @@ function seek(e: Event) {
        bottom content was unreachable without scrolling blind past it. Shaped
        like the now-playing island above (rounded card, ring, margins) so the
        two read as one design language. -->
-  <div class="shrink-0 px-4 pb-2 safe-area-bottom">
+  <div class="shrink-0 px-4 pb-4 safe-area-bottom">
     <div class="rounded-2xl bg-surface/60 px-2 py-1.5 ring-1 ring-white/10">
     <div class="flex items-start justify-between">
     <div class="flex items-start gap-1">
@@ -805,7 +805,7 @@ function seek(e: Event) {
       </button>
       <button
         onclick={() => filterOpen = !filterOpen}
-        class={"flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 transition-colors hover:bg-surface-hover " + (filterOpen ? 'bg-primary text-background' : 'text-muted hover:text-primary')}
+        class={"flex flex-col items-center gap-0.5 rounded-lg px-2 py-1 transition-colors hover:bg-surface-hover " + (filterOpen ? 'chip-on' : 'text-muted hover:text-primary')}
         aria-label="Auto queue filters"
       >
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
