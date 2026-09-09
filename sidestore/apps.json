@@ -1,0 +1,43 @@
+{
+  "name": "mmdrome",
+  "identifier": "com.mmdrome.sidestore",
+  "subtitle": "Self-hosted music player releases",
+  "description": "SideStore source for mmdrome — install and update without manual sideloading. SideStore signs the app with your own Apple ID and refreshes it automatically.",
+  "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
+  "website": "https://github.com/sieradni/mmdrome",
+  "tintColor": "8E8E93",
+  "apps": [
+    {
+      "name": "mmdrome",
+      "bundleIdentifier": "com.mmdrome.player",
+      "developerName": "sieradni",
+      "subtitle": "Minimalist music player for Navidrome / WebDAV",
+      "localizedDescription": "Self-hosted, mobile-first music player. Streams from Navidrome, writes ratings back via WebDAV, works in the iOS background.",
+      "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
+      "tintColor": "8E8E93",
+      "category": "music",
+      "version": "1.1.0",
+      "versionDate": "2026-09-09T09:56:49.027Z",
+      "versionDescription": "File Matching redesign: attention buckets, Confirm-this-is-correct, row search and filters. iOS Audio Mixing mode (play alongside other apps).",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.1.0/mmdrome.ipa",
+      "versions": [
+        {
+          "version": "1.1.0",
+          "versionDate": "2026-09-09T09:56:49.027Z",
+          "versionDescription": "File Matching redesign: attention buckets, Confirm-this-is-correct, row search and filters. iOS Audio Mixing mode (play alongside other apps).",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.1.0/mmdrome.ipa"
+        }
+      ]
+    }
+  ],
+  "news": [
+    {
+      "title": "mmdrome 1.1.0",
+      "identifier": "ios-v1.1.0",
+      "caption": "File Matching redesign + iOS Audio Mixing mode.",
+      "date": "2026-09-09T09:56:49.027Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    }
+  ]
+}

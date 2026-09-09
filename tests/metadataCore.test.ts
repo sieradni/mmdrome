@@ -31,6 +31,9 @@ import {
   bindingReleaseable,
   buildEffectiveTitleCounts,
   auditBoundFile,
+  classifyFmRow,
+  fmSeverity,
+  type FmRowFacts,
 } from '../src/lib/metadataCore'
 import type { Track } from '../src/stores/appState'
 import type { LocalMetadataStore, WebdavFileEntry, FileTagCacheEntry } from '../src/lib/db'
@@ -1001,4 +1004,66 @@ test('bindingReleaseable: normalization matches the heal counts (case/punct fold
   // title that folds to a library title proves ownership.
   const counts = buildEffectiveTitleCounts([track({ trackId: 't1', title: 'song' })])
   assert.equal(bindingReleaseable('Song B', ' SONG! ', counts), true)
+})
+
+// ── File Matching buckets + severity (2026-09-09) ──────────────────────────
+// The attention hierarchy behind the File Matching filters. A manual pick is
+// the user's verdict: it resolves the row (bucket `confirmed`) whatever the
+// tags say, while the audit evidence itself stays untouched (D17 honesty —
+// confirmation never fabricates a tag `verified`).
+
+function fmRow(over: Partial<FmRowFacts> = {}): FmRowFacts {
+  return { kind: 'no-match', pendingPush: false, ...over }
+}
+
+test('classifyFmRow: unlinked and auto-audit rows need action', () => {
+  assert.equal(classifyFmRow(fmRow({ kind: 'no-match' })), 'action')
+  assert.equal(classifyFmRow(fmRow({ kind: 'ambiguous' })), 'action')
+  assert.equal(classifyFmRow(fmRow({ kind: 'vanished' })), 'action')
+  assert.equal(classifyFmRow(fmRow({ kind: 'stale-base' })), 'action')
+  assert.equal(classifyFmRow(fmRow({ kind: 'matched', matchSource: 'auto', verdict: 'conflict', readState: 'tagged' })), 'action')
+  assert.equal(classifyFmRow(fmRow({ kind: 'matched', matchSource: 'auto', verdict: 'unknown', readState: 'empty' })), 'action')
+  assert.equal(classifyFmRow(fmRow({ kind: 'matched', matchSource: 'auto', verdict: 'unknown', readState: 'not-probed' })), 'action')
+})
+
+test('classifyFmRow: a manual pick resolves the row whatever the tags say', () => {
+  // The title-less case from the 2026-09-09 report: tags can never verify,
+  // so the user's same-file Confirm must move the row out of Needs action.
+  assert.equal(classifyFmRow(fmRow({ kind: 'matched', matchSource: 'manual', verdict: 'unknown', readState: 'empty' })), 'confirmed')
+  assert.equal(classifyFmRow(fmRow({ kind: 'matched', matchSource: 'manual', verdict: 'unknown', readState: 'not-probed' })), 'confirmed')
+  assert.equal(classifyFmRow(fmRow({ kind: 'matched', matchSource: 'manual', verdict: 'conflict', readState: 'tagged' })), 'confirmed')
+  assert.equal(classifyFmRow(fmRow({ kind: 'matched', matchSource: 'manual', verdict: 'verified', readState: 'tagged' })), 'confirmed')
+})
+
+test('classifyFmRow: verified auto links and ignored rows are the low-priority bulk', () => {
+  assert.equal(classifyFmRow(fmRow({ kind: 'matched', matchSource: 'auto', verdict: 'verified', readState: 'tagged' })), 'verified')
+  // Absent matchSource stamps (legacy auto rows) behave as auto.
+  assert.equal(classifyFmRow(fmRow({ kind: 'matched', verdict: 'verified', readState: 'tagged' })), 'verified')
+  assert.equal(classifyFmRow(fmRow({ kind: 'matched', verdict: 'unknown', readState: 'empty' })), 'action')
+  assert.equal(classifyFmRow(fmRow({ kind: 'ignored' })), 'ignored')
+})
+
+test('fmSeverity: errors first, picks next, confirmations after, resolved last', () => {
+  const sev = (r: Partial<FmRowFacts>) => fmSeverity(fmRow(r))
+  const vanished = sev({ kind: 'vanished' })
+  const stale = sev({ kind: 'stale-base' })
+  const conflict = sev({ kind: 'matched', matchSource: 'auto', verdict: 'conflict', readState: 'tagged' })
+  const readFailed = sev({ kind: 'no-match', reason: 'read-failed' })
+  const failedRead = sev({ kind: 'matched', matchSource: 'auto', verdict: 'unknown', readState: 'network-error' })
+  const ambiguous = sev({ kind: 'ambiguous' })
+  const noMatch = sev({ kind: 'no-match', reason: 'no-identity-tags' })
+  const notProbed = sev({ kind: 'matched', matchSource: 'auto', verdict: 'unknown', readState: 'not-probed' })
+  const empty = sev({ kind: 'matched', matchSource: 'auto', verdict: 'unknown', readState: 'empty' })
+  const confirmed = sev({ kind: 'matched', matchSource: 'manual', verdict: 'unknown', readState: 'empty' })
+  const verified = sev({ kind: 'matched', matchSource: 'auto', verdict: 'verified', readState: 'tagged' })
+  const ignored = sev({ kind: 'ignored' })
+  assert.ok(vanished < stale, 'dead link before stale link')
+  assert.ok(stale < conflict && stale < readFailed, 'dead links before evidence errors')
+  assert.ok(conflict < ambiguous && readFailed < ambiguous && failedRead < ambiguous, 'errors before picks')
+  assert.ok(ambiguous < noMatch, 'ambiguous before plain no-match')
+  assert.ok(noMatch < notProbed && noMatch < empty, 'missing links before audit confirmations')
+  assert.ok(empty > notProbed, 'never-read before title-less (a read may still verify)')
+  assert.ok(confirmed > empty, 'user-confirmed after every action row')
+  assert.ok(verified > confirmed, 'tag-verified bulk after confirmed')
+  assert.ok(ignored > verified, 'ignored last')
 })

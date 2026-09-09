@@ -1017,3 +1017,73 @@ export function canAutoBind(
   if (existing?.ignored) return { bindable: false, reason: 'ignored' }
   return { bindable: true }
 }
+
+// ── File Matching buckets + severity (2026-09-09) ──────────────────────────
+// The attention hierarchy behind the File Matching filters: which rows need
+// the user NOW vs which are resolved. Pure — operates on the already-computed
+// row facts (`UnresolvedTrack` satisfies `FmRowFacts` structurally, so the
+// scanner stamps rows without the core importing the scanner).
+//
+// Buckets:
+// - `action` — needs the user: dead links, errors, picks, confirmations.
+// - `confirmed` — a MANUAL link (any audit verdict): the user's verdict IS the
+//   resolution for tag-silent files. The audit evidence stays visible on the
+//   row — confirmation never fabricates a tag `verified` (D17 honesty).
+// - `verified` — auto link whose file tags confirm it. Lowest priority.
+// - `ignored` — user-dismissed, as before.
+//
+// Severity (lower = more urgent) orders rows WITHIN the action bucket:
+// dead links first (vanished, stale-base), then evidence errors (conflict,
+// read failures — including failed tag reads on bound files), then missing
+// links (ambiguous, no-match), then audit confirmations (auto unknown:
+// never-read → title-less). `pendingPush` still boosts within equal
+// severity (blocked Push first).
+
+/** Attention bucket for one File Matching row. */
+export type FmBucket = 'action' | 'confirmed' | 'verified' | 'ignored'
+
+/** The row facts the bucket/severity decision reads. `UnresolvedTrack`
+ *  satisfies this structurally (same literal unions, optional fields). */
+export interface FmRowFacts {
+  kind: 'no-match' | 'ambiguous' | 'vanished' | 'stale-base' | 'ignored' | 'matched'
+  matchSource?: 'auto' | 'manual'
+  verdict?: 'verified' | 'conflict' | 'unknown'
+  readState?: 'tagged' | 'empty' | 'unreadable' | 'network-error' | 'not-probed'
+  reason?: NoMatchReason
+  pendingPush: boolean
+}
+
+export function classifyFmRow(row: FmRowFacts): FmBucket {
+  if (row.kind === 'ignored') return 'ignored'
+  if (row.kind === 'matched') {
+    // A manual pick is the user's verdict — resolved whatever the tags say.
+    if ((row.matchSource ?? 'auto') === 'manual') return 'confirmed'
+    return row.verdict === 'verified' ? 'verified' : 'action'
+  }
+  return 'action'
+}
+
+export function fmSeverity(row: FmRowFacts): number {
+  switch (row.kind) {
+    case 'vanished': return 0
+    case 'stale-base': return 1
+    case 'matched': {
+      if ((row.matchSource ?? 'auto') === 'manual') return 40
+      if (row.verdict === 'conflict') return 10
+      if (row.verdict === 'unknown') {
+        switch (row.readState) {
+          case 'not-probed': return 22
+          case 'unreadable':
+          case 'network-error': return 12
+          case 'empty': return 23
+          default: return 24
+        }
+      }
+      return 50
+    }
+    case 'ambiguous': return 20
+    case 'no-match':
+      return row.reason === 'read-failed' ? 11 : 21
+    case 'ignored': return 60
+  }
+}

@@ -22,12 +22,13 @@ import {
 // mocked Navidrome library of two songs, then drives the whole journey:
 //
 //   1. a force rescan probes both fixture files through the browser taglib and
-//      AUTO-binds each song to its own file → File Matching shows two
+//      AUTO-binds each song to its own file → the Verified filter shows two
 //      "Verified" rows (a genuine browser-level proof of the match pipeline);
-//   2. the user force-steals Song Two's file onto Song One (a deliberate wrong
-//      link made through the picker) → the auditor surfaces a "Tags conflict"
-//      row whose copy is honest: the binding is MANUAL, so no auto-fix button
-//      appears and a rescan must never touch it (D8/D17);
+//   2. the user clears Song One's auto link (it drops into Needs action),
+//      then steals Song Two's file via the search picker ("Bind anyway" in
+//      the file-already-bound dialog) → the row resolves into Confirmed by
+//      you with honest MANUAL copy (no auto-fix button, rescan never touches
+//      manual picks — D8/D17);
 //   3. the user clears the wrong manual pick and rescans → both songs
 //      auto-relink to the right files and the auditor is back to "2 verified".
 //
@@ -58,13 +59,16 @@ test('File Matching audits real auto-binds; a manual wrong link is protected, th
   const s1 = row(page, S1)
   const s2 = row(page, S2)
   await expect(auditSummary(page)).toContainText('2 verified')
+  // Verified links are the resolved bulk — opt into the filter to see them.
+  await page.getByTestId('fm-filter-verified').click()
   await expect(s1).toContainText('Verified')
   await expect(s2).toContainText('Verified')
   expect(dav.getReadCount(), 'one Range GET per fixture file on the first scan').toBe(2)
 
-  // ── 2. Deliberate wrong link through the picker → manual conflict ──────
-  // Clear Song One's correct auto link, then steal Song Two's file via the
-  // search picker ("Bind anyway" in the file-already-bound dialog).
+  // ── 2. Deliberate wrong link through the picker → confirmed conflict ───
+  // Clear Song One's correct auto link (it drops into Needs action), then
+  // steal Song Two's file via the search picker ("Bind anyway" in the
+  // file-already-bound dialog).
   await s1.getByRole('button', { name: 'Clear match' }).click()
   await expect(auditSummary(page)).toContainText('1 verified')
   await s1.getByRole('button', { name: 'Select correct file…' }).click()
@@ -76,10 +80,12 @@ test('File Matching audits real auto-binds; a manual wrong link is protected, th
   await expect(page.getByText('File already bound')).toBeVisible()
   await page.getByRole('button', { name: 'Bind anyway' }).click()
 
-  // The auditor must surface the wrong link as a conflict with MANUAL copy —
-  // and no auto-fix button, because rescan never touches manual picks (D8).
+  // The pick is the user's verdict, so the row resolves into Confirmed by
+  // you — with MANUAL copy (rescan never touches it, D8) and no auto-fix
+  // button (D17: the promise is only for provably-wrong AUTO links).
   await expect(auditSummary(page)).toContainText('1 tag conflict')
-  await expect(s1).toContainText('Tags conflict')
+  await page.getByTestId('fm-filter-confirmed').click()
+  await expect(s1).toContainText('Confirmed by you')
   await expect(s1.getByText(/Rescan never changes manual picks/)).toBeVisible()
   await expect(page.getByTestId('fm-fix')).toHaveCount(0)
 

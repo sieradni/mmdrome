@@ -31,6 +31,15 @@ npm run check    # type checking (svelte-check + tsc)
 npm run deploy   # deploy to GitHub Pages
 ```
 
+## iOS app (SideStore)
+
+The native iOS build (background audio engine, lock-screen controls) is distributed as a SideStore source — install once, update from SideStore, no manual sideloading:
+
+1. In SideStore, add this source URL: `https://cdn.jsdelivr.net/gh/sieradni/mmdrome@main/sidestore/apps.json`
+2. Install **mmdrome** from the source. SideStore signs it with your own Apple ID and refreshes it automatically before the 7-day expiry.
+
+Each release is built in CI from a version tag as an unsigned IPA attached to a GitHub Release; the source file points at it.
+
 ## Architecture
 
 The app is a client-side SPA. Music streams directly from Navidrome to the browser. Persistent data (settings, EQ profiles, queue, metadata cache) lives in IndexedDB via Dexie. The audio engine uses dual HTMLAudioElement instances for gapless playback, routed through Web Audio API nodes (gain, SoundTouch worklet, EQ biquad filters) to the destination.

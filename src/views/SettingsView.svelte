@@ -9,10 +9,11 @@
   import { webdavBaseKey } from '../lib/webdavUtils'
   import { buildPushBreakdown, EMPTY_PUSH_BREAKDOWN, type PushBreakdown } from '../lib/pushReconcile'
   import { getPendingSyncMetadata } from '../lib/db'
-  import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, refreshIndexAndProbeForced, reprobeFiles, scanAll, resetMetadataAndRelink, cancelScan, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, DISPLAY_CAP, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, refreshIndexAndProbeForced, reprobeFiles, scanAll, resetMetadataAndRelink, cancelScan, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
   import { parseSearchQuery, highlightSegments, type HighlightSegment } from '../lib/searchCore'
-  import { foldMapForSearch } from '../lib/matchNormalize'
+  import { foldMapForSearch, normalizeForSearch } from '../lib/matchNormalize'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
+  import type { FmBucket } from '../lib/metadataCore'
   import type { MetadataScanProgress } from '../stores/appState'
   import type { NoMatchReason } from '../lib/metadataCore'
   import { setSetting } from '../lib/db'
@@ -615,34 +616,35 @@
   // highlight for a query the results no longer answer.
   let highlightTokens = $state<string[]>([])
   let conflict = $state<{ trackId: string; path: string; conflictTitle: string } | null>(null)
-  let showIgnored = $state(false)
-  // Matched links are audit rows now (the point of File Matching is to verify
-  // them), so they are visible by default — sorted after unresolved rows and
-  // capped like everything else. Hide them to focus on unresolved work.
-  let showMatched = $state(true)
+  // File Matching attention filters: multi-select buckets (session-only
+  // viewstate — never persisted). Default shows only rows that need the user;
+  // confirmed/verified/ignored are one tap away and carry live counts.
+  let fmEnabled = $state<Record<FmBucket, boolean>>({ action: true, confirmed: false, verified: false, ignored: false })
+  let fmBucketCounts = $state<Record<FmBucket, number>>({ action: 0, confirmed: 0, verified: 0, ignored: 0 })
+  // Row search across track identity + bound/file paths (same token folding
+  // as the app search; 120 ms-debounced like the file picker).
+  let fmQuery = $state('')
+  let fmTokens = $state<string[]>([])
+  let fmSearchTimer: ReturnType<typeof setTimeout> | null = null
+  // Incremental render for large libraries: the contained list grows by a
+  // window as the user scrolls instead of capping via a number input.
+  let fmRenderLimit = $state(120)
+  const FM_RENDER_STEP = 120
+  let fmListEl = $state<HTMLDivElement | null>(null)
+  // One-line transient feedback for Confirm/Clear/Bind (counts + buckets are
+  // the durable signal; this just narrates the last action).
+  let fmNotice = $state('')
   let unresolvedCounts = $state<Record<UnresolvedTrack['kind'], number>>({ 'no-match': 0, ambiguous: 0, 'vanished': 0, 'stale-base': 0, matched: 0, ignored: 0 })
   let blockedCount = $state(0)
   let bindError = $state<{ trackId: string; message: string } | null>(null)
-  let matchCap = $state(DISPLAY_CAP)
   let reverifyState = $state<{ running: boolean; result: string }>({ running: false, result: '' })
 
-  function countTotal(): number {
-    const c = unresolvedCounts
-    return c['no-match'] + c.ambiguous + c.vanished + c['stale-base'] + c.ignored + c.matched
-  }
-
-  function countLine(): string {
-    const c = unresolvedCounts
-    const bits: string[] = []
-    if (c['no-match']) bits.push(`${c['no-match']} no safe match`)
-    if (c.ambiguous) bits.push(`${c.ambiguous} multiple matches`)
-    if (c.vanished) bits.push(`${c.vanished} removed from server`)
-    if (c['stale-base']) bits.push(`${c['stale-base']} server changed`)
-    if (c.ignored) bits.push(`${c.ignored} ignored`)
-    if (bits.length === 0) return ''
-    const line = `Unresolved — ${bits.join(', ')}`
-    return blockedCount > 0 ? `${line}; ${blockedCount} blocked by pending edits` : line
-  }
+  const FM_FILTERS: { id: FmBucket; label: string }[] = [
+    { id: 'action', label: 'Needs action' },
+    { id: 'confirmed', label: 'Confirmed by you' },
+    { id: 'verified', label: 'Verified' },
+    { id: 'ignored', label: 'Ignored' },
+  ]
 
   // Matched-link audit summary (the auditor half of this view). Exact — rows
   // hold the full uncapped set, and every matched row carries a verdict.
@@ -665,12 +667,12 @@
   })
 
   function matchedChip(row: UnresolvedTrack): { label: string; cls: string } {
-    // The chip tells the user what the bound file's own tags say about the
-    // link. Manual picks stay green ('Your pick') — that row is audited by
-    // definition — but a conflicting file title is still surfaced below.
+    // A manual pick is the user's verdict — resolved whatever the tags say —
+    // so it reads as confirmation, while the evidence line below stays honest
+    // about what the file's tags actually claim.
+    if (row.matchSource === 'manual') return { label: 'Confirmed by you', cls: 'bg-sky-500/20 text-sky-300 ring-sky-500/30' }
     if (row.verdict === 'conflict') return { label: 'Tags conflict', cls: 'bg-red-500/20 text-red-300 ring-red-500/30' }
     if (row.verdict === 'unknown') return { label: 'Not verified', cls: 'bg-orange-500/20 text-orange-300 ring-orange-500/30' }
-    if (row.matchSource === 'manual') return { label: 'Your pick', cls: 'bg-green-500/20 text-green-300 ring-green-500/30' }
     return { label: 'Verified', cls: 'bg-green-500/20 text-green-300 ring-green-500/30' }
   }
 
@@ -688,6 +690,11 @@
       return `The file's tags say “${fileTitle}” — not provably a different song (same release family). Rescan keeps this link; if it's actually the wrong file, clear it and pick another.`
     }
     if (row.verdict === 'unknown') {
+      // A confirmed row keeps its honest audit line — the confirmation note
+      // only records whose verdict resolved it.
+      const confirmedNote = row.matchSource === 'manual'
+        ? ' You confirmed this link — clear it to pick another file.'
+        : ''
       switch (row.readState) {
         case 'not-probed':
           // The rescan promise is SOURCE-DEPENDENT: a force rescan's heal
@@ -700,13 +707,13 @@
             ? 'This file has not been read for tags yet — read it now to confirm your pick (rescans never re-read manual links).'
             : 'This file has not been read for tags yet — read it now or run Rescan All Metadata to verify the link.'
         case 'empty':
-          return 'The file has tags but no title to compare against this track.'
+          return 'The file has tags but no title to compare against this track.' + confirmedNote
         case 'unreadable':
-          return "The file's tags could not be read — it is retried automatically later."
+          return "The file's tags could not be read — it is retried automatically later." + confirmedNote
         case 'network-error':
-          return "The file's tags could not be read right now — it is retried automatically."
+          return "The file's tags could not be read right now — it is retried automatically." + confirmedNote
         default:
-          return 'This track has no title to compare against the file.'
+          return 'This track has no title to compare against the file.' + confirmedNote
       }
     }
     return ''
@@ -738,15 +745,48 @@
     return `Scanning ${$metadataScanState.progress.scanned}/${$metadataScanState.progress.total}...`
   }
 
-  // Full set (returned uncapped) is held in unresolvedRows; toggles + matchCap
-  // filter and slice it client-side so ignored/matched rows are never starved
-  // out of visibility by an arbitrary hard cap.
-  const filterVisible = $derived(
-    unresolvedRows.filter((r) => (showIgnored || r.kind !== 'ignored') && (showMatched || r.kind !== 'matched')),
+  // Filtered set: enabled buckets AND the row search. The folded haystack is
+  // derived once per list refresh (not per keystroke) so searching a large
+  // library stays a cheap substring pass over pre-folded strings.
+  const fmFolded = $derived.by(() => {
+    const map = new Map<string, string>()
+    for (const r of unresolvedRows) {
+      map.set(r.trackId, normalizeForSearch([r.title, r.artist, r.album, r.webdavPath ?? '', r.fileTitle ?? ''].join(' ')))
+    }
+    return map
+  })
+  const fmFiltered = $derived(
+    unresolvedRows.filter((r) => fmEnabled[r.bucket] && fmTokens.every((t) => fmFolded.get(r.trackId)?.includes(t))),
   )
-  const visibleRows = $derived(filterVisible.slice(0, matchCap))
+  const fmVisible = $derived(fmFiltered.slice(0, fmRenderLimit))
+
+  function fmToggleBucket(id: FmBucket) {
+    fmEnabled[id] = !fmEnabled[id]
+    fmRenderLimit = FM_RENDER_STEP
+    fmNotice = ''
+    if (fmListEl) fmListEl.scrollTop = 0
+  }
+
+  function fmScheduleSearch() {
+    if (fmSearchTimer) clearTimeout(fmSearchTimer)
+    fmSearchTimer = setTimeout(() => {
+      fmSearchTimer = null
+      fmTokens = parseSearchQuery(fmQuery)
+      fmRenderLimit = FM_RENDER_STEP
+      if (fmListEl) fmListEl.scrollTop = 0
+    }, 120)
+  }
+
+  function fmOnScroll() {
+    const el = fmListEl
+    if (!el) return
+    if (el.scrollTop + el.clientHeight > el.scrollHeight - 400 && fmRenderLimit < fmFiltered.length) {
+      fmRenderLimit += FM_RENDER_STEP
+    }
+  }
 
   let retryingTrackId = $state<string | null>(null)
+  let confirmingTrackId = $state<string | null>(null)
   let forceRefreshing = $state(false)
 
   async function refreshUnresolved(probe = false) {
@@ -776,6 +816,7 @@
       } else {
         unresolvedError = 'WebDAV credentials not configured'
         unresolvedRows = []
+        fmBucketCounts = { action: 0, confirmed: 0, verified: 0, ignored: 0 }
         return
       }
       if (probe) {
@@ -802,6 +843,8 @@
       const rows = await listUnresolvedMatches()
       unresolvedRows = rows.rows
       unresolvedCounts = rows.counts
+      fmBucketCounts = rows.bucketCounts
+      fmRenderLimit = FM_RENDER_STEP
       unresolvedIndexComplete = rows.indexComplete
       blockedCount = rows.pendingBlocked
       unresolvedLoaded = true
@@ -938,6 +981,9 @@
       conflict = null
       pickerTrackId = null
       await refreshUnresolved()
+      // Picker binds always stamp a manual link, so the row resolves into
+      // Confirmed by you — which is hidden by default. Say where it went.
+      fmNotice = `Saved — find it under the Confirmed by you filter.`
       return
     }
     if (res.reason === 'conflict' && !force) {
@@ -967,6 +1013,30 @@
   async function doUnbind(trackId: string) {
     await unbindTrack(trackId)
     await refreshUnresolved()
+    const row = unresolvedRows.find((r) => r.trackId === trackId)
+    fmNotice = row
+      ? `Cleared — “${row.title}” is back under Needs action with suggestions.`
+      : 'Cleared.'
+  }
+
+  // Confirm the CURRENT link (even the same path): stamps a manual binding so
+  // the row resolves into "Confirmed by you". The audit evidence is untouched
+  // — for tag-silent files the user's verdict is the only possible evidence.
+  async function doConfirm(row: UnresolvedTrack) {
+    if (!row.webdavPath) return
+    bindError = null
+    confirmingTrackId = row.trackId
+    try {
+      const res = await bindTrackToFile(row.trackId, row.webdavPath)
+      if (!res.ok) {
+        bindError = { trackId: row.trackId, message: 'Could not confirm this link.' }
+        return
+      }
+      await refreshUnresolved()
+      fmNotice = `Confirmed “${row.title}” — find it under the Confirmed by you filter.`
+    } finally {
+      confirmingTrackId = null
+    }
   }
 
   async function doIgnore(trackId: string) {
@@ -1870,7 +1940,7 @@
             >{forceRefreshing ? 'Retrying…' : 'Refresh'}</button>
           </div>
           <p class="mb-2 text-sm text-muted">
-            Songs without a file come first; every matched link is then checked against its file's own tags. Fix links here so Push writes ratings to the right file — your manual picks are never changed automatically.
+            Needs action comes first; every matched link is checked against its file's own tags. Confirm a link when you know it is right — your picks are never changed automatically, and you can always find and clear them under Confirmed by you.
           </p>
           {#if unresolvedLoaded && !unresolvedIndexComplete}
             <p class="mb-2 text-sm text-yellow-300">The WebDAV index is incomplete because one or more directories could not be read. These suggestions are partial; automatic matching and removed-file decisions are paused until the index can be rebuilt completely.</p>
@@ -1879,9 +1949,6 @@
             <p class="mb-2 text-sm text-muted">
               Reading tags from {tagProbeText()}{tagProbeMatched()} to match files by their contents…
             </p>
-          {/if}
-          {#if countTotal() > 0}
-            <p class="mb-2 text-sm text-muted">{countLine()}</p>
           {/if}
           {#if matchedAudit.total > 0}
             <div class="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1.5" data-testid="fm-audit-summary">
@@ -1924,8 +1991,43 @@
               {/if}
             </div>
           {:else if unresolvedRows.length > 0}
+            <!-- Filter chips + search: multi-select buckets with live counts,
+                 then a text search across track identity and file paths. -->
+            <div class="mb-2 flex flex-wrap gap-1.5" data-testid="fm-filters">
+              {#each FM_FILTERS as f (f.id)}
+                <button
+                  data-testid={`fm-filter-${f.id}`}
+                  onclick={() => fmToggleBucket(f.id)}
+                  aria-pressed={fmEnabled[f.id]}
+                  class={"rounded-full px-3 py-1 text-xs font-medium ring-1 transition-opacity hover:opacity-80 " + (fmEnabled[f.id] ? 'bg-white/15 text-primary ring-white/30' : 'bg-surface text-muted ring-white/10')}
+                >{f.label} ({fmBucketCounts[f.id]})</button>
+              {/each}
+            </div>
+            <div class="mb-2">
+              <input
+                type="text"
+                data-testid="fm-search"
+                placeholder="Search tracks or file paths…"
+                value={fmQuery}
+                oninput={(e) => { fmQuery = (e.target as HTMLInputElement).value; fmNotice = ''; fmScheduleSearch() }}
+                onkeydown={(e) => { if (e.key === 'Enter') { if (fmSearchTimer) { clearTimeout(fmSearchTimer); fmSearchTimer = null } fmTokens = parseSearchQuery(fmQuery); fmRenderLimit = FM_RENDER_STEP; if (fmListEl) fmListEl.scrollTop = 0 } }}
+                class="w-full rounded-lg bg-surface-hover px-3 py-1.5 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+              />
+            </div>
+            {#if fmNotice}
+              <p class="mb-2 text-xs text-muted">{fmNotice}</p>
+            {/if}
+            {#if blockedCount > 0}
+              <p class="mb-2 text-xs text-yellow-300">{blockedCount} row{blockedCount === 1 ? '' : 's'} blocked by pending edits.</p>
+            {/if}
+            <div
+              bind:this={fmListEl}
+              onscroll={fmOnScroll}
+              data-testid="fm-list"
+              class="max-h-96 overflow-y-auto pr-1"
+            >
             <div class:opacity-50={unresolvedLoading}>
-            {#each visibleRows as row (row.trackId)}
+            {#each fmVisible as row (row.trackId)}
               <div class="mb-2 rounded-lg bg-surface px-3 py-2" data-testid={`fm-row-${row.trackId}`}>
                 <div class="flex items-start justify-between gap-2">
                   <div class="min-w-0">
@@ -1981,11 +2083,18 @@
                   </div>
                 {:else if row.kind === 'matched'}
                   <div class="mt-2 flex flex-wrap gap-2">
+                    {#if row.matchSource !== 'manual' && row.verdict !== 'verified'}
+                      <button
+                        onclick={() => doConfirm(row)}
+                        disabled={confirmingTrackId === row.trackId || $tagProbeState.active || $metadataScanState.status === 'scanning'}
+                        class="btn-primary btn-sm"
+                      >{confirmingTrackId === row.trackId ? 'Confirming…' : 'Confirm this is correct'}</button>
+                    {/if}
                     {#if row.verdict === 'conflict' || row.verdict === 'unknown'}
                       <button
                         onclick={() => openPicker(row.trackId)}
-                        class="btn-primary btn-sm"
-                      >Select correct file…</button>
+                        class="btn-secondary btn-sm"
+                      >Select different file…</button>
                       {#if row.verdict === 'unknown' && row.readState === 'not-probed'}
                         <button
                           onclick={() => doReadBoundFile(row)}
@@ -2080,39 +2189,20 @@
                 {/if}
               </div>
             {/each}
-            {#if visibleRows.length < filterVisible.length}
-              <p class="mt-1 text-xs text-muted">Showing {visibleRows.length} of {filterVisible.length} visible rows. Increase "Rows shown" above to list more.</p>
+            {#if fmVisible.length < fmFiltered.length}
+              <p class="mt-1 text-xs text-muted">Showing {fmVisible.length} of {fmFiltered.length} matching rows — scroll for more.</p>
+            {:else if fmFiltered.length > 0}
+              <p class="mt-1 text-xs text-muted">Showing all {fmFiltered.length} matching row{fmFiltered.length === 1 ? '' : 's'}.</p>
             {:else}
-              <p class="mt-1 text-xs text-muted">Showing all {filterVisible.length} visible row{filterVisible.length === 1 ? '' : 's'}.</p>
+              <p class="mt-1 text-xs text-muted">
+                {#if fmQuery.trim() || Object.values(fmEnabled).some((v) => !v)}
+                  No rows match this view — adjust the filters or clear the search.
+                {:else}
+                  Nothing here yet.
+                {/if}
+              </p>
             {/if}
-            <div class="mt-2 flex items-center gap-2 text-sm">
-              <label for="matchCap" class="text-muted">Rows shown:</label>
-              <input
-                id="matchCap"
-                type="number"
-                min="1"
-                placeholder="100"
-                value={matchCap}
-                oninput={(e) => { const v = +(e.target as HTMLInputElement).value || 0; matchCap = v < 1 ? DISPLAY_CAP : v }}
-                class="w-20 rounded-lg bg-surface-hover px-2 py-1 text-sm text-primary outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
-              />
-              <button
-                onclick={() => matchCap = Infinity}
-                class="rounded-lg bg-surface-hover px-2 py-1 text-xs font-medium text-primary transition-opacity hover:opacity-80"
-              >All</button>
             </div>
-            {#if unresolvedCounts.ignored > 0}
-              <button
-                onclick={() => showIgnored = !showIgnored}
-                class="mt-1 text-sm font-medium text-muted transition-colors hover:text-primary"
-              >{showIgnored ? 'Hide' : 'Show'} ignored ({unresolvedCounts.ignored})</button>
-            {/if}
-            {#if unresolvedCounts.matched > 0}
-              <button
-                onclick={() => showMatched = !showMatched}
-                class="mt-1 text-sm font-medium text-muted transition-colors hover:text-primary"
-              >{showMatched ? 'Hide' : 'Show'} matched ({unresolvedCounts.matched})</button>
-            {/if}
             </div>
           {:else if unresolvedLoading}
             <p class="text-sm text-muted">Loading…</p>

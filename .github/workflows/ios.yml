@@ -3,6 +3,7 @@ name: iOS Build
 on:
   push:
     branches: [main]
+    tags: ['ios-v*']
   workflow_dispatch:
 
 concurrency:
@@ -67,3 +68,31 @@ jobs:
           name: mmdrome-ios
           path: mmdrome-unsigned.ipa
           retention-days: 14
+
+  # A pushed ios-v* tag publishes a GitHub Release carrying the unsigned IPA
+  # as `mmdrome.ipa` — the exact asset sidestore/apps.json points at. Install
+  # / update flow is SideStore-only from there: SideStore signs the IPA with
+  # the user's own Apple ID on install and refreshes it automatically, so no
+  # file is ever transferred by hand.
+  release-ios:
+    name: Publish iOS release
+    needs: build-ios
+    if: startsWith(github.ref, 'refs/tags/ios-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download IPA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mmdrome-ios
+          path: ipa
+
+      - name: Create GitHub Release with IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mv ipa/mmdrome-unsigned.ipa ./mmdrome.ipa
+          gh release create "${{ github.ref_name }}" ./mmdrome.ipa \
+            --title "mmdrome iOS ${{ github.ref_name }}" \
+            --notes "Unsigned IPA for SideStore (source auto-signs on install). Add the source once in SideStore, then install / update from there."

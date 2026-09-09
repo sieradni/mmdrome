@@ -29,8 +29,11 @@ import {
   bindingReleaseable,
   buildEffectiveTitleCounts,
   auditBoundFile,
+  classifyFmRow,
+  fmSeverity,
   type HealCandidate,
   type LinkAudit,
+  type FmBucket,
 } from "./metadataCore"
 import { filenameHintsTitle, normalizeForHint } from "./matchNormalize"
 import { webdavBaseKey, webdavFetch, authHeaders, buildWebdavUrl, isTempFile } from "./webdavUtils"
@@ -1966,25 +1969,31 @@ export interface UnresolvedTrack {
    *  False/absent for manual rows (never auto-cleared) and for family-titled
    *  conflicts ("Song (Live)" under "Song" — likely the same file, kept). */
   fixable?: boolean
+  /** Attention bucket + severity (pure `classifyFmRow`/`fmSeverity` in
+   *  metadataCore): which filter the row belongs to and how urgently it
+   *  needs the user. Stamped here so the view never re-derives policy. */
+  bucket: FmBucket
+  severity: number
 }
 
 /**
  * Result of listing unresolved matches. `rows` carries the full classified
- * list (uncommitted here — the UI applies any display cap it wants); the
- * `counts`/`pendingBlocked` are exact over the whole library.
+ * list (uncommitted here — the UI filters and windows it client-side); the
+ * `counts`/`bucketCounts`/`pendingBlocked` are exact over the whole library.
  */
 export interface UnresolvedMatch {
-  /** Every classified track (uncommitted — capped client-side). */
+  /** Every classified track in severity order — the UI filters and windows
+   *  it client-side. */
   rows: UnresolvedTrack[]
   /** Exact per-kind counts over the whole library (cheap — no scoring). */
   counts: Record<UnresolvedKind, number>
+  /** Exact per-bucket counts over the whole library — the filter chips. */
+  bucketCounts: Record<FmBucket, number>
   /** Whether the live WebDAV file set is complete enough for safe conclusions. */
   indexComplete: boolean
   /** Exact count of unresolved rows carrying a pending edit (blocks Push). */
   pendingBlocked: number
 }
-
-export const DISPLAY_CAP = 100
 
 /**
  * All library tracks the scanner cannot confidently target (and rows whose
@@ -1993,9 +2002,10 @@ export const DISPLAY_CAP = 100
  * plus the audit buckets: manual/auto `matched` rows and user-dismissed
  * `ignored` rows (their pending-ness is reported truthfully). Counts are
  * exact over the whole library (unbound rows are scored once for the
- * no-match/ambiguous split); the row list is returned in full ranked order —
- * unresolved-with-pending-edit first, then unresolved, then matched/ignored —
- * and is truncated client-side only (DISPLAY_CAP is the UI default).
+ * no-match/ambiguous split); the row list is returned in full severity
+ * order — dead links, errors, missing links, then audit confirmations,
+ * then the resolved bulk (confirmed, verified, ignored) —
+ * and is filtered/windowed client-side only.
  * Prompt candidates are computed and retained on every unbound row, never
  * trimmed server-side — the caller decides how many to render.
  *
@@ -2007,6 +2017,7 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
   if (!webdavUrl || !webdavUser || !webdavToken) return {
     rows: [],
     counts: { 'no-match': 0, ambiguous: 0, vanished: 0, 'stale-base': 0, ignored: 0, matched: 0 },
+    bucketCounts: { action: 0, confirmed: 0, verified: 0, ignored: 0 },
     indexComplete: false,
     pendingBlocked: 0,
   }
@@ -2049,6 +2060,9 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
   const counts: Record<UnresolvedKind, number> = {
     'no-match': 0, ambiguous: 0, 'vanished': 0, 'stale-base': 0, ignored: 0, matched: 0,
   }
+  const bucketCounts: Record<FmBucket, number> = {
+    action: 0, confirmed: 0, verified: 0, ignored: 0,
+  }
   let pendingBlocked = 0
 
   for (const t of tracks) {
@@ -2063,7 +2077,7 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
       pendingPush: meta?.syncStatus === 'pending_sync',
     }
 
-    let row: UnresolvedTrack
+    let row: Omit<UnresolvedTrack, 'bucket' | 'severity'>
     if (meta?.ignored) {
       // Deliberately dismissed — no re-matching, but pending-ness must be
       // truthful so the UI can say "edit exists, can't be pushed".
@@ -2145,27 +2159,22 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
         candidatePaths: row.candidates.map((c) => c.path),
       })
     }
-    rows.push(row)
+    const bucket = classifyFmRow(row)
+    bucketCounts[bucket]++
+    rows.push({ ...row, bucket, severity: fmSeverity(row) })
   }
 
-  // Rank first so the CAP picks the rows that matter: unresolved with a
-  // pending edit (blocked), then unresolved, then the AUDIT bucket — matched
-  // rows whose file tags conflict or were never read (the wrong-link
-  // candidates) before the verified bulk — then user-dismissed rows.
+  // Rank by attention severity so the visible window shows the rows that
+  // matter: dead links, errors, missing links, then audit confirmations —
+  // pending-push rows first within equal severity (they block Push Changes),
+  // the resolved bulk (confirmed, verified, ignored) last.
   rows.sort((a, b) => {
-    const rankOf = (r: UnresolvedTrack): number => {
-      if (r.kind === 'matched') {
-        if (r.verdict === 'conflict' || r.verdict === 'unknown') return 2
-        return 3
-      }
-      if (r.kind === 'ignored') return 4
-      return r.pendingPush ? 0 : 1
-    }
-    const d = rankOf(a) - rankOf(b)
+    const d = a.severity - b.severity
     if (d !== 0) return d
+    if (a.pendingPush !== b.pendingPush) return a.pendingPush ? -1 : 1
     return a.title.localeCompare(b.title)
   })
-  return { rows, counts, indexComplete, pendingBlocked }
+  return { rows, counts, bucketCounts, indexComplete, pendingBlocked }
 }
 
 /**

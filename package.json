@@ -1,7 +1,7 @@
 {
   "name": "mmdrome",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -11,6 +11,7 @@
     "test": "node --test --import ./scripts/test-loader.mjs",
     "test:e2e": "playwright test",
     "build:ios": "node scripts/build-ios.mjs",
+    "release:ios": "node scripts/release-ios.mjs",
     "sync:ios": "npm run build:ios && cap sync ios && node scripts/fix-spm-path.mjs",
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist"

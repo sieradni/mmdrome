@@ -37,6 +37,8 @@ import {
   tagProbeState,
   listUnresolvedMatches,
   searchWebdavFiles,
+  bindTrackToFile,
+  unbindTrack,
 } from '../src/lib/metadataScanner'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -1788,6 +1790,95 @@ test('cancelScan stamps the landing with the scan shape; ordinary scans do not c
   // An ordinary completed scan (no cancel) does NOT carry the marker.
   await scanAll('modified')
   assert.equal(get(metadataScanState).progress.cancelledShape, undefined, 'completed scans have no resume marker')
+
+  teardown()
+})
+
+test('File Matching buckets: title-less auto link needs action, same-path Confirm resolves it, Clear reopens it', async () => {
+  setupMocks()
+  initWebdav()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+
+  // t1: auto-bound to a file whose tags carry NO title (the 2026-09-09
+  // report) — audit unknown/empty, bucket action.
+  // t2: auto-bound, tags confirm — verified bucket.
+  // t3: unbound, no file of its type on the server — no-match, action.
+  // t4: dismissed — ignored bucket.
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', size: 222 })
+  const t3 = track({ trackId: 't3', title: 'Song C', artist: 'Artist', size: 333, fileType: 'mp3' })
+  const t4 = track({ trackId: 't4', title: 'Song D', artist: 'Artist', size: 444 })
+  library.set([t1, t2, t3, t4])
+
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  const stamp = 'Mon, 01 Jan 2024 00:00:00 GMT'
+  const base = 'http://test.com|user'
+  updateMetadata({
+    trackId: 't1', rating: 0, loved: false, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathA, webdavLastModified: stamp, webdavBase: base,
+  })
+  updateMetadata({
+    trackId: 't2', rating: 0, loved: false, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, webdavPath: pathB, webdavLastModified: stamp, webdavBase: base,
+  })
+  updateMetadata({
+    trackId: 't4', rating: 0, loved: false, fileType: 'flac', syncStatus: 'synced',
+    lastModifiedLocally: 1, ignored: true,
+  })
+
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: stamp },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: stamp },
+  ]
+  mockComplete = true
+  await db.webdavFileTags.bulkPut([
+    {
+      id: `${base}\u0000${pathA}`, baseKey: base, path: pathA, size: 111, lastModified: stamp,
+      metadata: fileMeta({ title: '', artist: '', album: '' }), status: 'empty', probedAt: 1,
+    },
+    {
+      id: `${base}\u0000${pathB}`, baseKey: base, path: pathB, size: 222, lastModified: stamp,
+      metadata: fileMeta({ title: 'Song B', artist: 'Artist' }), status: 'ok', probedAt: 1,
+    },
+  ])
+
+  await refreshIndex()
+  const before = await listUnresolvedMatches()
+  const byId = new Map(before.rows.map((r) => [r.trackId, r]))
+  assert.equal(byId.get('t1')?.kind, 'matched')
+  assert.equal(byId.get('t1')?.verdict, 'unknown')
+  assert.equal(byId.get('t1')?.readState, 'empty')
+  assert.equal(byId.get('t1')?.bucket, 'action', 'title-less auto link needs action')
+  assert.equal(byId.get('t2')?.bucket, 'verified')
+  assert.equal(byId.get('t3')?.kind, 'no-match')
+  assert.equal(byId.get('t3')?.bucket, 'action')
+  assert.equal(byId.get('t4')?.bucket, 'ignored')
+  assert.deepEqual(before.bucketCounts, { action: 2, confirmed: 0, verified: 1, ignored: 1 })
+  const order = before.rows.map((r) => r.trackId)
+  assert.ok(order.indexOf('t3') < order.indexOf('t1'), 'missing link sorts before audit confirmation')
+  assert.ok(order.indexOf('t1') < order.indexOf('t2'), 'action sorts before verified')
+  assert.ok(order.indexOf('t2') < order.indexOf('t4'), 'verified sorts before ignored')
+
+  // Confirming the SAME file is the user's verdict: the audit stays
+  // unknown/empty (honest — tags still have no title) but the row resolves.
+  const bindRes = await bindTrackToFile('t1', pathA)
+  assert.equal(bindRes.ok, true, 'same-path confirm binds')
+  const afterConfirm = await listUnresolvedMatches()
+  const confirmed = afterConfirm.rows.find((r) => r.trackId === 't1')
+  assert.equal(confirmed?.matchSource, 'manual')
+  assert.equal(confirmed?.verdict, 'unknown', 'audit evidence untouched by the confirm')
+  assert.equal(confirmed?.readState, 'empty')
+  assert.equal(confirmed?.bucket, 'confirmed', 'same-path Confirm resolves the row')
+  assert.deepEqual(afterConfirm.bucketCounts, { action: 1, confirmed: 1, verified: 1, ignored: 1 })
+
+  // Clearing reopens the row: back to unmatched + action with suggestions.
+  await unbindTrack('t1')
+  const afterClear = await listUnresolvedMatches()
+  const cleared = afterClear.rows.find((r) => r.trackId === 't1')
+  assert.equal(cleared?.kind, 'no-match')
+  assert.equal(cleared?.bucket, 'action')
+  assert.ok((cleared?.candidates.length ?? 0) > 0, 'cleared row offers suggestions again')
 
   teardown()
 })
