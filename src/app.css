@@ -26,6 +26,12 @@
   font-size: 93.75%;
 }
 
+/* Proportional fonts read true to size — undo the mono density shrink
+   (toggle set by appearance.ts when a non-mono face is selected). */
+:root.proportional-font {
+  font-size: 100%;
+}
+
 body {
   font-family: var(--app-font);
 }

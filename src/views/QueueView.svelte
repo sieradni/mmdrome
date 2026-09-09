@@ -776,10 +776,13 @@ function seek(e: Event) {
     {/if}
   </div>
 
-  <!-- Action bar: navigation (left) + destructive clears (right). In flow
+  <!-- Action island: navigation (left) + destructive clears (right). In flow
        BELOW the list — the old floating dock overlayed the last rows, so
-       bottom content was unreachable without scrolling blind past it. -->
-  <div class="shrink-0 border-t border-white/10 bg-surface px-4 pb-1 pt-1.5 safe-area-bottom">
+       bottom content was unreachable without scrolling blind past it. Shaped
+       like the now-playing island above (rounded card, ring, margins) so the
+       two read as one design language. -->
+  <div class="shrink-0 px-4 pb-2 safe-area-bottom">
+    <div class="rounded-2xl bg-surface/60 px-2 py-1.5 ring-1 ring-white/10">
     <div class="flex items-start justify-between">
     <div class="flex items-start gap-1">
       <button
@@ -838,6 +841,7 @@ function seek(e: Event) {
         </span>
         <span class="text-[10px] font-medium leading-none">Clear below</span>
       </button>
+    </div>
     </div>
     </div>
   </div>

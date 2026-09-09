@@ -18,8 +18,20 @@ export const NEUTRAL_ACCENT = 'neutral'
 /** The swatch hues offered by the Appearance tab (hsl hue numbers). */
 export const ACCENT_HUES = [0, 25, 45, 140, 190, 220, 270, 320] as const
 
-export type AppFont = 'jetbrains' | 'plex' | 'system'
+export type AppFont =
+  | 'jetbrains'
+  | 'plex'
+  | 'geist'
+  | 'fira'
+  | 'roboto'
+  | 'inter'
+  | 'space'
+  | 'system'
 
+/** The font choices: monospace by identity (the app's voice), plus two
+ *  proportional options for users who prefer one. All bundled locally via
+ *  fontsource (offline/native safe). Each list button renders in its own
+ *  stack so the picker shows the real thing. */
 export const FONT_OPTIONS: { id: AppFont; label: string; stack: string }[] = [
   {
     id: 'jetbrains',
@@ -30,6 +42,31 @@ export const FONT_OPTIONS: { id: AppFont; label: string; stack: string }[] = [
     id: 'plex',
     label: 'IBM Plex Mono',
     stack: "'IBM Plex Mono', ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, monospace",
+  },
+  {
+    id: 'geist',
+    label: 'Geist Mono',
+    stack: "'Geist Mono Variable', ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, monospace",
+  },
+  {
+    id: 'fira',
+    label: 'Fira Code',
+    stack: "'Fira Code', ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, monospace",
+  },
+  {
+    id: 'roboto',
+    label: 'Roboto Mono',
+    stack: "'Roboto Mono', ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, monospace",
+  },
+  {
+    id: 'inter',
+    label: 'Inter (sans)',
+    stack: "'Inter Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
+  },
+  {
+    id: 'space',
+    label: 'Space Grotesk (sans)',
+    stack: "'Space Grotesk Variable', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif",
   },
   {
     id: 'system',
@@ -70,6 +107,9 @@ export function applyAppearance(): void {
   root.style.setProperty('--app-accent-ring', ring)
   const font = FONT_OPTIONS.find((f) => f.id === (get(_appFont.store) || 'jetbrains')) ?? FONT_OPTIONS[0]
   root.style.setProperty('--app-font', font.stack)
+  // The 93.75% root size compensates for monospace's larger apparent size;
+  // proportional faces read true to size, so they run at the normal 100%.
+  root.classList.toggle('proportional-font', font.id === 'inter' || font.id === 'space')
 }
 
 /** Restore once at boot (main.ts) and subscribe to further changes. */

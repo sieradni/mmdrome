@@ -21,6 +21,7 @@
   import { scrobbleFlushStatus } from '../lib/scrobbleFlush'
   import { networkStatusStore } from '../lib/networkMode'
   import { BUILTIN_TRANSCODE_FORMATS, isLosslessTranscodeFormat } from '../lib/transcodePolicy'
+  import ToggleSwitch from '../components/ToggleSwitch.svelte'
   import { accentHue, appFont, ACCENT_HUES, FONT_OPTIONS, NEUTRAL_ACCENT } from '../lib/appearance'
   import { ensureFormatProbe } from '../lib/formatProbe'
   import { lbValidateToken } from '../lib/listenbrainzApi'
@@ -33,16 +34,18 @@
 
   const savedSettingsState = restoreViewStateSession<{ tab?: SettingsTab; scrollTops?: Record<string, number> }>('settings')
 
-  let tab = $state<SettingsTab>(savedSettingsState?.tab ?? 'sources')
+  // `tab === null` is the LANDING page: the menu of sections. `null` is a
+  // session-restored value too (it was the persisted tab of the last visit).
+  let tab = $state<SettingsTab | null>(savedSettingsState?.tab ?? null)
   let scrollTops = $state<Record<string, number>>({ sources: 0, scrobbling: 0, playback: 0, library: 0, appearance: 0, about: 0, ...(savedSettingsState?.scrollTops ?? {}) })
 
-  const tabs: { id: SettingsTab; label: string }[] = [
-    { id: 'sources', label: 'Sources' },
-    { id: 'scrobbling', label: 'Scrobble' },
-    { id: 'playback', label: 'Playback' },
-    { id: 'library', label: 'Library' },
-    { id: 'appearance', label: 'Appearance' },
-    { id: 'about', label: 'About' },
+  const tabs: { id: SettingsTab; label: string; icon: string; blurb: string }[] = [
+    { id: 'sources', label: 'Sources', icon: 'M19 4H5a2 2 0 00-2 2v12a2 2 0 002 2h14a2 2 0 002-2V6a2 2 0 00-2-2zm0 14H5V8h14v10zM7 10h4v2H7v-2zm0 4h10v2H7v-2z', blurb: 'Navidrome server & WebDAV files' },
+    { id: 'scrobbling', label: 'Scrobbling', icon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 18a8 8 0 110-16 8 8 0 010 16zm-1-13v5.59l3.95 3.95 1.41-1.41L13 11.17V7h-2z', blurb: 'Last.fm & ListenBrainz reporting' },
+    { id: 'playback', label: 'Playback', icon: 'M8 5v14l11-7L8 5z', blurb: 'Quality, preloading, crossfade, data use' },
+    { id: 'library', label: 'Library', icon: 'M4 6h16v2H4V6zm0 5h16v2H4v-2zm0 5h10v2H4v-2z', blurb: 'Tags, file matching, pushing edits' },
+    { id: 'appearance', label: 'Appearance', icon: 'M12 2a10 10 0 000 20 10 10 0 000-20zm0 18a8 8 0 010-16v16z', blurb: 'Accent color & font' },
+    { id: 'about', label: 'About', icon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z', blurb: 'Version & diagnostics' },
   ]
 
   let syncing = $state(false)
@@ -52,7 +55,9 @@
   let pushBreakdown = $state<PushBreakdown>(EMPTY_PUSH_BREAKDOWN)
   let reconcileResult = $state('')
   let indexing = $state(false)
-  let scrollContainer: HTMLDivElement | null = null
+  // $state: the container is conditionally rendered (hidden on the landing
+  // page), so the save/restore effects must react to it mounting/unmounting.
+  let scrollContainer = $state<HTMLDivElement | null>(null)
   // TODO 4.2: the save effect's first run can see scrollTop 0 before the
   // restore below has applied — writing it over the restored `scrollTops[tab]`
   // would defeat the restore AND persist the corruption. Ordering-defense: it
@@ -60,31 +65,44 @@
   // scheduling has shifted across 5.x releases. Skip saves until the restore
   // has run; the effect re-runs when `restored` flips and saves the true value.
   let restored = $state(false)
+  // Same defense for section switches: the save effect fires the moment the
+  // new (empty) container binds — BEFORE tick() re-applies the saved scroll —
+  // and would stamp 0 over the section's saved position. Skip saves while a
+  // switch is in flight; real scroll events land after the flag clears.
+  let switching = $state(false)
 
   $effect(() => {
-    if (!restored) return
+    if (!restored || switching) return
     const st = scrollContainer?.scrollTop ?? 0
-    if (scrollTops[tab] !== st) scrollTops[tab] = st
+    if (tab && scrollTops[tab] !== st) scrollTops[tab] = st
     saveViewStateSession('settings', { tab, scrollTops })
   })
 
   onMount(async () => {
     await tick()
-    if (scrollContainer) scrollContainer.scrollTop = scrollTops[tab]
+    if (scrollContainer) scrollContainer.scrollTop = tab ? (scrollTops[tab] ?? 0) : 0
     restored = true
   })
 
   function switchTab(t: SettingsTab) {
     if (t === tab) return
-    if (scrollContainer) scrollTops[tab] = scrollContainer.scrollTop
+    // Leaving a section (including via the back button to the landing page)
+    // preserves that section's scroll position for the next visit.
+    if (scrollContainer && tab) scrollTops[tab] = scrollContainer.scrollTop
+    switching = true
     tab = t
     // A reset result/error belongs to the moment it happened — never carry it
     // into a later visit to the Library tab where it could be misread.
     resetResult = ''
     resetError = ''
     tick().then(() => {
-      if (scrollContainer) scrollContainer.scrollTop = scrollTops[t]
+      if (scrollContainer) scrollContainer.scrollTop = t === null ? 0 : (scrollTops[t] ?? 0)
+      switching = false
     })
+  }
+
+  function backToMenu() {
+    switchTab(null as unknown as SettingsTab)
   }
 
   function onInput(field: 'webdavUrl' | 'webdavUser' | 'webdavToken' | 'navidromeUrl' | 'navidromeUser' | 'navidromePassword' | 'listenbrainzToken' | 'lastfmApiKey' | 'lastfmApiSecret') {
@@ -1026,21 +1044,45 @@
 
 <div class="flex h-full flex-col">
   <div class="border-b border-white/10 px-4 py-3">
-    <h2 class="text-sm font-medium uppercase tracking-wider text-muted">Settings</h2>
-    <div class="mt-2 flex gap-1 overflow-x-auto">
-      {#each tabs as t (t.id)}
-        <button
-          onclick={() => switchTab(t.id)}
-          class="whitespace-nowrap rounded-lg px-3 py-1.5 text-sm font-medium transition-colors"
-          class:bg-surface-hover={tab === t.id}
-          class:text-primary={tab === t.id}
-          class:text-muted={tab !== t.id}
-        >{t.label}</button>
-      {/each}
-    </div>
+    {#if tab === null}
+      <h2 class="text-sm font-medium uppercase tracking-wider text-muted">Settings</h2>
+    {:else}
+      <button
+        onclick={backToMenu}
+        class="flex items-center gap-1.5 text-sm font-medium text-muted transition-colors hover:text-primary"
+        aria-label="Back to settings menu"
+      >
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+        Settings
+      </button>
+    {/if}
   </div>
+  {#if tab === null}
+    <!-- Landing page: the section menu. Everything else renders inside the
+         scroll container below when a section is open. -->
+    <div class="flex-1 overflow-y-auto pb-24">
+      <div class="mx-3 mt-3 overflow-hidden rounded-2xl bg-surface/60 ring-1 ring-white/10">
+        {#each tabs as t, i (t.id)}
+          <button
+            onclick={() => switchTab(t.id)}
+            class={"flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-surface-hover " + (i > 0 ? 'border-t border-white/10 ' : '')}
+            aria-label="Open {t.label} settings"
+          >
+            <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-white/5 text-muted">
+              <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d={t.icon} /></svg>
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="block text-sm font-medium text-primary">{t.label}</span>
+              <span class="block truncate text-xs text-muted">{t.blurb}</span>
+            </span>
+            <svg class="h-4 w-4 flex-shrink-0 text-muted/60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>
+          </button>
+        {/each}
+      </div>
+    </div>
+  {:else}
   <div class="flex-1 overflow-y-auto pb-24" bind:this={scrollContainer} data-testid="settings-scroll"
-       onscroll={() => { if (scrollContainer) scrollTops[tab] = scrollContainer.scrollTop }}>
+       onscroll={() => { if (scrollContainer && tab) scrollTops[tab] = scrollContainer.scrollTop }}>
     <div class="divide-y divide-white/10">
       {#if tab === 'sources'}
         <!-- Navidrome -->
@@ -1273,18 +1315,18 @@
             {#if ($settings.ratingSource ?? 'webdav') === 'navidrome'}
               <p class="text-sm text-muted">Navidrome is the authoritative store. Ratings are pushed straight to the server.</p>
               <label class="flex cursor-pointer items-center gap-3">
-                <input type="checkbox" checked={$settings.writeTagsInNavidromeMode ?? false} onchange={setWriteTagsInNavidromeMode} />
+                <ToggleSwitch checked={$settings.writeTagsInNavidromeMode ?? false} onchange={setWriteTagsInNavidromeMode} />
                 <div>
                   <p class="text-base text-primary">Also write tags to your files</p>
-                  <p class="text-sm text-muted">Keep file tags in sync with the server so MusicBee sees phone edits (pushed with Push Changes).</p>
+                  <p class="text-sm text-muted">Push rating edits into the files' tags (with Push Changes) so MusicBee sees them.</p>
                 </div>
               </label>
             {:else}
               <label class="flex cursor-pointer items-center gap-3">
-                <input type="checkbox" checked={$settings.syncToNavidrome ?? false} onchange={setSyncToNavidrome} />
+                <ToggleSwitch checked={$settings.syncToNavidrome ?? false} onchange={setSyncToNavidrome} />
                 <div>
                   <p class="text-base text-primary">Also mirror ratings to Navidrome</p>
-                  <p class="text-sm text-muted">Mirror every rating/loved change to the server while keeping your files as the source of truth.</p>
+                  <p class="text-sm text-muted">Copy rating and loved edits to the server too — your files stay the source of truth.</p>
                 </div>
               </label>
               {#if reconcileResult}
@@ -1301,10 +1343,10 @@
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Navidrome</h3>
           <label class="flex cursor-pointer items-center gap-3">
-            <input type="checkbox" checked={$settings.scrobbling ?? false} onchange={setScrobbling} />
+            <ToggleSwitch checked={$settings.scrobbling ?? false} onchange={setScrobbling} />
             <div>
               <p class="text-base text-primary">Scrobble to Navidrome</p>
-              <p class="text-sm text-muted">Report plays and now-playing to your server (bumps its play counts). Navidrome can forward these to Last.fm / ListenBrainz if configured server-side.</p>
+              <p class="text-sm text-muted">Sends plays to your server (builds its play counts). If the server forwards to Last.fm itself, don't also enable the services below.</p>
             </div>
           </label>
         </section>
@@ -1312,7 +1354,7 @@
         <!-- Direct services -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Direct Services</h3>
-          <p class="mb-2 text-sm text-muted">Report plays and hearts straight to your music profiles — no server-side setup needed. Works even when Navidrome is not forwarding to Last.fm.</p>
+          <p class="mb-2 text-sm text-muted">Send plays and hearts straight to Last.fm / ListenBrainz — no server setup. Independent of the server's own forwarding.</p>
           <div class="space-y-4">
             <!-- Last.fm -->
             <div class="space-y-3 rounded-lg bg-surface-hover/40 p-3">
@@ -1349,10 +1391,10 @@
                 <p class="text-sm text-red-400">{lfmError}</p>
               {/if}
               <label class="flex cursor-pointer items-center gap-3">
-                <input type="checkbox" checked={$settings.lastfmScrobbling ?? false} onchange={setLastfmScrobbling} />
+                <ToggleSwitch checked={$settings.lastfmScrobbling ?? false} onchange={setLastfmScrobbling} />
                 <div>
                   <p class="text-base text-primary">Scrobble and sync hearts to Last.fm</p>
-                  <p class="text-sm text-muted">Plays queue up and are retried while offline; heart changes mirror outward.</p>
+                  <p class="text-sm text-muted">Uploads directly, even offline — plays and hearts queue and retry.</p>
                 </div>
               </label>
             </div>
@@ -1388,10 +1430,10 @@
                 {/if}
               </div>
               <label class="flex cursor-pointer items-center gap-3">
-                <input type="checkbox" checked={$settings.listenbrainzScrobbling ?? false} onchange={setListenbrainzScrobbling} />
+                <ToggleSwitch checked={$settings.listenbrainzScrobbling ?? false} onchange={setListenbrainzScrobbling} />
                 <div>
                   <p class="text-base text-primary">Scrobble to ListenBrainz</p>
-                  <p class="text-sm text-muted">Same durable offline queue as Last.fm.</p>
+                  <p class="text-sm text-muted">Uploads plays using your token; same offline queue as Last.fm.</p>
                 </div>
               </label>
             </div>
@@ -1439,25 +1481,33 @@
           <h3 class="mb-3 text-base font-medium text-primary">Data &amp; Network</h3>
           <div class="space-y-3">
             <label class="flex cursor-pointer items-center gap-3">
-              <input data-testid="low-data-mode" type="checkbox" checked={$settings.lowDataMode ?? false} onchange={setLowDataMode} />
+              <ToggleSwitch
+                checked={$settings.lowDataOnCellular ?? false}
+                onchange={setLowDataOnCellular}
+                testid="low-data-cellular"
+              />
               <div>
-                <p class="text-base text-primary">Low data mode</p>
-                <p class="text-sm text-muted">Pauses automatic background traffic: metadata scans, tag probes, and scrobble uploads (queued instead of sent). Streaming, cover art, preloading (it keeps your next tracks buffered — that's what makes low data mode work), and everything you tap yourself are never affected.</p>
+                <p class="text-base text-primary">Automatic low data mode</p>
+                <p class="text-sm text-muted">
+                  {#if $networkStatusStore.source === 'native'}
+                    Engages low data mode on cellular — detected exactly on this device, including hotspots and the system Low Data Mode setting.
+                  {:else if $networkStatusStore.known}
+                    Engages low data mode on cellular, using approximate browser hints — Wi-Fi may be misread as cellular; Safari can't detect it at all.
+                  {:else}
+                    Engages low data mode on cellular. This browser can't detect the network, so only the manual toggle below applies.
+                  {/if}
+                </p>
               </div>
             </label>
             <label class="flex cursor-pointer items-center gap-3">
-              <input type="checkbox" checked={$settings.lowDataOnCellular ?? false} onchange={setLowDataOnCellular} />
+              <ToggleSwitch
+                checked={$settings.lowDataMode ?? false}
+                onchange={setLowDataMode}
+                testid="low-data-mode"
+              />
               <div>
-                <p class="text-base text-primary">Low data mode on cellular</p>
-                <p class="text-sm text-muted">
-                  {#if $networkStatusStore.source === 'native'}
-                    Detects cellular exactly on this device (including hotspots and the system Low Data Mode setting).
-                  {:else if $networkStatusStore.known}
-                    Uses approximate browser network hints — good Wi-Fi may be misread as cellular; Safari cannot detect cellular at all.
-                  {:else}
-                    This browser cannot detect cellular; only the manual toggle applies.
-                  {/if}
-                </p>
+                <p class="text-base text-primary">Low data mode</p>
+                <p class="text-sm text-muted">Pauses background traffic: metadata scans, tag probes, and scrobble uploads (they queue instead). Streaming, cover art, preloading, and anything you tap yourself are never held back.</p>
               </div>
             </label>
           </div>
@@ -1466,7 +1516,7 @@
         <!-- Preload -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Preloading</h3>
-          <p class="mb-2 text-sm text-muted">Number of upcoming tracks to preload</p>
+          <p class="mb-2 text-sm text-muted">How many upcoming tracks to download ahead of playback.</p>
           <div class="flex gap-2">
             {#each [0, 1, 2, 3, 5] as n}
               <button
@@ -1501,7 +1551,7 @@
         <!-- Transcoding (server-side, Navidrome) -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Streaming Quality</h3>
-          <p class="mb-2 text-sm text-muted">Let your Navidrome server transcode on the fly (requires ffmpeg on the server).</p>
+          <p class="mb-2 text-sm text-muted">Stream smaller transcoded files from your server (needs ffmpeg on it). Original files stream untouched when Off.</p>
           <div class="flex gap-2">
             {#each ['off', 'lowData', 'always'] as mode}
               <button
@@ -1571,7 +1621,7 @@
         <!-- Replay Gain -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Replay Gain</h3>
-          <p class="mb-2 text-sm text-muted">Apply loudness normalization based on file metadata</p>
+          <p class="mb-2 text-sm text-muted">Evens out volume between tracks using loudness tags in the files.</p>
           <div class="flex gap-2">
             {#each ['off', 'track', 'album'] as mode}
               <button
@@ -1591,7 +1641,7 @@
         <!-- Push Changes -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Push Changes</h3>
-          <p class="mb-2 text-sm text-muted">Upload locally modified ratings and loved flags to your WebDAV files.</p>
+          <p class="mb-2 text-sm text-muted">Writes rating and loved edits into your music files' tags over WebDAV.</p>
           <div class="space-y-3">
             <button
               onclick={pushChanges}
@@ -1682,7 +1732,7 @@
         <!-- Metadata Scan -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Metadata Scan</h3>
-          <p class="mb-2 text-sm text-muted">Read identity, ratings, loved status, comments, and audio metadata from file tags via WebDAV. Cached probes are reused; modified files and unresolved candidates are refreshed as needed.</p>
+          <p class="mb-2 text-sm text-muted">Reads tags (identity, ratings, loved, comments) from your files over WebDAV and matches them to songs. Re-reads only what changed or is unresolved.</p>
           <div class="space-y-3">
             <button
               onclick={startMetadataScan}
@@ -2176,6 +2226,7 @@
       {/if}
     </div>
   </div>
+  {/if}
 
   {#if confirmReset}
     <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">

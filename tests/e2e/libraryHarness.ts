@@ -38,9 +38,39 @@ export async function mockSubsonic(page: Page): Promise<void> {
   })
 }
 
+export type SettingsSection = 'sources' | 'scrobbling' | 'playback' | 'library' | 'appearance' | 'about'
+
+/** Navigate to a Settings section from anywhere. Tolerant of the two states
+ *  the landing-page redesign introduced: the session-restored tab can land
+ *  the app straight INSIDE a section after a reload (no menu showing), and
+ *  the app can be inside a DIFFERENT section (needs back-to-menu first).
+ *  The bottom-nav 'Settings' click uses exact matching — every menu row's
+ *  label contains the word 'settings' too. */
+export async function openSettingsSection(page: Page, section: SettingsSection): Promise<void> {
+  const label = section === 'scrobbling' ? 'Scrobbling' : section[0].toUpperCase() + section.slice(1)
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  const open = page.getByRole('button', { name: `Open ${label} settings` })
+  // The session-restored tab can land the app directly INSIDE a section after
+  // a reload (no menu showing). The back button is the only reliable signal —
+  // it renders exactly when a section is open — and a double click is a no-op
+  // (clicking it on the menu does nothing, there is no such button).
+  const back = page.getByRole('button', { name: 'Back to settings menu' })
+  if (await back.isVisible().catch(() => false)) await back.click()
+  await open.click()
+  // Per-section sentinel: content renders only when the section is open.
+  const sentinel = {
+    sources: page.getByTestId('navidrome-url'),
+    scrobbling: page.getByRole('heading', { name: 'Direct Services' }),
+    playback: page.getByRole('heading', { name: 'Data & Network' }),
+    library: page.getByRole('heading', { name: 'Metadata Scan' }),
+    appearance: page.getByRole('heading', { name: 'Appearance' }),
+    about: page.getByRole('heading', { name: 'mmdrome' }),
+  }[section]
+  await expect(sentinel).toBeAttached()
+}
+
 export async function openSources(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Settings' }).click()
-  await expect(page.getByTestId('navidrome-url')).toBeAttached()
+  await openSettingsSection(page, 'sources')
 }
 
 export async function fillNavidrome(page: Page): Promise<void> {
@@ -58,8 +88,7 @@ export async function fillWebdav(page: Page): Promise<void> {
 }
 
 export async function openLibrary(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Library', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Metadata Scan' })).toBeVisible()
+  await openSettingsSection(page, 'library')
 }
 
 export async function rescanAll(page: Page): Promise<void> {

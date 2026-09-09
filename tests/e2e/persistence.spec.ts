@@ -14,11 +14,12 @@ import { installNavidromeMock, seedMockCredentials } from './navidromeMock'
 // Now Playing detail controls, which need an ACTIVE track.
 
 async function openQueue(page: Page): Promise<void> {
-  // The mini-player bar (empty-state text is present with no track loaded)
-  // opens the queue directly when nothing is active — the detail overlay is
-  // guarded. The queue view's Filter button is scoped by its aria-label —
-  // the base SongsView has a plain "Filter" button of its own.
+  // The mini-player bar opens the Now Playing detail (its empty state covers
+  // the idle case); the queue is reached from there via the queue button.
+  // The queue view's Filter button is scoped by its aria-label — the base
+  // SongsView has a plain "Filter" button of its own.
   await page.getByText('Not playing').first().click()
+  await page.getByRole('button', { name: 'Open queue' }).click()
   await page.getByRole('button', { name: 'Close queue' }).waitFor({ state: 'visible' })
 }
 

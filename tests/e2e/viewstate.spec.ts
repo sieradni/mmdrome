@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { bootApp } from './boot'
+import { openSettingsSection } from './libraryHarness'
 
 // Pins the TODO 4.2 end-to-end contract in the real production bundle: a
 // scrolled Settings position survives a reload. SettingsView restores
@@ -14,8 +15,10 @@ import { bootApp } from './boot'
 const VIEWSTATE_KEY = 'mmdrome_viewstate'
 
 async function openSettings(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Settings' }).click()
-  await expect(page.getByTestId('settings-scroll')).toBeAttached()
+  // The scroll contract is pinned on Sources (the session state's default
+  // key); the harness helper tolerates the restored tab landing directly
+  // inside a section after the reload below.
+  await openSettingsSection(page, 'sources')
 }
 
 test('the Settings scroll position survives a reload (4.2)', async ({ page }) => {

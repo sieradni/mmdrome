@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { bootApp } from './boot'
+import { openSettingsSection } from './libraryHarness'
 
 // The Phase 3 sync pipeline (connectNavidrome → planNavidromeLoad → library +
 // metadata seeding) is wired through Dexie + fetch, which the Node suites can't
@@ -23,9 +24,9 @@ function subsonic(extra: Record<string, unknown>): Record<string, unknown> {
 }
 
 async function openSources(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Settings' }).click()
-  // The Sources tab is the default; the Navidrome fields render immediately.
-  await expect(page.getByTestId('navidrome-url')).toBeAttached()
+  // The landing menu lists the sections; the harness helper tolerates the
+  // session-restored tab landing directly INSIDE a section after a reload.
+  await openSettingsSection(page, 'sources')
 }
 
 async function fillCredentials(page: Page): Promise<void> {

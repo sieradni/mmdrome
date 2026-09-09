@@ -298,10 +298,8 @@ function seek(e: Event) {
 
   function miniPlayerTap() {
     if (nowPlayingOpen || overlay) { closeAll(); return }
-    // The detail controls describe the ACTIVE track — with nothing playing
-    // they have nothing to show, so go straight to the queue instead (the
-    // mini-player tap is the queue's only entry from the idle state).
-    if (!$currentTrack) { openQueue(); return }
+    // Always the expanded Now Playing view — its own empty state covers the
+    // idle case (and the detail view's queue button is the idle path in).
     toggleNowPlaying()
   }
 </script>
@@ -344,13 +342,16 @@ function seek(e: Event) {
 
   <!-- ─── Bottom Bar: Mini Player + Tab Nav ─── -->
   <div class="flex flex-col overflow-hidden">
+    <!-- Mini-player island: rounded card floating on a padded strip (matching
+         the queue view's action island) instead of an edge-to-edge band. -->
+    <div class="px-3 pb-2 pt-1">
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       onclick={miniPlayerTap}
       role="button"
       tabindex="0"
       onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') miniPlayerTap(); }}
-      class="flex cursor-pointer items-center gap-3 border-t border-white/10 bg-surface px-4 py-2.5 text-left transition-colors hover:bg-surface-hover"
+      class="flex cursor-pointer items-center gap-3 rounded-2xl bg-surface/60 px-3 py-2.5 text-left ring-1 ring-white/10 transition-colors hover:bg-surface-hover"
     >
       {#if $currentTrack}
         <LazyThumb track={$currentTrack} size={128} wrapperClass="h-12 w-12 flex-shrink-0 rounded-md" />
@@ -382,6 +383,7 @@ function seek(e: Event) {
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
         </button>
       </div>
+    </div>
     </div>
 
     <nav class="flex border-t border-white/10 bg-surface safe-area-bottom">
@@ -548,7 +550,12 @@ function seek(e: Event) {
       <button class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
         <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
       </button>
-      <button onclick={openTrackOptions} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Options">
+      <button
+        onclick={openTrackOptions}
+        disabled={!$currentTrack}
+        class="rounded-full p-2.5 text-muted transition-colors disabled:cursor-not-allowed disabled:opacity-30 hover:text-primary"
+        aria-label="Options"
+      >
         <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
       </button>
     </div>
@@ -595,7 +602,7 @@ function seek(e: Event) {
 <!-- ─── Detail Overlay ─── -->
 {#if overlay === 'detail'}
   <div class="fixed inset-0 z-50 flex flex-col bg-background safe-area-full">
-    <DetailView onback={() => overlay = 'trackOptions'} oncloseall={closeAll} />
+    <DetailView onclose={toggleNowPlaying} oncloseall={closeAll} />
   </div>
 {/if}
 

@@ -10,6 +10,7 @@ import {
   fillWebdav,
   mockSubsonic,
 } from './libraryHarness'
+import { openSettingsSection } from './libraryHarness'
 
 // Push Changes end-to-end against the REAL bundle: a UI rating edit marks a
 // bound row pending_sync (webdav rating source), and Push writes it back
@@ -39,8 +40,7 @@ async function preparePendingRating(page: Page, dav: WebdavMockStats): Promise<n
   // binding stamps the row's webdav path and current-server base, which Push
   // requires.
   await fillWebdav(page)
-  await page.getByRole('button', { name: 'Library', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Metadata Scan' })).toBeVisible()
+  await openSettingsSection(page, 'library')
   await page.getByRole('button', { name: /Rescan All Metadata \(re-reads all tags\)/ }).click()
   await expect(page.getByText(/Scan complete/)).toBeVisible({ timeout: 30_000 })
   await expect(page.getByTestId('fm-audit-summary')).toContainText('2 verified')
@@ -63,7 +63,7 @@ async function preparePendingRating(page: Page, dav: WebdavMockStats): Promise<n
   // Push from Settings → Library (the Settings instance keeps its last tab —
   // Library here — so click the tab explicitly rather than expecting Sources).
   await page.getByRole('button', { name: 'Settings' }).click()
-  await page.getByRole('button', { name: 'Library', exact: true }).click()
+  await openSettingsSection(page, 'library')
   return readsAfterScan
 }
 
@@ -196,7 +196,7 @@ test('a second pushable row does not start after a mid-run cancel', async ({ pag
   await page.getByRole('button', { name: 'Set rating to 60' }).click()
   await page.getByRole('button', { name: 'Close' }).click()
   await page.getByRole('button', { name: 'Settings' }).click()
-  await page.getByRole('button', { name: 'Library', exact: true }).click()
+  await openSettingsSection(page, 'library')
 
   dav.setGetDelay(1200)
   await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
