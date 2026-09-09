@@ -88,11 +88,16 @@ jobs:
           name: mmdrome-ios
           path: ipa
 
+      - name: Inspect downloaded IPA
+        run: ls -la ipa/
+
+      - name: Rename IPA for the release asset
+        run: mv ipa/mmdrome-unsigned.ipa ./mmdrome.ipa
+
       - name: Create GitHub Release with IPA
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          mv ipa/mmdrome-unsigned.ipa ./mmdrome.ipa
           gh release create "${{ github.ref_name }}" ./mmdrome.ipa \
             --title "mmdrome iOS ${{ github.ref_name }}" \
             --notes "Unsigned IPA for SideStore (source auto-signs on install). Add the source once in SideStore, then install / update from there."
