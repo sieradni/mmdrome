@@ -338,6 +338,10 @@ public final class NativeAudioEngine: NSObject {
     private var replayGainMode = "off"
     private var preampDb: Double = 0
     private var masterVolume: Double = 1
+    /// JS `iosAudioMixing` setting ('exclusive' | 'mix'), mirrored by the
+    /// `setAudioMixing` bridge alongside `SessionController`. Read here (not
+    /// hardcoded) so an engine restart keeps the user's sharing choice.
+    public var audioMixingMode = "exclusive"
     private var crossfadeDuration: Double = 0
     private var crossfadeCurve = "sigmoid"
     private var sigmoidSteepness: Double = 6
@@ -391,7 +395,7 @@ public final class NativeAudioEngine: NSObject {
     private func ensureEngineRunning() {
         guard !engine.isRunning else { return }
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: SessionController.categoryOptions(for: audioMixingMode))
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             // Non-fatal: engine.start may still succeed if session already active.

@@ -28,6 +28,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setPreampDb", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setMasterVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setCrossfade", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setAudioMixing", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPreloadCount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSleepTimer", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setEq", returnType: CAPPluginReturnPromise),
@@ -320,6 +321,19 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
             self.engine.setCrossfade(duration: duration, curve: curve, sigmoidSteepness: steepness)
+            call.resolve()
+        }
+    }
+
+    /// Audio sharing mode (Settings → Playback → Audio Mixing): 'exclusive'
+    /// (default) or 'mix'. Applies live via the session controller and mirrors
+    /// onto the engine so `ensureEngineRunning` restarts keep the choice.
+    @objc func setAudioMixing(_ call: CAPPluginCall) {
+        let mode = call.getString("mode", "exclusive")
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.session.setMixingMode(mode)
+            self.engine.audioMixingMode = mode
             call.resolve()
         }
     }

@@ -125,6 +125,16 @@ class EngineFacade {
     }
   }
 
+  /**
+   * iOS audio-session sharing (native only). 'exclusive' takes over audio;
+   * 'mix' plays alongside other apps. No-op on web — the PWA has no
+   * audio-session API, so Safari owns mixing there.
+   */
+  setAudioMixing(mode: string): void {
+    if (!this.isNative) return
+    BackgroundAudio.setAudioMixing({ mode }).catch(() => {})
+  }
+
   setEqBypass(bypassed: boolean): void {
     if (this.isNative) {
       this._bypassed = bypassed

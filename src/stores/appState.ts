@@ -122,6 +122,11 @@ export interface SettingsMap {
   /** Per-format capability-probe verdicts ('ok' | 'unsupported'), persisted
    *  because the probe DOM element never survives a reload. */
   transcodeProbe?: Record<string, 'ok' | 'unsupported'>
+  /** iOS native audio-session sharing: 'exclusive' (default — other audio
+   *  pauses while mmdrome plays) or 'mix' (plays alongside other apps).
+   *  Native only — the PWA has no audio-session API, so Safari owns mixing
+   *  there and this key is never read on web. */
+  iosAudioMixing?: 'exclusive' | 'mix'
 }
 
 export const currentTrack = writable<Track | null>(null)
@@ -402,7 +407,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'lastfmApiKey', 'lastfmApiSecret', 'lowDataMode', 'lowDataOnCellular', 'transcodeMode', 'transcodeFormat', 'transcodeBitrate', 'transcodeProbe']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'lastfmApiKey', 'lastfmApiSecret', 'lowDataMode', 'lowDataOnCellular', 'transcodeMode', 'transcodeFormat', 'transcodeBitrate', 'transcodeProbe', 'iosAudioMixing']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]
@@ -442,6 +447,7 @@ export function applyDefaultSettings(): void {
   settings.update((s) => ({
     replayGainMode: s.replayGainMode ?? 'track',
     crossfadeDuration: s.crossfadeDuration ?? 6,
+    iosAudioMixing: s.iosAudioMixing ?? 'exclusive',
     ...s,
   }))
 }

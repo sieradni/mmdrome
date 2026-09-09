@@ -164,6 +164,10 @@
     updateSetting('replayGainMode', val)
   }
 
+  function setAudioMixing(val: 'exclusive' | 'mix') {
+    updateSetting('iosAudioMixing', val)
+  }
+
   function setRatingSource(val: 'webdav' | 'navidrome') {
     updateSetting('ratingSource', val)
     if (val === 'navidrome') {
@@ -1632,6 +1636,36 @@
             {/each}
           </div>
         </section>
+
+        {#if Capacitor.isNativePlatform()}
+          <!-- Audio Mixing (native only: the PWA has no audio-session API, so
+               Safari owns mixing there and this section stays hidden on web) -->
+          <section class="px-4 py-4">
+            <h3 class="mb-3 text-base font-medium text-primary">Audio Mixing</h3>
+            <p class="mb-2 text-sm text-muted">How mmdrome shares sound with other apps. Phone calls and Siri always interrupt, whichever you pick.</p>
+            <div class="flex gap-2">
+              <button
+                onclick={() => setAudioMixing('exclusive')}
+                data-testid="audio-mixing-exclusive"
+                class="btn-sm border border-white/15 hover:bg-white/5"
+                class:chip-on={($settings.iosAudioMixing ?? 'exclusive') === 'exclusive'}
+                class:text-muted={($settings.iosAudioMixing ?? 'exclusive') !== 'exclusive'}
+              >Exclusive</button>
+              <button
+                onclick={() => setAudioMixing('mix')}
+                data-testid="audio-mixing-mix"
+                class="btn-sm border border-white/15 hover:bg-white/5"
+                class:chip-on={($settings.iosAudioMixing ?? 'exclusive') === 'mix'}
+                class:text-muted={($settings.iosAudioMixing ?? 'exclusive') !== 'mix'}
+              >Mix together</button>
+            </div>
+            {#if ($settings.iosAudioMixing ?? 'exclusive') === 'mix'}
+              <p class="mt-2 text-sm text-muted">Plays alongside other apps — starting playback here won't pause them, and they won't pause this. An app that takes exclusive audio for itself can still pause mmdrome.</p>
+            {:else}
+              <p class="mt-2 text-sm text-muted">Takes over audio — other apps pause while mmdrome plays, and mmdrome pauses when something else plays.</p>
+            {/if}
+          </section>
+        {/if}
       {/if}
 
       {#if tab === 'library'}

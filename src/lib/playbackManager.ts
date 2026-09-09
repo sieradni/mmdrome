@@ -274,6 +274,7 @@ export class PlaybackManager {
     // the engine in the required order (snap tolerance before pitch).
     this._applyPlaybackParams()
     this._engine.setCrossfade(s.crossfadeDuration ?? 0)
+    this._engine.setAudioMixing(s.iosAudioMixing ?? 'exclusive')
     this._syncNativePreload()
     this._engine.pushNativeEqFromStore()
 
@@ -329,6 +330,9 @@ export class PlaybackManager {
     let prevTranscodeKey = ''
     unsubs.push(settings.subscribe((s) => {
       this._engine.setCrossfade(s.crossfadeDuration ?? 0)
+      // Audio-session sharing applies live (re-setting the category +
+      // re-activating needs no restart or re-engage).
+      this._engine.setAudioMixing(s.iosAudioMixing ?? 'exclusive')
       // Transcode-affecting change (mode/format/bitrate/probe verdict): the
       // ARMED crossfade target and the native snapshot hold URLs built with
       // the OLD params. Dropping the web arm lets the next monitor tick re-arm

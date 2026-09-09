@@ -32,6 +32,7 @@ class FakeEngine {
   setMasterVolume(v: number): void { this.calls.push(`setMasterVolume:${v}`) }
   setTapeMode(v: boolean): void { this.calls.push(`setTapeMode:${v}`) }
   setCrossfade(v: number): void { this.calls.push(`setCrossfade:${v}`) }
+  setAudioMixing(mode: string): void { this.calls.push(`setAudioMixing:${mode}`) }
   pushNativeEqFromStore(): void { this.calls.push('pushNativeEqFromStore') }
 }
 
