@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.1.0",
-      "versionDate": "2026-09-09T09:56:49.027Z",
-      "versionDescription": "File Matching redesign: attention buckets, Confirm-this-is-correct, row search and filters. iOS Audio Mixing mode (play alongside other apps).",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.1.0/mmdrome.ipa",
+      "version": "1.1.1",
+      "versionDate": "2026-09-10T04:49:06.430Z",
+      "versionDescription": "Low-data transcoding fixes, live data-saver status, undecodable-track skip",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.1.1/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.1.1",
+          "buildVersion": "3",
+          "date": "2026-09-10T04:49:06.430Z",
+          "localizedDescription": "Low-data transcoding fixes, live data-saver status, undecodable-track skip",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.1.1/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.1.0",
           "buildVersion": "2",
@@ -34,6 +42,14 @@
     }
   ],
   "news": [
+    {
+      "title": "mmdrome 1.1.1",
+      "identifier": "ios-v1.1.1",
+      "caption": "Low-data transcoding fixes, live data-saver status, undecodable-track skip",
+      "date": "2026-09-10T04:49:06.430Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
     {
       "title": "mmdrome 1.1.0",
       "identifier": "ios-v1.1.0",
