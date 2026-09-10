@@ -63,7 +63,7 @@ jobs:
           const path = require('path');
           const san = (s) => String(s ?? '').replace(/\r?\n/g, ' ').replace(/::/g, ':').slice(0, 500);
           // %0A-encoded multiline payloads for annotation bodies (cap ~4k).
-          const enc = (s) => String(s ?? '').replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A').replace(/::/g, ':').slice(0, 4000);
+          const enc = (s) => String(s ?? '').replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A').replace(/::/g, ':');
           let data;
           try {
             data = JSON.parse(fs.readFileSync('test-results/results.json', 'utf8'));
@@ -91,12 +91,22 @@ jobs:
           if (!failed) console.log('::notice title=e2e smoke failed::step failed with zero failing specs in results.json');
           // error-context.md holds the full expect text + page console output
           // + a DOM snapshot for each failed spec — the decisive evidence.
+          // The snapshot yaml is bulk without signal, so it is stripped and
+          // the rest (error, call log, console, source) is kept capped.
           try {
             for (const dir of fs.readdirSync('test-results', { withFileTypes: true })) {
               if (!dir.isDirectory()) continue;
               const p = path.join('test-results', dir.name, 'error-context.md');
               if (!fs.existsSync(p)) continue;
-              console.log('::error title=e2e context: ' + san(dir.name) + '::' + enc(fs.readFileSync(p, 'utf8')));
+              const lines = fs.readFileSync(p, 'utf8').split('\n');
+              const kept = [];
+              let inSnapshot = false;
+              for (const line of lines) {
+                if (line.trim() === '```yaml') { inSnapshot = true; continue; }
+                if (inSnapshot && line.trim() === '```') { inSnapshot = false; kept.push('[page snapshot stripped]'); continue; }
+                if (!inSnapshot) kept.push(line);
+              }
+              console.log('::error title=e2e context: ' + san(dir.name) + '::' + enc(kept.join('\n')).slice(0, 9000));
             }
           } catch (e) {
             console.log('::notice title=e2e context::could not read error-context files: ' + san(e && e.message));
