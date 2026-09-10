@@ -15,6 +15,19 @@ export default defineConfig({
   reporter: 'list',
   use: {
     baseURL: 'http://localhost:4173',
+    // Playwright launches Chromium with user-gesture-required autoplay, so
+    // every play() past transient-activation expiry (~5 s after the last
+    // click) rejects with NotAllowedError. Nothing in this suite tests
+    // autoplay denial (the policy behavior is unit-pinned instead), but the
+    // expiry window makes recovery paths timing-flaky under load: a
+    // decode-failure rescue whose play() lands outside the window dies on
+    // policy instead of proving the rescue. Allow autoplay so every play()
+    // succeeds-or-decode-fails on its own merits, deterministically — the
+    // same posture production has once playback is engaged (crossfade
+    // standbys play with zero gestures there too).
+    launchOptions: {
+      args: ['--autoplay-policy=no-user-gesture-required'],
+    },
   },
   webServer: {
     command: 'npm run build && npm run preview -- --port 4173 --strictPort',
