@@ -12,7 +12,10 @@ import { defineConfig } from '@playwright/test'
 export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
-  reporter: 'list',
+  // `list` keeps CI console output readable; `json` feeds the failure step
+  // in test.yml, which surfaces failing specs as check annotations (job
+  // logs need auth to read via the API — annotations do not).
+  reporter: [['list'], ['json', { outputFile: 'test-results/results.json' }]],
   use: {
     baseURL: 'http://localhost:4173',
     // Playwright launches Chromium with user-gesture-required autoplay, so

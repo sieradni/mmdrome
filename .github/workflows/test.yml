@@ -48,3 +48,38 @@ jobs:
 
       - name: Run smoke test (builds dist + serves via vite preview)
         run: npm run test:e2e
+
+      # Job logs need auth to read via the API (annotations do not), so a
+      # red smoke run is otherwise undebuggable from the dev box. Surface
+      # each failing spec + its first error line as a check annotation.
+      - name: Annotate e2e failures
+        if: failure()
+        run: node -e "
+          const fs = require('fs');
+          const san = (s) => String(s ?? '').replace(/\r?\n/g, ' ').replace(/::/g, ':').slice(0, 500);
+          let data;
+          try {
+            data = JSON.parse(fs.readFileSync('test-results/results.json', 'utf8'));
+          } catch (e) {
+            console.log('::error title=e2e smoke failed::no results.json (build or server failed before tests ran)');
+            process.exit(0);
+          }
+          let failed = 0;
+          const walk = (suites) => {
+            for (const s of suites || []) {
+              for (const spec of s.specs || []) {
+                for (const t of spec.tests || []) {
+                  for (const res of t.results || []) {
+                    if (res.status === 'passed' || res.status === 'skipped') continue;
+                    failed++;
+                    const first = ((res.error && res.error.message) || res.status || 'unknown').split('\n')[0];
+                    console.log('::error title=e2e failed: ' + san(spec.title) + '::' + san(spec.file) + ':' + (spec.line || '?') + ' ' + san(first));
+                  }
+                }
+              }
+              walk(s.suites);
+            }
+          };
+          walk(data.suites);
+          if (!failed) console.log('::notice title=e2e smoke failed::step failed with zero failing specs in results.json');
+        "
