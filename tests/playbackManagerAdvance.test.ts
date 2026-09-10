@@ -78,9 +78,9 @@ class FakeWebTransport {
   prepareNext(targetId: string | null): void {
     this.calls.push(`prepareNext:${targetId}`)
   }
-  async playLoaded(): Promise<boolean> {
+  async playLoaded(): Promise<{ started: boolean; errorName: string | null }> {
     this.calls.push('playLoaded')
-    return true
+    return { started: true, errorName: null }
   }
 }
 

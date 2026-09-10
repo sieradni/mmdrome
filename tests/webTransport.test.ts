@@ -13,6 +13,7 @@ class FakeEl {
   currentTime = 0
   private _playRejections = 0
   private _playCalls = 0
+  rejectErrorName = 'Error'
 
   set rejectPlays(n: number) { this._playRejections = n }
   get playCalls(): number { return this._playCalls }
@@ -21,7 +22,9 @@ class FakeEl {
     this._playCalls++
     if (this._playCalls <= this._playRejections) {
       this.paused = true
-      throw new Error('play rejected')
+      const err = new Error('play rejected')
+      err.name = this.rejectErrorName
+      throw err
     }
     this.paused = false
   }
@@ -259,8 +262,8 @@ test('crossfade switch cancels a pending retry for the old track', async () => {
 test('playLoaded success: plays, re-applies effects + RG, resets retry, anchors the track', async () => {
   const { t, engine } = makeTransport()
   await t.init()
-  const ok = await t.playLoaded({ trackId: 't1', replayGain: -6, albumReplayGain: -3 })
-  assert.equal(ok, true)
+  const res = await t.playLoaded({ trackId: 't1', replayGain: -6, albumReplayGain: -3 })
+  assert.deepEqual(res, { started: true, errorName: null })
   assert.equal(engine.a.paused, false)
   assert.equal(engine.reapplyCalls, 1)
   assert.deepEqual(engine.rgCalls, [[-6, -3]])
@@ -272,18 +275,27 @@ test('playLoaded survives autoplay rejections (1s/2s backoff), succeeds on the 3
   const { t, engine, timers } = makeTransport()
   await t.init()
   engine.a.rejectPlays = 2
-  const ok = await t.playLoaded({ trackId: 't1' })
-  assert.equal(ok, true)
+  const res = await t.playLoaded({ trackId: 't1' })
+  assert.deepEqual(res, { started: true, errorName: null })
   assert.equal(engine.a.playCalls, 3)
   assert.equal(timers.sleepCalls, 2)
 })
 
-test('playLoaded gives up after 3 rejections → false', async () => {
+test('playLoaded gives up after 3 rejections → not-started with the last error name', async () => {
   const { t, engine } = makeTransport()
   await t.init()
   engine.a.rejectPlays = 3
-  const ok = await t.playLoaded({ trackId: 't1' })
-  assert.equal(ok, false)
+  const res = await t.playLoaded({ trackId: 't1' })
+  assert.deepEqual(res, { started: false, errorName: 'Error' })
+})
+
+test('playLoaded reports the rejection name the manager routes on (e.g. NotSupportedError)', async () => {
+  const { t, engine } = makeTransport()
+  await t.init()
+  engine.a.rejectPlays = 3
+  engine.a.rejectErrorName = 'NotSupportedError'
+  const res = await t.playLoaded({ trackId: 't1' })
+  assert.deepEqual(res, { started: false, errorName: 'NotSupportedError' })
 })
 
 // ── destroy ────────────────────────────────────────────────────────────────

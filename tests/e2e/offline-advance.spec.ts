@@ -420,3 +420,45 @@ test('engaging low data mode mid-fill does not stop the preload window from fill
   const srcs = await mediaSrcs(page)
   expect(srcs.filter((s) => s.includes('id=s2')), 'no dead raw-URL load even under LDM').toEqual([])
 })
+
+// ── 7. Undecodable cached bytes: skip via the fromError chain, never freeze ──
+
+// Probe evidence (smoke flake): a blob whose bytes Chromium can't decode
+// rejects play() with NotSupportedError while user activation is VALID (not
+// an autoplay block) — under load this hits even the mock WAV. playLoaded
+// exhausts its 3 attempts; the old code then stopped the queue forever over
+// one bad file (blob src present, playhead frozen — the exact flake
+// signature). The rescue routes through the fromError A4 chain instead, so
+// the advance lands on the next playable cached track. Garbage bytes fail
+// decode deterministically, which is what makes this a pin rather than a
+// flake-chase: s2's cache entry holds text, s3's holds the WAV.
+test('an undecodable cached track is skipped instead of freezing playback', async ({ page }) => {
+  test.setTimeout(120_000)
+  await instrumentMediaSrc(page)
+  await bootApp(page)
+  await bootAndPlay(page, 5)
+
+  // Poison s2's cache entry BEFORE its fill lands: every later s2 fetch gets
+  // text bytes (LIFO route: registered after mockOnline, so it wins).
+  await page.route('**/rest/stream.view*', async (route) => {
+    const url = route.request().url()
+    if (url.includes('id=s2')) {
+      await route.fulfill({ status: 200, contentType: 'text/plain', body: 'this is not audio' })
+      return
+    }
+    await route.fulfill({ status: 200, contentType: 'audio/wav', body: WAV })
+  })
+  await expect.poll(() => preloadCacheHas(page, 'id=s2'), { timeout: 20_000, intervals: [500, 1_000] }).toBe(true)
+  await expect.poll(() => preloadCacheHas(page, 'id=s3'), { timeout: 30_000, intervals: [500, 1_000] }).toBe(true)
+
+  await dropConnection(page)
+  await miniNext(page).click()
+
+  // s2's blob can't decode (3 play() rejections ≈ 3.5 s) → the rescue
+  // advances to s3's valid cached blob, which plays — the playhead moves
+  // instead of freezing at 0 over the dead file.
+  await expect.poll(() => lastMediaTime(page), { timeout: 20_000 }).toBeGreaterThan(0.5)
+  const srcs = await mediaSrcs(page)
+  expect(srcs.filter((s) => s.startsWith('blob:')).length, 'both attempts resolve through the cache').toBeGreaterThanOrEqual(1)
+  expect(srcs.filter((s) => s.includes('id=s2') || s.includes('id=s3')), 'neither track touches a raw URL').toEqual([])
+})

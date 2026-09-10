@@ -52,6 +52,10 @@ export class PlaybackManager {
   private _initialized = false
   private _handlingEnd = false
   private _handlingNativeEnd = false
+  /** Re-entry bound for the undecodable-track rescue below: ONE fromError
+   *  advance per chain. Without it a loop-one restart (or a wrap back onto
+   *  the same track) would re-enter the rescue forever instead of stopping. */
+  private _advancingPastUndecodable = false
   private _webTransport: WebTransport | null = null
   private _bgTransport: WebBgTransport | null = null
   private _nativeTransport: NativeTransport | null = null
@@ -805,8 +809,30 @@ export class PlaybackManager {
       return
     }
 
-    const started = await this._webTransport!.playLoaded(track)
-    if (!started) {
+    const result = await this._webTransport!.playLoaded(track)
+    if (!result.started) {
+      // AbortError = a newer load superseded this one (rapid skip): it owns
+      // the outcome — writing stopped here would clobber the new track's
+      // currentTrack/playing state.
+      if (result.errorName === 'AbortError') return
+      // Undecodable bytes (NotSupportedError) can never play on this device —
+      // stopping the whole queue forever strands playback over a single bad
+      // file (and over transient decoder failures under load, which surface
+      // identically). Route through the fromError advance chain instead (the
+      // park is skipped, like the A5 give-up); the re-entry flag plus the
+      // in-chain guard bound it to ONE rescue per chain (a nested second
+      // failure stops instead of advancing again, and a rescue never nests).
+      // Loop-one needs no flag case: its restart rewinds in place and never
+      // re-enters _loadAndPlay, so it terminates by construction.
+      if (result.errorName === 'NotSupportedError' && !this._advancingPastUndecodable && !this._handlingEnd) {
+        this._advancingPastUndecodable = true
+        try {
+          await this._onTrackEnded(true)
+        } finally {
+          this._advancingPastUndecodable = false
+        }
+        return
+      }
       setCurrentTrack(null)
       setPlaybackState('stopped')
       return

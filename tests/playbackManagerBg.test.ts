@@ -88,15 +88,19 @@ class FakeAudioManager {
 class FakeWebTransport {
   calls: string[] = []
   playLoadedOk = true
+  playLoadedErrorName: string | null = null
+  playLoadedScript: Array<{ started: boolean; errorName: string | null }> = []
   cancelNext(): void {
     this.calls.push('cancelNext')
   }
   prepareNext(targetId: string | null): void {
     this.calls.push(`prepareNext:${targetId}`)
   }
-  async playLoaded(): Promise<boolean> {
+  async playLoaded(): Promise<{ started: boolean; errorName: string | null }> {
     this.calls.push('playLoaded')
-    return this.playLoadedOk
+    const next = this.playLoadedScript.shift()
+    if (next) return next
+    return { started: this.playLoadedOk, errorName: this.playLoadedOk ? null : this.playLoadedErrorName }
   }
 }
 
@@ -189,6 +193,7 @@ type PrivatePM = {
   _handleBgLoad(target: 'fg' | 'bg', decision: LoadDecision): Promise<void>
   _bgFacts(): BgFacts
   _resolveBgLoad(decision: LoadDecision): Track | null
+  _loadAndPlay(track: Track): Promise<void>
   _loadAndPlayInBg(track: Track): Promise<void>
   _pendingBgTrack: Track | null
 }
@@ -437,6 +442,92 @@ test('_handleBgLoad fg load failure clears the track and stops', async () => {
 
   assert.equal(get(currentTrack), null)
   assert.equal(get(playbackState), 'stopped')
+})
+
+// --- undecodable-track rescue (NotSupportedError advances, never strands) --
+// Probe evidence (e2e smoke flake): a blob whose bytes Chromium can't decode
+// rejects play() with NotSupportedError while user activation is VALID (not
+// an autoplay block). playLoaded exhausts its 3 attempts and the old code
+// stopped the queue forever over one bad file. The rescue routes through the
+// fromError A4 chain instead — same as the A5 give-up.
+
+test('fg load with undecodable bytes advances past the dead track', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['navidrome-t2', 'navidrome-t3'], [t2, t3], 0)
+  h.qm.nextTrack = t3
+  h.web.playLoadedScript = [
+    { started: false, errorName: 'NotSupportedError' },
+    { started: true, errorName: null },
+  ]
+
+  await h.m._loadAndPlay(t2)
+
+  assert.ok(h.qm.calls.includes('advanceQueue'), 'the rescue advances via the A4 chain')
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t3')
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('two consecutive undecodable tracks stop instead of looping forever', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['navidrome-t2', 'navidrome-t3'], [t2, t3], 0)
+  h.qm.nextTrack = t3
+  h.web.playLoadedOk = false
+  h.web.playLoadedErrorName = 'NotSupportedError'
+
+  await h.m._loadAndPlay(t2)
+
+  assert.equal(get(currentTrack), null)
+  assert.equal(get(playbackState), 'stopped')
+  assert.equal(h.qm.calls.filter((c) => c === 'advanceQueue').length, 1, 'exactly one rescue advance')
+})
+
+test('undecodable track under loop-one stays (rewind + single play attempt, no loop)', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['navidrome-t2'], [t2], 0)
+  loopMode.set('one')
+  h.web.playLoadedOk = false
+  h.web.playLoadedErrorName = 'NotSupportedError'
+
+  await h.m._loadAndPlay(t2)
+
+  // The A4 restart branch rewinds in place and attempts play() once — it
+  // never re-enters _loadAndPlay, so no rescue loop is possible. Staying on
+  // the broken track (not stopped, not advanced) matches a natural loop-one
+  // restart of a file that errors mid-play.
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t2', 'loop-one never leaves the track')
+  assert.ok(!h.qm.calls.includes('advanceQueue'), 'loop-one never advances')
+  assert.equal(h.web.calls.filter((c) => c === 'playLoaded').length, 1, 'exactly one load attempt')
+})
+
+test('a superseded load (AbortError) writes nothing — the newer load owns the outcome', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['navidrome-t2'], [t2], 0)
+  h.web.playLoadedScript = [{ started: false, errorName: 'AbortError' }]
+
+  await h.m._loadAndPlay(t2)
+
+  // The rapid-skip race: a newer load already moved state on; this stale
+  // load must neither null the track nor advance the queue.
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t2')
+  assert.ok(!h.qm.calls.includes('advanceQueue'), 'no rescue advance for a superseded load')
+})
+
+test('autoplay block (NotAllowedError) keeps the legacy stop — never skips the user track', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['navidrome-t2', 'navidrome-t3'], [t2, t3], 0)
+  h.qm.nextTrack = t3
+  h.web.playLoadedScript = [{ started: false, errorName: 'NotAllowedError' }]
+
+  await h.m._loadAndPlay(t2)
+
+  assert.equal(get(currentTrack), null)
+  assert.equal(get(playbackState), 'stopped')
+  assert.ok(!h.qm.calls.includes('advanceQueue'), 'a policy block must not skip the track')
 })
 
 // --- preloaded-track offline routing (the "preloaded song doesn't play

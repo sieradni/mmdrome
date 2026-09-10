@@ -44,18 +44,34 @@ export type TransportEndedEvent =
   | { kind: 'crossfade'; targetId: string | null }
   | { kind: 'natural'; fromError: boolean }
 
+/**
+ * playLoaded outcome. `errorName` is the last play() rejection's `name`
+ * (`NotAllowedError` = autoplay policy, `NotSupportedError` = undecodable
+ * bytes, `AbortError` = superseded by a newer load) — null when the element
+ * started. The manager routes on it: policy blocks stay stopped (the user
+ * can press play), undecodable bytes advance past the dead track, and
+ * superseded loads stay silent. Never invents a name: an exotic rejection
+ * keeps whatever (or no) name it carried, which routes to the legacy stop.
+ */
+export interface PlayLoadedResult {
+  started: boolean
+  errorName: string | null
+}
+
 export interface PlaybackTransport {
   /** Wires engine callbacks + element listeners. Callbacks must be assigned before init. */
   init(): Promise<void>
 
   /**
    * Plays the element the manager already loaded (src set, web audio ready,
-   * park guard consulted). Retries the autoplay rejection up to 3 times with
+   * park guard consulted). Retries the play() rejection up to 3 times with
    * 1s/2s backoff — DELIBERATELY outside RetryPolicy (an autoplay-policy
-   * rejection needs a user gesture, not backoff). Returns false when the
-   * element never starts; the manager reports the stopped state.
+   * rejection needs a user gesture, not backoff). On exhaustion returns the
+   * last rejection's name so the manager can tell a policy block (stay
+   * stopped) from undecodable bytes (advance past) from a superseded load
+   * (stay silent).
    */
-  playLoaded(track: TransportTrack): Promise<boolean>
+  playLoaded(track: TransportTrack): Promise<PlayLoadedResult>
 
   /**
    * Arms the next track for the crossfade (target id + url) and remembers the

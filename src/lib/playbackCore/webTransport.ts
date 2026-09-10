@@ -24,7 +24,7 @@
  */
 
 import { RetryPolicy, type RetryPolicyConfig } from './retryPolicy'
-import type { PlaybackTransport, ReplayGainFields, TransportEndedEvent, TransportTrack } from './types'
+import type { PlaybackTransport, PlayLoadedResult, ReplayGainFields, TransportEndedEvent, TransportTrack } from './types'
 
 /** The audioManager surface the transport drives. */
 export interface WebTransportEngine {
@@ -107,17 +107,24 @@ export class WebTransport implements PlaybackTransport {
     }
   }
 
-  async playLoaded(track: TransportTrack): Promise<boolean> {
+  async playLoaded(track: TransportTrack): Promise<PlayLoadedResult> {
     const el = this._engine.activeElement
     let playAttempt = 0
     let played = false
+    let errorName: string | null = null
     while (playAttempt < 3 && !played) {
       try {
         await el.play()
         played = true
-      } catch {
+      } catch (err) {
+        // The rejection NAME is the diagnosis the manager routes on
+        // (NotAllowedError = policy → stay; NotSupportedError = bad bytes →
+        // advance; AbortError = superseded → silent). Never invented: an
+        // exotic rejection keeps whatever name it carried (or none), which
+        // routes to the legacy stop.
+        errorName = err instanceof Error ? err.name : null
         playAttempt++
-        if (playAttempt >= 3) return false
+        if (playAttempt >= 3) return { started: false, errorName }
         await this._timers.sleep(Math.pow(2, playAttempt) * 500)
       }
     }
@@ -125,7 +132,7 @@ export class WebTransport implements PlaybackTransport {
     this._engine.applyReplayGain(track.replayGain, track.albumReplayGain)
     this._resetRetry()
     this._lastTrackId = track.trackId
-    return true
+    return { started: true, errorName: null }
   }
 
   prepareNext(
