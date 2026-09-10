@@ -52,9 +52,13 @@ jobs:
       # Job logs need auth to read via the API (annotations do not), so a
       # red smoke run is otherwise undebuggable from the dev box. Surface
       # each failing spec + its first error line as a check annotation.
+      # Literal block scalar: the embedded JS keeps its backslashes raw
+      # (a double-quoted YAML scalar would eat \? as an escape and
+      # invalidate the whole workflow file).
       - name: Annotate e2e failures
         if: failure()
-        run: node -e "
+        run: |
+          node -e "
           const fs = require('fs');
           const san = (s) => String(s ?? '').replace(/\r?\n/g, ' ').replace(/::/g, ':').slice(0, 500);
           let data;
@@ -82,4 +86,4 @@ jobs:
           };
           walk(data.suites);
           if (!failed) console.log('::notice title=e2e smoke failed::step failed with zero failing specs in results.json');
-        "
+          "
