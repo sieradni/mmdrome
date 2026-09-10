@@ -456,9 +456,14 @@ test('an undecodable cached track is skipped instead of freezing playback', asyn
 
   // s2's blob can't decode (3 play() rejections ≈ 3.5 s) → the rescue
   // advances to s3's valid cached blob, which plays — the playhead moves
-  // instead of freezing at 0 over the dead file.
+  // instead of freezing at 0 over the dead file. Poll the BLOB count first:
+  // it is the only signal the async advance landed (a time poll would pass
+  // vacuously off track 1's still-playing element, and a one-shot src read
+  // would race the load — that exact race failed this spec under load).
+  await expect
+    .poll(async () => (await mediaSrcs(page)).filter((s) => s.startsWith('blob:')).length, { timeout: 20_000 })
+    .toBeGreaterThanOrEqual(1)
   await expect.poll(() => lastMediaTime(page), { timeout: 20_000 }).toBeGreaterThan(0.5)
   const srcs = await mediaSrcs(page)
-  expect(srcs.filter((s) => s.startsWith('blob:')).length, 'both attempts resolve through the cache').toBeGreaterThanOrEqual(1)
   expect(srcs.filter((s) => s.includes('id=s2') || s.includes('id=s3')), 'neither track touches a raw URL').toEqual([])
 })
