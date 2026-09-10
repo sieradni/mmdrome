@@ -27,7 +27,8 @@
           "date": "2026-09-10T04:49:06.430Z",
           "localizedDescription": "Low-data transcoding fixes, live data-saver status, undecodable-track skip",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.1.1/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4830438
         },
         {
           "version": "1.1.0",

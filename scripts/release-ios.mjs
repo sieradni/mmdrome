@@ -14,8 +14,11 @@
 //     whose downloadURL points at the GitHub Release asset the ios.yml
 //     release job publishes when the ios-v<version> tag is pushed.
 //
-// After running: commit, tag, push, e.g.
-//   git add -A && git commit -m "..." && git tag ios-v1.1.0 && git push origin main ios-v1.1.0
+// After running: commit, push the branch, then tag + push the tag SEPARATELY
+// (a joint `git push origin main <tag>` fires two ios.yml runs into one
+// concurrency group and cancels the tag run before it publishes), e.g.
+//   git add -A && git commit -m "..." && git push origin main
+//   git tag ios-v1.1.0 && git push origin ios-v1.1.0
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -43,8 +46,13 @@ if (buildFlag !== -1) {
   if (!buildOverride || !/^\d+$/.test(buildOverride)) usage()
   rawArgs.splice(buildFlag, 2)
 }
-// --size N stamps the IPA byte size into the version entry (known only after
-// CI builds; omit when unknown — clients tolerate a missing size).
+// --size N stamps the IPA byte size into the version entry. The size is
+// known only AFTER CI publishes the release, so cut the release without it
+// and backfill afterwards with a second run for the SAME version —
+// SideStore hard-fails on a missing size ("no value associated with key
+// size"), so a release without it can never be installed. Re-running for the
+// same version is idempotent: build number and date are preserved from the
+// existing entry (only size, which the first run cannot know, is added).
 let sizeOverride = null
 const sizeFlag = rawArgs.indexOf('--size')
 if (sizeFlag !== -1) {
@@ -66,6 +74,16 @@ pkg.version = version
 writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n')
 console.log(`package.json version -> ${version}`)
 
+// Read the source early: a same-version re-run (the post-publish --size
+// backfill) must preserve the original build number and date everywhere.
+const dir = join(ROOT, 'sidestore')
+mkdirSync(dir, { recursive: true })
+const appsPath = join(dir, 'apps.json')
+let source = null
+if (existsSync(appsPath)) source = JSON.parse(readFileSync(appsPath, 'utf8'))
+const prior = (source?.apps?.[0]?.versions ?? []).find((v) => v.version === version) ?? null
+const entryDate = (prior && typeof prior.date === 'string' && prior.date) || versionDate
+
 // 2. Xcode project versions
 const pbxPath = join(ROOT, 'ios', 'App', 'App.xcodeproj', 'project.pbxproj')
 let pbx = readFileSync(pbxPath, 'utf8')
@@ -74,26 +92,23 @@ if (marketingHits === 0) throw new Error('no MARKETING_VERSION lines found in pr
 pbx = pbx.replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${version};`)
 const builds = [...pbx.matchAll(/CURRENT_PROJECT_VERSION = (\d+);/g)].map((m) => Number(m[1]))
 if (builds.length === 0) throw new Error('no CURRENT_PROJECT_VERSION lines found in project.pbxproj')
-const build = buildOverride ? Number(buildOverride) : Math.max(...builds) + 1
+// Same-version re-run keeps the published build (never max+1 past it).
+const build = buildOverride ? Number(buildOverride) : prior && /^\d+$/.test(String(prior.buildVersion ?? '')) ? Number(prior.buildVersion) : Math.max(...builds) + 1
 pbx = pbx.replace(/CURRENT_PROJECT_VERSION = \d+;/g, `CURRENT_PROJECT_VERSION = ${build};`)
 writeFileSync(pbxPath, pbx)
 console.log(`project.pbxproj MARKETING_VERSION -> ${version} (${marketingHits} configs), CURRENT_PROJECT_VERSION -> ${build}`)
 
-// 3. sidestore/apps.json
-const dir = join(ROOT, 'sidestore')
-mkdirSync(dir, { recursive: true })
-const appsPath = join(dir, 'apps.json')
-let source = null
-if (existsSync(appsPath)) source = JSON.parse(readFileSync(appsPath, 'utf8'))
+// 3. sidestore/apps.json (source object already read above for `prior`)
 // versions[] entries use the NEW key names (date, localizedDescription,
 // buildVersion) — NOT the legacy flat-app keys (versionDate,
-// versionDescription). SideStore's decoder requires `date` and throws
-// "no value associated with key date" otherwise (2026-09-09). The flat
-// legacy keys stay on the app object for old clients.
+// versionDescription). SideStore's decoder requires `date` AND `size` and
+// throws "no value associated with key ..." otherwise (2026-09-09 for date,
+// 2026-09-10 for size — a sizeless 1.1.1 entry failed source refresh). The
+// flat legacy keys stay on the app object for old clients.
 const versionEntry = {
   version,
   buildVersion: String(build),
-  date: versionDate,
+  date: entryDate,
   localizedDescription: notes,
   downloadURL,
   minOSVersion: '15.0',
@@ -101,7 +116,7 @@ const versionEntry = {
 }
 const versions = [versionEntry, ...((source?.apps?.[0]?.versions ?? []).filter((v) => v.version !== version))]
 const news = [
-  { title: `mmdrome ${version}`, identifier: tag, caption: notes.slice(0, 140), date: versionDate, tintColor: TINT, imageURL: ICON_URL },
+  { title: `mmdrome ${version}`, identifier: tag, caption: notes.slice(0, 140), date: entryDate, tintColor: TINT, imageURL: ICON_URL },
   ...((source?.news ?? []).filter((n) => n.identifier !== tag)),
 ].slice(0, 5)
 source = {
@@ -123,7 +138,7 @@ source = {
       tintColor: TINT,
       category: 'music',
       version,
-      versionDate,
+      versionDate: entryDate,
       versionDescription: notes,
       downloadURL,
       versions,
@@ -137,6 +152,13 @@ console.log(`sidestore/apps.json -> ${version} (build ${build}), ${versions.leng
 // 4. Next steps
 console.log('\nnext:')
 console.log('  npm run check && npm test')
-console.log(`  git add -A && git commit -m "<msg>" && git tag ${tag} && git push origin main ${tag}`)
+console.log(`  git add -A && git commit -m "<msg>" && git push origin main`)
+console.log(`  (tag separately, AFTER the branch CI is green — never together:`)
+console.log(`  a joint push fires two ios.yml runs into one concurrency group`)
+console.log(`  and cancels the tag run: git tag ${tag} && git push origin ${tag})`)
 console.log('  ios.yml builds the unsigned IPA and publishes the GitHub Release.')
 console.log('  SideStore source URL: https://cdn.jsdelivr.net/gh/sieradni/mmdrome@main/sidestore/apps.json')
+console.log('  AFTER the release publishes: re-run this script for the same')
+console.log('  version with --size <asset bytes> (SideStore hard-fails without')
+console.log('  size), commit, push, then purge the CDN:')
+console.log('  https://purge.jsdelivr.net/gh/sieradni/mmdrome@main/sidestore/apps.json')
