@@ -356,6 +356,23 @@ test('a vanished file goes dead after two non-ok responses and the window keeps 
     await route.fulfill({ status: 200, contentType: 'audio/wav', body: WAV })
   })
 
+  // Setup-race drain: track duration is 25 s so the fill gate passes at play
+  // start, and bootAndPlay returns as soon as track 1's playhead moves — the
+  // preloader's 1 s tick can therefore fill s2 with a 200 BEFORE this override
+  // existed. No product path caches a non-ok response (the Node suite pins the
+  // strike/dead books), so a pre-override s2 entry is setup contamination, not
+  // behavior. Drain in-flight puts, then delete it: everything after this line
+  // 404s, so s2's absence at the end deterministically means "went dead".
+  await new Promise((r) => setTimeout(r, 500))
+  await page.evaluate(async () => {
+    for (const name of await caches.keys()) {
+      const cache = await caches.open(name)
+      for (const req of await cache.keys()) {
+        if (req.url.includes('id=s2')) await cache.delete(req)
+      }
+    }
+  })
+
   // The first fill targets s2 and gets a non-ok response. After the SECOND
   // non-ok (next tick), the URL is dead for the session — and s3..s6 fill
   // behind it instead of head-of-line blocking forever.

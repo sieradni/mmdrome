@@ -18,9 +18,10 @@
 </script>
 
 {#if segments.length > 0}
-  <!-- Ambient upcoming-download strip: solid = cached, partial = fetching with
-       known bytes, pulsing = fetching without Content-Length, dim = queued.
-       Decorative (the queue rows are the operable surface). -->
+  <!-- Ambient upcoming-download strip: solid accent = cached, partial accent =
+       fetching with known bytes, pulsing = fetching without Content-Length,
+       dim = queued. Decorative (the queue rows are the operable surface);
+       the parent fixes the width so fills never move surrounding controls. -->
   <div
     class="flex items-center gap-1"
     role="img"
@@ -32,11 +33,11 @@
         class="relative h-1 flex-1 overflow-hidden rounded-full bg-white/10"
       >
         {#if s.entry?.state === 'cached'}
-          <div class="absolute inset-0 rounded-full bg-white/55"></div>
+          <div class="absolute inset-0 rounded-full bg-accent/60"></div>
         {:else if s.entry?.state === 'fetching'}
           {#if s.entry.progress !== null}
             <div
-              class="absolute inset-y-0 left-0 rounded-full bg-white/45"
+              class="absolute inset-y-0 left-0 rounded-full bg-accent/40"
               style="width: {s.entry.progress * 100}%;"
             ></div>
           {:else}

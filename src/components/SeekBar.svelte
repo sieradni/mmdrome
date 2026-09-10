@@ -85,7 +85,10 @@
   }
 </script>
 
-<!-- h-9 hit area with a slim visual bar: the whole strip seeks, not a 4 px line. -->
+<!-- Knob-less bar (Spotify/YouTube pattern): the h-9 strip seeks anywhere,
+  the slim bar thickens + takes the accent on hover/drag. No handle to grab,
+  nothing to align — the accent is interaction-only so the neutral theme
+  (accent = white) reads unchanged at rest. -->
 <div
   role="slider"
   tabindex={disabled ? -1 : 0}
@@ -107,30 +110,25 @@
   }}
   onkeydown={handleKeyDown}
 >
-  <!-- mx reserves knob overhang so the thumb never clips at 0/100%. -->
-  <div class="mx-[7px] w-full">
+  <div class="w-full">
     <div
       bind:this={trackEl}
-      class="relative h-1.5 w-full rounded-full bg-white/10 transition-[height] group-hover:h-2"
+      class="relative h-1 w-full rounded-full bg-white/10 transition-[height] duration-150 group-hover:h-1.5"
+      class:h-1.5={dragging}
     >
       <div class="absolute inset-0 overflow-hidden rounded-full">
         {#each fills as f, i (i)}
           <div
-            class="absolute inset-y-0 rounded-full bg-white/25"
+            class="absolute inset-y-0 rounded-full bg-white/20"
             style="left: {f.left}%; width: {f.width}%;"
           ></div>
         {/each}
         <div
-          class="absolute inset-y-0 left-0 rounded-full bg-white/85"
+          class="absolute inset-y-0 left-0 rounded-full bg-white/80 transition-colors group-hover:bg-accent"
+          class:bg-accent={dragging}
           style="width: {playedPct}%;"
         ></div>
       </div>
-      <div
-        class="absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow transition-transform {dragging
-          ? 'scale-125'
-          : 'group-hover:scale-110'}"
-        style="left: {playedPct}%;"
-      ></div>
     </div>
   </div>
 </div>

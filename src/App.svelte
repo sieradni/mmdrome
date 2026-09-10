@@ -452,13 +452,28 @@
     {#if $currentTrack}
       <!-- Album Art -->
       <div class="flex flex-1 items-center justify-center px-8">
-        <div class="aspect-square w-full max-w-sm overflow-hidden rounded-2xl bg-surface-hover shadow-2xl">
+        <div class="relative aspect-square w-full max-w-sm overflow-hidden rounded-2xl bg-surface-hover shadow-2xl">
           <LazyThumb track={$currentTrack} size={512} wrapperClass="h-full w-full" />
+          {#if $playbackState === 'buffering'}
+            <!-- Absolute overlay: no layout impact. A soft scrim + ring keeps
+              it clearly visible without shouting over the artwork. -->
+            <div class="absolute inset-0 flex items-center justify-center bg-black/35">
+              <BufferSpinner sizeClass="h-10 w-10" />
+            </div>
+          {/if}
         </div>
       </div>
 
-      <!-- Utility Row: Loop + Volume -->
-      <div class="flex w-full items-center justify-end gap-1 px-6 pt-2">
+      <!-- Utility Row: preload strip + Loop + Volume + Sleep. The strip is a
+        fixed w-24 box pushed left (buttons stay end-anchored in both states),
+        so fills never move the existing controls. -->
+      <div class="flex w-full items-center gap-1 px-6 pt-2">
+        {#if preloadSegments.length > 0}
+          <div class="mr-auto w-24">
+            <PreloadSegments segments={preloadSegments} />
+          </div>
+        {/if}
+        <div class="ml-auto flex items-center gap-1">
         <button onclick={toggleLoop} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$loopMode !== 'none'} class:text-muted={$loopMode === 'none'} aria-label="Toggle loop">
           <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
             <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
@@ -477,7 +492,7 @@
           </button>
           {#if volOpen}
             <div class="absolute bottom-full right-0 z-50 mb-2 flex flex-col items-center rounded-lg bg-surface px-3 py-3 shadow-xl ring-1 ring-white/10">
-              <span class="mb-3 text-xs tabular-nums text-muted">{(volValue * 100).toFixed(0)}%</span>
+              <span class="mb-3 min-w-[4ch] text-center text-xs tabular-nums text-muted">{(volValue * 100).toFixed(0)}%</span>
               <div class="flex h-32 w-6 items-center justify-center">
                 <input
                   type="range"
@@ -526,6 +541,7 @@
             </div>
           {/if}
         </div>
+        </div>
       </div>
 
       <!-- Track Info -->
@@ -550,13 +566,6 @@
           </div>
           <span class="w-10 text-xs tabular-nums text-muted">{formatTime($effectiveDuration)}</span>
         </div>
-        {#if $playbackState === 'buffering'}
-          <p class="pt-1 text-center text-xs text-muted animate-pulse">Buffering…</p>
-        {:else if preloadSegments.length > 0}
-          <div class="pt-1.5">
-            <PreloadSegments segments={preloadSegments} />
-          </div>
-        {/if}
       </div>
     {:else}
       <!-- Empty State -->
@@ -582,11 +591,7 @@
         <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
       </button>
       <button class="rounded-full bg-primary p-3.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
-        {#if $playbackState === 'buffering'}
-          <span class="flex h-9 w-9 items-center justify-center">
-            <BufferSpinner sizeClass="h-6 w-6" trackClass="border-background/30" headClass="border-t-background" />
-          </span>
-        {:else if $playbackState === 'playing'}
+        {#if $playbackState === 'playing' || $playbackState === 'buffering'}
           <svg class="h-9 w-9" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
         {:else}
           <svg class="h-9 w-9" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
