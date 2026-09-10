@@ -95,6 +95,9 @@ final class TrackFileLoader {
     /// All loader bookkeeping lives here; this class only binds a real
     /// URLSessionDownloadTask to it. Main-thread-only — see `prefetch`.
     private var state = LoaderState<URLSessionDownloadTask>()
+    /// Variant served per composite cache key (transcodeCacheKey) — the
+    /// preserve-unless-upgrade serve check needs each file's origin variant.
+    private var variantOf: [String: TrackVariant] = [:]
     private let session: URLSession = {
         let config = URLSessionConfiguration.default
         config.requestCachePolicy = .returnCacheDataElseLoad
@@ -103,9 +106,30 @@ final class TrackFileLoader {
         return URLSession(configuration: config)
     }()
 
+    /// Serve check under the preserve-unless-upgrade rule (TrackVariant): the
+    /// exact variant when cached, else the best cached variant of this track
+    /// whose quality covers the request. A cached LOWER variant never
+    /// satisfies a higher request — that path re-downloads (upgrade).
+    private func servingURL(forTrackId trackId: String, requested: TrackVariant) -> URL? {
+        let prefix = trackId + "|"
+        var best: (variant: TrackVariant, url: URL)?
+        for (key, url) in state.cache {
+            guard key.hasPrefix(prefix), let variant = variantOf[key] else { continue }
+            guard shouldServeCached(cached: variant, requested: requested) else { continue }
+            if let current = best {
+                if variant.rank > current.variant.rank {
+                    best = (variant, url)
+                }
+            } else {
+                best = (variant, url)
+            }
+        }
+        return best?.url
+    }
+
     func localURL(for track: NativeTrack) -> URL? {
         if track.url.isFileURL { return track.url }
-        return state.cached(track.trackId)
+        return servingURL(forTrackId: track.trackId, requested: TrackVariant(url: track.url))
     }
 
     func prefetch(_ track: NativeTrack, completion: @escaping (URL?, Error?) -> Void) {
@@ -125,20 +149,28 @@ final class TrackFileLoader {
             deliver(track.url, nil)
             return
         }
-        if let url = state.cached(track.trackId) {
+        // Variant-aware serve (preserve-unless-upgrade): a cached raw file
+        // satisfies a later transcode request, and a cached HIGHER transcode
+        // satisfies a lower one — no re-download just to downgrade.
+        let requested = TrackVariant(url: track.url)
+        if let url = servingURL(forTrackId: track.trackId, requested: requested) {
             deliver(url, nil)
             return
         }
-        if state.isActive(track.trackId) {
-            // A download for this track is already in flight (started by
-            // `prefetchUpcoming`). Chain onto it instead of dropping the
+        let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
+        if state.isActive(cacheKey) {
+            // A download for this track+VARIANT is already in flight (started
+            // by `prefetchUpcoming`). Chain onto it instead of dropping the
             // completion: `loadAndStart` only schedules its track once this
             // fires, so a dropped callback leaves the engine silently stalled.
-            state.chain(track.trackId, deliver)
+            // A different variant in flight does NOT satisfy this request —
+            // its key differs, so claiming below downloads in parallel rather
+            // than chaining onto the wrong bytes.
+            state.chain(cacheKey, deliver)
             return
         }
 
-        let destination = Self.destinationURL(for: track)
+        let destination = Self.destinationURL(for: track, variant: requested)
         let requestID = UUID()
         let task = session.downloadTask(with: track.url) { [weak self] tempURL, _, error in
             // The temp file is only valid until this handler returns. Move it
@@ -174,13 +206,14 @@ final class TrackFileLoader {
                     if let moved = movedURL { try? FileManager.default.removeItem(at: moved) }
                     return
                 }
-                guard self.state.isCurrent(track.trackId, requestID: requestID) else {
+                guard self.state.isCurrent(cacheKey, requestID: requestID) else {
                     if let moved = movedURL { try? FileManager.default.removeItem(at: moved) }
                     return
                 }
-                let pendings = self.state.complete(track.trackId, requestID: requestID)
+                let pendings = self.state.complete(cacheKey, requestID: requestID)
                 if let moved = movedURL {
-                    self.state.store(moved, for: track.trackId)
+                    self.state.store(moved, for: cacheKey)
+                    self.variantOf[cacheKey] = requested
                     deliver(moved, nil)
                     pendings.forEach { $0(moved, nil) }
                 } else {
@@ -192,24 +225,39 @@ final class TrackFileLoader {
                 }
             }
         }
-        if state.claim(track.trackId, task: task, requestID: requestID) {
+        if state.claim(cacheKey, task: task, requestID: requestID) {
             task.resume()
         } else {
             // Unreachable on the main thread (the isActive check above already
             // chained) — defensive: never resume a second download for a
-            // claimed id, and never leak the abandoned task.
+            // claimed key, and never leak the abandoned task.
             task.cancel()
-            state.chain(track.trackId, deliver)
+            state.chain(cacheKey, deliver)
         }
     }
 
-    /// Drops a cached file (e.g. a corrupt or partial download) and cancels any
-    /// in-flight fetch for it so the next prefetch re-fetches from the server.
-    func evict(_ trackId: String) {
-        let (task, url) = state.evict(trackId)
-        task?.cancel()
-        if let url = url {
-            try? FileManager.default.removeItem(at: url)
+    /// Drops cached file(s) for a track and cancels any in-flight fetch for
+    /// them so the next prefetch re-fetches from the server. With no variant,
+    /// ALL variants go (queue cleanup); pass the scheduled variant to drop one
+    /// (the corrupt-file path must not nuke the good variants).
+    func evict(_ trackId: String, variant: TrackVariant? = nil) {
+        var keys: [String]
+        if let variant = variant {
+            keys = [transcodeCacheKey(trackId: trackId, variant: variant)]
+        } else {
+            let prefix = trackId + "|"
+            keys = state.cache.keys.filter { $0.hasPrefix(prefix) }
+            for key in state.inFlight.keys where key.hasPrefix(prefix) && !keys.contains(key) {
+                keys.append(key)
+            }
+        }
+        for key in keys {
+            let (task, url) = state.evict(key)
+            variantOf.removeValue(forKey: key)
+            task?.cancel()
+            if let url = url {
+                try? FileManager.default.removeItem(at: url)
+            }
         }
     }
 
@@ -222,14 +270,18 @@ final class TrackFileLoader {
         }
     }
 
-    private static func destinationURL(for track: NativeTrack) -> URL {
+    private static func destinationURL(for track: NativeTrack, variant: TrackVariant) -> URL {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("mmdrome-tracks", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        // Stable FNV (not String.hashValue, which is process-seeded): cache files
-        // must survive across launches or every launch re-downloads the whole
-        // queue and orphans the previous launch's files (TODO 4.5a).
-        let hash = StableID.fnv1a64(track.trackId).description
+        // Stable FNV over trackId + variant (not String.hashValue, which is
+        // process-seeded): cache files must survive across launches or every
+        // launch re-downloads the whole queue and orphans the previous
+        // launch's files (TODO 4.5a). Variants hash apart, so raw and
+        // transcoded bytes never overwrite each other — the
+        // preserve-unless-upgrade rule needs both on disk. Pre-variant files
+        // (bare FNV(trackId)) orphan harmlessly; Caches is system-purged.
+        let hash = StableID.fnv1a64(transcodeCacheKey(trackId: track.trackId, variant: variant)).description
         var ext = track.url.pathExtension
         // Navidrome stream URLs end in /stream.view?query — pathExtension is "view",
         // not the real audio suffix. Use no extension so AVAudioFile probes the
@@ -970,7 +1022,8 @@ public final class NativeAudioEngine: NSObject {
         guard let file = try? AVAudioFile(forReading: localURL) else {
             // Corrupt or partial download. Evict it so the JS retry loop
             // re-fetches instead of replaying a poisoned file forever.
-            loader.evict(track.trackId)
+            // Variant-scoped: the good variants of this track survive.
+            loader.evict(track.trackId, variant: TrackVariant(url: track.url))
             onError?("Unsupported audio file: \(track.title)")
             return
         }
@@ -1202,7 +1255,7 @@ public final class NativeAudioEngine: NSObject {
             // A cached path can still be corrupt. Evict and restart its fetch;
             // the completion will re-check the active window on the main thread.
             print("[native-crossfade] target file could not be opened: \(nextTrack.trackId)")
-            loader.evict(nextTrack.trackId)
+            loader.evict(nextTrack.trackId, variant: TrackVariant(url: nextTrack.url))
             loader.prefetch(nextTrack) { [weak self] _, _ in
                 self?.crossfadeMonitorTick()
             }

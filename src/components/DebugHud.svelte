@@ -3,6 +3,9 @@
   import { Capacitor } from '@capacitor/core'
   import { get } from 'svelte/store'
   import { currentTrack, playbackState, queue, currentTime, effectiveDuration, settings, library } from '../stores/appState'
+  import { effectiveLowData, networkStatusStore } from '../lib/networkMode'
+  import { transcodeParams } from '../lib/transcodePolicy'
+  import { getCachedConfig } from '../lib/navidromeApi'
   import { BackgroundAudio } from '../lib/nativePlugin'
   import { audioManager } from '../lib/audioManager'
 
@@ -81,6 +84,19 @@
     const ct = get(currentTrack)
     const st = get(playbackState)
     const lib = get(library)
+    const st8 = get(settings)
+    // The manager's EXACT transcode decision (same pure function, same live
+    // inputs) — "what the app believed the stream params were" for this copy.
+    const tp = transcodeParams(
+      {
+        mode: st8.transcodeMode,
+        lowDataActive: get(effectiveLowData),
+        hasConfig: !!getCachedConfig(),
+        probeFailed: st8.transcodeProbe?.[st8.transcodeFormat ?? 'opus'] === 'unsupported',
+      },
+      st8.transcodeFormat,
+      st8.transcodeBitrate,
+    )
     const payload = {
       time: new Date().toISOString(),
       js: {
@@ -98,6 +114,8 @@
         isNative: Capacitor.isNativePlatform(),
         isIOS: audioManager.isIOS,
         engineWidth: typeof (audioManager as any).webAudioReady !== 'undefined' ? (audioManager as any).webAudioReady : null,
+        lowData: { effective: get(effectiveLowData), network: get(networkStatusStore) },
+        transcode: tp ?? 'original',
       },
       nativeState,
       nativeDebug,
@@ -122,6 +140,32 @@
   let ctime = $derived.by(() => { void jsTick; return get(currentTime) })
   let edur = $derived.by(() => { void jsTick; return get(effectiveDuration) })
   let combined = $derived.by(() => { void jsTick; const qq=get(queue); return [...qq.userQueue, ...qq.autoQueue] })
+  // Live LDM + effective-stream readout (same decision the URL layer makes).
+  let ldm = $derived.by(() => { void jsTick; return get(effectiveLowData) })
+  let ldmWhy = $derived.by(() => {
+    void jsTick
+    const s = get(settings)
+    const n = get(networkStatusStore)
+    if (!get(effectiveLowData)) return 'off'
+    if (s.lowDataMode) return 'man'
+    if (n.osLowData) return 'os'
+    return n.source === 'native' ? 'cell' : 'hint'
+  })
+  let streamVariant = $derived.by(() => {
+    void jsTick
+    const s = get(settings)
+    const tp = transcodeParams(
+      {
+        mode: s.transcodeMode,
+        lowDataActive: get(effectiveLowData),
+        hasConfig: !!getCachedConfig(),
+        probeFailed: s.transcodeProbe?.[s.transcodeFormat ?? 'opus'] === 'unsupported',
+      },
+      s.transcodeFormat,
+      s.transcodeBitrate,
+    )
+    return tp ? `${tp.format}@${tp.maxBitRate}` : 'original'
+  })
 </script>
 
 <div class="fixed bottom-20 right-2 z-[70] flex max-h-[70vh] w-[min(420px,calc(100vw-16px))] flex-col rounded-xl bg-black/85 text-[11px] leading-tight text-white shadow-2xl ring-1 ring-white/20 backdrop-blur">
@@ -142,6 +186,7 @@
       <div>state: {ps} time: {ctime.toFixed(2)} / {edur.toFixed(2)}</div>
       <div>activeIndex: {q.activeIndex} / {combined.length} (u:{q.userQueue.length} a:{q.autoQueue.length})</div>
       <div>activeId: {(combined[q.activeIndex] ?? '—')}</div>
+      <div>ldm: {ldm ? `on-${ldmWhy}` : 'off'} stream: {streamVariant}</div>
       <div>queue: [{combined.slice(0,6).join(', ')}{combined.length>6?' …':''}]</div>
       {#if lastTrackChanged}<div class="text-green-300">{lastTrackChanged}</div>{/if}
     </div>

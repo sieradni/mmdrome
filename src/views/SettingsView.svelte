@@ -20,8 +20,8 @@
   import { reconcileToNavidrome } from '../lib/feedbackService'
   import { connectLfm, disconnectLfm, lastfmAuthPhase, pendingAuthUrl, getCachedLfmSession } from '../lib/lastfmAuth'
   import { scrobbleFlushStatus } from '../lib/scrobbleFlush'
-  import { networkStatusStore } from '../lib/networkMode'
-  import { BUILTIN_TRANSCODE_FORMATS, isLosslessTranscodeFormat } from '../lib/transcodePolicy'
+  import { effectiveLowData, networkStatusStore } from '../lib/networkMode'
+  import { BUILTIN_TRANSCODE_FORMATS, isLosslessTranscodeFormat, resolveTranscodeFormat } from '../lib/transcodePolicy'
   import ToggleSwitch from '../components/ToggleSwitch.svelte'
   import { accentHue, appFont, ACCENT_HUES, FONT_OPTIONS, NEUTRAL_ACCENT } from '../lib/appearance'
   import { ensureFormatProbe } from '../lib/formatProbe'
@@ -145,6 +145,13 @@
   function isCustomFormat(fmt: string): boolean {
     return !(BUILTIN_TRANSCODE_FORMATS as readonly string[]).includes(fmt)
   }
+
+  // Effective stream format (probe fallback resolved through the same pure
+  // selector the URL layer uses — never drift a copy of that logic here).
+  let effectiveTranscodeFormat = $derived(resolveTranscodeFormat(
+    $settings.transcodeFormat,
+    ($settings.transcodeProbe?.[$settings.transcodeFormat ?? 'opus']) === 'unsupported',
+  ))
 
   /** Custom server-defined format (any target the admin's ffmpeg command
    *  produces). Lightly sanitized — lowercase, URL-safe — but never blocked:
@@ -1585,6 +1592,13 @@
                 <p class="text-sm text-muted">Pauses background traffic: metadata scans, tag probes, and scrobble uploads (they queue instead). Streaming, cover art, preloading, and anything you tap yourself are never held back.</p>
               </div>
             </label>
+            <p class="text-sm" data-testid="low-data-status">
+              {#if $effectiveLowData}
+                <span class="text-green-400">Low data mode is active{#if $settings.lowDataMode} (manual toggle){:else if $networkStatusStore.osLowData} (system Low Data Mode){:else} (cellular connection){/if}.</span>
+              {:else}
+                <span class="text-muted">Low data mode is off.</span>
+              {/if}
+            </p>
           </div>
         </section>
 
@@ -1685,6 +1699,19 @@
               {/if}
               {#if ($settings.transcodeProbe?.[$settings.transcodeFormat ?? 'opus']) === 'unsupported'}
                 <p class="text-sm text-yellow-500/90">This device couldn't decode {$settings.transcodeFormat ?? 'opus'} during a test — MP3 is used until it passes. If your files play fine, tap the {$settings.transcodeFormat ?? 'opus'} button to re-test.</p>
+              {/if}
+              {#if ($settings.transcodeMode ?? 'off') === 'lowData'}
+                <p class="text-sm text-muted" data-testid="transcode-effective">
+                  {#if $effectiveLowData}
+                    Active now — new tracks stream as {effectiveTranscodeFormat}{#if !isLosslessTranscodeFormat(effectiveTranscodeFormat)} · {$settings.transcodeBitrate ?? 128} kbps{/if}.
+                  {:else}
+                    Waiting for low data mode — originals stream until it engages.
+                  {/if}
+                </p>
+              {:else if ($settings.transcodeMode ?? 'off') === 'always'}
+                <p class="text-sm text-muted" data-testid="transcode-effective">
+                  Every track streams as {effectiveTranscodeFormat}{#if !isLosslessTranscodeFormat(effectiveTranscodeFormat)} · {$settings.transcodeBitrate ?? 128} kbps{/if}.
+                </p>
               {/if}
               <p class="text-sm text-muted">Applies from the next track. A server without ffmpeg silently streams original files; an unsupported custom format falls back to the server's own default.</p>
             </div>

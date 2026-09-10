@@ -246,8 +246,9 @@ async function preloadNext(n: number): Promise<void> {
   preloading = true
   try {
     // Bail when playback stopped mid-fill: a paused element means the poll
-    // gate would block further work anyway, and the LDM check keeps the
-    // window from re-evaluating while the mode is engaged.
+    // gate would block further work anyway. (Deliberately NO low-data bail:
+    // auto-preload stays ON under LDM by plan Principle — the serialized
+    // one-fetch-per-tick cadence is the bandwidth control, not a mode gate.)
     const el = getAudioEl?.()
     if (!el || el.paused) return
     const q = get(queue)

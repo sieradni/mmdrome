@@ -488,6 +488,26 @@ export class PlaybackManager {
         scrobbleFlushEngine.setAutoFlushEnabled(true)
         scrobbleFlushEngine.kick()
       }
+      // Transcoded-URL invalidation: an LDM flip rewrites the effective
+      // stream params for mode 'lowData', but the transcodeKey edge above
+      // ignores LDM state — without this, the native snapshot tail
+      // (engine-side auto-advance + lock-screen skips play it verbatim) and
+      // the web armed crossfade target (resolved at arm time) keep playing
+      // pre-flip URLs. The CURRENT track is never re-fetched — only
+      // not-yet-playing URLs refresh. Scoped to 'lowData': 'off' has no
+      // params and 'always' URLs are identical either side of the flip.
+      // Web lift ALSO sweeps format-bearing preload entries (stale keys);
+      // engage never sweeps — raw entries are the offline buffer, and the
+      // native preserve-unless-upgrade cache rule wants them kept.
+      if ((get(settings).transcodeMode ?? 'off') === 'lowData') {
+        if (this.isNative()) {
+          this._scheduleNativeQueueSync()
+        } else {
+          this._webTransport?.cancelNext()
+          this._rearmCrossfadeTarget()
+          if (!active) void sweepStaleTranscodeEntries().catch(() => {})
+        }
+      }
       if (this.isNative()) this._syncNativePreload()
     }))
 
