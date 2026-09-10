@@ -1,5 +1,6 @@
 import { get } from 'svelte/store'
 import { settings, currentTrack, queue } from '../stores/appState'
+import { emitPreloadEvent, resetLoadStatusForTests } from '../stores/loadStatus'
 import { advanceTargetIndex } from './queueMutation'
 // NOTE: the preloader deliberately does NOT read effectiveLowData — the LDM
 // plan's Principle (docs/plans/2026-09-06, §2) keeps auto-preload ON under
@@ -42,7 +43,7 @@ export function setup(getEl: () => HTMLAudioElement, resolver: TrackUrlResolver)
   let prevId: string | null = get(currentTrack)?.trackId ?? null
   unsubCurrentTrack = currentTrack.subscribe(track => {
     if (prevId && track && track.trackId !== prevId && urlForTrack) {
-      cleanup(urlForTrack(prevId))
+      cleanup(urlForTrack(prevId), prevId)
     }
     prevId = track?.trackId ?? null
   })
@@ -92,7 +93,8 @@ export async function resolveSrc(url: string): Promise<string> {
   return url
 }
 
-export async function cleanup(url: string): Promise<void> {
+export async function cleanup(url: string, trackId?: string): Promise<void> {
+  if (trackId) emitPreloadEvent({ type: 'evict', trackId })
   const old = blobUrls.get(url)
   if (old) { URL.revokeObjectURL(old); blobUrls.delete(url) }
   try {
@@ -110,6 +112,9 @@ export async function cleanup(url: string): Promise<void> {
  * Cache Storage API (old browsers / Node tests).
  */
 export async function sweepStaleTranscodeEntries(): Promise<void> {
+  // The store mirrors cache keys by trackId — a param rewrite orphans every
+  // entry, so the map resets alongside the cache (never show stale "cached").
+  emitPreloadEvent({ type: 'reset' })
   try {
     if (typeof caches === 'undefined') return
     const cache = await caches.open(CACHE_NAME)
@@ -179,6 +184,7 @@ export function __resetForTests(): void {
   nonOkFailures.clear()
   deadUrls.clear()
   blobUrls.clear()
+  resetLoadStatusForTests()
 }
 
 async function enforceCacheLimit(): Promise<void> {
@@ -197,10 +203,58 @@ async function enforceCacheLimit(): Promise<void> {
   } catch {}
 }
 
+/**
+ * Streams a response into the Cache API while reporting byte progress.
+ * Progress is HONEST: it reports only when the server sent a Content-Length.
+ * Without one (chunked/transcoded streams) the entry stays indeterminate and
+ * the UI pulses instead of filling. Non-streamable stubs (tests) and missing
+ * bodies fall back to a direct put — the body is never consumed unless the
+ * stream branch runs.
+ */
+async function putWithProgress(
+  cache: Cache,
+  url: string,
+  res: Response,
+  report: (progress: number) => void,
+): Promise<void> {
+  const body = (res as unknown as { body?: unknown }).body as ReadableStream<Uint8Array> | null | undefined
+  const lengthRaw = typeof res.headers?.get === 'function' ? res.headers.get('content-length') : null
+  const total = lengthRaw !== null ? Number(lengthRaw) : NaN
+  const canStream = !!body && typeof body.getReader === 'function' && isFinite(total) && total > 0
+  if (!canStream) {
+    await cache.put(url, res)
+    return
+  }
+  const reader = (body as ReadableStream<Uint8Array>).getReader()
+  const chunks: Uint8Array[] = []
+  let loaded = 0
+  let lastReported = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    if (value) {
+      chunks.push(value)
+      loaded += value.byteLength
+    }
+    const p = loaded / (total as number)
+    if (p - lastReported >= 0.05 || p >= 1) {
+      lastReported = p
+      report(Math.min(p, 1))
+    }
+  }
+  const blob = new Blob(chunks as BlobPart[])
+  await cache.put(url, new Response(blob, { status: res.status, statusText: res.statusText, headers: res.headers }))
+}
+
 /** One serial fetch: the head of the upcoming window, skipping rows already
  *  cached or marked dead. Called once per poll tick, so the queue order becomes
  *  the priority order (the next track fills first) and a failed fetch is
- *  naturally retried by the next tick. Returns the fetched id, or null. */
+ *  naturally retried by the next tick. Returns the fetched id, or null.
+ *
+ *  Store mirror: every branch reports the row's preload entry — `done` for
+ *  cache hits (this is also how rows cached by an earlier session surface),
+ *  `start`/`progress`/`done` across a fetch, `evict` on a retryable failure
+ *  (back to queued), `dead` past the strike threshold. */
 async function fillOne(
   nextIds: string[],
   cache: Cache,
@@ -209,16 +263,26 @@ async function fillOne(
   for (const id of nextIds) {
     const url = resolver(id)
     if (!url) return null
-    if (deadUrls.has(url)) continue
+    if (deadUrls.has(url)) {
+      emitPreloadEvent({ type: 'dead', trackId: id })
+      continue
+    }
     const exists = await cache.match(url)
-    if (exists) continue
+    if (exists) {
+      emitPreloadEvent({ type: 'done', trackId: id })
+      continue
+    }
+    emitPreloadEvent({ type: 'start', trackId: id })
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
     try {
       const res = await fetch(url, { signal: controller.signal })
       if (res.ok) {
-        await cache.put(url, res)
+        await putWithProgress(cache, url, res, (progress) =>
+          emitPreloadEvent({ type: 'progress', trackId: id, progress }),
+        )
         nonOkFailures.delete(url)
+        emitPreloadEvent({ type: 'done', trackId: id })
         return id
       }
       // The server answered and said no. Count it; past the threshold the row
@@ -227,11 +291,17 @@ async function fillOne(
       // — those self-heal when the connection returns.
       const fails = (nonOkFailures.get(url) ?? 0) + 1
       nonOkFailures.set(url, fails)
-      if (fails >= NON_OK_DEAD_THRESHOLD) deadUrls.add(url)
+      if (fails >= NON_OK_DEAD_THRESHOLD) {
+        deadUrls.add(url)
+        emitPreloadEvent({ type: 'dead', trackId: id })
+      } else {
+        emitPreloadEvent({ type: 'evict', trackId: id })
+      }
     } catch {
       // Abort/timeout/network: leave the slot uncached — the next tick's
       // window recomputes (a changed queue just re-ranks the priorities) and
       // retries this row only if it still belongs.
+      emitPreloadEvent({ type: 'evict', trackId: id })
     } finally {
       clearTimeout(timer)
     }

@@ -28,6 +28,12 @@
   import DetailView from './views/DetailView.svelte'
   import LazyThumb from './components/LazyThumb.svelte'
   import DebugHud from './components/DebugHud.svelte'
+  import SeekBar from './components/SeekBar.svelte'
+  import BufferSpinner from './components/BufferSpinner.svelte'
+  import PreloadSegments, { type PreloadSegment } from './components/PreloadSegments.svelte'
+  import { bufferedRanges, preloadEntries } from './stores/loadStatus'
+  import { setupBufferMonitor } from './lib/bufferMonitor'
+  import { advanceTargetIndex } from './lib/queueMutation'
 
   let nowPlayingOpen = $state(false)
   let queueOpen = $state(false)
@@ -266,19 +272,44 @@
     return `${m} min`
   })
 
-function seek(e: Event) {
-     const t = parseFloat((e.target as HTMLInputElement).value)
+ function seekValue(t: number) {
      playbackManager.seek(t)
    }
+
+  /** Upcoming-window preload segments for Now Playing (at most 5 — ambient,
+   *  the queue rows are the operable surface). Empty when preloading is off. */
+  let preloadSegments = $derived.by((): PreloadSegment[] => {
+    const n = $settings.preloadTracks ?? 0
+    if (n <= 0) return []
+    const q = $queue
+    const ids = [...q.userQueue, ...q.autoQueue]
+    const idx = advanceTargetIndex(q, ids, $currentTrack?.trackId)
+    if (idx < 0 || idx >= ids.length) return []
+    const entries = $preloadEntries
+    const byId = new Map($library.map((t) => [t.trackId, t] as const))
+    return ids.slice(idx, idx + Math.min(n, 5)).map((id) => ({
+      id,
+      title: byId.get(id)?.title ?? id,
+      entry: entries[id],
+    }))
+  })
 
   $effect(() => {
     if (Capacitor.isNativePlatform()) return
     const handler = () => currentTime.set(audioManager.playbackElement.currentTime)
     audioManager.a.addEventListener('timeupdate', handler)
     audioManager.b.addEventListener('timeupdate', handler)
+    // Buffered-range mirror for the shared SeekBar (web HTMLAudio only —
+    // native has no element, the store stays empty and the bar degrades).
+    const teardownMonitor = setupBufferMonitor({
+      getElements: () => [audioManager.a, audioManager.b],
+      getActiveElement: () => audioManager.playbackElement,
+      getDuration: () => get(effectiveDuration),
+    })
     return () => {
       audioManager.a.removeEventListener('timeupdate', handler)
       audioManager.b.removeEventListener('timeupdate', handler)
+      teardownMonitor()
     }
   })
 
@@ -504,18 +535,28 @@ function seek(e: Event) {
       </div>
 
       <!-- Seek Bar -->
-      <div class="flex items-center gap-3 px-6 pt-4">
-        <span class="w-10 text-right text-xs tabular-nums text-muted">{formatTime(sliderValue)}</span>
-        <input
-          type="range"
-          min="0"
-          max={sliderMax}
-          value={sliderValue}
-          oninput={seek}
-          class="h-1 flex-1 accent-white/80 cursor-pointer"
-          step="0.1"
-        />
-        <span class="w-10 text-xs tabular-nums text-muted">{formatTime($effectiveDuration)}</span>
+      <div class="px-6 pt-2">
+        <div class="flex items-center gap-3">
+          <span class="w-10 text-right text-xs tabular-nums text-muted">{formatTime(sliderValue)}</span>
+          <div class="min-w-0 flex-1">
+            <SeekBar
+              value={sliderValue}
+              max={sliderMax}
+              buffered={$bufferedRanges}
+              label="Seek"
+              valueText="{formatTime(sliderValue)} of {formatTime($effectiveDuration)}"
+              onSeek={seekValue}
+            />
+          </div>
+          <span class="w-10 text-xs tabular-nums text-muted">{formatTime($effectiveDuration)}</span>
+        </div>
+        {#if $playbackState === 'buffering'}
+          <p class="pt-1 text-center text-xs text-muted animate-pulse">Buffering…</p>
+        {:else if preloadSegments.length > 0}
+          <div class="pt-1.5">
+            <PreloadSegments segments={preloadSegments} />
+          </div>
+        {/if}
       </div>
     {:else}
       <!-- Empty State -->
@@ -541,7 +582,11 @@ function seek(e: Event) {
         <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
       </button>
       <button class="rounded-full bg-primary p-3.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
-        {#if $playbackState === 'playing'}
+        {#if $playbackState === 'buffering'}
+          <span class="flex h-9 w-9 items-center justify-center">
+            <BufferSpinner sizeClass="h-6 w-6" trackClass="border-background/30" headClass="border-t-background" />
+          </span>
+        {:else if $playbackState === 'playing'}
           <svg class="h-9 w-9" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
         {:else}
           <svg class="h-9 w-9" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>

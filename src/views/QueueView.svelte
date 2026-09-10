@@ -3,6 +3,7 @@
     queue,
     library,
     currentTrack,
+    settings,
     shuffleEnabled,
     toggleShuffle,
     currentTime,
@@ -15,6 +16,8 @@
     type Track,
     type AutoQueueFilterFields,
   } from '../stores/appState'
+  import { bufferedRanges, preloadEntries } from '../stores/loadStatus'
+  import { advanceTargetIndex } from '../lib/queueMutation'
   import { filterRangesValid } from '../lib/autoQueuePlan'
   import { onMount, onDestroy, tick } from 'svelte'
   import { flip } from 'svelte/animate'
@@ -24,6 +27,8 @@
   import { saveViewState, restoreViewState } from '../lib/viewState'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
+  import SeekBar from '../components/SeekBar.svelte'
+  import BufferSpinner from '../components/BufferSpinner.svelte'
 
   let { onclose, oncloseall }: { onclose: () => void; oncloseall: () => void } = $props()
 
@@ -277,10 +282,40 @@
     return `${m}:${s.toString().padStart(2, '0')}`
   }
 
-function seek(e: Event) {
-     const t = parseFloat((e.target as HTMLInputElement).value)
+ function seekValue(t: number) {
      playbackManager.seek(t)
    }
+
+  /** Ids in the background-preload window (same playing-track-aware start
+   *  the preloader fills from). Rows outside it never read the entries map,
+   *  so stale entries can't tint rows that left the window. */
+  let preloadWindow = $derived.by((): Set<string> => {
+    const n = $settings.preloadTracks ?? 0
+    if (n <= 0) return new Set()
+    const q = $queue
+    const ids = [...q.userQueue, ...q.autoQueue]
+    const idx = advanceTargetIndex(q, ids, $currentTrack?.trackId)
+    if (idx < 0 || idx >= ids.length) return new Set()
+    return new Set(ids.slice(idx, idx + n))
+  })
+
+  /** Ambient left-to-right fill for an upcoming queue row: a linear-gradient
+   *  layer over the row's own background (no extra element, no stacking
+   *  fights). Cached = full subtle wash; fetching with known bytes = partial;
+   *  indeterminate/dead/out-of-window = none. */
+  function preloadTint(trackId: string): string | undefined {
+    if (!preloadWindow.has(trackId)) return undefined
+    const entry = $preloadEntries[trackId]
+    if (!entry) return undefined
+    if (entry.state === 'cached') {
+      return 'background-image: linear-gradient(to right, rgba(255,255,255,0.06) 100%, transparent 100%);'
+    }
+    if (entry.state === 'fetching' && entry.progress !== null) {
+      const p = Math.min(Math.max(entry.progress * 100, 0), 100)
+      return `background-image: linear-gradient(to right, rgba(255,255,255,0.08) ${p}%, transparent ${p}%);`
+    }
+    return undefined
+  }
 
   let sliderValue = $derived($currentTime)
   let sliderMax = $derived($effectiveDuration > 0 ? $effectiveDuration : 1)
@@ -508,17 +543,15 @@ function seek(e: Event) {
         </div>
 
         <!-- Seek Bar -->
-        <div class="mt-2 flex items-center gap-2">
-          <input
-            type="range"
-            min="0"
-            max={sliderMax}
+        <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+        <div class="mt-1" onclick={(e) => e.stopPropagation()} onmousedown={(e) => e.stopPropagation()}>
+          <SeekBar
             value={sliderValue}
-            oninput={(e) => { e.stopPropagation(); seek(e) }}
-            onmousedown={(e) => e.stopPropagation()}
-            onclick={(e) => e.stopPropagation()}
-            class="h-1 flex-1 accent-white/80 cursor-pointer"
-            step="0.1"
+            max={sliderMax}
+            buffered={$bufferedRanges}
+            label="Seek"
+            valueText="{formatTime(sliderValue)} of {formatTime($effectiveDuration)}"
+            onSeek={seekValue}
           />
         </div>
 
@@ -540,7 +573,11 @@ function seek(e: Event) {
           </button>
 
           <button class="rounded-full bg-primary p-2.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
-            {#if $playbackState === 'playing'}
+            {#if $playbackState === 'buffering'}
+              <span class="flex h-6 w-6 items-center justify-center">
+                <BufferSpinner sizeClass="h-4 w-4" trackClass="border-background/30" headClass="border-t-background" />
+              </span>
+            {:else if $playbackState === 'playing'}
               <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
             {:else}
               <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
@@ -597,6 +634,7 @@ function seek(e: Event) {
               (isCurrentTrack(itemIndex) ? 'bg-white/10 ' : 'hover:bg-surface-hover ') +
               (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
+            style={preloadTint(item.track.trackId)}
             data-combined-index={itemIndex}
             data-track-id={item.track.trackId}
           >
@@ -704,6 +742,7 @@ function seek(e: Event) {
               (isCurrentTrack(itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-surface-hover ') +
               (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
+            style={preloadTint(item.track.trackId)}
             data-combined-index={itemCombinedIndex}
             data-track-id={item.track.trackId}
           >
