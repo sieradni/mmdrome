@@ -85,10 +85,13 @@
   }
 </script>
 
-<!-- Knob-less bar (Spotify/YouTube pattern): the h-9 strip seeks anywhere,
-  the slim bar thickens + takes the accent on hover/drag. No handle to grab,
-  nothing to align — the accent is interaction-only so the neutral theme
-  (accent = white) reads unchanged at rest. -->
+<!-- Knob-less bar (Spotify/YouTube pattern): the h-9 strip seeks anywhere.
+  Review pass 2026-09-11: the track is taller (6px → 8px on hover/drag) and
+  carries a thin vertical playhead line marking the exact position. Second
+  pass (review 2026-09-11): RECTANGULAR geometry — the played fill has no
+  rounded end (the old round cap left slivers of gap against the straight
+  playhead line), the track itself only slightly rounded, and the playhead
+  line is a step darker than pure white. -->
 <div
   role="slider"
   tabindex={disabled ? -1 : 0}
@@ -113,22 +116,32 @@
   <div class="w-full">
     <div
       bind:this={trackEl}
-      class="relative h-1 w-full rounded-full bg-white/10 transition-[height] duration-150 group-hover:h-1.5"
-      class:h-1.5={dragging}
+      class="relative h-2.5 w-full rounded-sm bg-white/10 transition-[height] duration-150 group-hover:h-3"
+      class:h-3={dragging}
     >
-      <div class="absolute inset-0 overflow-hidden rounded-full">
+      <div class="absolute inset-0 overflow-hidden rounded-sm">
         {#each fills as f, i (i)}
           <div
-            class="absolute inset-y-0 rounded-full bg-white/20"
+            class="absolute inset-y-0 rounded-sm bg-white/20"
             style="left: {f.left}%; width: {f.width}%;"
           ></div>
         {/each}
+        <!-- Played fill: SOLID accent at rest (playback is the app's pulse;
+             no hover brightening — one consistent color, review 2026-09-11).
+             Square ends — the playhead line must sit flush against the fill. -->
         <div
-          class="absolute inset-y-0 left-0 rounded-full bg-white/80 transition-colors group-hover:bg-accent"
-          class:bg-accent={dragging}
+          class="absolute inset-y-0 left-0 bg-accent"
           style="width: {playedPct}%;"
         ></div>
       </div>
+      <!-- Thin vertical playhead (position marker): 2px line a step darker
+           than white, overshooting the track, OUTSIDE the clipped fill
+           container so it never gets cut. -->
+      <div
+        class="pointer-events-none absolute top-1/2 h-5 w-0.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-neutral-300"
+        style="left: {playedPct}%;"
+        aria-hidden="true"
+      ></div>
     </div>
   </div>
 </div>

@@ -26,7 +26,7 @@
   {disabled}
   onclick={() => onchange?.(!checked)}
   class={"relative inline-flex h-6 w-11 flex-shrink-0 items-center rounded-full transition-colors " +
-    (checked ? 'bg-accent ' : 'bg-white/15 ring-1 ring-accent/40 ') +
+    (checked ? 'bg-accent ' : 'bg-white/15 ring-2 ring-accent/50 ') +
     (disabled ? 'cursor-not-allowed opacity-40' : 'cursor-pointer')}
 >
   <span

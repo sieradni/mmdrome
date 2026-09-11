@@ -12,6 +12,25 @@
   --color-accent: var(--app-accent, #ffffff);
   --color-accent-soft: var(--app-accent-soft, rgb(255 255 255 / 0.15));
   --color-accent-ring: var(--app-accent-ring, rgb(255 255 255 / 0.3));
+  /* Thick focus indicator (2px ring on primary entry points like search) —
+     tracks the runtime accent via --app-accent-ring-strong (defined on
+     :root below). */
+  --color-accent-ring-strong: var(--app-accent-ring-strong, rgb(255 255 255 / 0.65));
+}
+
+/* Now-playing ROW treatment (whole-row element, user request 2026-09-11):
+   one solid accent wash + a solid 3px left edge. Flat colors only — no
+   gradient, no glow. The wash mixes the accent over a LIFTED dark base
+   (not pure black) so the row reads as the accent color itself — a plain
+   low-alpha accent over #000 compounds into muddy off-accent darkness
+   (review 2026-09-11). Browsers without color-mix drop just the wash and
+   keep the edge. */
+.ui-now-playing-row {
+  background: color-mix(in srgb, var(--app-accent) 11%, #141414);
+  box-shadow: inset 3px 0 0 0 var(--app-accent);
+}
+.ui-now-playing-row:hover {
+  background: color-mix(in srgb, var(--app-accent) 15%, #141414);
 }
 
 /* App-wide font — a bundled monospace (Appearance tab offers the choice).
@@ -24,6 +43,11 @@
   --app-font: 'JetBrains Mono Variable', ui-monospace, 'Cascadia Mono', 'SF Mono', Menlo, monospace;
   font-family: var(--app-font);
   font-size: 93.75%;
+  /* Focus rings: the plain ring is the 30%-alpha hairline Tailwind uses;
+     `-strong` (2px, 65% accent) is the properly visible focus indicator for
+     primary entry points (header search) — the hairline was too thin to
+     read as focus (review 2026-09-11). */
+  --app-accent-ring-strong: color-mix(in srgb, var(--app-accent, #ffffff) 65%, transparent);
 }
 
 /* Proportional fonts read true to size — undo the mono density shrink
@@ -38,53 +62,59 @@ body {
 
 /* Modern form controls: quiet dark fields, soft focus, comfortable radii.
    The native look (beveled number spinners, default select chrome) reads
-   dated — restyled once here for every input in the app. */
-input[type="text"],
-input[type="search"],
-input[type="number"],
-input[type="password"],
-input[type="url"],
-textarea,
-select {
-  appearance: none;
-  -webkit-appearance: none;
-  border-radius: 0.5rem;
-  background: rgb(255 255 255 / 0.06);
-  border: 1px solid rgb(255 255 255 / 0.1);
-  transition: border-color 120ms ease, background-color 120ms ease;
-}
+   dated — restyled once here for every input in the app. IMPORTANT: these
+   live in `@layer base` — unlayered CSS beats ALL layered rules regardless
+   of specificity, so the previous unlayered `:where()` block still overrode
+   Tailwind's `rounded-full` (the search bar stayed square, review
+   2026-09-11). Inside the base layer, Tailwind utilities always win. */
+@layer base {
+  :where(input[type="text"],
+  input[type="search"],
+  input[type="number"],
+  input[type="password"],
+  input[type="url"],
+  textarea,
+  select) {
+    appearance: none;
+    -webkit-appearance: none;
+    border-radius: 0.5rem;
+    background: rgb(255 255 255 / 0.06);
+    border: 1px solid rgb(255 255 255 / 0.1);
+    transition: border-color 120ms ease, background-color 120ms ease;
+  }
 
-input[type="text"]:focus,
-input[type="search"]:focus,
-input[type="number"]:focus,
-input[type="password"]:focus,
-input[type="url"]:focus,
-textarea:focus,
-select:focus {
-  outline: none;
-  border-color: var(--app-accent-ring, rgb(255 255 255 / 0.3));
-  background: rgb(255 255 255 / 0.09);
-}
+  input[type="text"]:focus,
+  input[type="search"]:focus,
+  input[type="number"]:focus,
+  input[type="password"]:focus,
+  input[type="url"]:focus,
+  textarea:focus,
+  select:focus {
+    outline: none;
+    border-color: var(--app-accent-ring, rgb(255 255 255 / 0.3));
+    background: rgb(255 255 255 / 0.09);
+  }
 
-/* Number inputs: hide the dated native spinners (users type or use the
-   paired slider). */
-input[type="number"]::-webkit-outer-spin-button,
-input[type="number"]::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-input[type="number"] {
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
+  /* Number inputs: hide the dated native spinners (users type or use the
+     paired slider). */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
 
-/* Selects: restore a custom chevron (appearance:none removed it). */
-select {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a3a3a3' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 0.5rem center;
-  background-size: 1rem;
-  padding-right: 1.75rem;
+  /* Selects: restore a custom chevron (appearance:none removed it). */
+  select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23a3a3a3' stroke-width='2'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 1rem;
+    padding-right: 1.75rem;
+  }
 }
 
 /* Checkboxes: rounded, accent-tinted check. */
@@ -284,4 +314,15 @@ input[type="range"]::-webkit-slider-thumb {
   background: var(--app-accent-soft);
   color: var(--app-accent);
   border: 1px solid var(--app-accent-ring);
+}
+
+/* ═══ Shared design primitives (UI review — A2 baseline) ═══
+   Safe defaults keep every un-themed build byte-identical at rest; the
+   direction themes above only raise the intensity where the rules allow.
+   Hover language (review 2026-09-11): hover BRIGHTENS text (muted →
+   primary) — accent is a STATE color, not a hover color. */
+.ui-island {
+  background: #0b0b0b;
+  border: 1px solid rgb(255 255 255 / 0.08);
+  border-radius: 1rem;
 }

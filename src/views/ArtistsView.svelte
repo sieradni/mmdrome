@@ -14,6 +14,7 @@
   import TrackRow from '../components/TrackRow.svelte'
   import FilterSortBar from '../components/FilterSortBar.svelte'
   import JumpToCurrentButton from '../components/JumpToCurrentButton.svelte'
+  import ScrollTopButton from '../components/ScrollTopButton.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
 
@@ -200,11 +201,12 @@
     </div>
     <div bind:this={detailScrollContainer} class="flex-1 overflow-y-auto pb-24"
          onscroll={() => { if (detailScrollContainer) saveViewState(viewName, { detailScrollTop: detailScrollContainer.scrollTop }) }}>    <div class="px-4 pt-2 pb-1">
-      {#each selectedTracks as track (track.trackId)}          <TrackRow {track} ondetails={() => detailsTrack = track} onplay={handlePlayFromArtist} highlightTokens={searchTokens} />
+      {#each selectedTracks as track (track.trackId)}          <TrackRow {track} playing={track.trackId === $currentTrack?.trackId} ondetails={() => detailsTrack = track} onplay={handlePlayFromArtist} highlightTokens={searchTokens} />
       {/each}
     </div>
     </div>
     <JumpToCurrentButton show={canJumpDetail} onclick={jumpToCurrent} />
+    <ScrollTopButton target={detailScrollContainer} posClass={canJumpDetail ? 'bottom-20 right-4' : 'bottom-5 right-4'} />
   </div>
 
 {#if detailsTrack}
@@ -238,5 +240,6 @@
       {/if}
     </div>
     <JumpToCurrentButton show={canJumpList} onclick={jumpToCurrent} />
+    <ScrollTopButton target={scrollContainer} posClass={canJumpList ? 'bottom-20 right-4' : 'bottom-5 right-4'} />
   </div>
 {/if}

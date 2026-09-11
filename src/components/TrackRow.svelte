@@ -9,7 +9,7 @@
   import LazyThumb from './LazyThumb.svelte'
   import TrackOptionsDropdown from './TrackOptionsDropdown.svelte'
 
-  let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, dataTrackId, ondetails, onplay, highlightTokens = [] }: {
+  let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, dataTrackId, ondetails, onplay, highlightTokens = [], playing = false }: {
     track: Track
     showAlbum?: boolean
     showDuration?: boolean
@@ -19,6 +19,9 @@
     onplay?: (trackId: string) => void
     /** Search tokens to bold in title/artist/album — empty = plain render. */
     highlightTokens?: string[]
+    /** This row is the CURRENT track (any playback state) — whole-row accent
+     *  element (solid wash + left edge). */
+    playing?: boolean
   } = $props()
 
   /**
@@ -81,7 +84,8 @@
 </script>
 
 <div
-  class="flex cursor-pointer items-center gap-2 rounded-lg py-2 pl-1.5 pr-1 transition-colors hover:bg-surface-hover"
+  class={"relative flex cursor-pointer items-center gap-2 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
+    (playing ? 'ui-now-playing-row' : 'hover:bg-white/5')}
   role="button"
   tabindex="0"
   data-track-id={dataTrackId ?? track.trackId}
@@ -152,8 +156,12 @@
     {/if}
   </button>
 
-  {#if showAlbumArtist}
-    <span class="flex-shrink-0 text-xs text-muted/60 max-w-[120px] truncate">{track.albumArtist ?? ''}</span>
+  <!-- Album-artist column (album/artist detail views): only when it actually
+       DIFFERS from the track artist — on single-artist albums the two are
+       identical and the trailing name read as a duplicate (review
+       2026-09-11). Real use case: compilation various-artists albums. -->
+  {#if showAlbumArtist && track.albumArtist && track.albumArtist !== track.artist}
+    <span class="flex-shrink-0 text-xs text-muted/60 max-w-[120px] truncate">{track.albumArtist}</span>
   {/if}
 
   <TrackOptionsDropdown track={track} ondetails={ondetails} />

@@ -9,6 +9,7 @@
   import TrackRow from '../components/TrackRow.svelte'
   import FilterSortBar from '../components/FilterSortBar.svelte'
   import JumpToCurrentButton from '../components/JumpToCurrentButton.svelte'
+  import ScrollTopButton from '../components/ScrollTopButton.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
 
@@ -19,7 +20,7 @@
 
   let detailsTrack: Track | null = $state(null)
 
-  let listContainer: HTMLDivElement
+  let listContainer = $state<HTMLDivElement | null>(null)
   let sentinelEl: HTMLDivElement
 
   let ready = $state(false)
@@ -58,14 +59,16 @@
   })
 
   onMount(() => {
-    if (!listContainer || !sentinelEl) return () => {}
+    const lc = listContainer
+    const se = sentinelEl
+    if (!lc || !se) return () => {}
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting && listContainer.offsetHeight > 0) limit += CHUNK
+        if (entry.isIntersecting && lc.offsetHeight > 0) limit += CHUNK
       },
-      { root: listContainer, rootMargin: '200px' }
+      { root: lc, rootMargin: '200px' }
     )
-    observer.observe(sentinelEl)
+    observer.observe(se)
     return () => observer.disconnect()
   })
 
@@ -183,12 +186,13 @@ let visible = $derived(processed.slice(0, limit))
 <div class="relative flex h-full flex-col">
   <FilterSortBar onopen={() => { limit = CHUNK }} />
   <JumpToCurrentButton show={canJumpToCurrent} onclick={jumpToCurrent} />
+  <ScrollTopButton target={listContainer} posClass={canJumpToCurrent ? 'bottom-20 right-4' : 'bottom-5 right-4'} />
 
   <div bind:this={listContainer} class="flex-1 overflow-y-auto pb-24"
        onscroll={() => { if (listContainer) saveViewState(viewName, { scrollTop: listContainer.scrollTop }) }}>
     <div class="px-4 pt-2 pb-1">
       {#each visible as track (track.trackId)}
-        <TrackRow {track} showAlbum={false} ondetails={() => detailsTrack = track} highlightTokens={searchTokens} />
+        <TrackRow {track} showAlbum={false} playing={track.trackId === $currentTrack?.trackId} ondetails={() => detailsTrack = track} highlightTokens={searchTokens} />
       {/each}
 
       <div bind:this={sentinelEl} class="py-6 text-center">

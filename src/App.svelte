@@ -320,6 +320,11 @@
   let queueSize = $derived($queue.userQueue.length)
   let queuePosition = $derived($queue.activeIndex >= 0 ? $queue.activeIndex + 1 : 0)
 
+  /** Mini-player progress % (the island's bottom rail). Clamped to [0,100]. */
+  let railPct = $derived(
+    sliderMax > 0 ? Math.min(100, Math.max(0, (sliderValue / sliderMax) * 100)) : 0
+  )
+
   const tabs: { id: typeof view; label: string; icon: string }[] = [
     { id: 'songs', label: 'Songs', icon: 'M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z' },
     { id: 'albums', label: 'Albums', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z' },
@@ -341,11 +346,14 @@
     <header class="sticky top-0 z-30 flex flex-col bg-background">
       <div class="flex items-center gap-2 px-4 py-1.5">
         <div class="relative flex-1">
+          <!-- Icon-only search affordance (review 2026-09-11): no placeholder
+               text; the magnifier rides inside the pill. -->
+          <svg class="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
           <input
             type="search"
-            placeholder="Fuzzy Search tracks, artists, albums…"
+            aria-label="Fuzzy search tracks, artists, albums"
             bind:value={searchQuery}
-            class="w-full rounded-lg bg-white/5 px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-white/10 transition-colors focus:ring-white/20"
+            class="h-11 w-full rounded-full bg-white/5 py-2 pl-11 pr-4 text-sm text-primary outline-none ring-1 ring-white/10 transition-colors focus:ring-2 focus:ring-accent-ring-strong"
           />
         </div>
       </div>
@@ -359,10 +367,9 @@
   {/if}
 
   <!-- ─── Main View Container ─── -->
-  <main class="flex min-h-0 flex-1 flex-col overflow-hidden">
-    {#if view === 'songs'}
-      <SongsView searchQuery={searchQueryDebounced} />
-    {:else if view === 'albums'}
+  <main class="flex min-h-0 flex-1 flex-col overflow-hidden">  {#if view === 'songs'}
+    <SongsView searchQuery={searchQueryDebounced} />
+  {:else if view === 'albums'}
       <AlbumsView searchQuery={searchQueryDebounced} />
     {:else if view === 'artists'}
       <ArtistsView searchQuery={searchQueryDebounced} />
@@ -382,16 +389,23 @@
       role="button"
       tabindex="0"
       onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') miniPlayerTap(); }}
-      class="flex cursor-pointer items-center gap-3 rounded-2xl bg-surface/60 px-3 py-2.5 text-left ring-1 ring-white/10 transition-colors hover:bg-surface-hover"
+      class="ui-island relative flex cursor-pointer items-center gap-3 overflow-hidden px-3 py-2.5 text-left transition-colors hover:bg-white/5"
     >
+      <!-- Progress: a 2px accent bar INSET at the island's bottom (user
+           request: bottom, not top; not clipped by the rounded corners). -->
       {#if $currentTrack}
-        <LazyThumb track={$currentTrack} size={128} wrapperClass="h-12 w-12 flex-shrink-0 rounded-md" />
+        <div class="absolute inset-x-3 bottom-0 h-0.5 rounded-t-full bg-white/10" aria-hidden="true">
+          <div class="h-full rounded-t-full bg-accent" style="width: {railPct}%;"></div>
+        </div>
+      {/if}
+      {#if $currentTrack}
+      <LazyThumb track={$currentTrack} size={128} wrapperClass="h-12 w-12 flex-shrink-0 rounded-md" />
         <div class="min-w-0 flex-1">
           <p class="truncate text-base font-medium text-primary">{$currentTrack.title}</p>
           <p class="truncate text-sm text-muted">{$currentTrack.artist}</p>
         </div>
       {:else}
-        <div class="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-md bg-surface-hover">
+        <div class="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-md bg-white/5">
           <svg class="h-6 w-6 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
         </div>
         <div class="min-w-0 flex-1">
@@ -403,7 +417,7 @@
         <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => { e.stopPropagation(); playbackManager.prev() }}>
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
         </button>
-        <button class="rounded-full bg-primary p-2 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
+        <button class="rounded-full bg-neutral-300 p-2 text-black transition-transform hover:scale-105" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
           {#if $playbackState === 'playing'}
             <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
           {:else}
@@ -421,10 +435,11 @@
       {#each tabs as tab (tab.id)}
         <button
           onclick={() => view = tab.id}
-          class="flex flex-1 flex-col items-center gap-1 py-3 text-xs font-medium transition-colors"
-          class:text-primary={view === tab.id}
+          class="flex flex-1 flex-col items-center gap-1 py-3 text-xs font-medium transition-colors hover:text-primary"
+          class:text-accent={view === tab.id}
           class:text-muted={view !== tab.id}
         >
+          <!-- Active tab = solid accent icon+text, nothing else. -->
           <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
             <path d={tab.icon} />
           </svg>
@@ -439,13 +454,15 @@
 {#if nowPlayingOpen}
   <div class="fixed inset-0 z-40 flex flex-col bg-background safe-area-full">
     <!-- Header -->
-    <div class="flex items-center justify-between px-4 py-2">
-      <button onclick={toggleNowPlaying} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Close player">
-        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+    <div class="flex items-center justify-between px-4 py-1.5">
+      <button onclick={toggleNowPlaying} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Close player">
+        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
-      <span class="text-sm font-medium text-muted">Now Playing</span>
-      <button onclick={openQueue} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Open queue">
-        <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
+      <div class="flex items-center gap-1">
+        <span class="text-sm font-medium text-muted">Now Playing</span>
+      </div>
+      <button onclick={openQueue} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Open queue">
+        <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
       </button>
     </div>
 
@@ -474,7 +491,7 @@
           </div>
         {/if}
         <div class="ml-auto flex items-center gap-1">
-        <button onclick={toggleLoop} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$loopMode !== 'none'} class:text-muted={$loopMode === 'none'} aria-label="Toggle loop">
+        <button onclick={toggleLoop} class="rounded-full p-2 transition-colors" class:text-accent={$loopMode !== 'none'} class:text-muted={$loopMode === 'none'} aria-label="Toggle loop">
           <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
             <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
             {#if $loopMode === 'one'}
@@ -508,7 +525,7 @@
           {/if}
         </div>
         <div class="relative" data-sleep-popover>
-          <button onclick={toggleSleepPopover} class="rounded-full p-2 transition-colors hover:text-primary" class:text-primary={$sleepTimer.active} class:text-muted={!$sleepTimer.active} aria-label="Sleep timer">
+          <button onclick={toggleSleepPopover} class="rounded-full p-2 transition-colors" class:text-accent={$sleepTimer.active} class:text-muted={!$sleepTimer.active} aria-label="Sleep timer">
             <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm.5 6a.5.5 0 011 0v4.25l3 1.8a.5.5 0 01-.25.93.5.5 0 01-.25-.07l-3.25-1.95a.5.5 0 01-.25-.43V8a.5.5 0 01.5-.5z"/>
             </svg>
@@ -582,15 +599,17 @@
       </div>
     {/if}
 
-    <!-- Controls -->
+    <!-- Controls: every transport button the SAME size (p-3 pad around a
+         24/28/36px glyph); shuffle + options hang at the edges without
+         shifting the centered play group. -->
     <div class="flex items-center justify-center gap-3 px-6 pt-4">
-      <button onclick={() => { toggleShuffle() }} class="rounded-full p-2.5 transition-colors hover:text-primary" class:text-primary={$shuffleEnabled} class:text-muted={!$shuffleEnabled} aria-label="Toggle shuffle">
+      <button onclick={() => { toggleShuffle() }} class="rounded-full p-3 transition-colors" class:text-accent={$shuffleEnabled} class:text-muted={!$shuffleEnabled} aria-label="Toggle shuffle">
         <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
       </button>
-      <button class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
+      <button class="rounded-full p-3 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
         <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
       </button>
-      <button class="rounded-full bg-primary p-3.5 text-background transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
+      <button class="rounded-full bg-neutral-300 p-3.5 text-black transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
         {#if $playbackState === 'playing' || $playbackState === 'buffering'}
           <svg class="h-9 w-9" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
         {:else}
@@ -603,7 +622,7 @@
       <button
         onclick={openTrackOptions}
         disabled={!$currentTrack}
-        class="rounded-full p-2.5 text-muted transition-colors disabled:cursor-not-allowed disabled:opacity-30 hover:text-primary"
+        class="rounded-full p-3 text-muted transition-colors disabled:cursor-not-allowed disabled:opacity-30 hover:text-primary"
         aria-label="Options"
       >
         <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>

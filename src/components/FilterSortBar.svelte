@@ -279,7 +279,7 @@
   <button
     onclick={toggleFilter}
     aria-expanded={$libraryFilters.filterOpen}
-    class={"flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 " + ($libraryFilters.filterOpen ? 'bg-surface-raised ring-white/20' : 'bg-surface-hover ring-white/10')}
+    class={"flex items-center gap-2 rounded-full px-5 py-2.5 text-sm font-medium transition-colors ring-1 " + ($libraryFilters.filterOpen ? 'text-primary bg-[#191919] ring-white/15' : 'text-muted bg-[#0f0f0f] ring-white/10 hover:text-primary hover:ring-white/20')}
   >
     Filter
     {#if filterActive}
@@ -289,6 +289,6 @@
   <button
     onclick={toggleSort}
     aria-expanded={$libraryFilters.sortOpen}
-    class={"rounded-full px-5 py-2.5 text-sm font-medium text-primary transition-colors shadow-lg ring-1 " + ($libraryFilters.sortOpen ? 'bg-surface-raised ring-white/20' : 'bg-surface-hover ring-white/10')}
+    class={"rounded-full px-5 py-2.5 text-sm font-medium transition-colors ring-1 " + ($libraryFilters.sortOpen ? 'text-primary bg-[#191919] ring-white/15' : 'text-muted bg-[#0f0f0f] ring-white/10 hover:text-primary hover:ring-white/20')}
   >Sort{$libraryFilters.sortBy ? `: ${sortLabels[$libraryFilters.sortBy]} ${$libraryFilters.sortAsc ? '↑' : '↓'}` : ''}</button>
 </div>

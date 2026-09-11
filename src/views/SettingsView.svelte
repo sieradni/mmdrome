@@ -1133,10 +1133,10 @@
     {:else}
       <button
         onclick={backToMenu}
-        class="flex items-center gap-1.5 text-sm font-medium text-muted transition-colors hover:text-primary"
+        class="flex items-center gap-1.5 rounded-lg px-2 py-2.5 -ml-2 text-sm font-medium text-muted transition-colors hover:bg-white/5 hover:text-primary"
         aria-label="Back to settings menu"
       >
-        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
         Settings
       </button>
     {/if}
@@ -1145,11 +1145,11 @@
     <!-- Landing page: the section menu. Everything else renders inside the
          scroll container below when a section is open. -->
     <div class="flex-1 overflow-y-auto pb-24">
-      <div class="mx-3 mt-3 overflow-hidden rounded-2xl bg-surface/60 ring-1 ring-white/10">
+      <div class="ui-island mx-3 mt-3 overflow-hidden">
         {#each tabs as t, i (t.id)}
           <button
             onclick={() => switchTab(t.id)}
-            class={"flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-surface-hover " + (i > 0 ? 'border-t border-white/10 ' : '')}
+            class={"flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white/5 " + (i > 0 ? 'border-t border-white/10 ' : '')}
             aria-label="Open {t.label} settings"
           >
             <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-white/5 text-muted">
@@ -1179,7 +1179,7 @@
               placeholder="https://music.example.com"
               value={$settings.navidromeUrl ?? ''}
               oninput={onInput('navidromeUrl')}
-              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
             />
             <input
               type="text"
@@ -1187,7 +1187,7 @@
               placeholder="Username"
               value={$settings.navidromeUser ?? ''}
               oninput={onInput('navidromeUser')}
-              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
             />
             <input
               type="password"
@@ -1195,7 +1195,7 @@
               placeholder="Password"
               value={$settings.navidromePassword ?? ''}
               oninput={onInput('navidromePassword')}
-              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
             />
             <div class="flex items-center gap-3">
               <button
@@ -1274,21 +1274,21 @@
               placeholder="https://example.com/remote.php/dav/files/user/"
               value={$settings.webdavUrl ?? ''}
               oninput={onInput('webdavUrl')}
-              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
             />
             <input
               type="text"
               placeholder="Username"
               value={$settings.webdavUser ?? ''}
               oninput={onInput('webdavUser')}
-              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
             />
             <input
               type="password"
               placeholder="Password / Token"
               value={$settings.webdavToken ?? ''}
               oninput={onInput('webdavToken')}
-              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+              class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
             />
             <div class="flex items-center gap-3">
               <button
@@ -1489,7 +1489,7 @@
                 placeholder="User token (listenbrainz.org/settings)"
                 value={$settings.listenbrainzToken ?? ''}
                 oninput={onInput('listenbrainzToken')}
-                class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
               />
               <div class="flex items-center gap-3">
                 <button
@@ -1541,14 +1541,14 @@
                   placeholder="API key"
                   value={$settings.lastfmApiKey ?? ''}
                   oninput={onInput('lastfmApiKey')}
-                  class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                  class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
                 />
                 <input
                   type="password"
                   placeholder="Shared secret"
                   value={$settings.lastfmApiSecret ?? ''}
                   oninput={onInput('lastfmApiSecret')}
-                  class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                  class="w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
                 />
                 <p class="text-muted">Overrides the built-in mmdrome credentials (from last.fm/api/account/create).</p>
               </div>
@@ -1675,7 +1675,7 @@
                     placeholder="Custom… (server-defined format)"
                     value={$settings.transcodeFormat ?? ''}
                     oninput={setTranscodeFormatInput}
-                    class="mt-2 w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                    class="mt-2 w-full rounded-lg bg-surface-hover px-4 py-2 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
                   />
                   <p class="mt-1 text-sm text-muted">Custom format “{$settings.transcodeFormat}” — the server must have a transcode command for it, otherwise it falls back to its own default.</p>
                 {/if}
@@ -2038,7 +2038,7 @@
                 value={fmQuery}
                 oninput={(e) => { fmQuery = (e.target as HTMLInputElement).value; fmNotice = ''; fmScheduleSearch() }}
                 onkeydown={(e) => { if (e.key === 'Enter') { if (fmSearchTimer) { clearTimeout(fmSearchTimer); fmSearchTimer = null } fmTokens = parseSearchQuery(fmQuery); fmRenderLimit = FM_RENDER_STEP; if (fmListEl) fmListEl.scrollTop = 0 } }}
-                class="w-full rounded-lg bg-surface-hover px-3 py-1.5 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                class="w-full rounded-lg bg-surface-hover px-3 py-1.5 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
               />
             </div>
             {#if fmNotice}
@@ -2193,7 +2193,7 @@
                         value={searchQuery}
                         oninput={(e) => { searchQuery = (e.target as HTMLInputElement).value; scheduleSearch() }}
                         onkeydown={(e) => { if (e.key === 'Enter') { if (searchTimer) { clearTimeout(searchTimer); searchTimer = null } performSearch() } }}
-                        class="min-w-0 flex-1 rounded-lg bg-surface-hover px-3 py-1.5 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-white/20"
+                        class="min-w-0 flex-1 rounded-lg bg-surface-hover px-3 py-1.5 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
                       />
                     </div>
                     {#if searchResults.length > 0}

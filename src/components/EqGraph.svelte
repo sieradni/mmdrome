@@ -103,8 +103,8 @@
     <svg class="h-full w-full select-none overflow-visible" viewBox={`0 0 ${width} ${height}`}>
       <defs>
         <linearGradient id="eqFillGradient" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="var(--color-primary, #6366f1)" stop-opacity="0.25" />
-          <stop offset="100%" stop-color="var(--color-primary, #6366f1)" stop-opacity="0.02" />
+          <stop offset="0%" stop-color="var(--app-accent, #ffffff)" stop-opacity="0.25" />
+          <stop offset="100%" stop-color="var(--app-accent, #ffffff)" stop-opacity="0.02" />
         </linearGradient>
       </defs>
 
