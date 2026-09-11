@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.1.1",
-      "versionDate": "2026-09-10T04:49:06.430Z",
-      "versionDescription": "Low-data transcoding fixes, live data-saver status, undecodable-track skip",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.1.1/mmdrome.ipa",
+      "version": "1.2.0",
+      "versionDate": "2026-09-11T22:56:08.717Z",
+      "versionDescription": "Finalized UI design: accent-marks-states system, whole-row now-playing treatment, rectangular seek bar, compact queue island, scroll-to-top on all long lists",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.0/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.0",
+          "buildVersion": "4",
+          "date": "2026-09-11T22:56:08.717Z",
+          "localizedDescription": "Finalized UI design: accent-marks-states system, whole-row now-playing treatment, rectangular seek bar, compact queue island, scroll-to-top on all long lists",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.0/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.1.1",
           "buildVersion": "3",
@@ -43,6 +51,14 @@
     }
   ],
   "news": [
+    {
+      "title": "mmdrome 1.2.0",
+      "identifier": "ios-v1.2.0",
+      "caption": "Finalized UI design: accent-marks-states system, whole-row now-playing treatment, rectangular seek bar, compact queue island, scroll-to-top ",
+      "date": "2026-09-11T22:56:08.717Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
     {
       "title": "mmdrome 1.1.1",
       "identifier": "ios-v1.1.1",
