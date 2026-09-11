@@ -12,10 +12,11 @@ test('app mounts and boots with no console errors', async ({ page }) => {
   // The header search input renders as soon as the Svelte shell is mounted —
   // an early signal that the bundle evaluated — checked before the async boot
   // chain (initStores → initEqStore → taglib wasm → playbackManager.init)
-  // finishes, which `data-app-ready` marks.
+  // finishes, which `data-app-ready` marks. Icon-only search since the UI
+  // finalization: the label lives on aria-label, not placeholder text.
   await bootApp(page, {
     beforeReady: async () => {
-      await expect(page.locator('input[placeholder^="Fuzzy Search"]')).toBeVisible()
+      await expect(page.locator('input[aria-label^="Fuzzy search"]')).toBeVisible()
     },
   })
 })

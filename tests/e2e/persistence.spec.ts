@@ -94,13 +94,13 @@ test('shuffle mode round-trips through a reload', async ({ page }) => {
   await openDetailFromMiniBar(page)
 
   const shuffle = page.getByRole('button', { name: 'Toggle shuffle' })
-  // Default: shuffle off (the `text-muted` state class, distinct from the
-  // always-present `hover:text-primary`).
+  // Default: shuffle off (the `text-muted` state class).
   await expect(shuffle).toHaveClass(/(^|\s)text-muted($|\s)/)
 
-  // One click enables shuffle — the button highlights with `text-primary`.
+  // One click enables shuffle — the button highlights with `text-accent`
+  // (the accent-marks-states system: enabled toggles are accent, not white).
   await shuffle.click()
-  await expect(shuffle).toHaveClass(/(^|\s)text-primary($|\s)/)
+  await expect(shuffle).toHaveClass(/(^|\s)text-accent($|\s)/)
 
   // Persisted: survives a reload (shuffleEnabled is a persisted store).
   await page.waitForTimeout(250)
@@ -111,6 +111,6 @@ test('shuffle mode round-trips through a reload', async ({ page }) => {
   await page.getByText('Midnight Drive').first().click()
   await openDetailFromMiniBar(page)
   await expect(page.getByRole('button', { name: 'Toggle shuffle' })).toHaveClass(
-    /(^|\s)text-primary($|\s)/,
+    /(^|\s)text-accent($|\s)/,
   )
 })
