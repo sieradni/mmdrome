@@ -27,7 +27,8 @@
           "date": "2026-09-12T10:02:01.185Z",
           "localizedDescription": "Smoother seek dragging, correct advance after queue reorder, stable auto-queue order, native preload indicators, queue layout fixes",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.1/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4846365
         },
         {
           "version": "1.2.0",
