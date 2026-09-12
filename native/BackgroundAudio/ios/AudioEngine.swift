@@ -435,6 +435,11 @@ public final class NativeAudioEngine: NSObject {
     /// immediate successor is always retained as a transition reserve even when
     /// this setting is zero.
     private var preloadCount = 0
+    /// Bumped whenever the track list is replaced (setQueue/refreshQueue/
+    /// divergence reset). In-flight sequential-prefetch chains check it in
+    /// their completions and drop the rest of the chain instead of prefetching
+    /// against a queue that no longer exists.
+    private var prefetchGeneration = 0
     private var lastCrossfadeReadiness: CrossfadeReadiness?
     /// Track id whose crossfade automation a user seek suppressed (the seek
     /// landed inside its window — `isSeekInCrossfadeWindow`). Cleared when a
@@ -504,6 +509,7 @@ public final class NativeAudioEngine: NSObject {
         self.activeIndex = tracks.isEmpty ? 0 : max(0, min(activeIndex, tracks.count - 1))
         lastPreloadEmitted = [:]
         preloadWindowIds = nil
+        prefetchGeneration += 1
     }
 
     /// Atomic setQueue+playTrackAt for JS `engage` (fixes N1 — the split
@@ -518,6 +524,7 @@ public final class NativeAudioEngine: NSObject {
         self.activeIndex = tracks.isEmpty ? 0 : max(0, min(activeIndex, tracks.count - 1))
         lastPreloadEmitted = [:]
         preloadWindowIds = nil
+        prefetchGeneration += 1
         guard !tracks.isEmpty else { return }
         let clamped = self.activeIndex
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
@@ -562,6 +569,9 @@ public final class NativeAudioEngine: NSObject {
             stopPlayback()
             self.tracks = tracks
             self.activeIndex = max(0, min(activeIndex, tracks.count - 1))
+            lastPreloadEmitted = [:]
+            preloadWindowIds = nil
+            prefetchGeneration += 1
             onQueueEnded?()
             return
         }
@@ -578,6 +588,7 @@ public final class NativeAudioEngine: NSObject {
         self.activeIndex = synchronizedIndex
         lastPreloadEmitted = [:]
         preloadWindowIds = nil
+        prefetchGeneration += 1
         let newTargetIndex: Int? = oldTargetId.flatMap { targetId -> Int? in
             guard let candidate = tracks.firstIndex(where: { $0.trackId == targetId }),
                   self.nextIndex(after: synchronizedIndex) == candidate else { return nil }
@@ -861,12 +872,18 @@ public final class NativeAudioEngine: NSObject {
     /// 1 s sampler over the loader's in-flight download counters. URLSession
     /// exposes no progress callback, so polling `countOfBytesReceived` is the
     /// only source; the pure PreloadProgress diff keeps the bridge silent
-    /// unless a state actually moved. Completion/gone transitions are also
-    /// driven here so a completion that lands while playback is PAUSED (the
-    /// sampler stops with the monitor) still reaches JS on the next tick.
+    /// unless a state actually moved. The CURRENT track bypasses the visible-
+    /// window guard: its byte progress drives the seek bar's loaded layer
+    /// (native §3.4 — the bar renders the whole-file progress the web buffered
+    /// layer approximates). Completion/gone transitions are also driven here
+    /// so a completion that lands while playback is PAUSED still reaches JS on
+    /// the next tick (the sampler runs from engagement until stopPlayback —
+    /// downloads keep running while paused, and their tints must not freeze;
+    /// the user's "indicator has a brief period of movement then freezes").
     private func tickPreloadProgress() {
+        let currentId = currentTrackId
         for (key, trackId, received, expected) in loader.inFlightProgress {
-            if let window = preloadWindowIds, !window.contains(trackId) { continue }
+            if trackId != currentId, let window = preloadWindowIds, !window.contains(trackId) { continue }
             let ratio: Double? = {
                 guard let expected = expected, expected > 0 else { return nil }
                 return min(max(Double(received) / Double(expected), 0), 1)
@@ -881,7 +898,7 @@ public final class NativeAudioEngine: NSObject {
         // dropped/evicted row must clear its tint ("gone"), even when the
         // transition happened outside a running sampler.
         for (trackId, snapshot) in lastPreloadEmitted where snapshot.state == "fetching" {
-            if let window = preloadWindowIds, !window.contains(trackId) { continue }
+            if trackId != currentId, let window = preloadWindowIds, !window.contains(trackId) { continue }
             let prefix = trackId + "|"
             let stillCached = loader.cacheKeys.contains { $0.hasPrefix(prefix) }
             emitPreload(trackId, stillCached ? "done" : "gone", stillCached ? 1 : nil)
@@ -1088,24 +1105,38 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
-    /// Prefetches the configured upcoming rows, always reserving the immediate
-    /// successor while crossfade is enabled. Completion re-checks the monitor
-    /// immediately, so a target that becomes ready inside the fade window does
-    /// not wait for the next 100 ms tick.
-    private func prefetchUpcoming(from index: Int) {
-        let depth = crossfadeDuration > 0 ? max(1, preloadCount) : preloadCount
-        guard depth > 0 else { return }
-        var cursor = index
-        var seen = Set<Int>()
-        for _ in 0..<depth {
-            guard let next = nextIndex(after: cursor),
-                  tracks.indices.contains(next),
-                  seen.insert(next).inserted else { return }
-            let track = tracks[next]
-            loader.prefetch(track) { [weak self] _, _ in
-                self?.crossfadeMonitorTick()
+    /// Prefetches the configured upcoming rows SEQUENTIALLY — queue order is
+    /// the priority order (web preloader A14 parity): the immediate successor
+    /// downloads first and COMPLETES before the row behind it starts, so a
+    /// slow link never leaves the next track waiting behind track 5. The old
+    /// all-at-once loop made every download share bandwidth (the user report:
+    /// "tracks are preloaded in parallel instead of sequentially"). A failure
+    /// logs, clears the row's tint ("gone") and CONTINUES the chain; the row
+    /// stays uncached and is re-attempted by the next natural advance's
+    /// prefetchUpcoming (continuation, not a strand). Crossfade keeps
+    /// reserving the immediate successor even at preloadCount 0. Each
+    /// completion re-checks the crossfade monitor so a target that becomes
+    /// ready inside the fade window does not wait for the next 100 ms tick.
+    /// A chain is generation-guarded: a queue replacement (setQueue/refresh)
+    /// bumps `prefetchGeneration` and the surviving completions drop the rest.
+    private func prefetchUpcoming(from index: Int, total: Int? = nil, seen: Set<Int> = [], generation: Int? = nil) {
+        let totalCount = total ?? (crossfadeDuration > 0 ? max(1, preloadCount) : preloadCount)
+        guard totalCount > 0, seen.count < totalCount else { return }
+        let gen = generation ?? prefetchGeneration
+        guard let next = nextIndex(after: index),
+              tracks.indices.contains(next),
+              seen.insert(next).inserted else { return }
+        let track = tracks[next]
+        loader.prefetch(track) { [weak self] _, error in
+            guard let self = self else { return }
+            guard gen == self.prefetchGeneration else { return }
+            if error != nil {
+                // A failed prefetch must not sit "fetching" forever (frozen-
+                // tint report): gone clears the row's tint now.
+                self.emitPreload(track.trackId, "gone", nil)
             }
-            cursor = next
+            self.crossfadeMonitorTick()
+            self.prefetchUpcoming(from: next, total: totalCount, seen: seen, generation: gen)
         }
     }
 
@@ -1242,13 +1273,12 @@ public final class NativeAudioEngine: NSObject {
     private func setPlaying(_ playing: Bool) {
         if isPlaying == playing { return }
         isPlaying = playing
-        // Preload-progress sampling rides the playing state: while paused the
-        // downloads still run but the tint updates lazily on resume (the
-        // completion transition is caught by the sampler's post-tick sweep).
+        // Preload-progress sampling rides the ENGAGED session, not the playing
+        // state: while paused, downloads still run (the preload window and a
+        // resumed track's own bytes) and their tints must not freeze. The
+        // timer is stopped explicitly by `stopPlayback` (session teardown).
         if playing {
             startPreloadProgressTimer()
-        } else {
-            stopPreloadProgressTimer()
         }
         onPlaybackStateChanged?(playing)
     }
@@ -1277,6 +1307,8 @@ public final class NativeAudioEngine: NSObject {
         cachedPosition = 0
         positionBias = 0
         setPlaying(false)
+        // The preload sampler runs for the whole ENGAGED session (tints must
+        // not freeze while paused) — it stops only here, at session teardown.
         stopPreloadProgressTimer()
     }
 

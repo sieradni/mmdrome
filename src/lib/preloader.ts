@@ -15,7 +15,17 @@ const MAX_CACHE_ENTRIES = 50
  *  never wait behind track 5's download on a slow connection), and a tick
  *  cadence of 1 s re-attempts the head after a failure — offline blips and
  *  captive portals self-heal on a later tick without any event wiring. */
-const FETCH_TIMEOUT_MS = 15000
+
+/** Preload fetch INACTIVITY timeout (the old 15 s TOTAL abort kept aborting
+ *  healthy-but-slow downloads every 15 s, so their row's byte progress moved
+ *  briefly then froze in a restart loop — the user's "brief period of
+ *  movement but mainly frozen" report). The timer re-arms on EVERY streamed
+ *  chunk, so only a genuinely stalled connection (no bytes for 20 s) is
+ *  abandoned — and the next tick retries the same head row from scratch. */
+const FETCH_TIMEOUT_MS = 20000
+/** Test hook target: the effective inactivity window (tests shrink it so an
+ *  abort is observable without waiting 20 s of wall clock). */
+let fetchTimeoutMs = FETCH_TIMEOUT_MS
 /** Non-ok responses are the SERVER's verdict (unlike a fetch exception, which
  *  is the network's) — two of them mark the row dead for the session so one
  *  vanished file can't head-of-line block the whole preload window. */
@@ -178,6 +188,12 @@ export function __pollForTests(): Promise<void> {
   return pollOnce()
 }
 
+/** Test hook: shrinks the inactivity window so an abort is observable without
+ *  waiting the full 20 s of wall clock. Production never calls this. */
+export function __setFetchTimeoutForTests(ms: number): void {
+  fetchTimeoutMs = ms
+}
+
 /** Test hook: clears the session-lifetime failure books (production keeps
  *  them for the whole session; tests need per-test isolation). */
 export function __resetForTests(): void {
@@ -274,13 +290,21 @@ async function fillOne(
     }
     emitPreloadEvent({ type: 'start', trackId: id })
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+    // INACTIVITY timer: re-arms on every streamed chunk (see FETCH_TIMEOUT_MS).
+    // The putWithProgress report callback doubles as the re-arm hook — progress
+    // events and liveness are the same fact.
+    let timer = setTimeout(() => controller.abort(), fetchTimeoutMs)
+    const rearm = (): void => {
+      clearTimeout(timer)
+      timer = setTimeout(() => controller.abort(), fetchTimeoutMs)
+    }
     try {
       const res = await fetch(url, { signal: controller.signal })
       if (res.ok) {
-        await putWithProgress(cache, url, res, (progress) =>
-          emitPreloadEvent({ type: 'progress', trackId: id, progress }),
-        )
+        await putWithProgress(cache, url, res, (progress) => {
+          rearm()
+          emitPreloadEvent({ type: 'progress', trackId: id, progress })
+        })
         nonOkFailures.delete(url)
         emitPreloadEvent({ type: 'done', trackId: id })
         return id

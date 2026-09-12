@@ -19,13 +19,16 @@
 
 import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { get } from 'svelte/store'
 import { settings, queue, library, setCurrentTrack, type Track } from '../src/stores/appState'
+import { preloadEntries } from '../src/stores/loadStatus'
 import {
   setup as setupPreloader,
   teardown as teardownPreloader,
   resolveSrc,
   __pollForTests,
   __resetForTests,
+  __setFetchTimeoutForTests,
 } from '../src/lib/preloader'
 import { __setNetworkStatus } from '../src/lib/networkMode'
 
@@ -294,4 +297,85 @@ test('coverage is measured from the playhead range, not the furthest buffered en
   setupPreloader(() => el, resolver())
   await tick()
   assert.deepEqual(fetchLog, [])
+})
+
+// 6. Inactivity timeout (not a total-timer abort) --------------------------------
+
+test('a slow-but-alive download is NOT aborted mid-stream: the timer re-arms on every progress chunk', async () => {
+  // A response whose body arrives slowly in chunks: total transfer takes
+  // ~4 artificial awaits. The old TOTAL 15 s abort killed such transfers at
+  // the wall clock; the INACTIVITY timer only fires when NO chunk arrived
+  // within the window, so a chunky-but-alive stream completes.
+  const chunks = ['a'.repeat(10), 'b'.repeat(10), 'c'.repeat(10)]
+  let readerCalls = 0
+  const slowRes = {
+    ok: true,
+    status: 200,
+    headers: { get: (h: string) => (h.toLowerCase() === 'content-length' ? '30' : null) },
+    body: {
+      getReader() {
+        return {
+          async read() {
+            // Simulate chunk latency far beyond any per-chunk inactivity bound
+            // by yielding without wall-clock waits — the point is that the
+            // timer re-arms per chunk, so the abort never fires while chunks flow.
+            await new Promise((r) => setTimeout(r, 5))
+            const i = readerCalls++
+            if (i < chunks.length) return { done: false, value: new TextEncoder().encode(chunks[i]) }
+            return { done: true, value: undefined }
+          },
+        }
+      },
+    },
+  } as unknown as Response
+  globalThis.fetch = (async () => slowRes) as typeof fetch
+
+  await tick()
+  assert.ok(cacheStore.has(urlOf('t2')), 'the slow chunked download completed and cached')
+  // The stub cache stores a fixed body, so completeness is pinned via the
+  // store mirror: the row reached `cached` (an abort would have evicted it).
+  assert.equal(get(preloadEntries)['navidrome-t2']?.state, 'cached', 'no mid-stream abort — the row finished')
+})
+
+test('a stalled download (no chunks) is aborted by the inactivity timer and retried next tick', async () => {
+  // A reader whose first read() hangs until the fetch signal aborts — exactly
+  // what a wedged connection looks like to ReadableStream. The shrunken
+  // inactivity timeout must abort it (catch → evict), and the next tick
+  // retries the SAME head row.
+  __setFetchTimeoutForTests(50)
+  let rejectRead: ((err: unknown) => void) | null = null
+  const stalledRes = {
+    ok: true,
+    status: 200,
+    headers: { get: (h: string) => (h.toLowerCase() === 'content-length' ? '30' : null) },
+    body: {
+      getReader() {
+        return {
+          read() {
+            return new Promise<ReadableStreamReadResult<Uint8Array>>((_resolve, reject) => {
+              rejectRead = reject
+            })
+          },
+        }
+      },
+    },
+  } as unknown as Response
+  globalThis.fetch = (async (_input: unknown, init?: { signal?: AbortSignal }) => {
+    // Wire the preloader's AbortController into the hung read, like a real
+    // fetch would: abort → the pending read REJECTS with AbortError.
+    init?.signal?.addEventListener('abort', () => {
+      rejectRead?.(new DOMException('Aborted', 'AbortError'))
+    })
+    return stalledRes
+  }) as typeof fetch
+
+  await tick()
+  assert.equal(cacheStore.has(urlOf('t2')), false, 'the stalled download left nothing cached')
+  assert.equal(get(preloadEntries)['navidrome-t2']?.state, undefined, 'the row went back to queued (evicted)')
+  // The row evicted (back to queued), and the next tick retries the same head.
+  __setFetchTimeoutForTests(20000)
+  installFetchStub()
+  await tick()
+  assert.deepEqual(fetchLog, [urlOf('t2')], 'the SAME head row retried after the inactivity abort')
+  assert.ok(cacheStore.has(urlOf('t2')), 'the retry cached the track')
 })

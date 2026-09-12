@@ -8,6 +8,11 @@
     max: number
     /** Normalized buffered ranges — the gray layer. Empty = unknown. */
     buffered?: BufferedRange[]
+    /** Whole-track loaded fraction 0..1 — the NATIVE loaded layer (the
+     *  whole-file download model has no TimeRanges; web passes nothing and
+     *  keeps its per-range buffered layer). Null/undefined = unknown: no
+     *  layer is rendered, never a fake one. */
+    loadedFraction?: number | null
     disabled?: boolean
     label?: string
     /** Spoken value, e.g. "1:23 of 5:00". */
@@ -24,6 +29,7 @@
     value,
     max,
     buffered = [],
+    loadedFraction = null,
     disabled = false,
     label = 'Seek',
     valueText,
@@ -42,6 +48,14 @@
   const shown = $derived(dragging ? dragValue : Math.min(Math.max(value || 0, 0), safeMax))
   const playedPct = $derived((shown / safeMax) * 100)
   const fills = $derived(bufferedRangeFills(buffered, safeMax))
+  // Native loaded layer: a single solid span from 0 (whole-file model),
+  // clamped to never outrun the played fill's visual weight — it sits in the
+  // exact same slot the web buffered layer uses.
+  const loadedPct = $derived(
+    loadedFraction !== null && isFinite(loadedFraction) && loadedFraction > 0
+      ? Math.min(Math.max(loadedFraction, 0), 1) * 100
+      : 0,
+  )
   // Preview affordance: the hovered (or dragged) target position + duration
   // label (2026-09-11 — "see the hovered/selected new duration"). While
   // dragging the bubble rides the finger; at rest it previews the hover.
@@ -149,6 +163,12 @@
       class:h-3={dragging}
     >
       <div class="absolute inset-0 overflow-hidden rounded-sm">
+        {#if loadedPct > 0}
+          <div
+            class="absolute inset-y-0 left-0 rounded-sm bg-white/20"
+            style="width: {loadedPct}%;"
+          ></div>
+        {/if}
         {#each fills as f, i (i)}
           <div
             class="absolute inset-y-0 rounded-sm bg-white/20"

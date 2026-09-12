@@ -32,6 +32,7 @@
   import BufferSpinner from './components/BufferSpinner.svelte'
   import PreloadSegments, { type PreloadSegment } from './components/PreloadSegments.svelte'
   import { bufferedRanges, preloadEntries } from './stores/loadStatus'
+  import { currentLoadedFraction } from './lib/loadStatus'
   import { setupBufferMonitor } from './lib/bufferMonitor'
   import { advanceTargetIndex } from './lib/queueMutation'
 
@@ -576,6 +577,7 @@
               value={sliderValue}
               max={sliderMax}
               buffered={$bufferedRanges}
+              loadedFraction={currentLoadedFraction($preloadEntries[$currentTrack?.trackId ?? ''])}
               label="Seek"
               valueText="{formatTime(sliderValue)} of {formatTime($effectiveDuration)}"
               onSeek={seekValue}

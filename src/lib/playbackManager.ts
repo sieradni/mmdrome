@@ -608,6 +608,21 @@ export class PlaybackManager {
     return Math.max(0, advanceTargetIndex(q, ids, get(currentTrack)?.trackId))
   }
 
+  /**
+   * A successful Navidrome (re)connect rotates the Subsonic auth params — but
+   * the native engine's queue snapshot baked the PREVIOUS token into every
+   * row's cover URL, so lock-screen art and any <img> re-request died after a
+   * resume/reconnect (the stale-native-cover report). Re-sync the snapshot so
+   * every row carries fresh URLs. Web no-op (not engaged, not native); the
+   * current track is untouched (no re-load, no re-fetch of audio bytes).
+   * Called from syncEngine via a dynamic import (a static one would cycle:
+   * syncEngine ← manager is already imported there).
+   */
+  resyncNativeSnapshotAfterReconnect(): void {
+    if (!this.isNative() || !this._nativeTransport?.engaged || !this._initialized) return
+    this._scheduleNativeQueueSync()
+  }
+
   private async _nativeLoadPlay(track: Track): Promise<void> {
     const combined = this._qm.getCombinedQueue()
     const activeIndex = get(queue).activeIndex
@@ -678,6 +693,15 @@ export class PlaybackManager {
 
   private _onNativeTrackChanged(trackId: string): void {
     if (this._handlingNativeEnd) return
+    // The PREVIOUS track's preload entry must not outlive its play: rows left
+    // the window when they played, so a re-entering played row would resurface
+    // a stale partial tint (the "played rows got their indicator back, frozen
+    // partial" report). Native never evicts past tracks otherwise (web's
+    // preloader evicts by URL on track change). Same-id re-engages keep theirs.
+    const prevTrack = get(currentTrack)
+    if (prevTrack && prevTrack.trackId !== trackId) {
+      emitPreloadEvent({ type: 'evict', trackId: prevTrack.trackId })
+    }
     const combined = this._qm.getCombinedQueue()
     let idx = combined.indexOf(trackId)
     const track = this._qm.findTrack(trackId)

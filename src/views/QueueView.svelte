@@ -3,7 +3,6 @@
     queue,
     library,
     currentTrack,
-    settings,
     shuffleEnabled,
     toggleShuffle,
     currentTime,
@@ -17,7 +16,8 @@
     type AutoQueueFilterFields,
   } from '../stores/appState'
   import { bufferedRanges, preloadEntries } from '../stores/loadStatus'
-  import { advanceTargetIndex, planDragDrop } from '../lib/queueMutation'
+  import { planDragDrop } from '../lib/queueMutation'
+  import { currentLoadedFraction } from '../lib/loadStatus'
   import { filterRangesValid } from '../lib/autoQueuePlan'
   import { onMount, onDestroy, tick } from 'svelte'
   import { flip } from 'svelte/animate'
@@ -232,31 +232,22 @@
      playbackManager.seek(t)
    }
 
-  /** Ids in the background-preload window (same playing-track-aware start
-   *  the preloader fills from). Rows outside it never read the entries map,
-   *  so stale entries can't tint rows that left the window. */
-  let preloadWindow = $derived.by((): Set<string> => {
-    const n = $settings.preloadTracks ?? 0
-    if (n <= 0) return new Set()
-    const q = $queue
-    const ids = [...q.userQueue, ...q.autoQueue]
-    const idx = advanceTargetIndex(q, ids, $currentTrack?.trackId)
-    if (idx < 0 || idx >= ids.length) return new Set()
-    return new Set(ids.slice(idx, idx + n))
-  })
-
-  /** Ambient left-to-right fill for an upcoming queue row: a linear-gradient
-   *  layer over the row's own background (no extra element, no stacking
-   *  fights). Monotonic ladder (review 2026-09-11 — "darker → more tinted
-   *  as the download completes", never inverted), PRELOAD range pushed
-   *  darker overall with the ramp made more pronounced (second review pass:
-   *  2% → 9%, cached ceiling 9% — the progress must READ, not whisper):
+  /** Ambient left-to-right fill for a queue row: a linear-gradient layer over
+   *  the row's own background (no extra element, no stacking fights). Every
+   *  row with a load-status entry tints — not only the upcoming window — so
+   *  a played row that re-enters the window shows its true (refreshed) state
+   *  instead of looking resurrected. Stale entries can't haunt past rows:
+   *  the manager evicts the previous track's entry on every native track
+   *  change, and the web preloader evicts by URL. Monotonic ladder (review
+   *  2026-09-11 — "darker → more tinted as the download completes", never
+   *  inverted), PRELOAD range pushed darker overall with the ramp made more
+   *  pronounced (second review pass: 2% → 9%, cached ceiling 9% — the
+   *  progress must READ, not whisper):
    *    fetching partial: 2% → 9% mix AND the fill's extent grows with byte
    *    progress; cached: 9% full wash (the partial's ceiling); the CURRENT
    *    row (.ui-now-playing-row, 11% + edge) sits above all preloads.
    *  Browsers without color-mix drop the background-image and show no wash. */
   function preloadTint(trackId: string): string | undefined {
-    if (!preloadWindow.has(trackId)) return undefined
     const entry = $preloadEntries[trackId]
     if (!entry) return undefined
     if (entry.state === 'cached') {
@@ -521,6 +512,7 @@
             value={sliderValue}
             max={sliderMax}
             buffered={$bufferedRanges}
+            loadedFraction={currentLoadedFraction($preloadEntries[$currentTrack?.trackId ?? ''])}
             label="Seek"
             valueText="{formatTime(sliderValue)} of {formatTime($effectiveDuration)}"
             onSeek={seekValue}

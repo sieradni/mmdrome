@@ -296,6 +296,18 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   if (plan.seedFeedback) seedNavidromeFeedback(plan.tracks)
   if (plan.lastScan) setServerLastScan(plan.lastScan)
 
+  // A successful connect rotates the Subsonic auth params (fresh salt+token
+  // per process — buildAuthParams). The native engine's queue snapshot baked
+  // the PREVIOUS process's token into every cover URL, so lock-screen art and
+  // every <img> re-request died after a resume/reconnect (the "expanded view
+  // shows the default app cover" report). The rebuilt snapshot carries fresh
+  // URLs; the current track is untouched. No-op on web (not engaged, not
+  // native) and inside the try so a bridge failure can never fail the load.
+  try {
+    const { playbackManager } = await import('./playbackManager')
+    playbackManager.resyncNativeSnapshotAfterReconnect()
+  } catch { /* native bridge unavailable — nothing to resync */ }
+
   if (plan.configureWebdav) {
     setWebdavCredentials(s.webdavUrl!, s.webdavUser!, s.webdavToken!)
     // Skip the automatic scan when the device is offline (navigator.onLine is

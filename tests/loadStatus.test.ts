@@ -10,6 +10,7 @@ import {
   clampSeekTime,
   applyPreloadEvent,
   preloadFillPercent,
+  currentLoadedFraction,
   mapNativePreloadEvent,
   type BufferedSource,
   type PreloadEntry,
@@ -189,4 +190,14 @@ test('native event mapping composes with the reducer (round trip)', () => {
   assert.deepEqual(m['a'], { state: 'cached', progress: 1 })
   m = applyPreloadEvent(m, mapNativePreloadEvent({ trackId: 'a', state: 'gone' }))
   assert.deepEqual(m['a'], undefined)
+})
+
+// --- currentLoadedFraction (native seek-bar loaded layer) ---------------------
+
+test('currentLoadedFraction: fetching ratio passes through, cached is 1, else null', () => {
+  assert.equal(currentLoadedFraction(undefined), null)
+  assert.equal(currentLoadedFraction({ state: 'fetching', progress: null }), null, 'indeterminate stays unknown — no fake layer')
+  assert.equal(currentLoadedFraction({ state: 'fetching', progress: 0.35 }), 0.35)
+  assert.equal(currentLoadedFraction({ state: 'cached', progress: 1 }), 1)
+  assert.equal(currentLoadedFraction({ state: 'dead', progress: null }), null)
 })

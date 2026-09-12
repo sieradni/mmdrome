@@ -18,3 +18,32 @@ export function getCoverUrl(track: Track, config: NavidromeConfig, size?: number
   return url
 }
 
+/**
+ * Canonical thumbnail sizes, descending — the fallback ladder LazyThumb walks
+ * when a larger rendition fails (A13 keeps this list canonical so the server's
+ * resize cache is reused). Single source for the ladder so LazyThumb and any
+ * future consumer can never disagree on the step order.
+ */
+export const COVER_FALLBACK_SIZES = [512, 256, 128, 96] as const
+
+/**
+ * Pure ladder builder: the FULL ordered list of cover-art URLs to attempt for
+ * a requested size — the requested canonical size first, then each smaller
+ * canonical size (A13 keeps the list canonical so the server's resize cache is
+ * reused). Duplicates removed (a requested non-canonical size rounds down to
+ * its canonical ladder via `<=`). Empty when the track has no art id.
+ * Failure tracking lives in the caller (DOM state); this stays testable.
+ */
+export function coverLadderUrls(
+  track: Track,
+  config: NavidromeConfig,
+  requested: number,
+): string[] {
+  const ladder = COVER_FALLBACK_SIZES.filter((s) => s <= requested)
+  const attempts: string[] = []
+  for (const s of ladder) {
+    const url = getCoverUrl(track, config, s)
+    if (url && !attempts.includes(url)) attempts.push(url)
+  }
+  return attempts
+}

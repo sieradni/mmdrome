@@ -175,6 +175,22 @@ export function preloadFillPercent(entry: PreloadEntry | undefined): number | nu
   return null
 }
 
+// --- Current-track loaded fraction (native seek bar) --------------------------
+
+/**
+ * Fraction of the CURRENT track already on disk (native whole-file model) for
+ * the seek bar's loaded layer: fetching with a known byte ratio → that ratio,
+ * cached → 1, everything else (indeterminate, dead, absent) → null — the bar
+ * never invents precision (the same honesty rule as the web buffered layer,
+ * which this replaces on native; web passes nothing and keeps TimeRanges).
+ */
+export function currentLoadedFraction(entry: PreloadEntry | undefined): number | null {
+  if (!entry) return null
+  if (entry.state === 'cached') return 1
+  if (entry.state === 'fetching' && entry.progress !== null) return clampProgress(entry.progress)
+  return null
+}
+
 // --- Native preload progress mapping -----------------------------------------
 
 /** The bridge payload of the native `preloadProgress` event (iOS). */
