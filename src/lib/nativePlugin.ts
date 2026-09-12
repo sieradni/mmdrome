@@ -87,6 +87,11 @@ interface BackgroundAudioPlugin {
     eventName: 'networkStateChanged',
     listenerFunc: (data: { isExpensive: boolean; isConstrained: boolean }) => void
   ): Promise<PluginListenerHandle>
+  addListener(
+    eventName: 'preloadProgress',
+    listenerFunc: (data: { trackId: string; state: 'progress' | 'done' | 'gone'; progress?: number }) => void
+  ): Promise<PluginListenerHandle>
+  setPreloadWindow(options: { trackIds: string[] }): Promise<void>
   addListener(eventName: string, listenerFunc: (data: unknown) => void): Promise<PluginListenerHandle>
 }
 
@@ -95,6 +100,8 @@ export interface NativeEngineCallbacks {
   onPlaybackStateChanged: (playing: boolean) => void
   onQueueEnded: () => void
   onError: (message: string) => void
+  /** Native preload download progress (queue-row tint parity with web). */
+  onPreloadProgress?: (event: { trackId: string; state: 'progress' | 'done' | 'gone'; progress?: number }) => void
 }
 
 export const BackgroundAudio = registerPlugin<BackgroundAudioPlugin>('BackgroundAudio')
@@ -109,6 +116,7 @@ export class NativeAudioEngineApp {
   private listeners: PluginListenerHandle[] = []
   private positionPoll: ReturnType<typeof setInterval> | null = null
   private positionHandler: ((state: NativeEngineState) => void) | null = null
+  private preloadForward: ((event: { trackId: string; state: 'progress' | 'done' | 'gone'; progress?: number }) => void) | null = null
 
   isNative(): boolean {
     return Capacitor.isNativePlatform()
@@ -143,8 +151,25 @@ export class NativeAudioEngineApp {
         this.callbacks?.onError(data.message)
       }),
     )
+    this.listeners.push(
+      await plugin.addListener('preloadProgress', (data) => {
+        this.preloadForward?.(data)
+        this.callbacks?.onPreloadProgress?.(data)
+      }),
+    )
 
     await plugin.initialize()
+  }
+
+  /**
+   * Registers the handler that forwards native preload-download progress to
+   * the manager (which maps it onto the shared `preloadEntries` store). The
+   * plugin listener itself is registered in `init` (it needs the bridge);
+   * this only arms the forwarding so the manager can wire it before or
+   * after init without ordering constraints.
+   */
+  initPreloadForwarding(handler: (event: { trackId: string; state: 'progress' | 'done' | 'gone'; progress?: number }) => void): void {
+    this.preloadForward = handler
   }
 
   /**
@@ -170,6 +195,7 @@ export class NativeAudioEngineApp {
 
   async destroy(): Promise<void> {
     this.setPositionPolling(false, () => {})
+    this.preloadForward = null
     await Promise.all(this.listeners.map((h) => h.remove()))
     this.listeners = []
     this.callbacks = null

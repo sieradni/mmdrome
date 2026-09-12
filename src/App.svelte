@@ -635,7 +635,11 @@
 
 <!-- ─── Queue View ─── -->
 {#if queueOpen}
-  <div class="fixed inset-0 z-40 flex flex-col bg-background safe-area-full">
+  <!-- Bottom inset NOT counted here: QueueView's action-island wrapper
+       carries the single safe-area-bottom — a second one on the overlay
+       double-counted the home-indicator inset on iOS, pushing the island
+       ~2× the inset off the screen bottom (2026-09-11 iOS review). -->
+  <div class="fixed inset-0 z-40 flex flex-col bg-background safe-area-top safe-area-x">
     <QueueView onclose={closeQueue} oncloseall={closeAll} />
   </div>
 {/if}

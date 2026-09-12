@@ -529,3 +529,115 @@ test('reorderAll re-arms the crossfade target to the new next row', async () => 
   assert.ok(h.web.calls.includes('prepareNext:navidrome-t2'))
   assert.ok(!h.web.calls.includes('prepareNext:navidrome-t1'))
 })
+
+// --- composition gaps (2026-09-12): move-playing-row + advance interplay ---
+// No existing test composed (arm-next → drag-playing-row → natural end) or
+// (tap-auto-row → promote → refill → advance) — the stale-advance bug lived
+// in exactly those gaps.
+
+test('end-of-track after moving the PLAYING row down advances to the NEW next row (stale-preload regression)', async () => {
+  const h = makeHarness()
+  resetStores()
+  const a1: Track = { trackId: 'navidrome-a1', title: 'A1', artist: 'A', album: 'AL', duration: 300, fileType: 'mp3' }
+  library.set([t0, t1, t2, a1])
+  // Playing t1 at combined idx 1 — the preloaded/armed row is t2 (its OLD
+  // next slot). The user drags t1 past t2 to the end of the user section.
+  queue.set({ userQueue: ['t0', 'navidrome-t1', 'navidrome-t2'], autoQueue: ['navidrome-a1'], recentTrackIds: [], activeIndex: 1 })
+  setCurrentTrack(t1)
+  setPlaybackState('playing')
+  h.m._initialized = true
+
+  queueManager.applyDragDrop('navidrome-t1', 3, ['t0', 'navidrome-t1', 'navidrome-t2'], ['navidrome-a1'])
+  await flush()
+  const qAfterDrag = get(queue)
+  assert.deepEqual(qAfterDrag.userQueue, ['t0', 'navidrome-t2', 'navidrome-t1'])
+  assert.deepEqual(qAfterDrag.autoQueue, ['navidrome-a1'])
+  assert.equal(qAfterDrag.activeIndex, 2) // anchor re-anchored by id
+
+  // Natural end: from the LIVE anchor the next row is the auto tail a1 —
+  // never t2 ("the preloaded song in the previous position").
+  await h.m._onTrackEnded()
+
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-a1')
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('moving the playing row re-arms the web crossfade target onto the NEW next row', async () => {
+  const h = makeHarness()
+  resetStores()
+  const a1: Track = { trackId: 'navidrome-a1', title: 'A1', artist: 'A', album: 'AL', duration: 300, fileType: 'mp3' }
+  library.set([t0, t1, t2, a1])
+  queue.set({ userQueue: ['t0', 'navidrome-t1', 'navidrome-t2'], autoQueue: ['navidrome-a1'], recentTrackIds: [], activeIndex: 1 })
+  setCurrentTrack(t1)
+  setPlaybackState('playing')
+  h.m._initialized = true
+
+  queueManager.applyDragDrop('navidrome-t1', 3, ['t0', 'navidrome-t1', 'navidrome-t2'], ['navidrome-a1'])
+  await flush()
+  h.web.calls = []
+  h.m._rearmCrossfadeTarget()
+  await flush()
+
+  // The arm must follow t1's NEW position (auto tail a1), not the stale
+  // old-slot preloaded t2.
+  assert.ok(h.web.calls.includes('prepareNext:navidrome-a1'))
+  assert.ok(!h.web.calls.includes('prepareNext:navidrome-t2'))
+})
+
+test('auto-row promotion cools the consumed skipped prefix so the refill cannot replay it', () => {
+  resetStores()
+  const mk = (id: string): Track => ({ trackId: `navidrome-${id}`, title: id, artist: 'A', album: 'AL', duration: 300, fileType: 'mp3' })
+  const a1 = mk('a1')
+  const a2 = mk('a2')
+  const a3 = mk('a3')
+  // MAX_AUTO_QUEUE is 50: the refill needs 49 slots, so the fresh pool must
+  // be able to cover the whole window — otherwise tier-2 anti-starvation
+  // (B4, deliberate) re-admits cooled tracks by design and there is nothing
+  // to pin. 55 fresh matching tracks guarantee tier 1 fills alone.
+  const fresh = Array.from({ length: 55 }, (_, i) => mk(`f${i}`))
+  library.set([t0, a1, a2, a3, ...fresh])
+
+  // user [t0], auto [a1,a2,a3], playing t0 (user head).
+  queue.set({ userQueue: ['t0'], autoQueue: ['navidrome-a1', 'navidrome-a2', 'navidrome-a3'], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(t0)
+  setPlaybackState('playing')
+
+  // The user taps auto[2] (a3) — advanceTo the combined idx + promote: a1,a2
+  // are consumed unheard. A subsequent refill must NOT re-add them (they are
+  // cooled now and plenty of fresh candidates exist); otherwise the "songs
+  // afterward keep changing order" churn returns.
+  queueManager.advanceTo(3, 't0')
+  queueManager.promoteActiveTrack()
+  queueManager.replenishAutoQueue()
+
+  const qAfter = get(queue)
+  assert.ok(qAfter.userQueue.includes('navidrome-a3'))
+  for (const skipped of ['navidrome-a1', 'navidrome-a2']) {
+    assert.ok(
+      qAfter.recentTrackIds.includes(skipped),
+      `${skipped} must cool down after the skipped-prefix consumption`,
+    )
+    assert.ok(
+      !qAfter.autoQueue.includes(skipped),
+      `${skipped} must not re-enter the auto queue immediately`,
+    )
+  }
+})
+
+test('control: promote with NO skipped prefix still promotes and refills cleanly', () => {
+  resetStores()
+  const a1: Track = { trackId: 'navidrome-a1', title: 'A1', artist: 'A', album: 'AL', duration: 300, fileType: 'mp3' }
+  library.set([t0, t1, t2, a1])
+  // a1 (auto head) is the ACTIVE track — promote consumes nothing.
+  queue.set({ userQueue: ['t0'], autoQueue: ['navidrome-a1'], recentTrackIds: [], activeIndex: 1 })
+  setCurrentTrack(a1)
+  setPlaybackState('playing')
+
+  queueManager.promoteActiveTrack()
+  queueManager.replenishAutoQueue()
+
+  const qAfter = get(queue)
+  assert.ok(qAfter.userQueue.includes('navidrome-a1'))
+  assert.ok(qAfter.autoQueue.includes('navidrome-t1') || qAfter.autoQueue.includes('navidrome-t2'))
+  assert.deepEqual(qAfter.recentTrackIds, [])
+})

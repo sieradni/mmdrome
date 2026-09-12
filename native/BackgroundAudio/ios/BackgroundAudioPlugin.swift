@@ -107,6 +107,13 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self?.notifyListeners("sleepTimerFired", data: [:])
             self?.refreshNowPlaying()
         }
+        engine.onPreloadProgress = { [weak self] trackId, state, progress in
+            var data: [String: Any] = ["trackId": trackId, "state": state]
+            if let progress = progress {
+                data["progress"] = progress
+            }
+            self?.notifyListeners("preloadProgress", data: data)
+        }
 
         nowPlaying.setupRemoteCommands()
         nowPlaying.onPlay = { [weak self] in self?.performOnMain { self?.engine.play() } }
@@ -400,6 +407,19 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             "isExpensive": NetworkMonitor.shared.isExpensive,
             "isConstrained": NetworkMonitor.shared.isConstrained
         ])
+    }
+
+    /// Preload-progress reporting: JS declares the VISIBLE preload window
+    /// (the same advanceTargetIndex slice its tints render from) so the
+    /// engine only reports those rows — a stale preloaded tail outside the
+    /// view must not summon rows back into the JS preload map (write-back).
+    @objc func setPreloadWindow(_ call: CAPPluginCall) {
+        let ids = (call.getArray("trackIds", []) as? [String]) ?? []
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setPreloadWindow(trackIds: ids)
+            call.resolve()
+        }
     }
 
     // MARK: - Now Playing

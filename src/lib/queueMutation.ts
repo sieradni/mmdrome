@@ -161,10 +161,123 @@ export function promoteActiveTrack(q: QueueState): QueueMutation | null {
   if (!activeId) return null
   const autoIdx = q.autoQueue.indexOf(activeId)
   if (autoIdx < 0) return null
+  // The CONSUMED prefix cools down in the same write (2026-09-12): tapping
+  // an auto row deep in the queue discards every row before it — rows the
+  // user never played. Without a recency mark they re-enter the fresh fill
+  // pool on the very next replenish (tier 1) at the anchor-rotation head, so
+  // the auto tail visibly reshuffled itself after every manual auto-row play
+  // ("songs afterward keep changing order"). It rides THIS mutation because
+  // afterwards the rows are gone from the queue and no caller can see what
+  // was consumed.
+  let recentTrackIds = q.recentTrackIds
+  for (const skippedId of q.autoQueue.slice(0, autoIdx)) {
+    recentTrackIds = inscribeRecent(recentTrackIds, skippedId, RECENT_LIMIT)
+  }
   return {
     userQueue: q.userQueue.includes(activeId) ? q.userQueue : [...q.userQueue, activeId],
     autoQueue: q.autoQueue.slice(autoIdx + 1),
+    ...(recentTrackIds !== q.recentTrackIds ? { recentTrackIds } : {}),
   }
+}
+
+/**
+ * The drag-preview transform, shared by the QueueView preview AND the drop
+ * resolver (2026-09-12). Operates on ID arrays in combined order: `fromIdx`
+ * is the dragged row's combined index, `toIdx` the DOM drop slot (combined
+ * space). Semantics mirror the long-standing preview exactly:
+ *   - user→user: reorder within the user section;
+ *   - user→auto: the dragged row lands PAST the user tail and auto rows
+ *     above the slot join the user tail (the "convert" rule);
+ *   - auto→user: the dragged row is inserted into the user section;
+ *   - auto→auto: reorder within the auto section.
+ * One algorithm for what-you-see and what-you-get: the drop can never
+ * disagree with the preview, and applyDragDrop feeds it the LIVE arrays so a
+ * mutation that landed mid-drag cannot resurrect a stale order.
+ */
+export function planDragDrop(
+  user: string[],
+  auto: string[],
+  fromIdx: number,
+  toIdx: number,
+): { user: string[]; auto: string[] } {
+  const U = user.length
+  const isUserSource = fromIdx < U
+  const dragged = isUserSource ? user[fromIdx] : auto[fromIdx - U]
+  if (dragged === undefined) return { user, auto }
+
+  if (isUserSource) {
+    const remainingUser = user.filter((_, i) => i !== fromIdx)
+    if (toIdx <= U) {
+      let insertAt = toIdx
+      if (insertAt > fromIdx) insertAt--
+      insertAt = Math.max(0, Math.min(insertAt, remainingUser.length))
+      const nextUser = [...remainingUser]
+      nextUser.splice(insertAt, 0, dragged)
+      return { user: nextUser, auto }
+    }
+    const autoTargetIdx = toIdx - U
+    const converted = auto.slice(0, autoTargetIdx)
+    return { user: [...remainingUser, ...converted, dragged], auto: auto.slice(autoTargetIdx) }
+  }
+
+  const autoFromIdx = fromIdx - U
+  const remainingAuto = auto.filter((_, i) => i !== autoFromIdx)
+  if (toIdx <= U) {
+    const insertAt = Math.max(0, Math.min(toIdx, user.length))
+    const nextUser = [...user]
+    nextUser.splice(insertAt, 0, dragged)
+    return { user: nextUser, auto: remainingAuto }
+  }
+  const autoTargetIdx = toIdx - U
+  let insertAt = autoTargetIdx
+  if (insertAt > autoFromIdx) insertAt--
+  insertAt = Math.max(0, Math.min(insertAt, remainingAuto.length))
+  const nextAuto = [...remainingAuto]
+  nextAuto.splice(insertAt, 0, dragged)
+  return { user, auto: nextAuto }
+}
+
+/**
+ * Drop resolution for the queue drag-and-drop. The dragged row is identified
+ * by ID — the drag started from an index, but indices go stale when any
+ * mutation (advance, promote, fill re-rank) lands mid-drag; the old applyDrop
+ * wrote its START-OF-DRAG preview arrays verbatim, resurrecting the stale
+ * order over the mutation (the moved-playing-row played the stale preloaded
+ * row next).
+ *
+ * The plan is computed from the drag-time arrays (what the user SAW — the
+ * preview's exact semantics, conversion included), then RECONCILED against
+ * the live store: rows that left the queue mid-drag are dropped from the
+ * plan (never resurrected); rows that JOINED it mid-drag (fill re-rank,
+ * promotion) keep their store position by appending to the auto tail (the
+ * user never saw them, so the visible intent stays authoritative for the
+ * rows they did see). A dragged row that left the queue entirely voids the
+ * drop. No-op when the reconciled shape already matches the store.
+ */
+export function applyDragDrop(
+  q: QueueState,
+  draggedTrackId: string,
+  targetCombinedIndex: number,
+  dragStartUser: string[],
+  dragStartAuto: string[],
+): QueueMutation | null {
+  const startCombined = [...dragStartUser, ...dragStartAuto]
+  const fromIdx = startCombined.indexOf(draggedTrackId)
+  if (fromIdx < 0) return null
+  const plan = planDragDrop(dragStartUser, dragStartAuto, fromIdx, targetCombinedIndex)
+
+  const liveCombined = [...q.userQueue, ...q.autoQueue]
+  // The dragged row left the queue mid-drag (removal, clear): its removal
+  // supersedes the drop — there is nothing to place.
+  if (!liveCombined.includes(draggedTrackId)) return null
+  const liveIds = new Set(liveCombined)
+  const inPlan = new Set([...plan.user, ...plan.auto])
+  const user = plan.user.filter((id) => liveIds.has(id))
+  const auto = [...plan.auto.filter((id) => liveIds.has(id)), ...liveCombined.filter((id) => !inPlan.has(id))]
+  if (JSON.stringify(user) === JSON.stringify(q.userQueue) && JSON.stringify(auto) === JSON.stringify(q.autoQueue)) {
+    return null
+  }
+  return { userQueue: user, autoQueue: auto }
 }
 
 /**

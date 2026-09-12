@@ -256,6 +256,19 @@ class QueueManager {
   }
 
   /**
+   * Drag-and-drop resolution (2026-09-12): the dragged row is identified by
+   * ID and the plan is computed from the drag-time sections (what the user
+   * saw) then reconciled against the CURRENT store — never a verbatim write
+   * of the drag-start snapshot. The old path (`reorderAll` from the preview
+   * arrays) let any mutation landing mid-drag (natural advance, promotion,
+   * fill re-rank) be silently overwritten by the stale order, and the stale
+   * preloaded row played next. Anchor-preserving via `_mutateQueue`.
+   */
+  applyDragDrop(draggedTrackId: string, targetCombinedIndex: number, dragStartUser: string[], dragStartAuto: string[]): void {
+    this._mutateQueue((q) => queueMutation.applyDragDrop(q, draggedTrackId, targetCombinedIndex, dragStartUser, dragStartAuto))
+  }
+
+  /**
    * Full replacement for Play All flows: the user queue becomes the given
    * tracks, the auto queue is cleared, and the active index points at the
    * first track (the caller starts playback right after via `playTrackAt(0)`).

@@ -1152,7 +1152,7 @@
             class={"flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-white/5 " + (i > 0 ? 'border-t border-white/10 ' : '')}
             aria-label="Open {t.label} settings"
           >
-            <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-white/5 text-muted">
+            <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-white/5 text-accent">
               <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d={t.icon} /></svg>
             </span>
             <span class="min-w-0 flex-1">

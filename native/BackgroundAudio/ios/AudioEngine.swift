@@ -95,6 +95,16 @@ final class TrackFileLoader {
     /// All loader bookkeeping lives here; this class only binds a real
     /// URLSessionDownloadTask to it. Main-thread-only — see `prefetch`.
     private var state = LoaderState<URLSessionDownloadTask>()
+    /// In-flight download progress counters per composite cache key, read by
+    /// the engine's 1 s preload-progress sampler (TODO: parity with the web
+    /// preloader's queue-row tints). URLSessionDownloadTask exposes no
+    /// progress callback — its `countOfBytes*` properties are the only
+    /// readable source.
+    var inFlightProgress: [(key: String, trackId: String, received: Int64, expected: Int64?)] {
+        state.inFlight.map { key, task in
+            (key, trackId(of: key), task.countOfBytesReceived, task.countOfBytesExpectedToReceive > 0 ? task.countOfBytesExpectedToReceive : nil)
+        }
+    }
     /// Variant served per composite cache key (transcodeCacheKey) — the
     /// preserve-unless-upgrade serve check needs each file's origin variant.
     private var variantOf: [String: TrackVariant] = [:]
@@ -261,6 +271,16 @@ final class TrackFileLoader {
         }
     }
 
+    /// The trackId fragment of a composite cache key ("trackId|variant").
+    private func trackId(of cacheKey: String) -> String {
+        guard let idx = cacheKey.firstIndex(of: "|") else { return cacheKey }
+        return String(cacheKey[cacheKey.startIndex..<idx])
+    }
+
+    /// Cached composite keys — read by the engine's preload-progress sampler
+    /// to distinguish "download finished" (key present) from "evicted/gone".
+    var cacheKeys: Set<String> { Set(state.cache.keys) }
+
     /// Deletes cached files for tracks that are no longer within `keepRadius` of `currentIndex`.
     func cleanup(currentIndex: Int, tracks: [NativeTrack], keepRadius: Int = 3) {
         let minIndex = currentIndex - keepRadius
@@ -306,6 +326,10 @@ public final class NativeAudioEngine: NSObject {
     public var onError: ((String) -> Void)?
     /// Fired when the native sleep timer expires (playback has been paused).
     public var onSleepTimerFired: (() -> Void)?
+    /// Preload download progress (queue-row tint parity with web): fired by
+    /// the 1 s sampler ONLY on a real state change (pure PreloadProgress diff
+    /// — never a steady chatter stream). "progress"/"done"/"gone".
+    public var onPreloadProgress: ((String, String, Double?) -> Void)?
 
     // MARK: - Nodes
 
@@ -362,6 +386,16 @@ public final class NativeAudioEngine: NSObject {
 
     private var crossfadeMonitor: Timer?
     private var volumeRampTimer: Timer?
+    /// 1 s preload-progress sampler (queue-row tints) — started with playback.
+    private var preloadProgressTimer: Timer?
+    /// Last EMITTED snapshot per trackId (the diff baseline).
+    private var lastPreloadEmitted: [String: PreloadProgress] = [:]
+    /// Row ids JS declared as the visible preload window. Rows outside it are
+    /// skipped entirely — a stale preloaded tail outside the view must not
+    /// summon rows that were never shown (queue write-back). Nil = unsynced
+    /// (fresh boot before the first snapshot/refresh): fall back to
+    /// reporting everything so progress for the boot tail still arrives.
+    private var preloadWindowIds: Set<String>? = nil
     private var rampStepCount = 0
     /// Set when speed/pitch/tape-mode changed since the last schedule; consumed
     /// at the next schedule or resume.
@@ -468,6 +502,8 @@ public final class NativeAudioEngine: NSObject {
         self.tracks = tracks
         self.loopMode = loopMode
         self.activeIndex = tracks.isEmpty ? 0 : max(0, min(activeIndex, tracks.count - 1))
+        lastPreloadEmitted = [:]
+        preloadWindowIds = nil
     }
 
     /// Atomic setQueue+playTrackAt for JS `engage` (fixes N1 — the split
@@ -480,6 +516,8 @@ public final class NativeAudioEngine: NSObject {
         self.tracks = tracks
         self.loopMode = loopMode
         self.activeIndex = tracks.isEmpty ? 0 : max(0, min(activeIndex, tracks.count - 1))
+        lastPreloadEmitted = [:]
+        preloadWindowIds = nil
         guard !tracks.isEmpty else { return }
         let clamped = self.activeIndex
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
@@ -538,6 +576,8 @@ public final class NativeAudioEngine: NSObject {
         // after a queue mutation. Keep the native clock attached to that ID by
         // re-anchoring the index before rebuilding any crossfade tail.
         self.activeIndex = synchronizedIndex
+        lastPreloadEmitted = [:]
+        preloadWindowIds = nil
         let newTargetIndex: Int? = oldTargetId.flatMap { targetId -> Int? in
             guard let candidate = tracks.firstIndex(where: { $0.trackId == targetId }),
                   self.nextIndex(after: synchronizedIndex) == candidate else { return nil }
@@ -802,6 +842,64 @@ public final class NativeAudioEngine: NSObject {
         preloadCount = max(0, min(5, count))
         guard isPlaying else { return }
         prefetchUpcoming(from: activeIndex)
+    }
+
+    // MARK: - Preload progress (queue-row tint parity with web)
+
+    /// Syncs the VISIBLE preload window from the JS snapshot. Rows outside it
+    /// are never reported: JS derives its tints from its own window (A14), so
+    /// a stale preloaded tail outside the view must not summon rows back.
+    public func setPreloadWindow(trackIds: [String]) {
+        preloadWindowIds = Set(trackIds)
+    }
+
+    private func emitPreload(_ trackId: String, _ state: String, _ progress: Double?) {
+        lastPreloadEmitted[trackId] = PreloadProgress(state: state, progress: progress)
+        onPreloadProgress?(trackId, state, progress)
+    }
+
+    /// 1 s sampler over the loader's in-flight download counters. URLSession
+    /// exposes no progress callback, so polling `countOfBytesReceived` is the
+    /// only source; the pure PreloadProgress diff keeps the bridge silent
+    /// unless a state actually moved. Completion/gone transitions are also
+    /// driven here so a completion that lands while playback is PAUSED (the
+    /// sampler stops with the monitor) still reaches JS on the next tick.
+    private func tickPreloadProgress() {
+        for (key, trackId, received, expected) in loader.inFlightProgress {
+            if let window = preloadWindowIds, !window.contains(trackId) { continue }
+            let ratio: Double? = {
+                guard let expected = expected, expected > 0 else { return nil }
+                return min(max(Double(received) / Double(expected), 0), 1)
+            }()
+            if let snapshot = PreloadProgress.event(lastEmitted: lastPreloadEmitted[trackId],
+                                                    observed: PreloadProgress(state: "fetching", progress: ratio)) {
+                emitPreload(trackId, "progress", snapshot.progress)
+            }
+        }
+        // Completions + evictions: cached rows disappear from `inFlight` but
+        // stay in the loader cache — they must become `done` (solid), and a
+        // dropped/evicted row must clear its tint ("gone"), even when the
+        // transition happened outside a running sampler.
+        for (trackId, snapshot) in lastPreloadEmitted where snapshot.state == "fetching" {
+            if let window = preloadWindowIds, !window.contains(trackId) { continue }
+            let prefix = trackId + "|"
+            let stillCached = loader.cacheKeys.contains { $0.hasPrefix(prefix) }
+            emitPreload(trackId, stillCached ? "done" : "gone", stillCached ? 1 : nil)
+        }
+    }
+
+    private func startPreloadProgressTimer() {
+        stopPreloadProgressTimer()
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            self?.tickPreloadProgress()
+        }
+        preloadProgressTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopPreloadProgressTimer() {
+        preloadProgressTimer?.invalidate()
+        preloadProgressTimer = nil
     }
 
     /// Sets the native sleep timer. `active=false` cancels any pending timer;
@@ -1125,7 +1223,15 @@ public final class NativeAudioEngine: NSObject {
                 return
             }
 
-            if let next = self.nextIndex(after: completedIndex) {
+            // Advance from the LIVE activeIndex, never the schedule-time
+            // index (2026-09-12): a queue refresh (drag-reorder, promotion,
+            // fill) re-anchors activeIndex by id mid-flight, while
+            // `completedIndex` still holds the position captured when the
+            // segment was scheduled — advancing from it played the row that
+            // sat at the OLD next slot (the previously preloaded track) after
+            // the user moved the playing row. The live index is the same
+            // value in the undisturbed case, so nothing else changes.
+            if let next = self.nextIndex(after: self.activeIndex) {
                 self.playTrack(at: next, autoPlay: true)
             } else {
                 self.handleTrackEnd()
@@ -1136,6 +1242,14 @@ public final class NativeAudioEngine: NSObject {
     private func setPlaying(_ playing: Bool) {
         if isPlaying == playing { return }
         isPlaying = playing
+        // Preload-progress sampling rides the playing state: while paused the
+        // downloads still run but the tint updates lazily on resume (the
+        // completion transition is caught by the sampler's post-tick sweep).
+        if playing {
+            startPreloadProgressTimer()
+        } else {
+            stopPreloadProgressTimer()
+        }
         onPlaybackStateChanged?(playing)
     }
 
@@ -1163,6 +1277,7 @@ public final class NativeAudioEngine: NSObject {
         cachedPosition = 0
         positionBias = 0
         setPlaying(false)
+        stopPreloadProgressTimer()
     }
 
     /// Stops both players and invalidates all pending schedules/completions.

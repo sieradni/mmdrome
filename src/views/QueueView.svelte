@@ -17,7 +17,7 @@
     type AutoQueueFilterFields,
   } from '../stores/appState'
   import { bufferedRanges, preloadEntries } from '../stores/loadStatus'
-  import { advanceTargetIndex } from '../lib/queueMutation'
+  import { advanceTargetIndex, planDragDrop } from '../lib/queueMutation'
   import { filterRangesValid } from '../lib/autoQueuePlan'
   import { onMount, onDestroy, tick } from 'svelte'
   import { flip } from 'svelte/animate'
@@ -133,8 +133,16 @@
   })
 
   let isDragging = $state(false)
-  let draggedCombinedIndex = $state<number | null>(null)
+  // Drag identity is the TRACK ID, not an index (2026-09-12): an advance,
+  // promotion, or fill re-rank landing mid-drag reindexes the combined list,
+  // so an index captured at drag start can point at a different row by the
+  // time the finger lifts. The sections are snapshotted by ID at drag start
+  // (liveDrag*) and the drop is resolved against them + the CURRENT store —
+  // never against a stale snapshot written wholesale.
+  let draggedTrackId = $state<string | null>(null)
   let targetCombinedIndex = $state<number | null>(null)
+  let liveDragUserIds = $state<string[]>([])
+  let liveDragAutoIds = $state<string[]>([])
 
   let pointerX = $state(0)
   let pointerY = $state(0)
@@ -150,130 +158,67 @@
     originalCombinedIdx: number
   }
 
+  const trackMap = $derived.by(() => {
+    const m = new Map<string, Track>()
+    for (const t of combinedTracks) m.set(t.trackId, t)
+    return m
+  })
+
+  // Preview + drop share ONE transform (planDragDrop): the dragged row is
+  // re-resolved BY ID in the drag-time arrays on every evaluation, so the
+  // preview re-resolves if the underlying arrays change instead of freezing
+  // a start-of-drag index snapshot.
+  let draggedCombinedIdxLive = $derived.by(() => {
+    if (draggedTrackId === null) return -1
+    return [...liveDragUserIds, ...liveDragAutoIds].indexOf(draggedTrackId)
+  })
+
+  let dragPlan = $derived.by(() => {
+    if (!isDragging || draggedTrackId === null || targetCombinedIndex === null || draggedCombinedIdxLive < 0) {
+      return null
+    }
+    return planDragDrop(liveDragUserIds, liveDragAutoIds, draggedCombinedIdxLive, targetCombinedIndex)
+  })
+
   // Reactive preview items for user queue
   let previewUserItems = $derived.by<KeyedTrack[]>(() => {
-    const U = userTracks.length
-    if (!isDragging || draggedCombinedIndex === null || targetCombinedIndex === null) {
+    if (!dragPlan) {
       return userTracks.map((track, i) => ({
         key: `u-${i}-${track.trackId}`,
         track,
         originalCombinedIdx: i,
       }))
     }
-
-    const fromIdx = draggedCombinedIndex
-    const toIdx = targetCombinedIndex
-    const isUserSource = fromIdx < U
-
-    const draggedTrack = isUserSource ? userTracks[fromIdx] : autoTracks[fromIdx - U]
-    if (!draggedTrack) {
-      return userTracks.map((track, i) => ({ key: `u-${i}-${track.trackId}`, track, originalCombinedIdx: i }))
-    }
-    const draggedKey = isUserSource ? `u-${fromIdx}-${draggedTrack.trackId}` : `a-${fromIdx - U}-${draggedTrack.trackId}`
-
-    if (isUserSource) {
-      const remainingUser = userTracks
-        .map((t, i) => ({ key: `u-${i}-${t.trackId}`, track: t, originalCombinedIdx: i }))
-        .filter((_, i) => i !== fromIdx)
-
-      if (toIdx <= U) {
-        let insertAt = toIdx
-        if (insertAt > fromIdx) insertAt--
-        insertAt = Math.max(0, Math.min(insertAt, remainingUser.length))
-        const res = [...remainingUser]
-        res.splice(insertAt, 0, { key: draggedKey, track: draggedTrack, originalCombinedIdx: fromIdx })
-        return res
-      } else {
-        // User -> Auto conversion rule: convert auto tracks above target position to user queue
-        const autoTargetIdx = toIdx - U
-        const convertedAuto = autoTracks.slice(0, autoTargetIdx).map((t, i) => ({
-          key: `a-${i}-${t.trackId}`,
-          track: t,
-          originalCombinedIdx: U + i,
-        }))
-        return [...remainingUser, ...convertedAuto, { key: draggedKey, track: draggedTrack, originalCombinedIdx: fromIdx }]
-      }
-    } else {
-      // Source is Auto -> promoting to user queue
-      const remainingUser = userTracks.map((t, i) => ({ key: `u-${i}-${t.trackId}`, track: t, originalCombinedIdx: i }))
-      if (toIdx <= U) {
-        const insertAt = Math.max(0, Math.min(toIdx, remainingUser.length))
-        const res = [...remainingUser]
-        res.splice(insertAt, 0, { key: draggedKey, track: draggedTrack, originalCombinedIdx: fromIdx })
-        return res
-      } else {
-        return remainingUser
-      }
-    }
+    return dragPlan.user.flatMap((id, i) => {
+      const track = trackMap.get(id)
+      return track ? [{ key: `u-${i}-${id}`, track, originalCombinedIdx: i }] : []
+    })
   })
 
   // Reactive preview items for auto queue
   let previewAutoItems = $derived.by<KeyedTrack[]>(() => {
-    const U = userTracks.length
-    if (!isDragging || draggedCombinedIndex === null || targetCombinedIndex === null) {
+    if (!dragPlan) {
       return autoTracks.map((track, i) => ({
         key: `a-${i}-${track.trackId}`,
         track,
-        originalCombinedIdx: U + i,
+        originalCombinedIdx: userTracks.length + i,
       }))
     }
-
-    const fromIdx = draggedCombinedIndex
-    const toIdx = targetCombinedIndex
-    const isUserSource = fromIdx < U
-
-    const draggedTrack = isUserSource ? userTracks[fromIdx] : autoTracks[fromIdx - U]
-    if (!draggedTrack) {
-      return autoTracks.map((track, i) => ({ key: `a-${i}-${track.trackId}`, track, originalCombinedIdx: U + i }))
-    }
-    const draggedKey = isUserSource ? `u-${fromIdx}-${draggedTrack.trackId}` : `a-${fromIdx - U}-${draggedTrack.trackId}`
-
-    if (isUserSource) {
-      if (toIdx <= U) {
-        return autoTracks.map((t, i) => ({ key: `a-${i}-${t.trackId}`, track: t, originalCombinedIdx: U + i }))
-      } else {
-        const autoTargetIdx = toIdx - U
-        return autoTracks.slice(autoTargetIdx).map((t, i) => {
-          const origAutoIdx = autoTargetIdx + i
-          return {
-            key: `a-${origAutoIdx}-${t.trackId}`,
-            track: t,
-            originalCombinedIdx: U + origAutoIdx,
-          }
-        })
-      }
-    } else {
-      // Source is Auto
-      const autoFromIdx = fromIdx - U
-      const remainingAuto = autoTracks
-        .map((t, i) => ({ key: `a-${i}-${t.trackId}`, track: t, originalCombinedIdx: U + i }))
-        .filter((_, i) => i !== autoFromIdx)
-
-      if (toIdx <= U) {
-        return remainingAuto
-      } else {
-        const autoTargetIdx = toIdx - U
-        let insertAt = autoTargetIdx
-        if (insertAt > autoFromIdx) insertAt--
-        insertAt = Math.max(0, Math.min(insertAt, remainingAuto.length))
-        const res = [...remainingAuto]
-        res.splice(insertAt, 0, { key: draggedKey, track: draggedTrack, originalCombinedIdx: fromIdx })
-        return res
-      }
-    }
+    const U = dragPlan.user.length
+    return dragPlan.auto.flatMap((id, i) => {
+      const track = trackMap.get(id)
+      return track ? [{ key: `a-${i}-${id}`, track, originalCombinedIdx: U + i }] : []
+    })
   })
 
-  let draggedTrack = $derived.by(() => {
-    if (draggedCombinedIndex === null) return null
-    return combinedTracks[draggedCombinedIndex] ?? null
-  })
+  let draggedTrack = $derived(draggedTrackId ? trackMap.get(draggedTrackId) ?? null : null)
 
   let isConvertingUserToAuto = $derived(
     isDragging &&
-    draggedCombinedIndex !== null &&
-    draggedCombinedIndex < userTracks.length &&
+    draggedCombinedIdxLive >= 0 &&
+    draggedCombinedIdxLive < liveDragUserIds.length &&
     targetCombinedIndex !== null &&
-    targetCombinedIndex > userTracks.length
+    targetCombinedIndex > liveDragUserIds.length
   )
 
   function formatTime(sec: number): string {
@@ -353,8 +298,18 @@
     e.stopPropagation()
 
     isDragging = true
-    draggedCombinedIndex = combinedIdx
+    // Resolve the dragged row in the space the user SEES: during an active
+    // drag that's the plan space (the preview), at rest the real combined
+    // array. Real indices can have diverged mid-drag (that's the whole
+    // reason drag identity is id-based).
+    const planCombined = dragPlan ? [...dragPlan.user, ...dragPlan.auto] : null
+    draggedTrackId = planCombined?.[combinedIdx] ?? combinedTracks[combinedIdx]?.trackId ?? null
     targetCombinedIndex = combinedIdx
+    // Drag-time section snapshot (BY ID): the preview and the drop both plan
+    // against these, with the dragged row re-resolved live — mid-drag store
+    // mutations reindex the real lists, so an index-only identity would drift.
+    liveDragUserIds = $queue.userQueue.slice()
+    liveDragAutoIds = $queue.autoQueue.slice()
 
     pointerX = e.clientX
     pointerY = e.clientY
@@ -399,23 +354,27 @@
   }
 
   function applyDrop() {
-    if (!isDragging || draggedCombinedIndex === null || targetCombinedIndex === null) {
+    if (!isDragging || draggedTrackId === null || targetCombinedIndex === null) {
       stopPointerDrag()
       return
     }
 
-    queueManager.reorderAll(
-      previewUserItems.map((item) => item.track.trackId),
-      previewAutoItems.map((item) => item.track.trackId),
-    )
+    // Resolve against the drag-time sections BY ID — the arrays that produced
+    // the preview the user sees. queueManager.applyDragDrop recomputes the
+    // shape from the CURRENT store (mutation-race safe: an advance/promotion
+    // landing mid-drag can no longer be overwritten by a stale snapshot) and
+    // no-ops when nothing actually changed.
+    queueManager.applyDragDrop(draggedTrackId, targetCombinedIndex, liveDragUserIds, liveDragAutoIds)
 
     stopPointerDrag()
   }
 
   function stopPointerDrag() {
     isDragging = false
-    draggedCombinedIndex = null
+    draggedTrackId = null
     targetCombinedIndex = null
+    liveDragUserIds = []
+    liveDragAutoIds = []
 
     stopAutoScrollLoop()
 
@@ -508,6 +467,10 @@
   }
 </script>
 
+<!-- Root is the positioning context for the scroll-top button (the scroll
+     container itself is not relative, so the button's bottom-* utilities
+     resolve against THIS box — bottom-6 lands above the in-flow action
+     island, never on top of it; iOS review 2026-09-11). -->
 <div class="relative flex h-full flex-col bg-background select-none">
   <!-- Header --><!-- py-0.5 + p-2 keeps the bar's total height at the
        original 52px despite the larger 28px glyphs (review 2026-09-11). -->
@@ -585,7 +548,7 @@
               <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
             </button>
 
-            <button class="rounded-full p-2.5 text-primary transition-colors hover:text-primary" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
+            <button class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
               {#if $playbackState === 'buffering'}
                 <span class="flex h-6 w-6 items-center justify-center">
                   <BufferSpinner sizeClass="h-6 w-6" trackClass="border-white/30" headClass="border-t-white" />
@@ -620,9 +583,13 @@
 
   <!-- Queue List Scroll Container -->
   <div bind:this={listContainerEl} class="min-h-0 flex-1 overflow-y-auto pb-2 touch-pan-y" onscroll={() => { if (listContainerEl) saveViewState('queue', { scrollTop: listContainerEl.scrollTop }) }}>
-    <!-- bottom-16: the action island is IN FLOW below the list now — at
-         bottom-4 the top button landed ON "Clear below" (review 2026-09-11). -->
-    <ScrollTopButton target={listContainerEl} posClass="bottom-16 right-4" />
+    <!-- bottom-24 against the ROOT (this container isn't relative): the
+         island stack on iOS = safe-area inset (~34) + wrapper pad + island
+         (~54) ≈ 92px — bottom-16 (64px) landed INSIDE it, which is exactly
+         the "top button halfway under the island" report. 96px clears both
+         platforms; web (~62px island) floats ~34px above it.
+         (iOS review 2026-09-11). -->
+    <ScrollTopButton target={listContainerEl} posClass="bottom-24 right-4" />
     {#if $queue.userQueue.length === 0 && $queue.autoQueue.length === 0}
       <div class="flex h-full items-center justify-center">
         <p class="text-sm text-muted">Queue is empty</p>
@@ -647,7 +614,7 @@
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(item.track.trackId, itemIndex) }}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (isCurrentTrack(itemIndex) ? 'ui-now-playing-row ' : 'hover:bg-white/5 ') +
-              (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
+              (isDragging && item.track.trackId === draggedTrackId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
             style={preloadTint(item.track.trackId)}
             data-combined-index={itemIndex}
@@ -758,7 +725,7 @@
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(item.track.trackId, itemCombinedIndex) }}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (isCurrentTrack(itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-white/5 ') +
-              (isDragging && item.originalCombinedIdx === draggedCombinedIndex ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
+              (isDragging && item.track.trackId === draggedTrackId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
             style={preloadTint(item.track.trackId)}
             data-combined-index={itemCombinedIndex}

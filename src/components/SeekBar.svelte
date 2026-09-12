@@ -12,8 +12,12 @@
     label?: string
     /** Spoken value, e.g. "1:23 of 5:00". */
     valueText?: string
-    /** Fired live during drag/scrub (same cadence as the old range oninput). */
-    onSeek?: (value: number) => void
+    /** Fired on press/release/keyboard/programmatic seeks (always emitted;
+     *  the manager re-arms its live-seek cadence on these), and per
+     *  pointermove DURING a drag with `live: true` — the manager rate-gates
+     *  those onto the native engine (per-event firing stacked heavy
+     *  re-schedules; the thumb still follows the finger either way). */
+    onSeek?: (value: number, opts?: { live?: boolean }) => void
   }
 
   let {
@@ -29,6 +33,8 @@
   let trackEl: HTMLDivElement | null = $state(null)
   let dragging = $state(false)
   let dragValue = $state(0)
+  let hovered = $state(false)
+  let hoverValue = $state(0)
 
   const safeMax = $derived(max > 0 && isFinite(max) ? max : 1)
   // While dragging, the thumb follows the finger — not the playhead — so the
@@ -36,6 +42,12 @@
   const shown = $derived(dragging ? dragValue : Math.min(Math.max(value || 0, 0), safeMax))
   const playedPct = $derived((shown / safeMax) * 100)
   const fills = $derived(bufferedRangeFills(buffered, safeMax))
+  // Preview affordance: the hovered (or dragged) target position + duration
+  // label (2026-09-11 — "see the hovered/selected new duration"). While
+  // dragging the bubble rides the finger; at rest it previews the hover.
+  const previewActive = $derived(hovered || dragging)
+  const previewValue = $derived(dragging ? dragValue : hoverValue)
+  const previewPct = $derived((previewValue / safeMax) * 100)
 
   function valueFromClientX(clientX: number): number {
     if (!trackEl) return shown
@@ -54,9 +66,15 @@
   }
 
   function handlePointerMove(e: PointerEvent): void {
+    // Hover preview (mouse only — a touch pointer is handled by the drag
+    // branch; its preview is the dragValue bubble).
+    if (!dragging && !disabled && e.pointerType === 'mouse') {
+      hovered = true
+      hoverValue = valueFromClientX(e.clientX)
+    }
     if (!dragging || disabled) return
     dragValue = valueFromClientX(e.clientX)
-    onSeek?.(dragValue)
+    onSeek?.(dragValue, { live: true })
   }
 
   function handlePointerUp(e: PointerEvent): void {
@@ -64,6 +82,13 @@
     dragValue = valueFromClientX(e.clientX)
     onSeek?.(dragValue)
     dragging = false
+  }
+
+  function formatPreview(sec: number): string {
+    if (!isFinite(sec) || sec < 0) return '0:00'
+    const m = Math.floor(sec / 60)
+    const s = Math.floor(sec % 60)
+    return `${m}:${s.toString().padStart(2, '0')}`
   }
 
   function handleKeyDown(e: KeyboardEvent): void {
@@ -108,12 +133,16 @@
   onpointerdown={handlePointerDown}
   onpointermove={handlePointerMove}
   onpointerup={handlePointerUp}
+  onpointerleave={() => {
+    hovered = false
+  }}
   onpointercancel={() => {
     dragging = false
+    hovered = false
   }}
   onkeydown={handleKeyDown}
 >
-  <div class="w-full">
+  <div class="relative w-full">
     <div
       bind:this={trackEl}
       class="relative h-2.5 w-full rounded-sm bg-white/10 transition-[height] duration-150 group-hover:h-3"
@@ -143,5 +172,26 @@
         aria-hidden="true"
       ></div>
     </div>
+
+    <!-- Hover/drag preview: a faint tick where the seek would land plus the
+         target timestamp (the "what duration am I about to pick" affordance,
+         2026-09-11). Suppressed when it would sit on the playhead itself. -->
+    {#if previewActive && !disabled}
+      {#if Math.abs(previewValue - shown) >= 1}
+        <div
+          class="pointer-events-none absolute top-0 h-2.5 w-0.5 -translate-x-1/2 rounded-full bg-white/40 group-hover:h-3"
+          class:h-3={dragging}
+          style="left: {previewPct}%;"
+          aria-hidden="true"
+        ></div>
+        <div
+          class="pointer-events-none absolute -top-6 -translate-x-1/2 rounded bg-[#0f0f0f] px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-primary ring-1 ring-white/10"
+          style="left: {Math.min(Math.max(previewPct, 6), 94)}%;"
+          aria-hidden="true"
+        >
+          {formatPreview(previewValue)}
+        </div>
+      {/if}
+    {/if}
   </div>
 </div>

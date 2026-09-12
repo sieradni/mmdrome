@@ -10,6 +10,7 @@ import {
   clampSeekTime,
   applyPreloadEvent,
   preloadFillPercent,
+  mapNativePreloadEvent,
   type BufferedSource,
   type PreloadEntry,
 } from '../src/lib/loadStatus'
@@ -159,4 +160,33 @@ test('fill percent: cached 100, known progress scaled, else null', () => {
   assert.equal(preloadFillPercent({ state: 'fetching', progress: null }), null)
   assert.equal(preloadFillPercent({ state: 'dead', progress: null }), null)
   assert.equal(preloadFillPercent(undefined), null)
+})
+
+// --- native preload mapping (iOS queue-row tint parity, A14) ------------------
+
+test('native event mapping: done → cached, gone → evict, ratio → progress, none → start', () => {
+  assert.deepEqual(mapNativePreloadEvent({ trackId: 'a', state: 'done' }), { type: 'done', trackId: 'a' })
+  assert.deepEqual(mapNativePreloadEvent({ trackId: 'b', state: 'gone' }), { type: 'evict', trackId: 'b' })
+  assert.deepEqual(mapNativePreloadEvent({ trackId: 'c', state: 'progress', progress: 0.55 }), {
+    type: 'progress',
+    trackId: 'c',
+    progress: 0.55,
+  })
+  // No Content-Length → honest indeterminate start (never a fake percent).
+  assert.deepEqual(mapNativePreloadEvent({ trackId: 'd', state: 'progress' }), { type: 'start', trackId: 'd' })
+})
+
+test('native event mapping composes with the reducer (round trip)', () => {
+  let m: Record<string, PreloadEntry> = {}
+  m = applyPreloadEvent(m, mapNativePreloadEvent({ trackId: 'a', state: 'progress' }))
+  assert.deepEqual(m['a'], { state: 'fetching', progress: null })
+  m = applyPreloadEvent(m, mapNativePreloadEvent({ trackId: 'a', state: 'progress', progress: 0.5 }))
+  assert.deepEqual(m['a'], { state: 'fetching', progress: 0.5 })
+  m = applyPreloadEvent(m, mapNativePreloadEvent({ trackId: 'a', state: 'done' }))
+  assert.deepEqual(m['a'], { state: 'cached', progress: 1 })
+  // A stale 'progress' after done is ignored (reducer guard).
+  m = applyPreloadEvent(m, mapNativePreloadEvent({ trackId: 'a', state: 'progress', progress: 0.2 }))
+  assert.deepEqual(m['a'], { state: 'cached', progress: 1 })
+  m = applyPreloadEvent(m, mapNativePreloadEvent({ trackId: 'a', state: 'gone' }))
+  assert.deepEqual(m['a'], undefined)
 })

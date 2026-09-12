@@ -8,6 +8,8 @@ import { queueManager } from './queueManager'
 import { advanceTargetIndex } from './queueMutation'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc, sweepStaleTranscodeEntries } from './preloader'
+import { mapNativePreloadEvent } from './loadStatus'
+import { emitPreloadEvent } from '../stores/loadStatus'
 import { setupMediaSession } from './mediaSession'
 import { getCoverUrl } from './coverArtCache'
 import { getCachedConfig, buildStreamUrl, buildCoverArtUrl, resolveCoverArtId } from './navidromeApi'
@@ -22,6 +24,7 @@ import { NativeTransport } from './playbackCore/nativeTransport'
 import { reconcileReload } from './playbackCore/nativeReconcile'
 import { decideAdvance, type LoopMode } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
+import { freshSeekThrottle, resetSeekThrottle, shouldEmitSeek } from './playbackCore/seekThrottle'
 import { computeReplayGainFields } from './playbackCore/replayGain'
 import {
   currentTrack,
@@ -56,6 +59,14 @@ export class PlaybackManager {
    *  advance per chain. Without it a loop-one restart (or a wrap back onto
    *  the same track) would re-enter the rescue forever instead of stopping. */
   private _advancingPastUndecodable = false
+  /** Live-seek cadence (playbackCore/seekThrottle): engine seeks are heavy —
+   *  native does cancel + AVAudioFile re-open + re-schedule per command, and
+   *  web marks the user-seek latch + collapses any in-flight fade per command
+   *  (A12), so a held scrub must not command one per pointermove on EITHER
+   *  platform. Injected per manager (not module state). */
+  private _seekThrottle = freshSeekThrottle()
+  /** Injectable clock for the cadence (tests pin the timing matrix). */
+  _nowFn: () => number = () => performance.now()
   private _webTransport: WebTransport | null = null
   private _bgTransport: WebBgTransport | null = null
   private _nativeTransport: NativeTransport | null = null
@@ -268,6 +279,14 @@ export class PlaybackManager {
     transport.onRetry = (trackId) => { void this._onNativeRetry(trackId) }
     transport.onPlaybackState = (state) => setPlaybackState(state)
     transport.onTick = (position) => currentTime.set(position)
+    // Native preload progress → the SAME store the web preloader writes
+    // (parity, via the pure mapper): "progress" maps to start/progress
+    // (indeterminate when the response carries no length), "done" → cached,
+    // "gone" → evict. The reducer's same-reference early-outs keep unchanged
+    // re-emits harmless.
+    nativeEngine.initPreloadForwarding((event) => {
+      emitPreloadEvent(mapNativePreloadEvent(event))
+    })
     await transport.init()
 
     // 1.5 — recover a track the engine kept playing across a webview reload.
@@ -551,9 +570,9 @@ export class PlaybackManager {
     // One transcode decision per snapshot build — every row shares the same
     // mode/format/bitrate (the mode is per-session, not per-track).
     const transcode = this._activeTranscode()
-    return combined.map((id, index) => {
+    const snapshot = combined.map((id, index) => {
       const track = this._qm.findTrack(id)
-      const snapshot: NativeTrackSnapshot = {
+      const row: NativeTrackSnapshot = {
         index,
         trackId: id,
         title: track?.title ?? id,
@@ -563,12 +582,30 @@ export class PlaybackManager {
         url: config ? buildStreamUrl(config, id.replace(/^navidrome-/, ''), transcode ?? undefined) : '',
       }
       if (track) {
-        if (config) snapshot.coverUrl = buildCoverArtUrl(config, resolveCoverArtId(track), 512)
-        if (track.replayGain != null) snapshot.replayGain = track.replayGain
-        if (track.albumReplayGain != null) snapshot.albumReplayGain = track.albumReplayGain
+        if (config) row.coverUrl = buildCoverArtUrl(config, resolveCoverArtId(track), 512)
+        if (track.replayGain != null) row.replayGain = track.replayGain
+        if (track.albumReplayGain != null) row.albumReplayGain = track.albumReplayGain
       }
-      return snapshot
+      return row
     })
+    // Preload-progress window sync (queue-row tints on native): the engine
+    // reports only rows inside the SAME playing-track-aware slice the web
+    // preloader fills from (A14) — outside rows would write back entries JS
+    // never renders. Best-effort: the bridge call is fire-and-forget.
+    if (this.isNative()) {
+      const n = get(settings).preloadTracks ?? 0
+      const start = this._advanceTargetIndexFrom(combined)
+      const ids = n > 0 ? combined.slice(start, start + n) : []
+      BackgroundAudio.setPreloadWindow({ trackIds: ids }).catch(() => {})
+    }
+    return snapshot
+  }
+
+  /** Playing-track-aware advance start for the preload-window slice (B2/A14). */
+  private _advanceTargetIndexFrom(_combined: string[]): number {
+    const q = get(queue)
+    const ids = [...q.userQueue, ...q.autoQueue]
+    return Math.max(0, advanceTargetIndex(q, ids, get(currentTrack)?.trackId))
   }
 
   private async _nativeLoadPlay(track: Track): Promise<void> {
@@ -1442,13 +1479,26 @@ export class PlaybackManager {
     this.seek(0)
   }
 
-  seek(time: number): void {
+  seek(time: number, opts: { live?: boolean } = {}): void {
     this._stm.clearPendingStop()
     if (this.isNative()) {
       const track = get(currentTrack)
       const metaDur = track?.duration || time
       const clamped = Math.min(time, metaDur)
-      this._nativeTransport?.seek(clamped).catch(() => {})
+      // Scrub cadence (2026-09-12): the SeekBar emits onSeek per pointermove;
+      // a native engine seek is cancel + re-open + re-schedule, so per-event
+      // firing stacked re-schedules and the playhead lagged the thumb (worse
+      // the longer the drag was held). Held drags (live) pass through on a
+      // ≥150 ms cadence; press/release/keyboard/programmatic always emit AND
+      // re-arm the cadence so the next drag's first sample is never gated.
+      if (opts.live) {
+        if (shouldEmitSeek(this._seekThrottle, this._nowFn())) {
+          this._nativeTransport?.seek(clamped).catch(() => {})
+        }
+      } else {
+        resetSeekThrottle(this._seekThrottle)
+        this._nativeTransport?.seek(clamped).catch(() => {})
+      }
       currentTime.set(clamped)
       return
     }
@@ -1462,10 +1512,26 @@ export class PlaybackManager {
     const clamped = Math.min(time, metaDur)
     // User scrubbing owns the transition state (A12): the engine latches the
     // crossfade suppression when the position lands in the window and collapses
-    // any in-flight fade. BG-engaged seeks drive the bg element — no fg fade
-    // machinery applies there.
+    // any in-flight fade. Live drag samples pass through the SAME cadence as
+    // native (A15 — each markUserSeeked collapse + latch is real work, and a
+    // mid-window drag re-armed the monitor per event); press/release/keyboard
+    // always emit AND re-arm. BG-engaged seeks drive the bg element — no fg
+    // fade machinery applies there, so they stay unthrottled (the element is
+    // cheap and there is nothing to collapse).
     if (!this._bgTransport!.engaged) {
-      this._am.markUserSeeked(clamped)
+      if (opts.live) {
+        if (shouldEmitSeek(this._seekThrottle, this._nowFn())) {
+          this._am.markUserSeeked(clamped)
+          el.currentTime = clamped
+        }
+      } else {
+        resetSeekThrottle(this._seekThrottle)
+        this._am.markUserSeeked(clamped)
+        el.currentTime = clamped
+      }
+      // The thumb/time label follow the pointer regardless of the gate.
+      currentTime.set(clamped)
+      return
     }
     el.currentTime = clamped
     currentTime.set(clamped)

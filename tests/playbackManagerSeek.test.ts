@@ -6,6 +6,8 @@
 
 import './stub-audio-worklet-node'
 import { test } from 'node:test'
+import { SEEK_THROTTLE_MS } from '../src/lib/playbackCore/seekThrottle'
+import type { NativeTransport } from '../src/lib/playbackCore/nativeTransport'
 
 // seek() itself doesn't persist, but the harness shares the module graph with
 // queue mutations — stub the Dexie write up front (F3).
@@ -65,19 +67,34 @@ class FakeBgTransport {
   }
 }
 
+class FakeNativeTransport {
+  seekedTo: number[] = []
+  engagedValue = true
+  seek(position: number, _opts?: { live?: boolean }): Promise<void> {
+    // Records every call that REACHES it — the live-seek gate is manager-
+    // side (playbackCore/seekThrottle), so the fake observes only passing
+    // samples, exactly what the engine would receive.
+    void _opts
+    this.seekedTo.push(position)
+    return Promise.resolve()
+  }
+}
+
 function makeHarness(opts: { engaged: boolean; native: boolean; src: string }) {
   const am = new FakeAudioManager()
   const el = new FakeEl()
   el.src = opts.src
   const bg = new FakeBgTransport(opts.engaged, el)
+  const nt = new FakeNativeTransport()
   const m = new PlaybackManager({
     audioManager: am as unknown as typeof audioManager,
     sleepTimerManager: new FakeSleepTimer() as unknown as typeof sleepTimerManager,
     webTransport: new FakeWebTransport() as unknown as WebTransport,
     bgTransport: bg as unknown as WebBgTransport,
+    nativeTransport: nt as unknown as NativeTransport,
     isNative: () => opts.native,
   })
-  return { am, el, m }
+  return { am, el, m, nativeTransport: nt }
 }
 
 const track: Track = {
@@ -133,5 +150,115 @@ test('native seek never touches the fg engine hook', async () => {
 
   h.m.seek(28)
 
+  assert.deepEqual(h.am.seekedTo, [])
+})
+
+// --- live-seek cadence (2026-09-12): native engine seeks are heavy (cancel
+// + AVAudioFile re-open + re-schedule); the SeekBar emits per pointermove and
+// a held drag must not command one per event. Manager contract: live samples
+// gate on the ≥150 ms cadence, non-live (press/release/keyboard/programmatic)
+// always emit AND re-arm the cadence.
+
+test('native live seeks gate on the cadence; the release sample always emits', async () => {
+  const h = makeHarness({ engaged: false, native: true, src: 'https://srv/stream' })
+  resetStores()
+
+  let now = 1000
+  ;(h.m as unknown as { _nowFn: () => number })._nowFn = () => now
+  const m = h.m as unknown as { seek(time: number, opts?: { live?: boolean }): void }
+
+  m.seek(5, { live: true }) // press-position sample → emits (cadence armed)
+  m.seek(8, { live: true }) // 0 ms later → gated
+  m.seek(12, { live: true })
+  m.seek(20) // release — always emits (and re-arms)
+  m.seek(21, { live: true }) // fresh drag press — re-armed by the release
+
+  assert.deepEqual(h.nativeTransport!.seekedTo, [5, 20, 21])
+})
+
+test('native live seeks pass when spaced beyond the cadence window', async () => {
+  const h = makeHarness({ engaged: false, native: true, src: 'https://srv/stream' })
+  resetStores()
+
+  let now = 1000
+  ;(h.m as unknown as { _nowFn: () => number })._nowFn = () => now
+  const m = h.m as unknown as { seek(time: number, opts?: { live?: boolean }): void }
+
+  m.seek(5, { live: true })
+  now += SEEK_THROTTLE_MS // a slow drag step past the 150 ms window
+  m.seek(9, { live: true })
+
+  assert.deepEqual(h.nativeTransport!.seekedTo, [5, 9])
+})
+
+test('native programmatic seeks re-arm the cadence for the next drag', async () => {
+  const h = makeHarness({ engaged: false, native: true, src: 'https://srv/stream' })
+  resetStores()
+
+  let now = 1000
+  ;(h.m as unknown as { _nowFn: () => number })._nowFn = () => now
+  const m = h.m as unknown as { seek(time: number, opts?: { live?: boolean }): void }
+
+  m.seek(5, { live: true }) // press sample emits
+  m.seek(9, { live: true }) // 0 ms later → gated
+  m.seek(7) // programmatic (media-session seekto) — emits + re-arms
+  m.seek(11, { live: true }) // a new drag's press after the re-arm → emits
+
+  assert.deepEqual(h.nativeTransport!.seekedTo, [5, 7, 11])
+})
+
+// --- web cadence (A15 extension): web seeks are cheap per-call (`el.currentTime`),
+// but each fg seek ALSO runs markUserSeeked — the A12 latch + in-flight-fade
+// collapse are real work, and a held mid-window drag re-armed the monitor per
+// pointermove. Live drag samples share the native cadence; press/release still
+// always emit AND re-arm, and bg-engaged seeks stay unthrottled.
+
+test('web live seeks gate on the cadence; the release sample always emits', async () => {
+  const h = makeHarness({ engaged: false, native: false, src: 'https://srv/stream' })
+  resetStores()
+
+  let now = 1000
+  ;(h.m as unknown as { _nowFn: () => number })._nowFn = () => now
+  const m = h.m as unknown as { seek(time: number, opts?: { live?: boolean }): void }
+
+  m.seek(5, { live: true }) // drag starts — emits (cadence armed)
+  m.seek(8, { live: true }) // 0 ms later → gated
+  m.seek(12, { live: true }) // still inside 150 ms → gated
+  m.seek(20) // release — always emits (and re-arms)
+  m.seek(21, { live: true }) // a new drag's press after the re-arm → emits
+
+  assert.deepEqual(h.am.seekedTo, [5, 20, 21])
+  assert.equal(h.el.currentTime, 21)
+})
+
+test('web live seek updates currentTime even when the engine command is gated', async () => {
+  const h = makeHarness({ engaged: false, native: false, src: 'https://srv/stream' })
+  resetStores()
+
+  let now = 1000
+  ;(h.m as unknown as { _nowFn: () => number })._nowFn = () => now
+  const m = h.m as unknown as { seek(time: number, opts?: { live?: boolean }): void }
+
+  m.seek(5, { live: true })
+  m.seek(9, { live: true }) // 0 ms later → engine command gated
+
+  // The thumb/label follow the pointer regardless; the element + markUserSeeked
+  // were the gated parts (the latch runs on the EMITTED samples only).
+  assert.equal(get(currentTime), 9)
+  assert.equal(h.el.currentTime, 5)
+})
+
+test('bg-engaged live seeks stay unthrottled (no fg fade machinery to guard)', async () => {
+  const h = makeHarness({ engaged: true, native: false, src: 'https://srv/stream' })
+  resetStores()
+
+  const m = h.m as unknown as { seek(time: number, opts?: { live?: boolean }): void }
+
+  m.seek(5, { live: true })
+  m.seek(9, { live: true })
+  m.seek(12, { live: true })
+
+  // All three reach the bg element — nothing was gated.
+  assert.equal(h.el.currentTime, 12)
   assert.deepEqual(h.am.seekedTo, [])
 })

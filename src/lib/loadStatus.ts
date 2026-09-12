@@ -174,3 +174,35 @@ export function preloadFillPercent(entry: PreloadEntry | undefined): number | nu
   if (entry.state === 'fetching' && entry.progress !== null) return entry.progress * 100
   return null
 }
+
+// --- Native preload progress mapping -----------------------------------------
+
+/** The bridge payload of the native `preloadProgress` event (iOS). */
+export interface NativePreloadProgressEvent {
+  trackId: string
+  /** "progress" = bytes in flight, "done" = file cached, "gone" = evicted. */
+  state: 'progress' | 'done' | 'gone'
+  /** 0..1 when the response carries a Content-Length; absent = indeterminate. */
+  progress?: number
+}
+
+/**
+ * Maps a native preload-progress event onto the SAME `PreloadEvent` stream
+ * the web preloader writes — queue-row tints render identically on both
+ * platforms (A14 contract; the reducer's early-outs make repeated native
+ * re-emits harmless). "done" → cached, "gone" → evict (stale tint must
+ * clear), "progress" with a ratio → progress, without → start
+ * (indeterminate, the honest no-Content-Length state).
+ */
+export function mapNativePreloadEvent(event: NativePreloadProgressEvent): PreloadEvent {
+  switch (event.state) {
+    case 'done':
+      return { type: 'done', trackId: event.trackId }
+    case 'gone':
+      return { type: 'evict', trackId: event.trackId }
+    default:
+      return typeof event.progress === 'number'
+        ? { type: 'progress', trackId: event.trackId, progress: event.progress }
+        : { type: 'start', trackId: event.trackId }
+  }
+}

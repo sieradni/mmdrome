@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   addToUserQueue,
   advanceTargetIndex,
+  applyDragDrop,
   applyQueueMutation,
   clearQueue,
   clearUserAboveActive,
@@ -10,6 +11,7 @@ import {
   moveToEnd,
   moveToNext,
   playNext,
+  planDragDrop,
   promoteActiveTrack,
   promoteToUser,
   promoteToUserNext,
@@ -18,6 +20,82 @@ import {
   type QueueMutation,
 } from '../src/lib/queueMutation'
 import type { QueueState } from '../src/stores/appState'
+
+// --- drag-drop planner (2026-09-12) -----------------------------------------
+
+test('planDragDrop: user→end reorder matches the old preview semantics', () => {
+  // [A,B,C] drag A to slot 3 → B,C,A (parity with the old preview computation)
+  const r = planDragDrop(['a', 'b', 'c'], [], 0, 3)
+  assert.deepEqual(r, { user: ['b', 'c', 'a'], auto: [] })
+})
+
+test('planDragDrop: user→auto conversion converts auto rows above the slot', () => {
+  const r = planDragDrop(['a', 'b'], ['x', 'y', 'z'], 0, 4)
+  // slot 4 in combined space: rows before it convert — [a,b,x,y] → user tail
+  assert.deepEqual(r, { user: ['b', 'x', 'y', 'a'], auto: ['z'] })
+})
+
+test('planDragDrop: auto→user inserts into the user section', () => {
+  const r = planDragDrop(['a', 'b'], ['x', 'y', 'z'], 2, 1)
+  assert.deepEqual(r, { user: ['a', 'x', 'b'], auto: ['y', 'z'] })
+})
+
+test('planDragDrop: auto→auto reorders within auto (slot counts the dragged row)', () => {
+  // combined [a,x,y,z]: slot 3 = before z; removing x first shifts the slot
+  // (insertAt 2 → 1) → x lands between y and z — the legacy preview formula.
+  const r = planDragDrop(['a'], ['x', 'y', 'z'], 1, 3)
+  assert.deepEqual(r, { user: ['a'], auto: ['y', 'x', 'z'] })
+})
+
+test('applyDragDrop: mid-drag advance no longer resurrects the stale order (regression)', () => {
+  // Drag started with user [A,B,C] + auto [X], dragging A toward the end.
+  // While held, the natural advance fires: B left the queue (heard), user is
+  // now [C,A] with activeIndex on C. The stale write would restore B and the
+  // old order wholesale; the reconciled drop keeps the visible intent (a
+  // after c) and the live membership.
+  const liveNow = q(['c', 'a'], ['x'], 0, [])
+  const r = applyDragDrop(liveNow, 'a', 2, ['a', 'b', 'c'], ['x'])
+  assert.ok(r)
+  // Plan (from start): [b,a,c] + [x] → reconcile: b is gone → user [a,c]
+  // (plan order minus the departed row — the visible intent preserved),
+  // auto [x].
+  assert.deepEqual(r.userQueue, ['a', 'c'])
+  assert.deepEqual(r.autoQueue, ['x'])
+})
+
+test('applyDragDrop: reorder still lands when rows joined mid-drag', () => {
+  // Drag started user [a,b,c]; mid-drag a fill added 'n' to auto. The drop
+  // plan keeps the visible reorder and preserves the newcomer (auto tail).
+  const liveNow = q(['a', 'b', 'c'], ['x', 'n'], 0, [])
+  const r = applyDragDrop(liveNow, 'a', 2, ['a', 'b', 'c'], ['x'])
+  assert.ok(r)
+  // Plan: [b,a,c] + [x]; n joined mid-drag → auto [x,n]
+  assert.deepEqual(r.userQueue, ['b', 'a', 'c'])
+  assert.deepEqual(r.autoQueue, ['x', 'n'])
+})
+
+test('applyDragDrop: dragged row removed mid-drag voids the drop', () => {
+  const liveNow = q(['b', 'c'], ['x'], 0, [])
+  assert.equal(applyDragDrop(liveNow, 'a', 2, ['a', 'b', 'c'], ['x']), null)
+})
+
+test('applyDragDrop: unknown dragged id is a no-op', () => {
+  const s = q(['a', 'b'], [], 0, [])
+  assert.equal(applyDragDrop(s, 'zzz', 1, ['a', 'b'], []), null)
+})
+
+// --- skipped-prefix cooling (2026-09-12) ------------------------------------
+
+test('promoteActiveTrack consumes the skipped prefix and cools it for the refill', () => {
+  // Promoting auto[2] (combined idx 3) consumes auto[0..1]; they left the
+  // queue unheard and must cool down so the replenish cannot immediately
+  // re-add them (the "songs afterward keep changing order" churn).
+  const s = q(['p1'], ['s1', 's2', 'target', 'a3', 'a4'], 3, [])
+  const r = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
+  assert.deepEqual(r.userQueue, ['p1', 'target'])
+  assert.deepEqual(r.autoQueue, ['a3', 'a4'])
+  assert.ok(r.recentTrackIds?.includes('s1') && r.recentTrackIds?.includes('s2'))
+})
 
 function q(userQueue: string[], autoQueue: string[], activeIndex: number, recentTrackIds: string[] = []): QueueState {
   return { userQueue, autoQueue, recentTrackIds, activeIndex }
