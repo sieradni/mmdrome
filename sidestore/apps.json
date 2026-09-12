@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.0",
-      "versionDate": "2026-09-11T22:56:08.717Z",
-      "versionDescription": "Finalized UI design: accent-marks-states system, whole-row now-playing treatment, rectangular seek bar, compact queue island, scroll-to-top on all long lists",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.0/mmdrome.ipa",
+      "version": "1.2.1",
+      "versionDate": "2026-09-12T10:02:01.185Z",
+      "versionDescription": "Smoother seek dragging, correct advance after queue reorder, stable auto-queue order, native preload indicators, queue layout fixes",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.1/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.1",
+          "buildVersion": "5",
+          "date": "2026-09-12T10:02:01.185Z",
+          "localizedDescription": "Smoother seek dragging, correct advance after queue reorder, stable auto-queue order, native preload indicators, queue layout fixes",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.1/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.0",
           "buildVersion": "4",
@@ -52,6 +60,14 @@
     }
   ],
   "news": [
+    {
+      "title": "mmdrome 1.2.1",
+      "identifier": "ios-v1.2.1",
+      "caption": "Smoother seek dragging, correct advance after queue reorder, stable auto-queue order, native preload indicators, queue layout fixes",
+      "date": "2026-09-12T10:02:01.185Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
     {
       "title": "mmdrome 1.2.0",
       "identifier": "ios-v1.2.0",
