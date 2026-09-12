@@ -1123,6 +1123,8 @@ public final class NativeAudioEngine: NSObject {
         let totalCount = total ?? (crossfadeDuration > 0 ? max(1, preloadCount) : preloadCount)
         guard totalCount > 0, seen.count < totalCount else { return }
         let gen = generation ?? prefetchGeneration
+        // Function parameters are constants; the dedupe set mutates per step.
+        var seen = seen
         guard let next = nextIndex(after: index),
               tracks.indices.contains(next),
               seen.insert(next).inserted else { return }
