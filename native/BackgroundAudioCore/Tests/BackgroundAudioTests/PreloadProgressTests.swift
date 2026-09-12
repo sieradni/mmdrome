@@ -36,7 +36,10 @@ final class PreloadProgressTests: XCTestCase {
 
     func testProgressAboveWindowEmits() {
         let last = PreloadProgress(state: "fetching", progress: 0.4)
-        XCTAssertNotNil(PreloadProgress.event(lastEmitted: last, observed: fetching(0.41)))
+        // 0.42 is comfortably past the 1% window — 0.41 is NOT: in binary FP
+        // abs(0.41 - 0.4) = 0.00999…95 < 0.01, so the core (correctly) gates
+        // it. Boundary-value tests around FP percentages must keep a margin.
+        XCTAssertNotNil(PreloadProgress.event(lastEmitted: last, observed: fetching(0.42)))
         XCTAssertNotNil(PreloadProgress.event(lastEmitted: last, observed: fetching(0.9)))
     }
 
