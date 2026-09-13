@@ -27,7 +27,8 @@
           "date": "2026-09-12T22:40:53.540Z",
           "localizedDescription": "Sequential native preloading, honest load indicators, native seek-bar loaded layer, cover fallback ladder — five playback-surface fixes.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.2/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4848190
         },
         {
           "version": "1.2.1",
