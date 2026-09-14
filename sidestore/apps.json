@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.7",
-      "versionDate": "2026-09-14T10:52:40.115Z",
-      "versionDescription": "Preload indicators: engine-derived window — every upcoming row now lights reliably, and the current track's seek-bar layer appears even when served from cache",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.7/mmdrome.ipa",
+      "version": "1.2.8",
+      "versionDate": "2026-09-14T21:21:17.553Z",
+      "versionDescription": "Slider knobs mark the exact value with a lighter track; Art/Lyrics button only appears for songs that have lyrics",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.8/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.8",
+          "buildVersion": "12",
+          "date": "2026-09-14T21:21:17.553Z",
+          "localizedDescription": "Slider knobs mark the exact value with a lighter track; Art/Lyrics button only appears for songs that have lyrics",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.8/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.7",
           "buildVersion": "11",
@@ -116,6 +124,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.8",
+      "identifier": "ios-v1.2.8",
+      "appID": "com.mmdrome.player",
+      "caption": "Slider knobs mark the exact value with a lighter track; Art/Lyrics button only appears for songs that have lyrics",
+      "date": "2026-09-14T21:21:17.553Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.7",
       "identifier": "ios-v1.2.7",
       "appID": "com.mmdrome.player",
@@ -148,15 +165,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Navidrome lyrics: synced highlight, tap-to-seek, cached with negative TTL",
       "date": "2026-09-14T06:13:57.328Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.3",
-      "identifier": "ios-v1.2.3",
-      "appID": "com.mmdrome.player",
-      "caption": "EQ overhaul: persistent working state, editable graph, flexible bands with per-point curve modes; slider visuals fixed on all platforms",
-      "date": "2026-09-14T03:39:10.586Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
