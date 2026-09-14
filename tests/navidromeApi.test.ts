@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { submitNowPlaying, submitScrobble, paginateSearch3, cachedConfigMatches, type NavidromeConfig } from '../src/lib/navidromeApi'
+import { submitNowPlaying, submitScrobble, paginateSearch3, cachedConfigMatches, getLyricsBySongId, type NavidromeConfig } from '../src/lib/navidromeApi'
 
 // The Subsonic/OpenSubsonic API has no `nowPlaying` endpoint: a "now playing"
 // notification is `scrobble?submission=false`, and a completed listen is
@@ -151,4 +151,47 @@ test('paginateSearch3 isCancelled: checked before the FIRST page too', async () 
   }, { isCancelled: () => true })
   assert.equal(calls, 0, 'an already-cancelled token fetches nothing')
   assert.equal(songs.length, 0)
+})
+
+test('getLyricsBySongId: URL shape — getLyricsBySongId with the song id', async (t) => {
+  const { urls, restore } = stubFetch()
+  t.after(restore)
+  await getLyricsBySongId(config, 'song-9')
+  const url = new URL(urls[0])
+  assert.equal(url.pathname, '/rest/getLyricsBySongId')
+  assert.equal(url.searchParams.get('id'), 'song-9')
+})
+
+test('getLyricsBySongId: parses structuredLyrics from the envelope', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => { globalThis.fetch = original })
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    'subsonic-response': {
+      status: 'ok',
+      version: '1.16.1',
+      lyricsList: { structuredLyrics: [{ synced: true, line: [{ start: 0, value: 'Hi' }] }] },
+    },
+  }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
+  const result = await getLyricsBySongId(config, 'song-1')
+  assert.ok(Array.isArray(result))
+  assert.equal((result as Array<{ synced?: boolean }>)[0].synced, true)
+})
+
+test('getLyricsBySongId: server WITHOUT the extension → null, never throws', async (t) => {
+  // An old Subsonic answers the unknown endpoint with a subsonic-error envelope
+  const original = globalThis.fetch
+  t.after(() => { globalThis.fetch = original })
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    'subsonic-response': { status: 'failed', error: { code: 20, message: 'Not found (unknown endpoint)' } },
+  }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
+  assert.equal(await getLyricsBySongId(config, 'song-1'), null)
+})
+
+test('getLyricsBySongId: empty lyricsList → null', async (t) => {
+  const original = globalThis.fetch
+  t.after(() => { globalThis.fetch = original })
+  globalThis.fetch = (async () => new Response(JSON.stringify({
+    'subsonic-response': { status: 'ok', version: '1.16.1', lyricsList: {} },
+  }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
+  assert.equal(await getLyricsBySongId(config, 'song-1'), null)
 })

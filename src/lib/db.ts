@@ -127,6 +127,13 @@ export interface PendingScrobbleRow {
   attempts: number
 }
 
+/** One lyricsCache row: the normalized doc, or null for a negative row. */
+export interface LyricsCacheRow {
+  trackId: string
+  doc: import('./lyricsCore').LyricDoc | null
+  fetchedAt: number
+}
+
 const db = new Dexie('mmdrome') as Dexie & {
   localMetadata: EntityTable<LocalMetadataStore, 'trackId'>
   userSettings: EntityTable<UserSettings, 'key'>
@@ -135,6 +142,7 @@ const db = new Dexie('mmdrome') as Dexie & {
   songLibraryCache: EntityTable<SongLibraryCache, 'id'>
   webdavFileTags: EntityTable<FileTagCacheEntry, 'id'>
   pendingScrobbles: EntityTable<PendingScrobbleRow, 'seq'>
+  lyricsCache: EntityTable<LyricsCacheRow, 'trackId'>
 }
 
 db.version(1).stores({
@@ -190,6 +198,20 @@ db.version(6).stores({
   // silent no-op rather than a duplicate delivery (Last.fm dedupes too, but
   // the queue must not grow unbounded on re-evaluations).
   pendingScrobbles: '++seq, &[kind+artist+track+timestamp]',
+})
+
+// Lyrics cache (Navidrome getLyricsBySongId). `doc` is the normalized LyricDoc
+// from lyricsCore, or NULL for a NEGATIVE cache row (checked, server has none)
+// — negative rows carry `fetchedAt` only and are re-probed after the TTL.
+db.version(7).stores({
+  localMetadata: 'trackId, syncStatus, rating, loved',
+  userSettings: 'key',
+  playQueue: 'id',
+  webdavFileIndex: 'id',
+  songLibraryCache: 'id',
+  webdavFileTags: 'id, baseKey',
+  pendingScrobbles: '++seq, &[kind+artist+track+timestamp]',
+  lyricsCache: 'trackId',
 })
 
 export { db }

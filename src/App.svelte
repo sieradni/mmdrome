@@ -27,6 +27,8 @@
   import VolumeView from './views/VolumeView.svelte'
   import DetailView from './views/DetailView.svelte'
   import LazyThumb from './components/LazyThumb.svelte'
+  import LyricsView from './components/LyricsView.svelte'
+  import { lyricsState } from './lib/lyricsService'
   import DebugHud from './components/DebugHud.svelte'
   import SeekBar from './components/SeekBar.svelte'
   import BufferSpinner from './components/BufferSpinner.svelte'
@@ -38,6 +40,10 @@
 
   let nowPlayingOpen = $state(false)
   let queueOpen = $state(false)
+  /** Narrow-viewport Now Playing pane: artwork (false) vs lyrics (true). */
+  let lyricsPaneMode = $state(false)
+  /** Wide-viewport gate for the persistent lyrics/art split (matches md:). */
+  let isWide = $state(false)
   let overlay: 'trackOptions' | 'pitchSpeed' | 'eq' | 'volume' | 'detail' | null = $state(null)
   let searchQuery = $state('')
   let searchQueryDebounced = $state('')
@@ -79,6 +85,11 @@
 
   onMount(async () => {
     checkDebugHud()
+    // Lyrics/art split gate — keep in sync with the md: breakpoint (768px).
+    const wideMq = window.matchMedia('(min-width: 768px)')
+    isWide = wideMq.matches
+    const onWideChange = (e: MediaQueryListEvent) => { isWide = e.matches }
+    wideMq.addEventListener('change', onWideChange)
     if (Capacitor.isNativePlatform()) {
       // Light status bar content over the app's dark chrome (dynamic island area).
       SystemBars.setStyle({ style: SystemBarsStyle.Dark, bar: SystemBarType.StatusBar }).catch(() => {})
@@ -468,18 +479,42 @@
     </div>
 
     {#if $currentTrack}
-      <!-- Album Art -->
-      <div class="flex flex-1 items-center justify-center px-8">
-        <div class="relative aspect-square w-full max-w-sm overflow-hidden rounded-2xl bg-surface-hover shadow-2xl">
-          <LazyThumb track={$currentTrack} size={512} wrapperClass="h-full w-full" />
-          {#if $playbackState === 'buffering'}
-            <!-- Absolute overlay: no layout impact. A soft scrim + ring keeps
-              it clearly visible without shouting over the artwork. -->
-            <div class="absolute inset-0 flex items-center justify-center bg-black/35">
-              <BufferSpinner sizeClass="h-10 w-10" />
+      <!-- Lyrics + art split (user decision 2026-09-14): side-by-side on md+
+           viewports; narrow viewports cannot fit both, so an explicit toggle
+           chip swaps the pane (default = artwork) — the transport, seekbar and
+           utility row stay visible in every case. -->
+      <div class="relative flex min-h-0 flex-1 items-stretch gap-4 px-8 pt-2">
+        <!-- Wide viewports show the split ONLY when there is something in the
+             lyrics half (a loading spinner counts — it resolves in ms); a
+             lyric-less track keeps the classic centred artwork, no dead panel. -->
+        {#if (isWide && ($lyricsState.loading || $lyricsState.doc)) || (!isWide && lyricsPaneMode)}
+          <div class="min-h-0 flex-1">
+            <LyricsView />
+          </div>
+        {/if}
+        {#if isWide || !lyricsPaneMode}
+          <div class="flex min-h-0 flex-1 items-center justify-center">
+            <div class="relative aspect-square w-full max-w-sm overflow-hidden rounded-2xl bg-surface-hover shadow-2xl">
+              <LazyThumb track={$currentTrack} size={512} wrapperClass="h-full w-full" />
+              {#if $playbackState === 'buffering'}
+                <!-- Absolute overlay: no layout impact. A soft scrim + ring keeps
+                  it clearly visible without shouting over the artwork. -->
+                <div class="absolute inset-0 flex items-center justify-center bg-black/35">
+                  <BufferSpinner sizeClass="h-10 w-10" />
+                </div>
+              {/if}
             </div>
-          {/if}
-        </div>
+          </div>
+        {/if}
+        {#if !isWide}
+          <button
+            onclick={() => (lyricsPaneMode = !lyricsPaneMode)}
+            class="absolute right-2 top-0 rounded-full bg-surface/90 px-2.5 py-1 text-[11px] font-medium text-muted shadow ring-1 ring-white/10 transition-colors hover:text-primary"
+            aria-label={lyricsPaneMode ? 'Show artwork' : 'Show lyrics'}
+          >
+            {lyricsPaneMode ? 'Art' : 'Lyrics'}
+          </button>
+        {/if}
       </div>
 
       <!-- Utility Row: preload strip + Loop + Volume + Sleep. The strip is a

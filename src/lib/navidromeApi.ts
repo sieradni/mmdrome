@@ -1,4 +1,5 @@
 import type { Track } from '../stores/appState'
+import type { RawStructuredLyrics } from './lyricsCore'
 import { writable } from 'svelte/store'
 import { webdavFetch } from './webdavUtils'
 
@@ -531,28 +532,18 @@ export async function setNavidromeRating(config: NavidromeConfig, songId: string
 
 // ── Lyrics ────────────────────────────────────────────────────────────
 
-export interface NavidromeLyrics {
-  artist?: string
-  title?: string
-  value: string
-  synced?: boolean
-}
-
-export async function getNavidromeLyrics(
-  config: NavidromeConfig,
-  artist: string,
-  title: string,
-): Promise<NavidromeLyrics | null> {
+/**
+ * OpenSubsonic `getLyricsBySongId` (Navidrome ≥0.55): structured lyrics for a
+ * song ID — embedded SYLT/USLT tags and .lrc sidecars, synced or not. Returns
+ * null when the server lacks the extension (Subsonic error 20/0 or missing
+ * payload — never throws) or no lyrics exist. Lookup is by ID: no fuzzy
+ * artist/title matching at all.
+ */
+export async function getLyricsBySongId(config: NavidromeConfig, songId: string): Promise<RawStructuredLyrics[] | null> {
   try {
-    const resp = await callSubsonic(config, 'getLyrics.view', { artist, title })
-    const lyricsList = resp.lyricsList?.lyrics
-    const found = Array.isArray(lyricsList) ? lyricsList.find((l: Record<string, unknown>) => l && typeof l['value'] === 'string' && (l['value'] as string).length > 0) : undefined
-    if (!found) return null
-    return {
-      artist: found['artist'] as string | undefined,
-      title: found['title'] as string | undefined,
-      value: found['value'] as string,
-    }
+    const resp = await callSubsonic(config, 'getLyricsBySongId', { id: songId })
+    const list = resp['lyricsList']?.['structuredLyrics']
+    return Array.isArray(list) && list.length > 0 ? list : null
   } catch {
     return null
   }
