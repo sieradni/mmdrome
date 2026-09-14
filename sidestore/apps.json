@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.2",
-      "versionDate": "2026-09-12T22:40:53.540Z",
-      "versionDescription": "Sequential native preloading, honest load indicators, native seek-bar loaded layer, cover fallback ladder — five playback-surface fixes.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.2/mmdrome.ipa",
+      "version": "1.2.3",
+      "versionDate": "2026-09-14T03:39:10.586Z",
+      "versionDescription": "EQ overhaul: persistent working state, editable graph, flexible bands with per-point curve modes; slider visuals fixed on all platforms",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.3/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.3",
+          "buildVersion": "7",
+          "date": "2026-09-14T03:39:10.586Z",
+          "localizedDescription": "EQ overhaul: persistent working state, editable graph, flexible bands with per-point curve modes; slider visuals fixed on all platforms",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.3/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.2",
           "buildVersion": "6",
@@ -71,6 +79,14 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.3",
+      "identifier": "ios-v1.2.3",
+      "caption": "EQ overhaul: persistent working state, editable graph, flexible bands with per-point curve modes; slider visuals fixed on all platforms",
+      "date": "2026-09-14T03:39:10.586Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.2",
       "identifier": "ios-v1.2.2",
       "caption": "Sequential native preloading, honest load indicators, native seek-bar loaded layer, cover fallback ladder — five playback-surface fixes.",
@@ -99,14 +115,6 @@
       "identifier": "ios-v1.1.1",
       "caption": "Low-data transcoding fixes, live data-saver status, undecodable-track skip",
       "date": "2026-09-10T04:49:06.430Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.1.0",
-      "identifier": "ios-v1.1.0",
-      "caption": "File Matching redesign + iOS Audio Mixing mode.",
-      "date": "2026-09-09T09:56:49.027Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
