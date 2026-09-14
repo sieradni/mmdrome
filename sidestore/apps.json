@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.5",
-      "versionDate": "2026-09-14T07:53:45.068Z",
-      "versionDescription": "Slider usability: press-to-jump accent sliders everywhere; preload indicators now light up on fast servers; lyrics art backdrop + timestamps",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.5/mmdrome.ipa",
+      "version": "1.2.6",
+      "versionDate": "2026-09-14T08:50:36.935Z",
+      "versionDescription": "Instant preload indicators: downloads light up the moment they finish, seekbar loaded layer on fast servers; search clear buttons",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.6/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.6",
+          "buildVersion": "10",
+          "date": "2026-09-14T08:50:36.935Z",
+          "localizedDescription": "Instant preload indicators: downloads light up the moment they finish, seekbar loaded layer on fast servers; search clear buttons",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.6/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.5",
           "buildVersion": "9",
@@ -98,6 +106,14 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.6",
+      "identifier": "ios-v1.2.6",
+      "caption": "Instant preload indicators: downloads light up the moment they finish, seekbar loaded layer on fast servers; search clear buttons",
+      "date": "2026-09-14T08:50:36.935Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.5",
       "identifier": "ios-v1.2.5",
       "caption": "Slider usability: press-to-jump accent sliders everywhere; preload indicators now light up on fast servers; lyrics art backdrop + timestamps",
@@ -126,14 +142,6 @@
       "identifier": "ios-v1.2.2",
       "caption": "Sequential native preloading, honest load indicators, native seek-bar loaded layer, cover fallback ladder — five playback-surface fixes.",
       "date": "2026-09-12T22:40:53.540Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.1",
-      "identifier": "ios-v1.2.1",
-      "caption": "Smoother seek dragging, correct advance after queue reorder, stable auto-queue order, native preload indicators, queue layout fixes",
-      "date": "2026-09-12T10:02:01.185Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
