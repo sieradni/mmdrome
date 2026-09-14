@@ -409,18 +409,13 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         ])
     }
 
-    /// Preload-progress reporting: JS declares the VISIBLE preload window
-    /// (the same advanceTargetIndex slice its tints render from) so the
-    /// engine only reports those rows — a stale preloaded tail outside the
-    /// view must not summon rows back into the JS preload map (write-back).
-    @objc func setPreloadWindow(_ call: CAPPluginCall) {
-        let ids = (call.getArray("trackIds", []) as? [String]) ?? []
-        performOnMain { [weak self] in
-            guard let self else { call.resolve(); return }
-            self.engine.setPreloadWindow(trackIds: ids)
-            call.resolve()
-        }
-    }
+    /// REMOVED — the JS-pushed visible window raced every snapshot (the push
+    /// rode BEFORE the bridge call; setQueue/setQueueAndPlay/refreshQueue
+    /// reset the engine's stored set AFTER), leaving the engine permanently
+    /// unsynced so the instant completion hook dropped almost every `done`
+    /// (the "only one row ever shows preloaded" report). The engine now
+    /// derives the window from its own live queue (AudioEngine.
+    /// syncPreloadWindow; pure core: BackgroundAudioCore/PreloadWindow.swift).
 
     // MARK: - Now Playing
 

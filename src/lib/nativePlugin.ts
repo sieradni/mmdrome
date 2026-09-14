@@ -97,7 +97,6 @@ interface BackgroundAudioPlugin {
     eventName: 'preloadProgress',
     listenerFunc: (data: { trackId: string; state: 'progress' | 'done' | 'gone'; progress?: number }) => void
   ): Promise<PluginListenerHandle>
-  setPreloadWindow(options: { trackIds: string[] }): Promise<void>
   addListener(eventName: string, listenerFunc: (data: unknown) => void): Promise<PluginListenerHandle>
 }
 

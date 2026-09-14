@@ -588,24 +588,17 @@ export class PlaybackManager {
       }
       return row
     })
-    // Preload-progress window sync (queue-row tints on native): the engine
-    // reports only rows inside the SAME playing-track-aware slice the web
-    // preloader fills from (A14) — outside rows would write back entries JS
-    // never renders. Best-effort: the bridge call is fire-and-forget.
-    if (this.isNative()) {
-      const n = get(settings).preloadTracks ?? 0
-      const start = this._advanceTargetIndexFrom(combined)
-      const ids = n > 0 ? combined.slice(start, start + n) : []
-      BackgroundAudio.setPreloadWindow({ trackIds: ids }).catch(() => {})
-    }
+    // Preload-progress window (queue-row tints on native): DERIVED ENGINE-
+    // SIDE since 2026-09-14 — the old setPreloadWindow push rode BEFORE this
+    // bridge call while setQueue/setQueueAndPlay/refreshQueue reset the
+    // engine's stored set AFTER, so the engine permanently ran unsynced and
+    // the instant completion hook dropped almost every `done` (the "only one
+    // row ever shows preloaded" report). The engine walks the same chain it
+    // prefetches (BackgroundAudioCore/PreloadWindow.swift) — no JS push, no
+    // ordering to lose. JS-side staleness is bounded by the evict-on-track-
+    // change in _onNativeTrackChanged plus the rows' own progress/done/gone
+    // events; a row outside the current window never gains a NEW entry.
     return snapshot
-  }
-
-  /** Playing-track-aware advance start for the preload-window slice (B2/A14). */
-  private _advanceTargetIndexFrom(_combined: string[]): number {
-    const q = get(queue)
-    const ids = [...q.userQueue, ...q.autoQueue]
-    return Math.max(0, advanceTargetIndex(q, ids, get(currentTrack)?.trackId))
   }
 
   /**

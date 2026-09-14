@@ -368,14 +368,14 @@ public final class NativeAudioEngine: NSObject {
     /// the retry lands, then `done` fires from here).
     private func handleDownloadFinished(_ trackId: String, _ succeeded: Bool) {
         guard succeeded else {
-            if trackId == currentTrackId || preloadWindowIds?.contains(trackId) == true {
+            if trackId == currentTrackId || preloadWindowIds.contains(trackId) {
                 emitPreload(trackId, "gone", nil)
             }
             return
         }
         // Current track bypasses the window: its completion drives the seek
         // bar's loaded layer (native §3.4).
-        if trackId == currentTrackId || preloadWindowIds?.contains(trackId) == true {
+        if trackId == currentTrackId || preloadWindowIds.contains(trackId) {
             emitPreload(trackId, "done", 1)
         }
     }
@@ -423,12 +423,15 @@ public final class NativeAudioEngine: NSObject {
     private var preloadProgressTimer: Timer?
     /// Last EMITTED snapshot per trackId (the diff baseline).
     private var lastPreloadEmitted: [String: PreloadProgress] = [:]
-    /// Row ids JS declared as the visible preload window. Rows outside it are
-    /// skipped entirely — a stale preloaded tail outside the view must not
-    /// summon rows that were never shown (queue write-back). Nil = unsynced
-    /// (fresh boot before the first snapshot/refresh): fall back to
-    /// reporting everything so progress for the boot tail still arrives.
-    private var preloadWindowIds: Set<String>? = nil
+    /// The VISIBLE preload window is now DERIVED from the live queue
+    /// (`syncPreloadWindow` — pure `preloadWindowIndexes` in Core), not
+    /// pushed from JS: the old `setPreloadWindow` set raced every snapshot
+    /// (the push rode BEFORE the bridge call; `setQueue`/`setQueueAndPlay`/
+    /// `refreshQueue` reset the stored set to nil AFTER), leaving the engine
+    /// permanently unsynced — the instant completion hook then treated nil
+    /// as "report nothing" and almost every `done` was silently dropped
+    /// (the "only one row ever shows preloaded" report, 2026-09-14).
+    private var preloadWindowIds: Set<String> = []
     private var rampStepCount = 0
     /// Set when speed/pitch/tape-mode changed since the last schedule; consumed
     /// at the next schedule or resume.
@@ -544,7 +547,7 @@ public final class NativeAudioEngine: NSObject {
         self.loopMode = loopMode
         self.activeIndex = tracks.isEmpty ? 0 : max(0, min(activeIndex, tracks.count - 1))
         lastPreloadEmitted = [:]
-        preloadWindowIds = nil
+        syncPreloadWindow()
         prefetchGeneration += 1
     }
 
@@ -559,7 +562,7 @@ public final class NativeAudioEngine: NSObject {
         self.loopMode = loopMode
         self.activeIndex = tracks.isEmpty ? 0 : max(0, min(activeIndex, tracks.count - 1))
         lastPreloadEmitted = [:]
-        preloadWindowIds = nil
+        syncPreloadWindow()
         prefetchGeneration += 1
         guard !tracks.isEmpty else { return }
         let clamped = self.activeIndex
@@ -579,6 +582,7 @@ public final class NativeAudioEngine: NSObject {
         // must not leak (loop-one restarts clear it too; same id, new play).
         seekSuppressedTrackId = nil
         activeIndex = clamped
+        syncPreloadWindow()
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
         let newTrackId = tracks.indices.contains(clamped) ? tracks[clamped].trackId : ""
         if autoPlay && newTrackId != oldTrackId && !newTrackId.isEmpty {
@@ -606,7 +610,7 @@ public final class NativeAudioEngine: NSObject {
             self.tracks = tracks
             self.activeIndex = max(0, min(activeIndex, tracks.count - 1))
             lastPreloadEmitted = [:]
-            preloadWindowIds = nil
+            syncPreloadWindow()
             prefetchGeneration += 1
             onQueueEnded?()
             return
@@ -623,7 +627,7 @@ public final class NativeAudioEngine: NSObject {
         // re-anchoring the index before rebuilding any crossfade tail.
         self.activeIndex = synchronizedIndex
         lastPreloadEmitted = [:]
-        preloadWindowIds = nil
+        syncPreloadWindow()
         prefetchGeneration += 1
         let newTargetIndex: Int? = oldTargetId.flatMap { targetId -> Int? in
             guard let candidate = tracks.firstIndex(where: { $0.trackId == targetId }),
@@ -658,6 +662,7 @@ public final class NativeAudioEngine: NSObject {
 
     public func setLoopMode(_ mode: NativeLoopMode) {
         loopMode = mode
+        syncPreloadWindow() // wrap behavior feeds the window walk
         let hadCrossfade = crossfade.isActive
         stopCrossfadeMonitor()
         stopVolumeRamp()
@@ -885,20 +890,47 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
+    /// Rebuilds the visible preload window from the LIVE queue — pure
+    /// `preloadWindowIndexes` walks the same chain `prefetchUpcoming` fills
+    /// (next-first, wrap under loop-all, never the playing row). Derived at
+    /// every queue/index/preload-count mutation so the completion hook's
+    /// window guard is always current; no bridge round-trip can desync it.
+    private func syncPreloadWindow() {
+        // Mirror the chain's own total (the crossfade reservation keeps ONE
+        // successor even at preloadCount 0) so the window is exactly the set
+        // `prefetchUpcoming` fills.
+        let total = crossfadeDuration > 0 ? max(1, preloadCount) : preloadCount
+        preloadWindowIds = Set(
+            preloadWindowIndexes(
+                activeIndex: activeIndex,
+                trackCount: tracks.count,
+                count: total,
+                loopAll: loopMode == .all
+            )
+            .compactMap { tracks.indices.contains($0) ? tracks[$0].trackId : nil }
+        )
+    }
+
+    /// Re-derives the window and restarts the chain after a preload-count
+    /// change. The window is engine-derived, so no JS round-trip is needed —
+    /// the count's only cross-boundary effect is how many rows report.
     public func setPreloadCount(_ count: Int) {
-        preloadCount = max(0, min(5, count))
+        let clamped = max(0, min(5, count))
+        guard clamped != preloadCount else { return }
+        preloadCount = clamped
+        syncPreloadWindow()
         guard isPlaying else { return }
         prefetchUpcoming(from: activeIndex)
     }
 
     // MARK: - Preload progress (queue-row tint parity with web)
 
-    /// Syncs the VISIBLE preload window from the JS snapshot. Rows outside it
-    /// are never reported: JS derives its tints from its own window (A14), so
-    /// a stale preloaded tail outside the view must not summon rows back.
-    public func setPreloadWindow(trackIds: [String]) {
-        preloadWindowIds = Set(trackIds)
-    }
+    /// REMOVED — the JS-pushed window raced every snapshot (the push rode
+    /// BEFORE the bridge call; setQueue/setQueueAndPlay/refreshQueue reset
+    /// the stored set AFTER), leaving the engine permanently unsynced and
+    /// the instant completion hook dropping almost every `done`. The engine
+    /// now derives the window itself (`syncPreloadWindow`); see
+    /// BackgroundAudioCore/PreloadWindow.swift.
 
     private func emitPreload(_ trackId: String, _ state: String, _ progress: Double?) {
         lastPreloadEmitted[trackId] = PreloadProgress(state: state, progress: progress)
@@ -919,7 +951,7 @@ public final class NativeAudioEngine: NSObject {
     private func tickPreloadProgress() {
         let currentId = currentTrackId
         for (key, trackId, received, expected) in loader.inFlightProgress {
-            if trackId != currentId, let window = preloadWindowIds, !window.contains(trackId) { continue }
+            if trackId != currentId, !preloadWindowIds.contains(trackId) { continue }
             let ratio: Double? = {
                 guard let expected = expected, expected > 0 else { return nil }
                 return min(max(Double(received) / Double(expected), 0), 1)
@@ -943,10 +975,16 @@ public final class NativeAudioEngine: NSObject {
         // cached announces `gone`. Rows with no bytes and no history stay
         // silent (dim = queued — never invent progress).
         var candidates = Set(lastPreloadEmitted.keys)
-        if let window = preloadWindowIds { candidates.formUnion(window) }
+        candidates.formUnion(preloadWindowIds)
+        // The CURRENT track is a candidate too: a cache-served track (played
+        // in an earlier session — cache filenames are stable across launches)
+        // never downloads, so its completion hook never fires and the seek
+        // bar's loaded layer would stay hidden forever. The pass announces
+        // its cached state once; rows still downloading are owned by pass 1.
+        candidates.insert(currentId)
         let inFlightIds = Set(loader.inFlightProgress.map { $0.trackId })
         for trackId in candidates {
-            if trackId != currentId, let window = preloadWindowIds, !window.contains(trackId) { continue }
+            if trackId != currentId, !preloadWindowIds.contains(trackId) { continue }
             if inFlightIds.contains(trackId) { continue } // pass 1 owns it this tick
             let prefix = trackId + "|"
             let cached = loader.cacheKeys.contains { $0.hasPrefix(prefix) }
@@ -1545,6 +1583,7 @@ public final class NativeAudioEngine: NSObject {
         crossfade = .idle
 
         activeIndex = targetIndex
+        syncPreloadWindow()
         isActiveB.toggle()
         standbyNode.stop()
         standbyGain.outputVolume = 0
