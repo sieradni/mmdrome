@@ -27,7 +27,8 @@
           "date": "2026-09-14T21:21:17.553Z",
           "localizedDescription": "Slider knobs mark the exact value with a lighter track; Art/Lyrics button only appears for songs that have lyrics",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.8/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4861308
         },
         {
           "version": "1.2.7",
