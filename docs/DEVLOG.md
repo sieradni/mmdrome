@@ -11,6 +11,12 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-14 — "Unable to check for updates: data couldn't be read" = the mirror shipped sizeless
+
+Right after 1.2.10: SideStore's update check failed with "the data couldn't be read because it's missing". Root cause was the two-phase release order colliding with the new mirror: the web deploy ran BETWEEN the release commit and the `--size` backfill commit, so the gh-pages mirror faithfully copied a **sizeless 1.2.10 entry** — and SideStore hard-fails a sizeless version entry (the documented 1.1.1 decoder rule). Git was correct the whole time; only the mirror was poisoned.
+
+Guards shipped: (1) `scripts/deploy-web.mjs` validates every version entry (size/date/downloadURL) before publishing and aborts with a pointed message when the backfill hasn't landed — deploy is now explicitly the LAST step of a release; (2) `tests/sidestoreManifest.test.ts` pins the manifest shape on every push (required keys, size positive, news appID, **newest entry matches the newest `ios-v*` tag** — catching a forgotten backfill even without a deploy) and validates every downloadURL against an existing tag. Debug recipe: when SideStore says data-missing, diff the SERVED manifest's newest entry against git — check `size` first.
+
 ## 2026-09-14 — EQ mobile UX pass: unified save, curve-snapped dots, tap-popovers
 
 Field reports: "lots of buttons and knobs, preset names get cut off", "unclear what the mode toggles and the slider do", "two dots on the calculated display, and the dots don't line up with the curve", "add band should ask for the frequency". Mobile-resolution analysis (360 px probe mount) of EQView:
