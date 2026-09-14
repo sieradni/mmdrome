@@ -27,7 +27,8 @@
           "date": "2026-09-14T10:52:40.115Z",
           "localizedDescription": "Preload indicators: engine-derived window — every upcoming row now lights reliably, and the current track's seek-bar layer appears even when served from cache",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.7/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4861128
         },
         {
           "version": "1.2.6",
