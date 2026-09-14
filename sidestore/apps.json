@@ -27,7 +27,8 @@
           "date": "2026-09-14T08:50:36.935Z",
           "localizedDescription": "Instant preload indicators: downloads light up the moment they finish, seekbar loaded layer on fast servers; search clear buttons",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.6/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4860243
         },
         {
           "version": "1.2.5",
