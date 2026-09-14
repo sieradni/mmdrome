@@ -16,9 +16,18 @@
  */
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import { mkdirSync, copyFileSync } from 'node:fs'
+import { join } from 'node:path'
 import ghpages from 'gh-pages'
 
 const execFileP = promisify(execFile)
+
+// The SideStore source rides along on gh-pages as a SECOND source URL —
+// a fallback for jsDelivr edge staleness (SideStore kept an old version
+// after purge; a different CDN lets the user re-add the source without
+// waiting on jsDelivr). Same file, committed from sidestore/apps.json.
+mkdirSync(join('dist', 'sidestore'), { recursive: true })
+copyFileSync('sidestore/apps.json', join('dist', 'sidestore', 'apps.json'))
 
 await new Promise((resolve, reject) => {
   ghpages.publish('dist', { push: false }, (err) => (err ? reject(err) : resolve()))
