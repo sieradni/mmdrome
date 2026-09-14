@@ -42,10 +42,22 @@
 
   let nowPlayingOpen = $state(false)
   let queueOpen = $state(false)
-  /** Narrow-viewport Now Playing pane: artwork (false) vs lyrics (true). */
+  /** Narrow-viewport Now Playing pane: artwork (false) vs lyrics (true).
+   *  Reset per track when the new track has no lyrics (lyricsAvail). */
   let lyricsPaneMode = $state(false)
   /** Wide-viewport gate for the persistent lyrics/art split (matches md:). */
   let isWide = $state(false)
+  /** The current track has lyrics (or they may still be loading) — gates the
+   *  narrow-viewport lyrics toggle AND the wide split (2026-09-14: the toggle
+   *  used to render for every track, including lyric-less ones that can only
+   *  ever show an empty state). Stale-true during a track switch (the old doc
+   *  stays visible until the new state lands) — deliberate: the pane swaps
+   *  content rather than blinking through a no-lyrics frame mid-transition. */
+  let hasLyrics = $derived($lyricsState.loading || $lyricsState.doc !== null)
+  // A lyric-less track must not leave the narrow pane stuck in lyrics mode.
+  $effect(() => {
+    if (!hasLyrics) lyricsPaneMode = false
+  })
   let overlay: 'trackOptions' | 'pitchSpeed' | 'eq' | 'volume' | 'detail' | null = $state(null)
   let searchQuery = $state('')
   let searchQueryDebounced = $state('')
@@ -488,7 +500,7 @@
         <!-- Wide viewports show the split ONLY when there is something in the
              lyrics half (a loading spinner counts — it resolves in ms); a
              lyric-less track keeps the classic centred artwork, no dead panel. -->
-        {#if (isWide && ($lyricsState.loading || $lyricsState.doc)) || (!isWide && lyricsPaneMode)}
+        {#if (isWide && hasLyrics) || (!isWide && lyricsPaneMode)}
           <div class="min-h-0 flex-1">
             <LyricsView />
           </div>
@@ -507,7 +519,7 @@
             </div>
           </div>
         {/if}
-        {#if !isWide}
+        {#if !isWide && hasLyrics}
           <button
             onclick={() => (lyricsPaneMode = !lyricsPaneMode)}
             class="absolute right-2 top-0 flex items-center gap-1.5 rounded-full bg-surface/95 px-4 py-2 text-xs font-medium text-muted shadow-lg ring-1 ring-white/15 transition-colors hover:text-primary"

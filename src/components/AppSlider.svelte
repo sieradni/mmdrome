@@ -13,8 +13,13 @@
    * drag = adjust. Same reasoning that built SeekBar and EqSlider.
    *
    * Visual language matches SeekBar: 6px track (taller on hover/drag),
-   * solid accent fill from the left edge, square fill end. Two-way `value`
-   * binding keeps it a drop-in for the old <input bind:value>.
+   * solid accent fill from the left edge, square fill end, and an accent
+   * THUMB at the fill's end — the 2026-09-14 ambiguity report: with no knob,
+   * a mid-track fill read as "somewhere in here" rather than an exact value
+   * (Seekbar's playhead line is its marker; a generic slider needs one).
+   * The unfilled remainder was also lifted to white/15 so the control reads
+   * as a track at all on dim backgrounds. Two-way `value` binding keeps it a
+   * drop-in for the old <input bind:value>.
    */
 
   interface Props {
@@ -148,13 +153,23 @@
 >
   <div
     bind:this={trackEl}
-    class="relative h-1.5 w-full rounded-full bg-white/10 transition-[height] duration-150 group-hover:h-2.5"
+    class="relative h-1.5 w-full rounded-full bg-white/15 transition-[height] duration-150 group-hover:h-2.5"
     class:h-2.5={dragging}
   >
     <!-- Played fill: solid accent from the left edge (SeekBar's language). -->
     <div
-      class="absolute inset-y-0 left-0 rounded-full bg-accent"
+      class="absolute inset-y-0 left-0 rounded-l-full bg-accent"
       style="width: {fillPct}%;"
+    ></div>
+    <!-- Knob: marks the EXACT value at the fill's end (the fill alone is
+         ambiguous mid-track). Square side faces the fill, round side out —
+         same idea as EqSlider's round thumb, sized to the track. -->
+    <div
+      class="pointer-events-none absolute top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-accent shadow-[0_0_0_1px_rgb(0_0_0/0.6)] ring-2 ring-[#0d0d0d] transition-[height,width] duration-100 group-hover:h-4 group-hover:w-4"
+      class:h-4={dragging}
+      class:w-4={dragging}
+      style="left: {fillPct}%;"
+      aria-hidden="true"
     ></div>
   </div>
 </div>

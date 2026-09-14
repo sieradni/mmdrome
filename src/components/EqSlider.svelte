@@ -139,10 +139,11 @@
   }}
   onkeydown={handleKeyDown}
 >
-  <!-- Track: 4px bar centered in the column, full height -->
+  <!-- Track: 4px bar centered in the column, full height. Unfilled rest
+       lifted to white/15 (2026-09-14 ambiguity pass — matches AppSlider). -->
   <div
     bind:this={trackEl}
-    class="absolute inset-y-0 left-1/2 w-1 -translate-x-1/2 rounded-full bg-white/10"
+    class="absolute inset-y-0 left-1/2 w-1 -translate-x-1/2 rounded-full bg-white/15"
   >
     <!-- Fill from the 0 dB line toward the thumb -->
     <div
@@ -160,9 +161,10 @@
   ></div>
 
   <!-- Thumb: rides the same geometry as the track (left-1/2 + w-1) so it
-       can never drift from the fill; enlarges on hover/drag -->
+       can never drift from the fill; a ring + dark edge separates it from
+       the fill it caps (2026-09-14 ambiguity pass); enlarges on hover/drag -->
   <div
-    class="pointer-events-none absolute left-1/2 h-3.5 w-3.5 -translate-x-1/2 translate-y-1/2 rounded-full bg-accent shadow-[0_0_0_1px_rgb(0_0_0/0.6)] transition-[height,width] duration-100 group-hover:h-4 group-hover:w-4"
+    class="pointer-events-none absolute left-1/2 h-3.5 w-3.5 -translate-x-1/2 translate-y-1/2 rounded-full bg-accent shadow-[0_0_0_1px_rgb(0_0_0/0.6)] ring-2 ring-[#0d0d0d] transition-[height,width] duration-100 group-hover:h-4 group-hover:w-4"
     class:h-4={dragging}
     class:w-4={dragging}
     style="bottom: {thumbPct}%;"
