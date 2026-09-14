@@ -95,6 +95,13 @@ final class TrackFileLoader {
     /// All loader bookkeeping lives here; this class only binds a real
     /// URLSessionDownloadTask to it. Main-thread-only — see `prefetch`.
     private var state = LoaderState<URLSessionDownloadTask>()
+    /// Fired on the MAIN thread the moment a download's bookkeeping settles:
+    /// (trackId, succeeded). The engine's 1 s sampler only sees downloads
+    /// in flight AT tick time — a download that starts and finishes between
+    /// two ticks (fast LAN, small transcoded file) never fires a progress
+    /// event, so the engine hooks THIS to announce `done`/`gone` instantly
+    /// (the "preload indicators stay empty" report, 2026-09-14).
+    var onDownloadFinished: ((String, Bool) -> Void)?
     /// In-flight download progress counters per composite cache key, read by
     /// the engine's 1 s preload-progress sampler (TODO: parity with the web
     /// preloader's queue-row tints). URLSessionDownloadTask exposes no
@@ -226,12 +233,14 @@ final class TrackFileLoader {
                     self.variantOf[cacheKey] = requested
                     deliver(moved, nil)
                     pendings.forEach { $0(moved, nil) }
+                    self.onDownloadFinished?(trackId, true)
                 } else {
                     let err = moveError ?? error
                     // If we moved but became stale, the file was already cleaned above.
                     // Otherwise report the download/move error to trigger retry.
                     deliver(nil, err)
                     pendings.forEach { $0(nil, err) }
+                    self.onDownloadFinished?(trackId, false)
                 }
             }
         }
@@ -330,6 +339,7 @@ public final class NativeAudioEngine: NSObject {
     /// the 1 s sampler ONLY on a real state change (pure PreloadProgress diff
     /// — never a steady chatter stream). "progress"/"done"/"gone".
     public var onPreloadProgress: ((String, String, Double?) -> Void)?
+    // (loader hook wired in setup, below)
 
     // MARK: - Nodes
 
@@ -347,6 +357,29 @@ public final class NativeAudioEngine: NSObject {
     // MARK: - State
 
     private let loader = TrackFileLoader()
+    /// Instant completion announcements (no tick wait): the loader fires this
+    /// the moment a download settles and the engine emits `done`/`gone`
+    /// immediately. Routes through `emitPreload` so the sampler's
+    /// `lastPreloadEmitted` diff state stays coherent (its completion pass
+    /// then never re-announces). Emissions are window-guarded exactly like
+    /// the sampler's; duplicates (e.g. a prefetch-chain error also emitting
+    /// `gone`) are harmless — the JS reducer treats a repeat `gone` as a
+    /// no-op eviction, and the failed row stays retryable per A5 (dim until
+    /// the retry lands, then `done` fires from here).
+    private func handleDownloadFinished(_ trackId: String, _ succeeded: Bool) {
+        guard succeeded else {
+            if trackId == currentTrackId || preloadWindowIds?.contains(trackId) == true {
+                emitPreload(trackId, "gone", nil)
+            }
+            return
+        }
+        // Current track bypasses the window: its completion drives the seek
+        // bar's loaded layer (native §3.4).
+        if trackId == currentTrackId || preloadWindowIds?.contains(trackId) == true {
+            emitPreload(trackId, "done", 1)
+        }
+    }
+
     private var tracks: [NativeTrack] = []
     /// Memoized effective durations for tracks with `duration == 0` (TODO 4.5b):
     /// without this, `state()` (driven by the 250 ms poll and `refreshNowPlaying`)
@@ -450,6 +483,9 @@ public final class NativeAudioEngine: NSObject {
     public override init() {
         super.init()
         setupGraph()
+        loader.onDownloadFinished = { [weak self] trackId, succeeded in
+            self?.handleDownloadFinished(trackId, succeeded)
+        }
     }
 
     private func setupGraph() {
