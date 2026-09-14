@@ -11,6 +11,10 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-14 — `release:full` — the whole two-phase pipeline in one command
+
+After the sizeless-mirror incident it was clear the 7-step manual choreography (bump → commit → push → wait CI → tag solo → wait tag run → read size → backfill → deploy → purge/verify) was the actual defect: every ordering bug of the last three releases (tag run cancelled by a joint push, sizeless mirror, stale jsDelivr) was a *sequence* mistake, not a script bug. `scripts/release-full.mjs` (`npm run release:full <x.y.z> "notes"`) encodes the sequence with its own waits and verifications: numeric version compare (a string compare would reject 1.2.10 as "lower than 1.2.9"), tag-unused check AFTER `git fetch origin --tags` (a remote-only tag used to slip through), execFileSync for the notes-bearing release:ios call (execSync cannot take an argv array and must never let user notes reach a shell), CI polls with transient-error retry (never blind sleeps), iOS gating steps verified BY NAME from the jobs endpoint, the backfill verified by manifest diff, and deploy last — before which the deploy script's own manifest guard runs. Phase 8 hard-aborts if the Pages mirror doesn't converge to version+size (SideStore's hard-fail) and only WARNS on stale jsDelivr edges — the mirror is primary. Edge cases verified live against the real repo: workflow runs query, jobs/steps shape, release-asset size read, mirror URL derivation.
+
 ## 2026-09-14 — "Unable to check for updates: data couldn't be read" = the mirror shipped sizeless
 
 Right after 1.2.10: SideStore's update check failed with "the data couldn't be read because it's missing". Root cause was the two-phase release order colliding with the new mirror: the web deploy ran BETWEEN the release commit and the `--size` backfill commit, so the gh-pages mirror faithfully copied a **sizeless 1.2.10 entry** — and SideStore hard-fails a sizeless version entry (the documented 1.1.1 decoder rule). Git was correct the whole time; only the mirror was poisoned.
