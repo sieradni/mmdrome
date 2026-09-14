@@ -113,12 +113,33 @@
     return `${pathD} L ${lastX},${zeroY} L ${firstX},${zeroY} Z`
   })
 
-  // Handle positions: a parametric band's handle sits at its biquad bump
-  // (frequency, gain); a graphic band's handle sits ON the interpolated
-  // curve at its frequency — the visual statement that its gain is the
-  // curve's gain there, not an isolated bump.
+  /** The drawn curve's dB at an arbitrary frequency — log-frequency linear
+   *  interpolation over `points`, the EXACT polyline the SVG path connects
+   *  (linear in log space matches the segments). Handles snap to this, so a
+   *  dot sits on the drawn line BY CONSTRUCTION — it can never float above
+   *  or below the visual curve (2026-09-14: handles sat at preamp + band
+   *  gain and drifted wherever neighbor bumps overlapped). */
+  function curveDbAt(freq: number): number {
+    if (points.length === 0) return 0
+    if (freq <= points[0].frequency) return points[0].gainDb
+    const logF = Math.log10(freq)
+    for (let i = 1; i < points.length; i++) {
+      if (points[i].frequency >= freq) {
+        const a = points[i - 1]
+        const b = points[i]
+        const t =
+          (logF - Math.log10(a.frequency)) / (Math.log10(b.frequency) - Math.log10(a.frequency))
+        return a.gainDb + t * (b.gainDb - a.gainDb)
+      }
+    }
+    return points[points.length - 1].gainDb
+  }
+
+  // Handle positions: ON the displayed curve at the band's frequency — the
+  // single visual truth (the dot IS where the curve is; dragging it moves the
+  // band to follow). Parametric and graphic share the position; kind is kept
+  // for the distinct shapes.
   let bandNodes = $derived.by(() => {
-    const effPreamp = eqBypassed ? 0 : preampDb
     const nodes: {
       index: number
       x: number
@@ -133,12 +154,8 @@
       if (!f.enabled) return
       nodes.push({
         index: i,
-        // Parametric AND graphic handles sit at (frequency, gain): in the
-        // hybrid renderer the interpolated curve passes through each
-        // graphic point's own gain, so one formula lands every handle on
-        // the curve.
         x: freqToX(f.frequency),
-        y: dbToY(effPreamp + f.gain),
+        y: dbToY(curveDbAt(f.frequency)),
         kind: effectiveCurve(f),
         freq: f.frequency,
         gain: f.gain,
@@ -150,6 +167,18 @@
   // ── Editor interaction (pointer capture, SeekBar pattern) ──────────────
 
   let dragIndex: number | null = $state(null)
+  let dragMoved = $state(false)
+  /** The band whose popover (value + delete) is open; null = none.
+   *  Replaces the always-visible × button (2026-09-14: every handle rendered
+   *  TWO dots — the band dot plus a permanent remove-button circle). */
+  let popoverIndex: number | null = $state(null)
+
+  // A structural change (band added/removed, curve flipped) invalidates the
+  // open popover's index — close rather than point at the wrong band.
+  $effect(() => {
+    void filters.length
+    popoverIndex = null
+  })
 
   function svgPointFromEvent(e: PointerEvent): { freq: number; db: number } {
     const rect = svgEl?.getBoundingClientRect()
@@ -174,28 +203,41 @@
       e.stopPropagation()
       ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
       dragIndex = index
+      dragMoved = false
+      popoverIndex = null // a drag is not a popover interaction
     }
   }
 
   function handleHandleMove(e: PointerEvent) {
     if (dragIndex === null || !onMoveFilter) return
+    dragMoved = true
     const { freq, db } = svgPointFromEvent(e)
     // The pointer's dB is on the DISPLAYED curve (includes preamp); the
     // caller wants the band's own gain — subtract the preamp offset so the
-    // handle tracks the finger exactly (handle y = preamp + gain).
+    // handle tracks the finger exactly (the handle y rides the curve, which
+    // includes preamp + neighbors — the subtraction lands the band's gain so
+    // the dot stays under the finger as the curve re-computes).
     onMoveFilter(dragIndex, freq, snapDb(db - preampDb))
   }
 
-  function handleHandleUp() {
+  function handleHandleUp(index: number | null) {
     dragIndex = null
+    // A TAP (no meaningful drag) opens the band's popover — value + delete.
+    // A drag-end stays quiet: the user was placing the band, not asking.
+    if (index !== null && !dragMoved && popoverIndex !== index) popoverIndex = index
+    dragMoved = false
   }
 
   function handleSvgClick(e: MouseEvent) {
     if (!editable || eqBypassed || !onAddFilter) return
-    // A click anywhere on a handle group (circle, square, or its × button)
-    // must never register as add-point — check the ancestor, not just the
-    // exact target.
+    // A click anywhere on a handle group (dot, popover, its buttons) must
+    // never register as add-point — check the ancestor, not just the target.
     if ((e.target as Element)?.closest?.('[data-eq-handle]')) return
+    // First tap on empty graph closes an open popover; the next tap adds.
+    if (popoverIndex !== null) {
+      popoverIndex = null
+      return
+    }
     const { freq } = svgPointFromEvent(e as unknown as PointerEvent)
     onAddFilter(freq)
   }
@@ -288,6 +330,9 @@
       {#if !eqBypassed}
         {#each bandNodes as node (node.index)}
           {#if editable && !eqBypassed}
+            <!-- ONE dot per band (2026-09-14: the old always-visible × circle
+                 beside each handle was the mystery "second dot"). Tap = value
+                 + delete popover; drag = move. -->
             <g
               data-eq-handle="1"
               role="button"
@@ -296,51 +341,71 @@
               class="cursor-grab touch-none"
               onpointerdown={handleHandleDown(node.index)}
               onpointermove={handleHandleMove}
-              onpointerup={handleHandleUp}
-              onpointercancel={handleHandleUp}
+              onpointerup={() => handleHandleUp(node.index)}
+              onpointercancel={() => handleHandleUp(null)}
+              onkeydown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  popoverIndex = popoverIndex === node.index ? null : node.index
+                }
+              }}
             >
               {#if node.kind === 'graphic'}
                 <rect
-                  x={node.x - 5}
-                  y={node.y - 5}
-                  width="10"
-                  height="10"
-                  class="fill-background stroke-primary stroke-[2] transition-all duration-150"
+                  x={node.x - (popoverIndex === node.index ? 6 : 5)}
+                  y={node.y - (popoverIndex === node.index ? 6 : 5)}
+                  width={popoverIndex === node.index ? 12 : 10}
+                  height={popoverIndex === node.index ? 12 : 10}
+                  class="fill-background stroke-primary stroke-[2]"
                 />
               {:else}
                 <circle
                   cx={node.x}
                   cy={node.y}
-                  r="4.5"
-                  class="fill-primary stroke-background stroke-[2] transition-all duration-150"
+                  r={popoverIndex === node.index ? 5.5 : 4.5}
+                  class="fill-primary stroke-background stroke-[2]"
                 />
               {/if}
-              <!-- remove affordance (editor only): a real ARIA button —
-                   keyboard Enter/Space triggers it like a click -->
-              <circle
-                cx={node.x + 10}
-                cy={node.y - 10}
-                r="5"
-                role="button"
-                tabindex="0"
-                aria-label="Remove band {fmtFreq(node.freq)}"
-                class="fill-surface-raised text-muted/80 stroke-[1] stroke-white/20 cursor-pointer hover:text-red-400"
-                onpointerdown={(e) => e.stopPropagation()}
-                onclick={handleRemove(node.index)}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault()
-                    handleRemove(node.index)(e)
-                  }
-                }}
-              />
-              <text
-                x={node.x + 10}
-                y={node.y - 7.5}
-                text-anchor="middle"
-                class="pointer-events-none fill-current text-[7px] font-mono select-none"
-              >×</text>
             </g>
+            {#if popoverIndex === node.index}
+              {@const px = Math.min(Math.max(node.x - 34, 2), Math.max(width - 70, 2))}
+              {@const py = Math.max(node.y - 56, 2)}
+              <g data-eq-handle="1" class="select-none">
+                <rect
+                  x={px}
+                  y={py}
+                  width="68"
+                  height="24"
+                  rx="6"
+                  class="fill-[#161616] stroke-white/15 stroke-[1]"
+                />
+                <text x={px + 8} y={py + 15.5} class="fill-primary text-[10px] font-mono">
+                  {fmtFreq(node.freq)}Hz {node.gain > 0 ? '+' : ''}{node.gain.toFixed(1)}dB
+                </text>
+                <circle
+                  cx={px + 58}
+                  cy={py + 12}
+                  r="7"
+                  role="button"
+                  tabindex="0"
+                  aria-label="Remove band {fmtFreq(node.freq)}"
+                  class="fill-white/10 text-muted/90 cursor-pointer hover:text-red-400 hover:fill-red-500/20"
+                  onclick={handleRemove(node.index)}
+                  onkeydown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      handleRemove(node.index)(e)
+                    }
+                  }}
+                />
+                <text
+                  x={px + 58}
+                  y={py + 14.5}
+                  text-anchor="middle"
+                  class="pointer-events-none fill-current text-[9px] font-mono"
+                >×</text>
+              </g>
+            {/if}
           {:else}
             {#if node.kind === 'graphic'}
               <rect

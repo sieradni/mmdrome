@@ -11,6 +11,20 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-14 — EQ mobile UX pass: unified save, curve-snapped dots, tap-popovers
+
+Field reports: "lots of buttons and knobs, preset names get cut off", "unclear what the mode toggles and the slider do", "two dots on the calculated display, and the dots don't line up with the curve", "add band should ask for the frequency". Mobile-resolution analysis (360 px probe mount) of EQView:
+
+- **Name truncation**: the preset `<select>` shared one row with FOUR buttons (Save as Current / Save New / Import / Delete). The select now owns the full row; actions moved to their own row with shorter labels.
+- **Unified save**: the Save-as-Current / Save-New pair became ONE `saveEqSession(name?)` in eqStore — user-preset base → overwrite in place; builtin/imported → create `"<base> (modified)"` (name prompt only then); a clean session still saves (no-op overwrite) so the button is never disabled-and-unexplained. BONUS FIX found by the new test: the import flow never sets activePresetId to 'imported', so an activePresetId-based check would have overwritten the previously active USER preset with imported values. The session `base.id` is the discriminator everywhere; also carries `graphicEqCurves` (Save-as-Current silently dropped them).
+- **The "two dots" mystery**: every graph handle rendered its band dot PLUS an always-visible × remove-button circle beside it. Removed the permanent × — the handle is ONE dot now; TAP opens a small popover (value + remove), DRAG moves (a drag-end stays quiet via a `dragMoved` flag; pointercancel never opens).
+- **Dots off the curve**: handles sat at `preamp + band gain`, but the drawn curve is the SUM over neighbors — wherever bumps overlapped, the dot floated off the line. Handles now snap to the drawn polyline itself (log-frequency linear interpolation over the rendered `points` — the exact segments the SVG path connects), so a dot is ON the line by construction in all three renderer paths (parametric, graphic, hybrid). Drag math still subtracts preamp to recover the band's own gain.
+- **Add band asks**: `+ Add Band` opens a frequency input (prefilled with the widest-gap suggestion) instead of silently inserting; graph taps still add at the tap point and now auto-open the new band's editor. `insertBandAt` SORTS by frequency, so the new row is found by object identity, never index math.
+- **Per-band settings**: Q (the unlabeled second slider), the curve-kind dot toggle, and remove moved out of the band columns into a band editor popover (typed frequency, Q with label "Width (Q)", explicit ●/■ buttons with words) opened by tapping the frequency label under each slider — band columns are now value / slider / frequency and stay readable at 12+ bands.
+- **Label clarity**: the curve-flip button reads "All Graphic" / "All Parametric" (state-forward); the legend explains ■ vs ●.
+
+Verified live at 360 px (no overflow, all flows driven through the real component); probe gotchas for next time: hidden preview webviews never fire rAF (thumbLoader queues stall), synthetic `setPointerCapture` throws on fake pointerIds (patch it to a no-op), and Svelte event handlers need `() => fn(arg)` not `fn(arg)`.
+
 ## 2026-09-14 — SideStore source staleness survives a verified purge; gh-pages mirror added
 
 "I don't see the new version in SideStore" after 1.2.8 shipped — with the manifest provably correct on `main` and CI green. root cause: **a jsDelivr purge can report `"status": "finished"` while some edges keep serving the stale copy**. The dev box fetched 1.2.8 from `cdn.jsdelivr.net` immediately after the purge; the user's device kept an older manifest through TWO successful purges (also showing the "Open never flips to Update" state from the same stale copy — it matched the installed 1.2.7 exactly). Re-purge loops eventually converged, but the lesson is structural: purge verification from ONE vantage point proves nothing about the edge the device hits.

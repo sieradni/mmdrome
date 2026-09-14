@@ -250,6 +250,73 @@ export async function saveAsCurrentPreset(draft: EqPreset): Promise<EqPreset> {
   return committed
 }
 
+/**
+ * Unified save (2026-09-14 UX pass): ONE function behind the EQ's single
+ * Save button — overwrites the active preset when it is a user preset,
+ * otherwise (builtin or imported base) creates a new preset from the
+ * optional name (default `"<base> (modified)"`, exactly what Save-as-Current
+ * did for builtins). Succeeds cleanly on a CLEAN session too (no-op
+ * overwrite of the preset it already equals) so the button never has to be
+ * disabled or explained. Carries graphicEqCurves through (the old
+ * Save-as-Current dropped them — a saved import lost its curve stack).
+ */
+export async function saveEqSession(name?: string): Promise<EqPreset> {
+  const activeId = get(activePresetId)
+  const preset = findPresetById(activeId)
+  const session = get(workingEq)
+  const draft = session.state
+  // The base id — NOT activePresetId — decides: the import flow keeps the
+  // previously active preset selected while the session base is 'imported',
+  // so an activePresetId check would happily OVERWRITE that unrelated user
+  // preset with imported values (found by the eqStore test).
+  const baseIsImport = session.base.id === 'imported'
+
+  if (preset && !preset.isBuiltin && !baseIsImport) {
+    // Overwrite path: keep the preset's identity, take the working values.
+    const committed: EqPreset = {
+      ...preset,
+      mode: draft.mode,
+      preampDb: draft.preampDb,
+      filters: draft.filters.map((f) => ({ ...f })),
+      graphicEqCurves: draft.graphicEqCurves?.map((c) => c.map((p) => ({ ...p }))),
+    }
+    await setSetting(`${USER_PRESET_PREFIX}${committed.id}`, committed)
+    userPresets.update((list) => {
+      const idx = list.findIndex((p) => p.id === committed.id)
+      if (idx >= 0) {
+        const updated = [...list]
+        updated[idx] = committed
+        return updated
+      }
+      return list
+    })
+    currentEqState.set(committed)
+    resetWorkingEq(committed)
+    await persistEqState(committed, activeId)
+    return committed
+  }
+
+  // Builtin or imported base: create a new user preset. The default name
+  // follows the SESSION BASE (an import saved while 'Flat' is selected must
+  // not call itself "Flat (modified)").
+  const committed: EqPreset = {
+    id: `user_${Date.now()}`,
+    name: name?.trim() || `${session.base.name ?? preset?.name ?? 'User'} (modified)`,
+    mode: draft.mode,
+    preampDb: draft.preampDb,
+    filters: draft.filters.map((f) => ({ ...f })),
+    graphicEqCurves: draft.graphicEqCurves?.map((c) => c.map((p) => ({ ...p }))),
+    isBuiltin: false,
+  }
+  await setSetting(`${USER_PRESET_PREFIX}${committed.id}`, committed)
+  userPresets.update((list) => [...list, committed])
+  activePresetId.set(committed.id)
+  currentEqState.set(committed)
+  resetWorkingEq(committed)
+  await persistEqState(committed, committed.id)
+  return committed
+}
+
 export async function persistEqState(state: EqPreset, presetId: string): Promise<void> {
   await setSetting(CURRENT_EQ_STATE_KEY, state)
   await setSetting(ACTIVE_PRESET_KEY, presetId)

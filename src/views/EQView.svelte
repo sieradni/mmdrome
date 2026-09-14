@@ -11,10 +11,9 @@
     workingEq,
     editWorkingEq,
     resetWorkingEq,
-    saveUserPreset,
     deleteUserPreset,
     applyPreset,
-    saveAsCurrentPreset,
+    saveEqSession,
     findPresetById,
   } from '../lib/eq/eqStore'
   import { parseEqText } from '../lib/eq/eqParser'
@@ -122,18 +121,20 @@
     })
   }
 
-  function addBand(frequency: number) {
+  function addBand(frequency: number): number {
+    let newIndex = -1
     editWorkingEq((st) => {
-      st.filters = insertBandAt(st.filters, frequency, { gain: 0 })
+      const next = insertBandAt(st.filters, frequency, { gain: 0 })
+      // insertBandAt SORTS by frequency — the new band's row index must be
+      // found in the RESULT (identity of the inserted object), not assumed.
+      const before = new Set(st.filters)
+      newIndex = next.findIndex((f) => !before.has(f))
+      st.filters = next
       return st
     })
     // A structural change needs the full push (band count changed).
     applyEqToEngine(get(workingEq).state)
-  }
-
-  function addBandAtWidestGap() {
-    const freq = suggestInsertFrequency(eqState.filters)
-    addBand(freq)
+    return newIndex
   }
 
   function removeBand(index: number) {
@@ -167,6 +168,71 @@
   const canFlipCurves = $derived(!isGraphicImport && eqState.filters.length > 0)
   const anyGraphic = $derived(hasGraphicBands(eqState.filters))
 
+  // ── Unified save (2026-09-14 UX pass): ONE Save button. User-preset base →
+  //    overwrite; builtin/imported base → name-and-create. The dialog only
+  //    appears when a name is actually needed (the old dual Save-as-Current /
+  //    Save-New pair asked the user to know the difference up front). The
+  //    SESSION BASE decides (not activePresetId — an import keeps the old
+  //    preset selected while base.id is 'imported'; same rule as the store). ──
+  const basePreset = $derived(presets.find((p) => p.id === $workingEq.base.id))
+  const baseIsUserPreset = $derived(!!basePreset && !basePreset.isBuiltin && $workingEq.base.id !== 'imported')
+  const saveNeedsName = $derived(!baseIsUserPreset)
+  const saveDisabled = $derived(baseIsUserPreset && !$workingEq.dirty)
+
+  function onSaveTap() {
+    if (saveDisabled) return
+    if (saveNeedsName) {
+      newPresetName = ''
+      saveDialogOpen = true
+    } else {
+      void saveEqSession()
+    }
+  }
+
+  // ── Per-band popover (frequency edit + Q + curve kind + remove) — the
+  //    band row itself is just value / slider / frequency, so 12+ bands stay
+  //    readable on a phone. ──
+  let bandPopover = $state<number | null>(null)
+  let bandFreqDraft = $state('')
+
+  function openBandEditor(i: number) {
+    const f = eqState.filters[i]
+    if (!f || isGraphicImport) return
+    bandPopover = i
+    bandFreqDraft = String(f.frequency)
+  }
+
+  function applyBandFreq() {
+    const i = bandPopover
+    if (i === null) return
+    const f = eqState.filters[i]
+    if (!f) return
+    const parsed = Number(bandFreqDraft)
+    if (!Number.isFinite(parsed)) return
+    const freq = Math.min(20000, Math.max(20, Math.round(parsed)))
+    moveFilter(i, freq, f.gain)
+    bandFreqDraft = String(freq)
+  }
+
+  // ── Add-band frequency prompt (2026-09-14: the user picks the frequency
+  //    instead of accepting a magic widest-gap default — graph taps already
+  //    place by position, the button now matches that mental model). ──
+  let addBandPrompt = $state(false)
+  let addBandFreq = $state(1000)
+
+  function onAddBandTap() {
+    addBandFreq = Math.round(suggestInsertFrequency(eqState.filters))
+    addBandPrompt = true
+  }
+
+  function confirmAddBand() {
+    const freq = Math.min(20000, Math.max(20, Math.round(addBandFreq)))
+    if (!Number.isFinite(freq)) return
+    const idx = addBand(freq)
+    addBandPrompt = false
+    if (idx >= 0) openBandEditor(idx)
+  }
+
   // ── Preset flows (dirty-guarded) ────────────────────────────────────────
 
   type DirtyChoice = 'save' | 'discard' | 'cancel'
@@ -194,7 +260,10 @@
         return
       }
       if (choice === 'save') {
-        await saveAsCurrent()
+        // Unified save: user-preset base → overwrite; builtin/import → new
+        // "(modified)" preset (no name prompt mid-switch — the default name
+        // is the old Save-as-Current behavior).
+        await saveEqSession()
       }
       // 'discard' falls through — applyPreset resets the session clean.
     }
@@ -227,31 +296,13 @@
   }
 
   async function saveCurrentPreset() {
-    const name = newPresetName.trim() || `User Preset ${Date.now()}`
-    const st = get(workingEq).state
-    const preset: EqPreset = {
-      id: `user_${Date.now()}`,
-      name,
-      mode: st.mode,
-      preampDb: st.preampDb,
-      filters: st.filters.map((f) => ({ ...f })),
-      graphicEqCurves: st.graphicEqCurves?.map((c) => c.map((p) => ({ ...p }))),
-    }
-    await saveUserPreset(preset)
+    await saveEqSession(newPresetName)
     saveDialogOpen = false
     newPresetName = ''
   }
 
   async function removePreset(id: string) {
     await deleteUserPreset(id)
-  }
-
-  async function saveAsCurrent() {
-    // Overwrite the active user preset with the working state (builtin base
-    // → the store creates a "(modified)" user preset and re-activates it).
-    // The store resets the working session clean against the committed
-    // preset; the engine already holds these exact values.
-    await saveAsCurrentPreset(structuredClone(get(workingEq).state))
   }
 
   function handleImport() {
@@ -323,7 +374,9 @@
 
   <div class="flex-1 overflow-y-auto px-4 pb-6 space-y-4">
 
-    <!-- PRESET SELECTOR -->
+    <!-- PRESET SELECTOR: the select owns the full row width (2026-09-14:
+         preset names were truncated by four squeeze-in buttons); the actions
+         moved to their own row below. -->
     <div class="flex items-center gap-2">
       <div class="relative flex-1">
         <select
@@ -341,22 +394,36 @@
       {#if $workingEq.dirty}
         <span class="shrink-0 text-[10px] font-medium text-amber-400" title="Unsaved changes over {findPresetById($workingEq.base.id)?.name ?? 'the active preset'} — they persist with the working state until you save or reset">(edited)</span>
       {/if}
-      <button onclick={saveAsCurrent} class="shrink-0 rounded-lg bg-sky-500/15 px-2.5 py-2 text-xs text-sky-400 transition-colors hover:bg-sky-500/25 ring-1 ring-sky-500/30" title="Save current slider positions as the active preset">Save as Current</button>
-      <button onclick={() => { saveDialogOpen = true; newPresetName = '' }} class="shrink-0 rounded-lg bg-white/10 px-2.5 py-2 text-xs text-primary transition-colors hover:bg-white/20 ring-1 ring-white/10" title="Save as new preset">Save New</button>
-      <button onclick={() => { showImport = !showImport; importText = ''; importErrors = '' }} class="shrink-0 rounded-lg bg-surface px-2.5 py-2 text-xs text-muted transition-colors hover:text-primary ring-1 ring-white/10" title="Import AutoEQ/Parametric EQ text">
+    </div>
+
+    <!-- ACTIONS ROW: one Save (unified — overwrites user presets, asks for a
+         name over builtins/imports), Import, Delete. Labels are short so all
+         three fit a 360px row without truncation. -->
+    <div class="flex items-center gap-2">
+      <button
+        onclick={onSaveTap}
+        disabled={saveDisabled}
+        class={"flex-1 rounded-lg px-2.5 py-2 text-xs font-medium ring-1 transition-colors " +
+          (saveDisabled
+            ? 'bg-white/5 text-muted/40 ring-white/5'
+            : 'bg-sky-500/15 text-sky-400 ring-sky-500/30 hover:bg-sky-500/25')}
+      >
+        {saveNeedsName ? 'Save as New…' : 'Save'}
+      </button>
+      <button onclick={() => { showImport = !showImport; importText = ''; importErrors = '' }} class="rounded-lg bg-surface px-2.5 py-2 text-xs text-muted transition-colors hover:text-primary ring-1 ring-white/10" title="Import AutoEQ/Parametric EQ text">
         {showImport ? 'Close' : 'Import'}
       </button>
       {#if !presets.find(p => p.id === $activePresetId)?.isBuiltin}
-        <button onclick={() => removePreset($activePresetId)} class="shrink-0 rounded-lg bg-surface px-2.5 py-2 text-xs text-red-400 transition-colors hover:bg-red-500/10 ring-1 ring-white/10" title="Delete preset">Delete</button>
+        <button onclick={() => removePreset($activePresetId)} class="rounded-lg bg-surface px-2.5 py-2 text-xs text-red-400 transition-colors hover:bg-red-500/10 ring-1 ring-white/10" title="Delete preset">Delete</button>
       {/if}
     </div>
 
-    <!-- SAVE DIALOG -->
+    <!-- SAVE DIALOG (only for builtin/imported bases — a name is needed) -->
     {#if saveDialogOpen}
       <div class="flex items-center gap-2 rounded-lg bg-surface px-3 py-2 ring-1 ring-white/10">
         <input
           type="text"
-          placeholder="Preset name..."
+          placeholder="Preset name…"
           bind:value={newPresetName}
           class="flex-1 bg-transparent text-xs text-primary outline-none placeholder:text-muted/50"
           onkeydown={(e) => { if (e.key === 'Enter') void saveCurrentPreset() }}
@@ -413,7 +480,8 @@
       <span class="w-14 text-right text-[10px] tabular-nums text-muted/60">{preampDb > 0 ? '+' : ''}{preampDb.toFixed(1)} dB</span>
     </div>
 
-    <!-- FREQUENCY RESPONSE GRAPH (editable: drag points, tap to add, × to remove) -->
+    <!-- FREQUENCY RESPONSE GRAPH (editable: drag points, tap a dot for
+         value/delete, tap empty space to add) -->
     <EqGraph
       preampDb={$eqBypassed ? 0 : preampDb}
       filters={eqState.filters}
@@ -422,34 +490,40 @@
       graphicEqCurves={eqState.graphicEqCurves}
       editable={!isGraphicImport}
       onMoveFilter={moveFilter}
-      onAddFilter={addBand}
+      onAddFilter={(freq) => {
+        const idx = addBand(freq)
+        if (idx >= 0) openBandEditor(idx)
+      }}
       onRemoveFilter={removeBand}
     />
 
-    <!-- BAND EDITOR CONTROLS -->
+    <!-- BAND EDITOR CONTROLS: each action says what it does -->
     <div class="flex items-center justify-between gap-2">
       <div class="flex items-center gap-2">
         <button
-          onclick={addBandAtWidestGap}
+          onclick={onAddBandTap}
           class="rounded px-2.5 py-1 text-xs text-primary ring-1 ring-white/10 transition-colors hover:bg-white/10"
-          title="Add a band at the widest frequency gap"
+          title="Add a band — you pick the frequency (tapping the graph also adds a band at that spot)"
           disabled={$eqBypassed || isGraphicImport}
         >+ Add Band</button>
         <button
           onclick={flipAllCurves}
           class="rounded px-2.5 py-1 text-xs ring-1 ring-white/10 transition-colors hover:bg-white/10 {anyGraphic ? 'text-accent' : 'text-muted'}"
-          title="Convert every band: parametric (own peak filter) ↔ graphic (point on the curve)"
+          title="Convert every band: parametric (its own peak filter) ↔ graphic (a point the curve passes through)"
           disabled={$eqBypassed || !canFlipCurves}
-        >Flip Curve Mode</button>
+        >{anyGraphic ? 'All Parametric' : 'All Graphic'}</button>
       </div>
       {#if anyGraphic}
-        <span class="text-[10px] text-muted/60" title="Graphic points render through the FFT convolution path — the curve passes through every point">curve points: ■</span>
+        <span class="text-[10px] text-muted/60" title="■ = graphic point the curve passes through; ● = parametric band with its own peak">■ graphic · ● parametric</span>
       {/if}
     </div>
 
-    <!-- BAND SLIDERS (grows beyond 10 — every filter is a row) -->
+    <!-- BAND SLIDERS: one slim column per band — value / vertical slider /
+         tappable frequency. Q, curve kind and remove live in the dot's
+         popover on the graph (and Q stays in the popover for parametric
+         bands), so 12+ columns stay readable on a phone. -->
     <div class="overflow-x-auto pb-1">
-      <div class="flex items-stretch justify-between gap-1" style="height: 220px; min-width: min-content;">
+      <div class="flex items-stretch justify-between gap-1" style="height: 190px; min-width: min-content;">
         {#each eqState.filters as f, i (i)}
           <div class="flex min-w-9 flex-1 flex-col items-center gap-1">
             <span class="text-[10px] tabular-nums text-muted/60">{formatDb(f.gain)}</span>
@@ -461,41 +535,95 @@
                 onInput={(v) => setGain(i, v)}
               />
             </div>
-            <span class="text-[10px] {f.curve === 'graphic' ? 'text-accent' : 'text-muted/50'}">{freqLabel(f.frequency)}</span>
-            {#if !isGraphicImport && f.curve !== 'graphic'}
-              <AppSlider
-                value={f.q}
-                min={0.2}
-                max={8}
-                step={0.1}
-                label="Q for {freqLabel(f.frequency)} Hz band"
-                onInput={(v) => setBandQ(i, v)}
-                disabled={$eqBypassed}
-                class="min-w-0 flex-1 px-1"
-              />
-            {/if}
             {#if !isGraphicImport}
-              <div class="flex items-center gap-1">
-                <button
-                  onclick={() => toggleBandCurve(i)}
-                  class="rounded p-0.5 text-[9px] leading-none {f.curve === 'graphic' ? 'text-accent' : 'text-muted/60'} hover:text-primary"
-                  title={f.curve === 'graphic' ? 'Graphic curve point — click to make a parametric peak' : 'Parametric peak — click to make a graphic curve point'}
-                  disabled={$eqBypassed}
-                >{f.curve === 'graphic' ? '■' : '●'}</button>
-                <button
-                  onclick={() => removeBand(i)}
-                  class="rounded p-0.5 text-[9px] leading-none text-muted/40 hover:text-red-400"
-                  title="Remove band"
-                  disabled={$eqBypassed || eqState.filters.length <= 1}
-                >×</button>
-              </div>
+              <button
+                onclick={() => openBandEditor(i)}
+                class="rounded px-1 text-[10px] leading-tight {f.curve === 'graphic' ? 'text-accent' : 'text-muted/70'} hover:text-primary"
+                title="Band settings: frequency, width (Q), curve kind, remove"
+                disabled={$eqBypassed}
+              >{freqLabel(f.frequency)}{f.curve === 'graphic' ? ' ■' : ''}</button>
             {:else}
-              <span class="h-4"></span>
+              <span class="text-[10px] text-muted/50">{freqLabel(f.frequency)}</span>
             {/if}
           </div>
         {/each}
       </div>
     </div>
+
+    <!-- PER-BAND POPOVER: frequency (typed!), width (Q), curve kind, remove -->
+    {#if bandPopover !== null && eqState.filters[bandPopover]}
+      {@const bi = bandPopover}
+      {@const bf = eqState.filters[bi]}
+      <div class="rounded-lg bg-surface px-3 py-2.5 ring-1 ring-white/10">
+        <div class="mb-2 flex items-center justify-between">
+          <span class="text-xs font-medium text-primary">Band · {freqLabel(bf.frequency)} Hz {bf.curve === 'graphic' ? '(graphic point)' : '(parametric)'}</span>
+          <button onclick={() => (bandPopover = null)} class="rounded-full p-1 text-muted hover:text-primary" aria-label="Close band editor">
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6l-12 12" /></svg>
+          </button>
+        </div>
+        <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <label class="flex items-center gap-1.5 text-[10px] text-muted">
+            Freq
+            <input
+              type="number"
+              min="20"
+              max="20000"
+              bind:value={bandFreqDraft}
+              onchange={applyBandFreq}
+              onkeydown={(e) => { if (e.key === 'Enter') applyBandFreq() }}
+              class="w-20 rounded bg-white/5 px-2 py-1 text-xs tabular-nums text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40"
+            />
+            Hz
+          </label>
+          {#if bf.curve !== 'graphic'}
+            <label class="flex items-center gap-2 text-[10px] text-muted" title="Bandwidth: low = broad, high = narrow">
+              Width (Q)
+              <AppSlider
+                value={bf.q}
+                min={0.2}
+                max={8}
+                step={0.1}
+                label="Q for {freqLabel(bf.frequency)} Hz band"
+                onInput={(v) => setBandQ(bi, v)}
+                disabled={$eqBypassed}
+                class="w-28"
+              />
+              <span class="w-8 text-right text-[10px] tabular-nums text-muted/70">{bf.q.toFixed(1)}</span>
+            </label>
+          {/if}
+          <button
+            onclick={() => toggleBandCurve(bi)}
+            class="rounded px-2 py-1 text-[10px] ring-1 ring-white/10 {bf.curve === 'graphic' ? 'text-accent' : 'text-muted'} hover:bg-white/10"
+            title={bf.curve === 'graphic' ? 'Graphic curve point — tap to give this band its own peak' : 'Parametric band — tap to make it a point the curve passes through'}
+            disabled={$eqBypassed}
+          >{bf.curve === 'graphic' ? '■ Graphic' : '● Parametric'}</button>
+          <button
+            onclick={() => { const i = bandPopover; bandPopover = null; if (i !== null) removeBand(i) }}
+            class="rounded px-2 py-1 text-[10px] text-red-400/90 ring-1 ring-white/10 hover:bg-red-500/10"
+            title="Remove this band"
+            disabled={$eqBypassed || eqState.filters.length <= 1}
+          >Remove</button>
+        </div>
+      </div>
+    {/if}
+
+    <!-- ADD-BAND FREQUENCY PROMPT -->
+    {#if addBandPrompt}
+      <div class="flex items-center gap-2 rounded-lg bg-surface px-3 py-2 ring-1 ring-white/10">
+        <span class="text-xs text-muted">New band at</span>
+        <input
+          type="number"
+          min="20"
+          max="20000"
+          bind:value={addBandFreq}
+          onkeydown={(e) => { if (e.key === 'Enter') confirmAddBand() }}
+          class="w-24 rounded bg-white/5 px-2 py-1 text-xs tabular-nums text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40"
+        />
+        <span class="text-xs text-muted">Hz</span>
+        <button onclick={confirmAddBand} class="ml-auto rounded bg-white/15 px-2.5 py-1 text-xs font-medium text-primary hover:bg-white/25">Add</button>
+        <button onclick={() => (addBandPrompt = false)} class="rounded px-2 py-1 text-xs text-muted">Cancel</button>
+      </div>
+    {/if}
 
     <!-- RESET -->
     <div class="flex justify-center">

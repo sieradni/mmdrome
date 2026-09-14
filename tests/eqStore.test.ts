@@ -25,6 +25,7 @@ import {
   deleteUserPreset,
   applyPreset,
   saveAsCurrentPreset,
+  saveEqSession,
   editWorkingEq,
   cancelPendingWorkingCommit,
 } from '../src/lib/eq/eqStore'
@@ -253,4 +254,82 @@ test('saveAsCurrentPreset consumes the working state and re-bases the session cl
   assert.equal(get(workingEq).dirty, false, 'session clean against the committed preset')
   assert.equal(get(workingEq).base.id, committed.id)
   assert.equal((rows.get('active_eq_preset') as string), committed.id, 'committed selection persisted')
+})
+
+// ── saveEqSession (2026-09-14 unified save) ──────────────────────────────
+
+test('saveEqSession overwrites a user-preset base in place and re-bases clean', async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore()
+  await saveUserPreset({ id: 'user_probe', name: 'Probe', mode: 'parametric', preampDb: 0, filters: BUILTIN_PRESETS[0].filters.map((f) => ({ ...f })) })
+  assert.equal(get(activePresetId), 'user_probe')
+  editWorkingEq((st) => {
+    st.preampDb = -4
+    return st
+  })
+  const committed = await saveEqSession()
+  assert.equal(committed.id, 'user_probe', 'overwrote in place')
+  assert.equal(committed.preampDb, -4)
+  assert.equal(get(workingEq).dirty, false, 'session re-based clean')
+  assert.equal(get(currentEqState)?.preampDb, -4)
+})
+
+test('saveEqSession over a builtin creates a new preset with the default (modified) name', async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore()
+  editWorkingEq((st) => {
+    st.filters[0].gain = 3
+    return st
+  })
+  const committed = await saveEqSession()
+  assert.match(committed.id, /^user_/)
+  assert.equal(committed.name, 'Flat (modified)')
+  assert.equal(committed.filters[0].gain, 3)
+  assert.equal(get(activePresetId), committed.id)
+  assert.equal(get(workingEq).dirty, false)
+})
+
+test('saveEqSession with a name uses it; a clean session still saves (no-op overwrite)', async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore()
+  const committed = await saveEqSession('My Mix')
+  assert.equal(committed.name, 'My Mix')
+  assert.equal(get(activePresetId), committed.id)
+  // Clean session over the new user preset: second save is a clean no-op overwrite
+  const again = await saveEqSession()
+  assert.equal(again.id, committed.id)
+  assert.equal(get(workingEq).dirty, false)
+})
+
+test('saveEqSession over an imported base creates a new preset carrying graphicEqCurves', async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore()
+  const imported: EqPreset = {
+    id: 'imported',
+    name: 'Imported',
+    mode: 'parametric',
+    preampDb: -2,
+    filters: BUILTIN_PRESETS[0].filters.map((f) => ({ ...f })),
+    graphicEqCurves: [[{ frequency: 100, gainDb: 4 }]],
+  }
+  // Land the session on the import without going through the view's handler.
+  applyPreset('flat')
+  workingEq.set({
+    base: imported,
+    state: imported,
+    dirty: false,
+  } as never)
+  editWorkingEq((st) => {
+    st.preampDb = -5
+    return st
+  })
+  const committed = await saveEqSession()
+  assert.match(committed.id, /^user_/)
+  assert.equal(committed.name, 'Imported (modified)')
+  assert.deepEqual(committed.graphicEqCurves, [[{ frequency: 100, gainDb: 4 }]], 'curve stack survives the save')
+  assert.equal(committed.preampDb, -5)
 })
