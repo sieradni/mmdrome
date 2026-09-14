@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.3",
-      "versionDate": "2026-09-14T03:39:10.586Z",
-      "versionDescription": "EQ overhaul: persistent working state, editable graph, flexible bands with per-point curve modes; slider visuals fixed on all platforms",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.3/mmdrome.ipa",
+      "version": "1.2.4",
+      "versionDate": "2026-09-14T06:13:57.328Z",
+      "versionDescription": "Navidrome lyrics: synced lyrics with auto-scroll and tap-to-seek in Now Playing, cached offline; layout collapses gracefully when a track has no lyrics",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.4/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.4",
+          "buildVersion": "8",
+          "date": "2026-09-14T06:13:57.328Z",
+          "localizedDescription": "Navidrome lyrics: synced lyrics with auto-scroll and tap-to-seek in Now Playing, cached offline; layout collapses gracefully when a track has no lyrics",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.4/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.3",
           "buildVersion": "7",
@@ -80,6 +88,14 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.4",
+      "identifier": "ios-v1.2.4",
+      "caption": "Navidrome lyrics: synced lyrics with auto-scroll and tap-to-seek in Now Playing, cached offline; layout collapses gracefully when a track ha",
+      "date": "2026-09-14T06:13:57.328Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.3",
       "identifier": "ios-v1.2.3",
       "caption": "EQ overhaul: persistent working state, editable graph, flexible bands with per-point curve modes; slider visuals fixed on all platforms",
@@ -108,14 +124,6 @@
       "identifier": "ios-v1.2.0",
       "caption": "Finalized UI design: accent-marks-states, whole-row now-playing, rectangular seek bar, compact queue island, scroll-to-top.",
       "date": "2026-09-11T22:56:08.717Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.1.1",
-      "identifier": "ios-v1.1.1",
-      "caption": "Low-data transcoding fixes, live data-saver status, undecodable-track skip",
-      "date": "2026-09-10T04:49:06.430Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
