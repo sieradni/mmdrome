@@ -163,6 +163,23 @@ class EngineFacade {
     }
   }
 
+  /** Live per-band frequency + gain (+ optional Q). Web updates in place
+   *  with NO chain rebuild; native folds the change into its existing setEq
+   *  snapshot push. */
+  setEqBandParams(index: number, frequency: number, gainDb: number, q?: number): void {
+    if (this.isNative) {
+      const f = this._filters[index]
+      if (f) {
+        f.frequency = frequency
+        f.gain = gainDb
+        if (q !== undefined) f.q = q
+      }
+      this._pushNativeEq()
+    } else {
+      audioManager.setEqBandParams(index, frequency, gainDb, q)
+    }
+  }
+
   applyFiltersConfig(filters: EqFilterConfig[]): void {
     if (this.isNative) {
       this._filters = filters.map((f) => ({ ...f }))
@@ -199,6 +216,7 @@ class EngineFacade {
       gain: f.gain,
       q: f.q,
       enabled: f.enabled,
+      curve: f.curve,
     }))
     BackgroundAudio.setEq({ filters, bypassed: this._bypassed }).catch(() => {})
   }

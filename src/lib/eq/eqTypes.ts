@@ -9,12 +9,23 @@ export type EqFilterType =
   | 'bandpass'
   | 'notch'
 
+/**
+ * Per-band curve rendering. ABSENT = 'parametric' (all existing presets,
+ * imports, and persisted states parse unchanged — the field is optional by
+ * design). 'graphic' marks the band as a point on the interpolated curve:
+ * its gain is reached by linear log-frequency interpolation to its
+ * neighbors (the GraphicEQ convolution path), not by its own biquad bump.
+ */
+export type EqCurveType = 'parametric' | 'graphic'
+
 export interface EqFilterConfig {
   type: EqFilterType
   frequency: number
   gain: number
   q: number
   enabled: boolean
+  /** Optional curve kind; missing = 'parametric' (see EqCurveType). */
+  curve?: EqCurveType
 }
 
 /** A single GraphicEQ frequency-gain point */

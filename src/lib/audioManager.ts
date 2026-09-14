@@ -1,7 +1,8 @@
 import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
 import { parseEqText } from './eq/eqParser'
 import { computeBiquadCoefficients } from './eq/eqResponseCalculator'
-import { createGraphicEqAudioBuffer, filtersToPoints } from './eq/graphicEqEngine'
+import { createGraphicEqAudioBuffer } from './eq/graphicEqEngine'
+import { hasGraphicBands, bandsToCurvePoints } from './eq/eqCurveTopology'
 import { DEFAULT_EQ_Q } from './eq/eqTypes'
 import type { EqFilterConfig } from './eq/eqTypes'
 import type { EqPoint } from './eq/eqTypes'
@@ -313,14 +314,28 @@ class AudioManager {
         this._eqProcessorReady = false
       }
 
-      if (this._graphicEqMode && this._eqFilterConfigs.length > 0) {
+      if (this._shouldUseConvolverPath() && this._eqFilterConfigs.length > 0) {
         this._updateConvolverBuffer()
         this._reconnectChain()
       } else if (this._eqProcessorReady) {
         this._reconnectChain()
         this._sendEqConfigToWorklet()
       } else {
-        this._buildDefaultEq()
+        // Biquad fallback (no worklet): rebuild from the stored configs when
+        // present — flexible-band EQs must not silently collapse to the
+        // flat 10-band default on engines without AudioWorklet support.
+        if (this._eqFilterConfigs.length > 0) {
+          this._eqFilters = this._eqFilterConfigs.map(cfg => {
+            const f = this._ctx!.createBiquadFilter()
+            f.type = cfg.type
+            f.frequency.value = cfg.frequency
+            f.gain.value = clamp(cfg.enabled ? cfg.gain : 0, -12, 12)
+            f.Q.value = cfg.q
+            return f
+          })
+        } else {
+          this._buildDefaultEq()
+        }
         this._reconnectChain()
       }
 
@@ -514,7 +529,38 @@ class AudioManager {
       config.gain = clamped
     }
 
-    if (this._graphicEqMode) {
+    if (this._shouldUseConvolverPath()) {
+      this._updateConvolverBuffer()
+    } else if (this._eqProcessorReady) {
+      this._sendEqConfigToWorklet()
+    }
+  }
+
+  /** Live per-band frequency + gain (+ optional Q) update WITHOUT a chain
+   *  rebuild — the editable graph's drag affordance and the per-row Q
+   *  slider (a drag can move dozens of events per second;
+   *  disconnect/reconnect churn per event is audible garbage). The band
+   *  LIST (count/order) is untouched here — structural changes go through
+   *  applyFiltersConfig, which rebuilds the chain once. */
+  setEqBandParams(bandIndex: number, frequency: number, gainDb: number, q?: number): void {
+    const clampedGain = clamp(gainDb, -12, 12)
+    const clampedFreq = clamp(frequency, 20, 20000)
+
+    const filter = this._eqFilters[bandIndex]
+    if (filter) {
+      filter.frequency.value = clampedFreq
+      filter.gain.value = clampedGain
+      if (q !== undefined) filter.Q.value = clamp(q, 0.1, 12)
+    }
+
+    const config = this._eqFilterConfigs[bandIndex]
+    if (config) {
+      config.frequency = clampedFreq
+      config.gain = clampedGain
+      if (q !== undefined) config.q = clamp(q, 0.1, 12)
+    }
+
+    if (this._shouldUseConvolverPath()) {
       this._updateConvolverBuffer()
     } else if (this._eqProcessorReady) {
       this._sendEqConfigToWorklet()
@@ -603,6 +649,19 @@ class AudioManager {
 
     if (!this._ctx) return
 
+    // Hybrid EQ (any enabled graphic band — eqCurveTopology): the WHOLE EQ
+    // renders through the FFT-convolver path. It reproduces biquad
+    // responses accurately at 4096-tap resolution, and a convolver cannot
+    // be mixed with the biquad/worklet chain in one signal path — so the
+    // parametric bands contribute their gain as curve points instead of
+    // running as biquads. All-parametric configs keep the biquad/worklet
+    // path (cheaper, per-band live gain updates).
+    if (this._shouldUseConvolverPath()) {
+      this._updateConvolverBuffer()
+      this._reconnectChain()
+      return
+    }
+
     if (this._eqProcessorReady && this._eqWorkletNode) {
       this._sendEqConfigToWorklet()
       this._reconnectChain()
@@ -649,21 +708,27 @@ class AudioManager {
     })
   }
 
+  /** No-worklet fallback. Materializes the STORED configs as biquads when
+   *  any exist (this runs after applyFiltersConfig already recorded them —
+   *  overwriting with a flat 10-band grid silently collapsed a flexible-
+   *  band or imported parametric EQ to flat); a flat default grid only for
+   *  a cold engine with no EQ applied yet. */
   private _buildDefaultEq(): void {
     if (!this._ctx) return
-    this._eqFilterConfigs = EQ_FREQUENCIES.map(freq => ({
-      type: 'peaking',
-      frequency: freq,
-      gain: 0,
-      q: DEFAULT_EQ_Q,
-      enabled: true,
-    }))
-    this._eqFilters = EQ_FREQUENCIES.map(freq => {
+    const configs =
+      this._eqFilterConfigs.length > 0 ? this._eqFilterConfigs : EQ_FREQUENCIES.map(freq => ({
+        type: 'peaking' as const,
+        frequency: freq,
+        gain: 0,
+        q: DEFAULT_EQ_Q,
+        enabled: true,
+      }))
+    this._eqFilters = configs.map(cfg => {
       const f = this._ctx!.createBiquadFilter()
-      f.type = 'peaking'
-      f.frequency.value = freq
-      f.gain.value = 0
-      f.Q.value = DEFAULT_EQ_Q
+      f.type = cfg.type
+      f.frequency.value = cfg.frequency
+      f.gain.value = clamp(cfg.enabled ? cfg.gain : 0, -12, 12)
+      f.Q.value = cfg.q
       return f
     })
   }
@@ -673,6 +738,13 @@ class AudioManager {
       f.disconnect()
     }
     this._eqFilters = []
+  }
+
+  /** The EQ signal path decision: the graphic IMPORT mode OR any enabled
+   *  graphic-curve band routes through the FFT convolver (see
+   *  applyFiltersConfig). One predicate — every routing site reads it. */
+  private _shouldUseConvolverPath(): boolean {
+    return this._graphicEqMode || hasGraphicBands(this._eqFilterConfigs)
   }
 
   private _updateConvolverBuffer(): void {
@@ -685,7 +757,11 @@ class AudioManager {
       const buffer = createGraphicEqAudioBuffer(this._ctx, this._graphicEqCurves)
       this._convolverNode.buffer = buffer
     } else {
-      const points = filtersToPoints(this._eqFilterConfigs)
+      // Every enabled band as a curve point: graphic bands are literally
+      // curve points; parametric bands contribute their gain at their
+      // frequency (the 4096-tap convolver reproduces their biquad response
+      // accurately, including the interpolation between points).
+      const points = bandsToCurvePoints(this._eqFilterConfigs)
       if (points.length > 0) {
         const buffer = createGraphicEqAudioBuffer(this._ctx, [points])
         this._convolverNode.buffer = buffer
@@ -704,7 +780,7 @@ class AudioManager {
     if (this._eqWorkletNode) { try { this._eqWorkletNode.disconnect() } catch {} }
     if (this._convolverNode) { try { this._convolverNode.disconnect() } catch {} }
 
-    if (this._graphicEqMode && this._convolverNode && this._convolverNode.buffer) {
+    if (this._shouldUseConvolverPath() && this._convolverNode && this._convolverNode.buffer) {
       if (this._eqBypassed || this._eqFilterConfigs.length === 0) {
         this._soundTouch.connect(this._preamp)
       } else {

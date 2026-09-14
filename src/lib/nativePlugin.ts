@@ -21,6 +21,12 @@ export interface NativeFilterSnapshot {
   gain: number
   q: number
   enabled: boolean
+  /** Curve kind of the band ('graphic' = interpolated curve point).
+   *  Informational on the bridge today: native maps filters by order onto
+   *  its fixed 24-band node, so a graphic point's gain lands on its band —
+   *  the documented, honest approximation (plan §0.4). Swift ignores the
+   *  field until a native hybrid path exists. */
+  curve?: 'parametric' | 'graphic'
 }
 
 export interface NativeEngineState {
