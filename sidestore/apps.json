@@ -27,7 +27,8 @@
           "date": "2026-09-14T22:04:04.482Z",
           "localizedDescription": "Album/artist covers load ahead of your scroll: wider pre-roll, faster thumbnail pipeline",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.9/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4861302
         },
         {
           "version": "1.2.8",
