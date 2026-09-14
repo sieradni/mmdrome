@@ -5,7 +5,7 @@ interface PendingThumb {
   retries: number
 }
 
-const MAX_PER_TICK = 3
+const MAX_PER_TICK = 8
 const MAX_ZERO_SIZE_RETRIES = 10
 
 let pending: PendingThumb[] = []
@@ -60,6 +60,11 @@ function start(): void {
  * Queue a thumbnail load so the browser fetches/decodes at most `MAX_PER_TICK`
  * per frame, always nearest-to-viewport first. Fast scrolling past rows never
  * creates a decode backlog that stalls the current scroll position.
+ *
+ * 8/frame (2026-09-14, the "albums load slowly on a fast network" report):
+ * the old 3/frame serialized ~7+ frames just to ARM a screenful of album-grid
+ * cells before any byte moved — decode is already async (`decoding="async"`),
+ * so the cap only throttled the fetch starts, not the main thread.
  */
 export function requestThumb(el: HTMLElement, load: () => void): void {
   if (pending.some((p) => p.el === el)) return

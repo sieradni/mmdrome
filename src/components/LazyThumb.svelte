@@ -73,7 +73,12 @@
           requestThumb(container, () => { visible = true })
         }
       },
-      { rootMargin: '100px' }
+      // 800px pre-roll (2026-09-14, the "albums load slowly on a fast network"
+      // report): at 100px a grid cell was queued when it was already nearly on
+      // screen, so the user always watched the placeholder through queue +
+      // fetch + decode. 800px arms a cell several rows early — enough scroll
+      // time for a fast server to have the cover ready before it scrolls in.
+      { rootMargin: '800px' }
     )
     obs.observe(container)
     return () => {
@@ -85,11 +90,13 @@
 
 <div bind:this={container} class="{wrapperClass} overflow-hidden bg-surface-hover">
   {#if visible && currentUrl}
+    <!-- No loading="lazy": scheduling is OWNED by the IO pre-roll + thumbLoader
+         queue, and the browser's own lazy threshold (small on iOS Safari) would
+         re-defer cells armed early — fighting the pre-roll. -->
     <img
       src={currentUrl}
       alt=""
       class="h-full w-full object-cover"
-      loading="lazy"
       decoding="async"
       onerror={handleImgError}
     />
@@ -97,6 +104,6 @@
     <!-- No cover URL, the ladder exhausted, or no cover config: the app icon.
          A transient failure recovers on the next track/config change (the
          failure memory resets with the ladder). -->
-    <img src={fallbackIcon} alt="" class="h-full w-full object-cover opacity-60" loading="lazy" decoding="async" />
+    <img src={fallbackIcon} alt="" class="h-full w-full object-cover opacity-60" decoding="async" />
   {/if}
 </div>
