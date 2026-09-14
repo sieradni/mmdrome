@@ -333,3 +333,22 @@ test('saveEqSession over an imported base creates a new preset carrying graphicE
   assert.deepEqual(committed.graphicEqCurves, [[{ frequency: 100, gainDb: 4 }]], 'curve stack survives the save')
   assert.equal(committed.preampDb, -5)
 })
+
+test("saveEqSession mode 'new' duplicates a user-preset session instead of overwriting", async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore()
+  await saveUserPreset({ id: 'user_probe', name: 'Probe', mode: 'parametric', preampDb: 0, filters: BUILTIN_PRESETS[0].filters.map((f) => ({ ...f })) })
+  editWorkingEq((st) => {
+    st.preampDb = -9
+    return st
+  })
+  const copy = await saveEqSession(undefined, 'new')
+  assert.notEqual(copy.id, 'user_probe', 'a NEW preset was created, not an overwrite')
+  assert.equal(copy.name, 'Probe (modified)', 'default name follows the base')
+  assert.equal(copy.preampDb, -9)
+  assert.equal(get(activePresetId), copy.id, 'the copy is now active')
+  const original = get(userPresets).find((p) => p.id === 'user_probe')
+  assert.equal(original?.preampDb, 0, 'the original preset is untouched (duplicate semantics)')
+  assert.equal(get(userPresets).length, 2, 'both presets exist')
+})

@@ -168,25 +168,36 @@
   const canFlipCurves = $derived(!isGraphicImport && eqState.filters.length > 0)
   const anyGraphic = $derived(hasGraphicBands(eqState.filters))
 
-  // ── Unified save (2026-09-14 UX pass): ONE Save button. User-preset base →
-  //    overwrite; builtin/imported base → name-and-create. The dialog only
-  //    appears when a name is actually needed (the old dual Save-as-Current /
-  //    Save-New pair asked the user to know the difference up front). The
-  //    SESSION BASE decides (not activePresetId — an import keeps the old
-  //    preset selected while base.id is 'imported'; same rule as the store). ──
+  // ── Save (2026-09-14 UX pass, revised after user feedback): the button
+  //    opens a dialog with the two EXPLICIT choices — "Save as Current"
+  //    (overwrite the active user preset; hidden when the base is a builtin
+  //    or an import, where there is nothing of the user's to overwrite) and
+  //    "Save as New" with an optional name (always available — this is the
+  //    copy/duplicate path). The SESSION BASE decides (not activePresetId —
+  //    an import keeps the old preset selected while base.id is 'imported';
+  //    same rule as the store). ──
   const basePreset = $derived(presets.find((p) => p.id === $workingEq.base.id))
   const baseIsUserPreset = $derived(!!basePreset && !basePreset.isBuiltin && $workingEq.base.id !== 'imported')
-  const saveNeedsName = $derived(!baseIsUserPreset)
-  const saveDisabled = $derived(baseIsUserPreset && !$workingEq.dirty)
 
   function onSaveTap() {
-    if (saveDisabled) return
-    if (saveNeedsName) {
+    // Never disabled: even a CLEAN session offers Save as New, which is how
+    // an existing preset gets DUPLICATED (user request — copying must work).
+    newPresetName = ''
+    saveDialogOpen = true
+  }
+
+  function saveOverwrite() {
+    void saveEqSession(undefined, 'auto').then(() => {
+      saveDialogOpen = false
       newPresetName = ''
-      saveDialogOpen = true
-    } else {
-      void saveEqSession()
-    }
+    })
+  }
+
+  function saveAsNew() {
+    void saveEqSession(newPresetName, 'new').then(() => {
+      saveDialogOpen = false
+      newPresetName = ''
+    })
   }
 
   // ── Per-band popover (frequency edit + Q + curve kind + remove) — the
@@ -295,12 +306,6 @@
     resetWorkingEq(target)
   }
 
-  async function saveCurrentPreset() {
-    await saveEqSession(newPresetName)
-    saveDialogOpen = false
-    newPresetName = ''
-  }
-
   async function removePreset(id: string) {
     await deleteUserPreset(id)
   }
@@ -402,13 +407,9 @@
     <div class="flex items-center gap-2">
       <button
         onclick={onSaveTap}
-        disabled={saveDisabled}
-        class={"flex-1 rounded-lg px-2.5 py-2 text-xs font-medium ring-1 transition-colors " +
-          (saveDisabled
-            ? 'bg-white/5 text-muted/40 ring-white/5'
-            : 'bg-sky-500/15 text-sky-400 ring-sky-500/30 hover:bg-sky-500/25')}
+        class="flex-1 rounded-lg bg-sky-500/15 px-2.5 py-2 text-xs font-medium text-sky-400 ring-1 ring-sky-500/30 transition-colors hover:bg-sky-500/25"
       >
-        {saveNeedsName ? 'Save as New…' : 'Save'}
+        Save
       </button>
       <button onclick={() => { showImport = !showImport; importText = ''; importErrors = '' }} class="rounded-lg bg-surface px-2.5 py-2 text-xs text-muted transition-colors hover:text-primary ring-1 ring-white/10" title="Import AutoEQ/Parametric EQ text">
         {showImport ? 'Close' : 'Import'}
@@ -418,18 +419,31 @@
       {/if}
     </div>
 
-    <!-- SAVE DIALOG (only for builtin/imported bases — a name is needed) -->
+    <!-- SAVE DIALOG: both choices explicit — overwrite the active user
+         preset, or save as a NEW preset (the copy path, always available) -->
     {#if saveDialogOpen}
-      <div class="flex items-center gap-2 rounded-lg bg-surface px-3 py-2 ring-1 ring-white/10">
-        <input
-          type="text"
-          placeholder="Preset name…"
-          bind:value={newPresetName}
-          class="flex-1 bg-transparent text-xs text-primary outline-none placeholder:text-muted/50"
-          onkeydown={(e) => { if (e.key === 'Enter') void saveCurrentPreset() }}
-        />
-        <button onclick={() => void saveCurrentPreset()} class="rounded bg-white/15 px-2.5 py-1 text-xs font-medium text-primary hover:bg-white/25">Save</button>
-        <button onclick={() => saveDialogOpen = false} class="rounded px-2 py-1 text-xs text-muted">Cancel</button>
+      <div class="flex flex-col gap-2 rounded-lg bg-surface px-3 py-3 ring-1 ring-white/10">
+        {#if baseIsUserPreset}
+          <button
+            onclick={saveOverwrite}
+            class="rounded-lg bg-sky-500/15 px-3 py-2 text-left text-xs font-medium text-sky-400 ring-1 ring-sky-500/30 hover:bg-sky-500/25"
+          >
+            Save as Current
+            <span class="block text-[10px] font-normal text-sky-400/70">Overwrite “{basePreset?.name}” with these settings</span>
+          </button>
+        {/if}
+        <div class="flex items-center gap-2">
+          <input
+            type="text"
+            placeholder="New preset name…"
+            bind:value={newPresetName}
+            class="min-w-0 flex-1 rounded-lg bg-white/5 px-3 py-2 text-xs text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40 placeholder:text-muted/50"
+            onkeydown={(e) => { if (e.key === 'Enter') saveAsNew() }}
+          />
+          <button onclick={saveAsNew} class="shrink-0 rounded-lg bg-white/15 px-3 py-2 text-xs font-medium text-primary hover:bg-white/25">Save as New</button>
+        </div>
+        <p class="text-[10px] text-muted/60">{newPresetName.trim() ? `“${newPresetName.trim()}”` : `“${$workingEq.base.name} (modified)”`} will be created — the current preset stays untouched.</p>
+        <button onclick={() => (saveDialogOpen = false)} class="self-end rounded px-2 py-1 text-xs text-muted hover:text-primary">Cancel</button>
       </div>
     {/if}
 

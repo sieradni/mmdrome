@@ -252,15 +252,17 @@ export async function saveAsCurrentPreset(draft: EqPreset): Promise<EqPreset> {
 
 /**
  * Unified save (2026-09-14 UX pass): ONE function behind the EQ's single
- * Save button — overwrites the active preset when it is a user preset,
- * otherwise (builtin or imported base) creates a new preset from the
- * optional name (default `"<base> (modified)"`, exactly what Save-as-Current
- * did for builtins). Succeeds cleanly on a CLEAN session too (no-op
- * overwrite of the preset it already equals) so the button never has to be
- * disabled or explained. Carries graphicEqCurves through (the old
- * Save-as-Current dropped them — a saved import lost its curve stack).
+ * Save button. mode 'auto' (default): overwrite the active preset when it
+ * is a user preset, otherwise (builtin or imported base) create a new
+ * preset from the optional name (default `"<base> (modified)"`). mode
+ * 'new': ALWAYS create a new preset — the explicit "Save as New" choice
+ * (copy/duplicate), even when the base is a user preset the auto path
+ * would have overwritten. Succeeds cleanly on a CLEAN session too (no-op
+ * overwrite in 'auto') so the button never has to be disabled or
+ * explained. Carries graphicEqCurves through (the old Save-as-Current
+ * dropped them — a saved import lost its curve stack).
  */
-export async function saveEqSession(name?: string): Promise<EqPreset> {
+export async function saveEqSession(name?: string, mode: 'auto' | 'new' = 'auto'): Promise<EqPreset> {
   const activeId = get(activePresetId)
   const preset = findPresetById(activeId)
   const session = get(workingEq)
@@ -270,8 +272,9 @@ export async function saveEqSession(name?: string): Promise<EqPreset> {
   // so an activePresetId check would happily OVERWRITE that unrelated user
   // preset with imported values (found by the eqStore test).
   const baseIsImport = session.base.id === 'imported'
+  const asNew = mode === 'new' || !preset || preset.isBuiltin || baseIsImport
 
-  if (preset && !preset.isBuiltin && !baseIsImport) {
+  if (!asNew) {
     // Overwrite path: keep the preset's identity, take the working values.
     const committed: EqPreset = {
       ...preset,
@@ -296,9 +299,9 @@ export async function saveEqSession(name?: string): Promise<EqPreset> {
     return committed
   }
 
-  // Builtin or imported base: create a new user preset. The default name
-  // follows the SESSION BASE (an import saved while 'Flat' is selected must
-  // not call itself "Flat (modified)").
+  // Builtin/imported base, or an explicit Save-as-New: create a new user
+  // preset. The default name follows the SESSION BASE (an import saved while
+  // 'Flat' is selected must not call itself "Flat (modified)").
   const committed: EqPreset = {
     id: `user_${Date.now()}`,
     name: name?.trim() || `${session.base.name ?? preset?.name ?? 'User'} (modified)`,
