@@ -160,5 +160,7 @@ console.log('  ios.yml builds the unsigned IPA and publishes the GitHub Release.
 console.log('  SideStore source URL: https://cdn.jsdelivr.net/gh/sieradni/mmdrome@main/sidestore/apps.json')
 console.log('  AFTER the release publishes: re-run this script for the same')
 console.log('  version with --size <asset bytes> (SideStore hard-fails without')
-console.log('  size), commit, push, then purge the CDN:')
+console.log('  size), commit, push, then purge the CDN. Through npm the flag')
+console.log('  needs the -- separator: npm run release:ios 1.2.7 "notes" -- --size N')
+console.log('  (a bare --size is eaten by npm and its value lands in the notes).')
 console.log('  https://purge.jsdelivr.net/gh/sieradni/mmdrome@main/sidestore/apps.json')
