@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.8",
-      "versionDate": "2026-09-14T21:21:17.553Z",
-      "versionDescription": "Slider knobs mark the exact value with a lighter track; Art/Lyrics button only appears for songs that have lyrics",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.8/mmdrome.ipa",
+      "version": "1.2.9",
+      "versionDate": "2026-09-14T22:04:04.482Z",
+      "versionDescription": "Album/artist covers load ahead of your scroll: wider pre-roll, faster thumbnail pipeline",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.9/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.9",
+          "buildVersion": "13",
+          "date": "2026-09-14T22:04:04.482Z",
+          "localizedDescription": "Album/artist covers load ahead of your scroll: wider pre-roll, faster thumbnail pipeline",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.9/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.8",
           "buildVersion": "12",
@@ -125,6 +133,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.9",
+      "identifier": "ios-v1.2.9",
+      "appID": "com.mmdrome.player",
+      "caption": "Album/artist covers load ahead of your scroll: wider pre-roll, faster thumbnail pipeline",
+      "date": "2026-09-14T22:04:04.482Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.8",
       "identifier": "ios-v1.2.8",
       "appID": "com.mmdrome.player",
@@ -157,15 +174,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Slider usability: press-to-jump accent sliders everywhere; preload indicators now light up on fast servers; lyrics art backdrop + timestamps",
       "date": "2026-09-14T07:53:45.068Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.4",
-      "identifier": "ios-v1.2.4",
-      "appID": "com.mmdrome.player",
-      "caption": "Navidrome lyrics: synced highlight, tap-to-seek, cached with negative TTL",
-      "date": "2026-09-14T06:13:57.328Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
