@@ -118,6 +118,7 @@
     {
       "title": "mmdrome 1.2.7",
       "identifier": "ios-v1.2.7",
+      "appID": "com.mmdrome.player",
       "caption": "Preload indicators: engine-derived window — every upcoming row now lights reliably, and the current track's seek-bar layer appears even when",
       "date": "2026-09-14T10:52:40.115Z",
       "tintColor": "8E8E93",
@@ -126,6 +127,7 @@
     {
       "title": "mmdrome 1.2.6",
       "identifier": "ios-v1.2.6",
+      "appID": "com.mmdrome.player",
       "caption": "Instant preload indicators: downloads light up the moment they finish, seekbar loaded layer on fast servers; search clear buttons",
       "date": "2026-09-14T08:50:36.935Z",
       "tintColor": "8E8E93",
@@ -134,6 +136,7 @@
     {
       "title": "mmdrome 1.2.5",
       "identifier": "ios-v1.2.5",
+      "appID": "com.mmdrome.player",
       "caption": "Slider usability: press-to-jump accent sliders everywhere; preload indicators now light up on fast servers; lyrics art backdrop + timestamps",
       "date": "2026-09-14T07:53:45.068Z",
       "tintColor": "8E8E93",
@@ -142,6 +145,7 @@
     {
       "title": "mmdrome 1.2.4",
       "identifier": "ios-v1.2.4",
+      "appID": "com.mmdrome.player",
       "caption": "Navidrome lyrics: synced highlight, tap-to-seek, cached with negative TTL",
       "date": "2026-09-14T06:13:57.328Z",
       "tintColor": "8E8E93",
@@ -150,6 +154,7 @@
     {
       "title": "mmdrome 1.2.3",
       "identifier": "ios-v1.2.3",
+      "appID": "com.mmdrome.player",
       "caption": "EQ overhaul: persistent working state, editable graph, flexible bands with per-point curve modes; slider visuals fixed on all platforms",
       "date": "2026-09-14T03:39:10.586Z",
       "tintColor": "8E8E93",

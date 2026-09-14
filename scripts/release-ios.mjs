@@ -116,7 +116,10 @@ const versionEntry = {
 }
 const versions = [versionEntry, ...((source?.apps?.[0]?.versions ?? []).filter((v) => v.version !== version))]
 const news = [
-  { title: `mmdrome ${version}`, identifier: tag, caption: notes.slice(0, 140), date: entryDate, tintColor: TINT, imageURL: ICON_URL },
+  // appID links the news card to the app's store page (AltStore spec). Without
+  // it the card is inert — and the card is the only "new version" surface many
+  // users ever see, since the install/update button lives on the app page.
+  { title: `mmdrome ${version}`, identifier: tag, appID: BUNDLE_ID, caption: notes.slice(0, 140), date: entryDate, tintColor: TINT, imageURL: ICON_URL },
   ...((source?.news ?? []).filter((n) => n.identifier !== tag)),
 ].slice(0, 5)
 source = {
