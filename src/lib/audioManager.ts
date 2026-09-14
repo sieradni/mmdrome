@@ -38,6 +38,12 @@ class AudioManager {
   private _speed = 1
   private _pitchOctaves = 0
   private _tapeMode = false
+  /** SoundTouch param writes on a LIVE node are never written directly (A3-web,
+   *  _markStDirty) — dirty + debounced rebuild instead. */
+  private _stParamsDirty = false
+  private _stRebuildTimer: ReturnType<typeof setTimeout> | null = null
+  /** True once the SoundTouch node is connected into a running graph (pullable). */
+  private _stNodeLive = false
   private _snapTolerance = 0.15
   private _eqBypassed = false
   private _eqFilters: BiquadFilterNode[] = []
@@ -339,6 +345,7 @@ class AudioManager {
         this._reconnectChain()
       }
 
+      this._stNodeLive = true
       this._applyTempo()
       this._applyPitch(this._pitchOctaves)
 
@@ -357,6 +364,12 @@ class AudioManager {
       clearTimeout(this._retireTimer)
       this._retireTimer = null
     }
+    if (this._stRebuildTimer !== null) {
+      clearTimeout(this._stRebuildTimer)
+      this._stRebuildTimer = null
+    }
+    this._stParamsDirty = false
+    this._stNodeLive = false
     this._fadeInFlight = false
     this._seekSuppressed = false
     if (this._sourceA) { try { this._sourceA.disconnect() } catch {} }
@@ -452,6 +465,68 @@ class AudioManager {
   reapplyEffects(): void {
     this._applyTempo()
     this._applyPitch(this._pitchOctaves)
+  }
+
+  /**
+   * The SoundTouch worklet is LIVE (its pipe holds in-flight audio): a param
+   * write must not land directly — mark dirty and let the debounced rebuild
+   * carry it on a fresh node (_rebuildSoundTouchNode). Element playbackRate
+   * writes stay live (plain HTMLMediaElement — always safe).
+   */
+  private _markStDirty(): void {
+    const st = this._soundTouch
+    if (!(st instanceof SoundTouchNode)) return
+    const wantRate = this._tapeMode ? 1 : this._speed
+    const wantPitch = this._tapeMode ? 1 : Math.pow(2, this._pitchOctaves)
+    // Same-value writes (reviveContext's reapplyEffects, redundant restores)
+    // must not schedule a pointless node swap.
+    if (st.playbackRate.value === wantRate && st.pitch.value === wantPitch) return
+    this._stParamsDirty = true
+    if (this._stRebuildTimer === null) {
+      this._stRebuildTimer = setTimeout(() => {
+        this._stRebuildTimer = null
+        if (!this._stParamsDirty) return
+        this._stParamsDirty = false
+        this._rebuildSoundTouchNode()
+      }, 120)
+    }
+  }
+
+  /**
+   * Web mirror of the native schedule-time param rule (A3). The worklet's
+   * pipe REWIRES its Transposer/Stretch stage order whenever the effective
+   * rate crosses 1 (calculateEffectiveRateAndTempo) — a live param write on a
+   * node that is mid-stream rebinds buffers around in-flight frames and the
+   * WSOLA ring can end up self-feeding: wrong pitch ("speed/pitch stop
+   * working"), then the ring recycles its own output as a looping phrase even
+   * while the element is paused ("paused it loops in place"). Fix: build a
+   * FRESH node (params written pre-pull, buffers empty), swap it into the
+   * chain and discard the wedged one. Debounced 120 ms so a slider drag
+   * collapses into one rebuild (native's restartForParams analog).
+   */
+  private _rebuildSoundTouchNode(): void {
+    if (!this._ctx || this._webAudioFailed || this._ctx.state === 'closed') return
+    let fresh: AudioNode
+    try {
+      fresh = new SoundTouchNode({ context: this._ctx })
+    } catch {
+      fresh = this._ctx.createGain()
+    }
+    if (fresh instanceof SoundTouchNode) {
+      // Pre-pull writes: the node has no connections yet, its pipe buffers
+      // are empty — a stage rewire here is harmless by construction.
+      fresh.playbackRate.value = this._tapeMode ? 1 : this._speed
+      fresh.pitch.value = this._tapeMode ? 1 : Math.pow(2, this._pitchOctaves)
+    }
+    const old = this._soundTouch
+    if (old) { try { old.disconnect() } catch {} }
+    if (this._rgGainA) { try { this._rgGainA.disconnect() } catch {}; this._rgGainA.connect(fresh) }
+    if (this._rgGainB) { try { this._rgGainB.disconnect() } catch {}; this._rgGainB.connect(fresh) }
+    this._soundTouch = fresh
+    // Conservative: treat the fresh node as live immediately (it starts
+    // receiving audio as soon as it is connected to the running context).
+    this._stNodeLive = true
+    this._reconnectChain()
   }
 
   cancelNextTrack(): void {
@@ -809,28 +884,27 @@ class AudioManager {
   }
 
   private _applyTempo(): void {
-    if (this._soundTouch instanceof SoundTouchNode) {
-      if (this._tapeMode) {
-        this.a.playbackRate = this._speed
-        this.b.playbackRate = this._speed
-        this._soundTouch.playbackRate.value = 1
+    this.a.playbackRate = this._speed
+    this.b.playbackRate = this._speed
+    const st = this._soundTouch
+    if (st instanceof SoundTouchNode) {
+      if (this._stNodeLive) {
+        // A3-web: the node is mid-stream — pipe-shape params go through the
+        // debounced rebuild, never a direct write (see _markStDirty).
+        this._markStDirty()
       } else {
-        this.a.playbackRate = this._speed
-        this.b.playbackRate = this._speed
-        this._soundTouch.playbackRate.value = this._speed
+        st.playbackRate.value = this._tapeMode ? 1 : this._speed
       }
-    } else {
-      this.a.playbackRate = this._speed
-      this.b.playbackRate = this._speed
     }
   }
 
   private _applyPitch(octaves: number): void {
-    if (this._soundTouch instanceof SoundTouchNode) {
-      if (this._tapeMode) {
-        this._soundTouch.pitch.value = 1
+    const st = this._soundTouch
+    if (st instanceof SoundTouchNode) {
+      if (this._stNodeLive) {
+        this._markStDirty()
       } else {
-        this._soundTouch.pitch.value = Math.pow(2, octaves)
+        st.pitch.value = this._tapeMode ? 1 : Math.pow(2, octaves)
       }
     }
   }

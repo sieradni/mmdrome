@@ -9,6 +9,7 @@
     effectiveDuration,
     playbackState,
     autoQueueFilterFields,
+    autoQueueScope,
     ratingBound,
     queueWrapNotice,
     autoQueueEmptyNotice,
@@ -693,7 +694,13 @@
     {/if}
 
     {#if $autoQueueEmptyNotice}
-      <p class="mx-4 mb-1 text-center text-[11px] text-yellow-500/80">Auto queue is empty — nothing left to add from the current filters</p>
+      <!-- B5: with an album/artist scope an exhausted pool is the scope's natural
+           end, not a filter problem — yellow would read as a warning. -->
+      {#if $autoQueueScope.albumScope || $autoQueueScope.artistScope}
+        <p class="mx-4 mb-1 text-center text-[11px] text-muted/60">End of {$autoQueueScope.albumScope ? 'album' : 'artist'}</p>
+      {:else}
+        <p class="mx-4 mb-1 text-center text-[11px] text-yellow-500/80">Auto queue is empty — nothing left to add from the current filters</p>
+      {/if}
     {/if}
 
     <!-- === AUTO QUEUE === -->
