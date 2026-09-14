@@ -11,6 +11,12 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-14 — SideStore source staleness survives a verified purge; gh-pages mirror added
+
+"I don't see the new version in SideStore" after 1.2.8 shipped — with the manifest provably correct on `main` and CI green. root cause: **a jsDelivr purge can report `"status": "finished"` while some edges keep serving the stale copy**. The dev box fetched 1.2.8 from `cdn.jsdelivr.net` immediately after the purge; the user's device kept an older manifest through TWO successful purges (also showing the "Open never flips to Update" state from the same stale copy — it matched the installed 1.2.7 exactly). Re-purge loops eventually converged, but the lesson is structural: purge verification from ONE vantage point proves nothing about the edge the device hits.
+
+Mitigation shipped: `scripts/deploy-web.mjs` now copies `sidestore/apps.json` into `dist/`, so every `npm run deploy` publishes the manifest to **`https://sieradni.github.io/mmdrome/sidestore/apps.json`** — a second source URL on GitHub Pages with a cache completely independent of jsDelivr. Same bytes, same IPA. README documents adding it as a fallback source. The debug recipe when a release "doesn't appear": check all of `cdn.jsdelivr.net`, `fastly.jsdelivr.net`, `gcore.jsdelivr.net`, and raw.githubusercontent for the version — if they disagree or the device disagrees with all of them, it's edge state, not the pipeline; hand the user the Pages URL.
+
 ## 2026-09-14 — Slider knob + track contrast; lyrics toggle gated on lyrics; SideStore "Open, never Update"
 
 Three field reports, three fixes:
