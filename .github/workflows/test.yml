@@ -11,6 +11,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # tests/sidestoreManifest.test.ts pins the manifest against the
+          # ios-v* git tags — the default shallow clone fetches none.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -33,6 +38,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # tests/sidestoreManifest.test.ts pins the manifest against the
+          # ios-v* git tags — the default shallow clone fetches none.
+          fetch-depth: 0
+          fetch-tags: true
 
       - name: Set up Node
         uses: actions/setup-node@v4
