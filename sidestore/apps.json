@@ -27,7 +27,8 @@
           "date": "2026-09-14T03:39:10.586Z",
           "localizedDescription": "EQ overhaul: persistent working state, editable graph, flexible bands with per-point curve modes; slider visuals fixed on all platforms",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.3/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4853791
         },
         {
           "version": "1.2.2",
