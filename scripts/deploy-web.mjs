@@ -16,7 +16,7 @@
  */
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { mkdirSync, copyFileSync } from 'node:fs'
+import { mkdirSync, copyFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import ghpages from 'gh-pages'
 
@@ -26,6 +26,27 @@ const execFileP = promisify(execFile)
 // a fallback for jsDelivr edge staleness (SideStore kept an old version
 // after purge; a different CDN lets the user re-add the source without
 // waiting on jsDelivr). Same file, committed from sidestore/apps.json.
+//
+// GUARD (2026-09-14, the "unable to check for updates — data couldn't be
+// read because it's missing" report): the deploy ran in the two-phase
+// release window BEFORE the --size backfill commit, publishing a sizeless
+// 1.2.10 entry — SideStore hard-fails a sizeless version entry. The deploy
+// refuses to ship a manifest where ANY version entry lacks size/date/URL:
+// run the backfill first, then deploy.
+const manifest = JSON.parse(readFileSync('sidestore/apps.json', 'utf8'))
+const broken = []
+for (const app of manifest.apps ?? []) {
+  for (const v of app.versions ?? []) {
+    if (typeof v.size !== 'number' || v.size <= 0) broken.push(`${app.bundleIdentifier} ${v.version}: size`)
+    if (!v.date) broken.push(`${app.bundleIdentifier} ${v.version}: date`)
+    if (!v.downloadURL) broken.push(`${app.bundleIdentifier} ${v.version}: downloadURL`)
+  }
+}
+if (broken.length > 0) {
+  console.error(`\nsidestore/apps.json is not publishable — SideStore rejects these entries:\n  ${broken.join('\n  ')}\nCut a release's --size backfill (npm run release:ios <ver> "notes" -- --size N) and commit it BEFORE deploying.`)
+  process.exit(1)
+}
+
 mkdirSync(join('dist', 'sidestore'), { recursive: true })
 copyFileSync('sidestore/apps.json', join('dist', 'sidestore', 'apps.json'))
 
