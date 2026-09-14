@@ -233,14 +233,14 @@ final class TrackFileLoader {
                     self.variantOf[cacheKey] = requested
                     deliver(moved, nil)
                     pendings.forEach { $0(moved, nil) }
-                    self.onDownloadFinished?(trackId, true)
+                    self.onDownloadFinished?(track.trackId, true)
                 } else {
                     let err = moveError ?? error
                     // If we moved but became stale, the file was already cleaned above.
                     // Otherwise report the download/move error to trigger retry.
                     deliver(nil, err)
                     pendings.forEach { $0(nil, err) }
-                    self.onDownloadFinished?(trackId, false)
+                    self.onDownloadFinished?(track.trackId, false)
                 }
             }
         }
