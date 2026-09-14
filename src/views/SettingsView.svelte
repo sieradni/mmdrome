@@ -1,5 +1,6 @@
 <script lang="ts">
   import AppSlider from '../components/AppSlider.svelte'
+  import ClearableSearch from '../components/ClearableSearch.svelte'
   import { onMount } from 'svelte'
   import { get } from 'svelte/store'
   import { Capacitor } from '@capacitor/core'
@@ -2033,14 +2034,14 @@
               {/each}
             </div>
             <div class="mb-2">
-              <input
-                type="text"
-                data-testid="fm-search"
+              <ClearableSearch
+                bind:value={fmQuery}
+                testId="fm-search"
                 placeholder="Search tracks or file paths…"
-                value={fmQuery}
-                oninput={(e) => { fmQuery = (e.target as HTMLInputElement).value; fmNotice = ''; fmScheduleSearch() }}
-                onkeydown={(e) => { if (e.key === 'Enter') { if (fmSearchTimer) { clearTimeout(fmSearchTimer); fmSearchTimer = null } fmTokens = parseSearchQuery(fmQuery); fmRenderLimit = FM_RENDER_STEP; if (fmListEl) fmListEl.scrollTop = 0 } }}
-                class="w-full rounded-lg bg-surface-hover px-3 py-1.5 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
+                onInput={() => { fmNotice = ''; fmScheduleSearch() }}
+                onEnter={() => { if (fmSearchTimer) { clearTimeout(fmSearchTimer); fmSearchTimer = null } fmTokens = parseSearchQuery(fmQuery); fmRenderLimit = FM_RENDER_STEP; if (fmListEl) fmListEl.scrollTop = 0 }}
+                onClear={() => { fmNotice = ''; if (fmSearchTimer) { clearTimeout(fmSearchTimer); fmSearchTimer = null } fmTokens = parseSearchQuery('') }}
+                class="rounded-lg bg-surface-hover px-3 py-1.5 pr-9 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
               />
             </div>
             {#if fmNotice}
@@ -2189,13 +2190,12 @@
                       {/each}
                     {/if}
                     <div class="flex gap-2">
-                      <input
-                        type="text"
+                      <ClearableSearch
+                        bind:value={searchQuery}
                         placeholder="Search all files…"
-                        value={searchQuery}
-                        oninput={(e) => { searchQuery = (e.target as HTMLInputElement).value; scheduleSearch() }}
-                        onkeydown={(e) => { if (e.key === 'Enter') { if (searchTimer) { clearTimeout(searchTimer); searchTimer = null } performSearch() } }}
-                        class="min-w-0 flex-1 rounded-lg bg-surface-hover px-3 py-1.5 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
+                        onInput={() => scheduleSearch()}
+                        onEnter={() => { if (searchTimer) { clearTimeout(searchTimer); searchTimer = null } performSearch() }}
+                        class="min-w-0 flex-1 rounded-lg bg-surface-hover px-3 py-1.5 pr-9 text-sm text-primary placeholder-muted outline-none ring-1 ring-transparent transition-colors focus:ring-accent-ring"
                       />
                     </div>
                     {#if searchResults.length > 0}

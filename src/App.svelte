@@ -34,6 +34,7 @@
   import BufferSpinner from './components/BufferSpinner.svelte'
   import PreloadSegments, { type PreloadSegment } from './components/PreloadSegments.svelte'
   import AppSlider from './components/AppSlider.svelte'
+  import ClearableSearch from './components/ClearableSearch.svelte'
   import { bufferedRanges, preloadEntries } from './stores/loadStatus'
   import { currentLoadedFraction } from './lib/loadStatus'
   import { setupBufferMonitor } from './lib/bufferMonitor'
@@ -362,11 +363,10 @@
           <!-- Icon-only search affordance (review 2026-09-11): no placeholder
                text; the magnifier rides inside the pill. -->
           <svg class="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-          <input
-            type="search"
-            aria-label="Fuzzy search tracks, artists, albums"
+          <ClearableSearch
             bind:value={searchQuery}
-            class="h-11 w-full rounded-full bg-white/5 py-2 pl-11 pr-4 text-sm text-primary outline-none ring-1 ring-white/10 transition-colors focus:ring-2 focus:ring-accent-ring-strong"
+            label="Fuzzy search tracks, artists, albums"
+            class="h-11 rounded-full bg-white/5 py-2 pl-11 pr-11 text-sm text-primary outline-none ring-1 ring-white/10 transition-colors focus:ring-2 focus:ring-accent-ring-strong"
           />
         </div>
       </div>

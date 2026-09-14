@@ -23,6 +23,7 @@
   import { onMount, onDestroy, tick } from 'svelte'
   import { derived } from 'svelte/store'
   import AppSlider from '../components/AppSlider.svelte'
+  import ClearableSearch from '../components/ClearableSearch.svelte'
   import { flip } from 'svelte/animate'
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
@@ -919,12 +920,11 @@
         <div>
           <span class="text-sm font-medium text-muted">Search Query</span>
           <div class="mt-1">
-            <input
-              type="search"
-              placeholder="Fuzzy search title, artist, album..."
+            <ClearableSearch
               value={$autoQueueFilterFields.searchQuery ?? ''}
-              oninput={(e) => setFilter('searchQuery', (e.target as HTMLInputElement).value)}
-              class="w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted outline-none focus:ring-accent-ring"
+              placeholder="Fuzzy search title, artist, album..."
+              onInput={(v) => setFilter('searchQuery', v)}
+              class="rounded bg-surface-hover px-2 py-1 pr-8 text-sm text-primary ring-1 ring-white/10 placeholder-muted outline-none focus:ring-accent-ring"
             />
           </div>
         </div>

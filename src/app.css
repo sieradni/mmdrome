@@ -184,6 +184,14 @@ select {
   font-size: 16px;
 }
 
+/* Search inputs use ClearableSearch's custom × button — the WebKit-native
+   clear bubble (another ×, unstyled, double-rendered next to it) is hidden. */
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  display: none;
+}
+
 /* ── Themed scrollbars ── the default light chrome clashes with the dark
    theme. Firefox gets the standard properties; WebKit/Blink gets the
    pseudo-element styling (thin, translucent, rounded — hover brightens). */
