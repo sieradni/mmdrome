@@ -3,6 +3,7 @@
   import type { Track } from '../stores/appState'
   import { commitFeedback } from '../lib/feedbackService'
   import TrackDetailPanel from './TrackDetailPanel.svelte'
+  import AppSlider from './AppSlider.svelte'
 
   let { track, onclose }: { track: Track; onclose: () => void } = $props()
 
@@ -37,12 +38,6 @@
   }
 
   function onRatingRelease() {
-    dragging = false
-    dragCommitted = false
-    commit()
-  }
-
-  function onRatingBlur() {
     dragging = false
     dragCommitted = false
     commit()
@@ -135,15 +130,14 @@
               </button>
             {/each}
           </div>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            step="10"
+          <AppSlider
             bind:value={rating}
-            oninput={onRatingInput}
-            onchange={onRatingRelease}
-            onblur={onRatingBlur}
+            min={0}
+            max={100}
+            step={10}
+            label="Rating"
+            onInput={onRatingInput}
+            onCommit={onRatingRelease}
             class="flex-1"
           />
           <span class="w-8 text-right text-xs text-muted">{rating}</span>

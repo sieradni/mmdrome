@@ -1,4 +1,5 @@
 <script lang="ts">
+  import AppSlider from '../components/AppSlider.svelte'
   import { onMount } from 'svelte'
   import { get } from 'svelte/store'
   import { Capacitor } from '@capacitor/core'
@@ -164,8 +165,8 @@
     if (val) updateSetting('transcodeFormat', val)
   }
 
-  function setCrossfade(e: Event) {
-    updateSetting('crossfadeDuration', Number((e.target as HTMLInputElement).value))
+  function setCrossfade(val: number) {
+    updateSetting('crossfadeDuration', val)
   }
 
   function setReplayGainMode(val: 'off' | 'track' | 'album') {
@@ -1622,13 +1623,14 @@
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Crossfade</h3>
           <div class="flex items-center gap-3">
-            <input
-              type="range"
-              min="0"
-              max="15"
-              step="0.5"
+            <AppSlider
               value={$settings.crossfadeDuration ?? 0}
-              oninput={setCrossfade}
+              min={0}
+              max={15}
+              step={0.5}
+              label="Crossfade duration"
+              valueText={(v) => `${v}s`}
+              onInput={setCrossfade}
               class="flex-1"
             />
             <span class="w-10 text-right text-sm text-muted">{($settings.crossfadeDuration ?? 0)}s</span>

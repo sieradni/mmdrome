@@ -22,6 +22,7 @@
   import { filterRangesValid } from '../lib/autoQueuePlan'
   import { onMount, onDestroy, tick } from 'svelte'
   import { derived } from 'svelte/store'
+  import AppSlider from '../components/AppSlider.svelte'
   import { flip } from 'svelte/animate'
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
@@ -931,11 +932,11 @@
         <div>
           <span class="text-sm font-medium text-muted">Rating range</span>
           <div class="mt-1 flex items-center gap-2">
-            <input type="range" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24" />
+            <AppSlider value={$autoQueueFilterFields.minRating} min={0} max={100} step={10} label="Minimum rating" onInput={(v) => setFilter('minRating', v)} class="w-20 shrink" />
             <input data-testid="min-rating" type="number" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', ratingBound((e.target as HTMLInputElement).value, 0))} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
             <span class="text-sm text-muted">–</span>
             <input data-testid="max-rating" type="number" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', ratingBound((e.target as HTMLInputElement).value, 100))} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
-            <input type="range" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', Number((e.target as HTMLInputElement).value))} class="h-1 w-24" />
+            <AppSlider value={$autoQueueFilterFields.maxRating} min={0} max={100} step={10} label="Maximum rating" onInput={(v) => setFilter('maxRating', v)} class="w-20 shrink" />
           </div>
         </div>
         <label class="flex cursor-pointer items-center gap-2 text-sm text-muted">

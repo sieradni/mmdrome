@@ -33,6 +33,7 @@
   import SeekBar from './components/SeekBar.svelte'
   import BufferSpinner from './components/BufferSpinner.svelte'
   import PreloadSegments, { type PreloadSegment } from './components/PreloadSegments.svelte'
+  import AppSlider from './components/AppSlider.svelte'
   import { bufferedRanges, preloadEntries } from './stores/loadStatus'
   import { currentLoadedFraction } from './lib/loadStatus'
   import { setupBufferMonitor } from './lib/bufferMonitor'
@@ -509,9 +510,16 @@
         {#if !isWide}
           <button
             onclick={() => (lyricsPaneMode = !lyricsPaneMode)}
-            class="absolute right-2 top-0 rounded-full bg-surface/90 px-2.5 py-1 text-[11px] font-medium text-muted shadow ring-1 ring-white/10 transition-colors hover:text-primary"
+            class="absolute right-2 top-0 flex items-center gap-1.5 rounded-full bg-surface/95 px-4 py-2 text-xs font-medium text-muted shadow-lg ring-1 ring-white/15 transition-colors hover:text-primary"
             aria-label={lyricsPaneMode ? 'Show artwork' : 'Show lyrics'}
           >
+            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              {#if lyricsPaneMode}
+                <path d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+              {:else}
+                <path d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3"/>
+              {/if}
+            </svg>
             {lyricsPaneMode ? 'Art' : 'Lyrics'}
           </button>
         {/if}
@@ -544,19 +552,19 @@
             </svg>
           </button>
           {#if volOpen}
-            <div class="absolute bottom-full right-0 z-50 mb-2 flex flex-col items-center rounded-lg bg-surface px-3 py-3 shadow-xl ring-1 ring-white/10">
-              <span class="mb-3 min-w-[4ch] text-center text-xs tabular-nums text-muted">{(volValue * 100).toFixed(0)}%</span>
-              <div class="flex h-32 w-6 items-center justify-center">
-                <input
-                  type="range"
-                  min="0"
-                  max="2"
-                  step="0.01"
-                  bind:value={volValue}
-                  oninput={updateVolumePopover}
-                  class="h-1 w-32 -rotate-90 cursor-pointer accent-white/80"
-                />
-              </div>
+            <div class="absolute bottom-full right-0 z-50 mb-2 w-52 rounded-lg bg-surface px-3 py-3 shadow-xl ring-1 ring-white/10">
+              <span class="mb-2 block min-w-[4ch] text-center text-xs tabular-nums text-muted">{(volValue * 100).toFixed(0)}%</span>
+              <!-- Horizontal AppSlider (the popover already opens on tap): a
+                   horizontal drag is more thumb-real-estate than the old
+                   rotated 32px-wide track, and matches every other slider. -->
+              <AppSlider
+                bind:value={volValue}
+                min={0}
+                max={2}
+                step={0.01}
+                label="Volume"
+                onInput={updateVolumePopover}
+              />
             </div>
           {/if}
         </div>

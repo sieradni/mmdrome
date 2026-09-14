@@ -2,6 +2,7 @@
   import { engine } from '../lib/engineFacade'
   import EqGraph from '../components/EqGraph.svelte'
   import EqSlider from '../components/EqSlider.svelte'
+  import AppSlider from '../components/AppSlider.svelte'
   import { get } from 'svelte/store'
   import {
     activePresetId,
@@ -398,15 +399,16 @@
     <!-- PREAMP SLIDER -->
     <div class="flex items-center gap-3">
       <span class="w-14 text-[10px] text-muted/60">Preamp</span>
-      <input
-        type="range"
-        min="-12"
-        max="12"
-        step="0.5"
+      <AppSlider
         value={preampDb}
-        oninput={(e) => onPreampChange(Number((e.target as HTMLInputElement).value))}
-        class="w-full"
+        min={-12}
+        max={12}
+        step={0.5}
+        label="Preamp"
+        valueText={(v) => `${v > 0 ? '+' : ''}${v.toFixed(1)} dB`}
+        onInput={onPreampChange}
         disabled={$eqBypassed}
+        class="w-full"
       />
       <span class="w-14 text-right text-[10px] tabular-nums text-muted/60">{preampDb > 0 ? '+' : ''}{preampDb.toFixed(1)} dB</span>
     </div>
@@ -461,17 +463,15 @@
             </div>
             <span class="text-[10px] {f.curve === 'graphic' ? 'text-accent' : 'text-muted/50'}">{freqLabel(f.frequency)}</span>
             {#if !isGraphicImport && f.curve !== 'graphic'}
-              <input
-                type="range"
-                min="0.2"
-                max="8"
-                step="0.1"
+              <AppSlider
                 value={f.q}
-                oninput={(e) => setBandQ(i, Number((e.target as HTMLInputElement).value))}
-                class="w-full px-1"
-                aria-label="Q for {freqLabel(f.frequency)} Hz band"
-                title="Band width (Q {f.q.toFixed(1)})"
+                min={0.2}
+                max={8}
+                step={0.1}
+                label="Q for {freqLabel(f.frequency)} Hz band"
+                onInput={(v) => setBandQ(i, v)}
                 disabled={$eqBypassed}
+                class="min-w-0 flex-1 px-1"
               />
             {/if}
             {#if !isGraphicImport}

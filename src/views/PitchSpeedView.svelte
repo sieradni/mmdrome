@@ -1,5 +1,6 @@
 <script lang="ts">
   import { engine } from '../lib/engineFacade'
+  import AppSlider from '../components/AppSlider.svelte'
 
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
@@ -76,14 +77,15 @@
         <p class="text-xs font-medium text-muted uppercase tracking-wider">Speed</p>
         <span class="text-sm tabular-nums text-primary">{speed.toFixed(2)}x</span>
       </div>
-      <input
-        type="range"
-        min="0"
-        max="100"
-        step="0.1"
+      <AppSlider
         bind:value={sliderVal}
-        oninput={updateSpeed}
-        class="h-1 w-full accent-white/80"
+        min={0}
+        max={100}
+        step={0.1}
+        label="Playback speed"
+        valueText={() => `${speed.toFixed(2)}x`}
+        onInput={updateSpeed}
+        class="w-full"
       />
       <div class="flex justify-between text-[10px] text-muted/50">
         <span>0.2x</span>
@@ -98,15 +100,16 @@
         <p class="text-xs font-medium text-muted uppercase tracking-wider">Pitch</p>
         <span class="text-sm tabular-nums text-primary">{pitch > 0 ? '+' : ''}{pitch.toFixed(2)} oct</span>
       </div>
-      <input
-        type="range"
-        min="-2"
-        max="2"
-        step="0.01"
+      <AppSlider
         bind:value={pitch}
-        oninput={updatePitch}
+        min={-2}
+        max={2}
+        step={0.01}
+        label="Pitch"
+        valueText={(v) => `${v > 0 ? '+' : ''}${v.toFixed(2)} oct`}
+        onInput={updatePitch}
         disabled={tapeMode}
-        class="h-1 w-full accent-white/80 disabled:opacity-30"
+        class="w-full"
       />
       <div class="flex justify-between text-[10px] text-muted/50">
         <span>-2</span>
@@ -124,15 +127,15 @@
         </div>
         <span class="text-sm tabular-nums text-primary">{snapTolerance.toFixed(2)} st</span>
       </div>
-      <input
-        type="range"
-        min="0"
-        max="0.5"
-        step="0.01"
+      <AppSlider
         bind:value={snapTolerance}
-        oninput={updateSnapTolerance}
+        min={0}
+        max={0.5}
+        step={0.01}
+        label="Snap tolerance"
+        onInput={updateSnapTolerance}
         disabled={tapeMode}
-        class="h-1 w-full accent-white/80 disabled:opacity-30"
+        class="w-full"
       />
       <div class="flex justify-between text-[10px] text-muted/50">
         <span>Off</span>

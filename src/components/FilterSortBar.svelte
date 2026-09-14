@@ -2,6 +2,7 @@
   import { libraryFilters, sortLabels, distinctGenres } from '../lib/libraryFilters'
   import type { LibrarySortKey } from '../lib/libraryFilters'
   import { library } from '../stores/appState'
+  import AppSlider from './AppSlider.svelte'
 
   let { onopen }: { onopen?: () => void } = $props()
 
@@ -110,13 +111,14 @@
       <div>
         <span class="text-sm font-medium text-muted">Rating range</span>
         <div class="mt-1 flex items-center gap-2">
-          <input
-            type="range"
-            min="0"
-            max="100"
+          <AppSlider
             value={$libraryFilters.minRating}
-            oninput={(e) => libraryFilters.update((f) => ({ ...f, minRating: Number((e.target as HTMLInputElement).value) }))}
-            class="h-1 w-20"
+            min={0}
+            max={100}
+            step={10}
+            label="Minimum rating"
+            onInput={(v) => libraryFilters.update((f) => ({ ...f, minRating: v }))}
+            class="w-24 shrink"
           />
           <input
             type="number"
@@ -135,13 +137,14 @@
             oninput={(e) => libraryFilters.update((f) => ({ ...f, maxRating: Number((e.target as HTMLInputElement).value) }))}
             class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10"
           />
-          <input
-            type="range"
-            min="0"
-            max="100"
+          <AppSlider
             value={$libraryFilters.maxRating}
-            oninput={(e) => libraryFilters.update((f) => ({ ...f, maxRating: Number((e.target as HTMLInputElement).value) }))}
-            class="h-1 w-20"
+            min={0}
+            max={100}
+            step={10}
+            label="Maximum rating"
+            onInput={(v) => libraryFilters.update((f) => ({ ...f, maxRating: v }))}
+            class="w-24 shrink"
           />
         </div>
       </div>

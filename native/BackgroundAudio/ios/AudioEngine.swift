@@ -893,15 +893,33 @@ public final class NativeAudioEngine: NSObject {
                 emitPreload(trackId, "progress", snapshot.progress)
             }
         }
-        // Completions + evictions: cached rows disappear from `inFlight` but
-        // stay in the loader cache — they must become `done` (solid), and a
-        // dropped/evicted row must clear its tint ("gone"), even when the
-        // transition happened outside a running sampler.
-        for (trackId, snapshot) in lastPreloadEmitted where snapshot.state == "fetching" {
+        // Completions + cached-row announcements. Two blind spots the
+        // in-flight pass above can never see (the "preload indicators stay
+        // empty" report, 2026-09-14):
+        //  1. A download that starts AND finishes between two ticks (fast LAN
+        //     server, small file) is absent from `inFlight` at tick time —
+        //     its completion must still reach JS.
+        //  2. A row served straight from the loader cache (prefetched on an
+        //     earlier pass) never appears in `inFlight` at all.
+        // Both are diffs against the loader CACHE, not the in-flight map:
+        // any visible row that is cached but not announced `done` announces
+        // it once; a previously-fetching row that is neither in flight nor
+        // cached announces `gone`. Rows with no bytes and no history stay
+        // silent (dim = queued — never invent progress).
+        var candidates = Set(lastPreloadEmitted.keys)
+        if let window = preloadWindowIds { candidates.formUnion(window) }
+        let inFlightIds = Set(loader.inFlightProgress.map { $0.trackId })
+        for trackId in candidates {
             if trackId != currentId, let window = preloadWindowIds, !window.contains(trackId) { continue }
+            if inFlightIds.contains(trackId) { continue } // pass 1 owns it this tick
             let prefix = trackId + "|"
-            let stillCached = loader.cacheKeys.contains { $0.hasPrefix(prefix) }
-            emitPreload(trackId, stillCached ? "done" : "gone", stillCached ? 1 : nil)
+            let cached = loader.cacheKeys.contains { $0.hasPrefix(prefix) }
+            let last = lastPreloadEmitted[trackId]
+            if cached {
+                if last?.state != "done" { emitPreload(trackId, "done", 1) }
+            } else if last?.state == "fetching" {
+                emitPreload(trackId, "gone", nil)
+            }
         }
     }
 

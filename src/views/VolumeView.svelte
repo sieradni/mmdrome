@@ -1,5 +1,6 @@
 <script lang="ts">
   import { engine } from '../lib/engineFacade'
+  import AppSlider from '../components/AppSlider.svelte'
 
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
@@ -35,14 +36,15 @@
         <span class="text-xs text-muted">Preamp Gain</span>
         <span class="text-sm tabular-nums text-primary">{(volume * 100).toFixed(0)}%</span>
       </div>
-      <input
-        type="range"
-        min="0"
-        max="2"
-        step="0.01"
+      <AppSlider
         bind:value={volume}
-        oninput={updateVolume}
-        class="h-1.5 w-full accent-white/80"
+        min={0}
+        max={2}
+        step={0.01}
+        label="Preamp gain"
+        valueText={(v) => `${(v * 100).toFixed(0)}%`}
+        onInput={updateVolume}
+        class="w-full"
       />
       <div class="flex justify-between text-[10px] text-muted/50">
         <span>0%</span>

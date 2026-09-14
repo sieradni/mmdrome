@@ -2,6 +2,7 @@
   import { currentTrack, metadataCache } from '../stores/appState'
   import { commitFeedback } from '../lib/feedbackService'
   import LazyThumb from '../components/LazyThumb.svelte'
+  import AppSlider from '../components/AppSlider.svelte'
 
   let { onclose, oncloseall, onnavigate }: { onclose: () => void; oncloseall: () => void; onnavigate: (page: 'pitchSpeed' | 'eq' | 'volume' | 'detail' | 'settings') => void } = $props()
 
@@ -37,12 +38,6 @@
   }
 
   function onRatingRelease() {
-    dragging = false
-    dragCommitted = false
-    commit()
-  }
-
-  function onRatingBlur() {
     dragging = false
     dragCommitted = false
     commit()
@@ -88,15 +83,14 @@
       <div class="mt-6 space-y-2">
         <p class="text-xs font-medium text-muted uppercase tracking-wider">Rating</p>
         <div class="flex items-center gap-3">
-          <input
-            type="range"
-            min="0"
-            max="100"
-            step="10"
+          <AppSlider
             bind:value={rating}
-            oninput={onRatingInput}
-            onchange={onRatingRelease}
-            onblur={onRatingBlur}
+            min={0}
+            max={100}
+            step={10}
+            label="Rating"
+            onInput={onRatingInput}
+            onCommit={onRatingRelease}
             class="flex-1"
           />
           <span class="w-8 text-right text-xs tabular-nums text-muted">{rating}</span>
