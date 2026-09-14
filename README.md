@@ -35,10 +35,11 @@ npm run deploy   # deploy to GitHub Pages
 
 The native iOS build (background audio engine, lock-screen controls) is distributed as a SideStore source — install once, update from SideStore, no manual sideloading:
 
-1. In SideStore, add this source URL: `https://cdn.jsdelivr.net/gh/sieradni/mmdrome@main/sidestore/apps.json`
+1. In SideStore, add this source URL (served from GitHub Pages — recommended, always current):
+   `https://sieradni.github.io/mmdrome/sidestore/apps.json`
 2. Install **mmdrome** from the source. SideStore signs it with your own Apple ID and refreshes it automatically before the 7-day expiry.
 
-The same manifest is mirrored to GitHub Pages at `https://sieradni.github.io/mmdrome/sidestore/apps.json` — add it as a second source if the jsDelivr copy ever serves a stale version (SideStore caches aggressively; pull-to-refresh first, re-adding the mirror is the reliable fallback).
+The same manifest is also served via jsDelivr at `https://cdn.jsdelivr.net/gh/sieradni/mmdrome@main/sidestore/apps.json`, but jsDelivr has repeatedly served stale versions after releases (three consecutive releases in 2026-09) even after cache purges — prefer the Pages URL.
 
 Each release is built in CI from a version tag as an unsigned IPA attached to a GitHub Release; the source file points at it.
 
