@@ -21,6 +21,7 @@
   import { currentLoadedFraction } from '../lib/loadStatus'
   import { filterRangesValid } from '../lib/autoQueuePlan'
   import { onMount, onDestroy, tick } from 'svelte'
+  import { derived } from 'svelte/store'
   import { flip } from 'svelte/animate'
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
@@ -414,6 +415,11 @@
   })
 
   // Action Helpers
+  /** B5 scope pill label: "Album · <name>" / "Artist · <name>" (session-only). */
+  const scopeLabel = derived(autoQueueScope, (s) =>
+    s.albumScope ? `Album · ${s.albumScope}` : s.artistScope ? `Artist · ${s.artistScope}` : null,
+  )
+
   function removeFromUser(trackId: string) {
     const q = $queue
     const idx = q.userQueue.indexOf(trackId)
@@ -695,9 +701,10 @@
 
     {#if $autoQueueEmptyNotice}
       <!-- B5: with an album/artist scope an exhausted pool is the scope's natural
-           end, not a filter problem — yellow would read as a warning. -->
-      {#if $autoQueueScope.albumScope || $autoQueueScope.artistScope}
-        <p class="mx-4 mb-1 text-center text-[11px] text-muted/60">End of {$autoQueueScope.albumScope ? 'album' : 'artist'}</p>
+           end, not a filter problem — yellow would read as a warning. The label
+           names the scope so the source stays visible without auto rows. -->
+      {#if $scopeLabel}
+        <p class="mx-4 mb-1 text-center text-[11px] text-muted/60">End of {$scopeLabel}</p>
       {:else}
         <p class="mx-4 mb-1 text-center text-[11px] text-yellow-500/80">Auto queue is empty — nothing left to add from the current filters</p>
       {/if}
@@ -708,6 +715,11 @@
       <div class="mx-4 mb-1 flex items-center gap-2 px-1" role="heading" aria-level="2" data-boundary>
         <span class="text-[11px] font-semibold uppercase tracking-widest" class:text-accent={isConvertingUserToAuto} class:text-muted={!isConvertingUserToAuto}>Auto</span>
         <span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted">{previewAutoItems.length}</span>
+        {#if $scopeLabel}
+          <!-- B5: persistent scope indicator — the auto queue draws from this
+               album/artist only; truncation-safe (names can be long). -->
+          <span class="max-w-[45%] truncate rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium text-primary" title={$scopeLabel}>{$scopeLabel}</span>
+        {/if}
         <div class="h-0.5 flex-1 rounded-full bg-white/25"></div>
         {#if isConvertingUserToAuto}
           <span class="text-xs font-medium uppercase tracking-wider text-accent">Release to convert to User Queue</span>
