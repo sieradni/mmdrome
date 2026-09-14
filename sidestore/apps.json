@@ -27,7 +27,8 @@
           "date": "2026-09-14T07:53:45.068Z",
           "localizedDescription": "Slider usability: press-to-jump accent sliders everywhere; preload indicators now light up on fast servers; lyrics art backdrop + timestamps",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.5/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4859054
         },
         {
           "version": "1.2.4",
