@@ -18,16 +18,17 @@
       "category": "music",
       "version": "1.2.4",
       "versionDate": "2026-09-14T06:13:57.328Z",
-      "versionDescription": "Navidrome lyrics: synced lyrics with auto-scroll and tap-to-seek in Now Playing, cached offline; layout collapses gracefully when a track has no lyrics",
+      "versionDescription": "Navidrome lyrics: synced highlight, tap-to-seek, cached with negative TTL",
       "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.4/mmdrome.ipa",
       "versions": [
         {
           "version": "1.2.4",
           "buildVersion": "8",
           "date": "2026-09-14T06:13:57.328Z",
-          "localizedDescription": "Navidrome lyrics: synced lyrics with auto-scroll and tap-to-seek in Now Playing, cached offline; layout collapses gracefully when a track has no lyrics",
+          "localizedDescription": "Navidrome lyrics: synced highlight, tap-to-seek, cached with negative TTL",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.4/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4857268
         },
         {
           "version": "1.2.3",
@@ -90,7 +91,7 @@
     {
       "title": "mmdrome 1.2.4",
       "identifier": "ios-v1.2.4",
-      "caption": "Navidrome lyrics: synced lyrics with auto-scroll and tap-to-seek in Now Playing, cached offline; layout collapses gracefully when a track ha",
+      "caption": "Navidrome lyrics: synced highlight, tap-to-seek, cached with negative TTL",
       "date": "2026-09-14T06:13:57.328Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
