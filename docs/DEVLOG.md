@@ -11,6 +11,16 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-15 — Offline-advance e2e de-flaked: the probe watched the wrong element
+
+The spec flaked on CI across three release commits (runs 34433551570, 34437082807, 34824985802 — always a `lastMediaTime > 0.5` poll timing out AFTER the blob-src poll had resolved, once a blob-count tail assertion), and a rerun always went green, which meant the assertion was measuring something load-sensitive, not the product. Root cause was in the PROBE, twice over:
+
+1. **`__lastMedia` (the element of the most recent src assignment) is not "the element playing".** With `crossfadeDuration` at its 6 s default, every advance in the spec sits inside the armed-crossfade world: the bg-swap path MIRRORS the src onto the fg element (A6) and a fade executing near the 25 s mock track's window assigns a src to the other element — both AFTER the playing element's assignment, both onto a PAUSED element. The playhead poll then watched a frozen standby for 15 s. Fix: track every element (`__mediaEls`) and poll `max(currentTime)` over non-paused elements (`playingMediaTime`) — a real stop still fails the predicate (all paused), so the assertion keeps its teeth.
+2. **No rescue runway.** The 2026-09-10 episode established that under CI load a blob decode transiently fails with NotSupportedError and the fromError rescue advances to the NEXT track. Scenarios 1/3/6 only awaited s2 in cache — the rescue then landed on a raw URL over a dead connection and honestly stopped, freezing the playhead. Awaiting s2+s3 gives the rescue a deterministic landing spot; scenario 2 (whole window cached) never flaked for exactly this reason.
+3. One leftover vacuous-poll instance (scenario 2's second advance read the src log once after a time poll — the exact "part 3" race) now polls the blob count first.
+
+Verification: full suite 20/20, then the spec 7/7 three consecutive rounds at `--workers=4` (parallel load was the historical reproduction condition), unit 920/920, check clean. The probe rules are pinned in AGENTS A14 so the next spec edit doesn't reintroduce them.
+
 ## 2026-09-15 — EQ graph: pan/zoom, 22 px hit targets, modals instead of inline shifting UI
 
 Follow-up to the EQ UX pass. Three user reports drove it: the dots were hard to press (a 5 px SVG circle is hopeless as a touch target), the frequency axis was fixed (20 Hz–20 kHz always, so dense low-end work meant squinting), and the dialogs (band editor, save) were inline rows that shifted the page and cramped the graph popover.

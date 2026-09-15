@@ -93,13 +93,24 @@ async function mockOnline(page: Page): Promise<void> {
  */
 async function instrumentMediaSrc(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const w = window as unknown as { __mediaSrcs: string[]; __lastMedia?: HTMLMediaElement }
+    const w = window as unknown as {
+      __mediaSrcs: string[]
+      __mediaEls: HTMLMediaElement[]
+      __lastMedia?: HTMLMediaElement
+    }
     w.__mediaSrcs = []
+    w.__mediaEls = []
     const desc = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src')!
     Object.defineProperty(HTMLMediaElement.prototype, 'src', {
       set(v: string) {
         w.__mediaSrcs.push(String(v))
         w.__lastMedia = this
+        // Track EVERY element (deduped): the playhead probe must watch the
+        // PLAYING element, not the last-assigned one — with crossfade armed
+        // (default 6 s), legitimate paths (bg-swap mirror, a fade execution)
+        // assign a src to the OTHER, paused element AFTER the playing one,
+        // and a last-assigned probe then times out on a frozen standby.
+        if (!w.__mediaEls.includes(this)) w.__mediaEls.push(this)
         desc.set!.call(this, v)
       },
       get() {
@@ -141,9 +152,24 @@ function mediaSrcs(page: Page): Promise<string[]> {
   return page.evaluate(() => (window as unknown as { __mediaSrcs: string[] }).__mediaSrcs)
 }
 
-/** The playhead of the most-recently-assigned media element. */
-function lastMediaTime(page: Page): Promise<number> {
-  return page.evaluate(() => (window as unknown as { __lastMedia?: HTMLMediaElement }).__lastMedia?.currentTime ?? 0)
+/**
+ * The playhead of the PLAYING element (the max currentTime across every
+ * media element that is not paused). Polling a last-assigned element instead
+ * is the flake this spec kept hitting: after an advance the crossfade/bg
+ * machinery can assign a src to the other (paused) element, and the old
+ * `__lastMedia` probe then waited 15 s on a frozen standby while the real
+ * element played. A REAL pause (the app stopped) still fails the predicate —
+ * every element is paused — so the assertion keeps its teeth.
+ */
+function playingMediaTime(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const els = (window as unknown as { __mediaEls?: HTMLMediaElement[] }).__mediaEls ?? []
+    let t = 0
+    for (const el of els) {
+      if (!el.paused && el.currentTime > t) t = el.currentTime
+    }
+    return t
+  })
 }
 
 /**
@@ -170,7 +196,7 @@ async function bootAndPlay(page: Page, preloadCount: number): Promise<void> {
   const srcs1 = await mediaSrcs(page)
   expect(srcs1[srcs1.length - 1], 'track 1 starts on the raw stream URL (cache miss)').toContain('stream.view')
   expect(srcs1[srcs1.length - 1]).toContain('id=s1')
-  await expect.poll(() => lastMediaTime(page), { timeout: 10_000 }).toBeGreaterThan(0)
+  await expect.poll(() => playingMediaTime(page), { timeout: 10_000 }).toBeGreaterThan(0)
 }
 
 /** The mini-bar Next button, scoped past the hidden overlay's duplicate
@@ -195,8 +221,15 @@ test('a mid-track connection drop still plays the preloaded next track from the 
   await bootAndPlay(page, 5)
 
   // The preloader window fills in queue order — Song Two (the next track) is
-  // the FIRST fill and must land in Cache Storage.
+  // the FIRST fill and must land in Cache Storage. s3 is also awaited: under
+  // CI load a blob decode can transiently fail (NotSupportedError — the
+  // documented 2026-09-10 smoke-flake episode), and the fromError rescue
+  // advances to the NEXT track, which needs its cache entry to play offline.
+  // Without it the rescue honestly stops at a dead raw URL and the playhead
+  // freezes — a flake with no product bug behind it. s2+s3 cached gives the
+  // rescue a deterministic landing spot.
   await expect.poll(() => preloadCacheHas(page, 'id=s2'), { timeout: 20_000, intervals: [500, 1_000] }).toBe(true)
+  await expect.poll(() => preloadCacheHas(page, 'id=s3'), { timeout: 30_000, intervals: [500, 1_000] }).toBe(true)
 
   await dropConnection(page)
   await miniNext(page).click()
@@ -211,9 +244,9 @@ test('a mid-track connection drop still plays the preloaded next track from the 
   expect(srcs2.filter((s) => s.includes('id=s2')), 'track 2 is never loaded from the dead raw URL').toEqual([])
 
   // …and it actually PLAYS (not just loaded): the playhead advances with the
-  // network dead. `__lastMedia` is the element of the most recent src
-  // assignment — the one now playing track 2.
-  await expect.poll(() => lastMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
+  // network dead — measured on the PLAYING element, never the last-assigned
+  // one (the crossfade standby is legitimately paused after an advance).
+  await expect.poll(() => playingMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
 })
 
 // ── 2. Multiple preloads: the whole window fills, in QUEUE order ───────
@@ -240,11 +273,18 @@ test('the full preload window fills in queue order and survives two offline adva
   await dropConnection(page)
   await miniNext(page).click()
   await expect.poll(async () => (await mediaSrcs(page)).filter((s) => s.startsWith('blob:')).length, { timeout: 15_000 }).toBeGreaterThanOrEqual(1)
-  await expect.poll(() => lastMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
+  await expect.poll(() => playingMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
 
   await miniNext(page).click()
-  // Track 3 also plays offline from its cached blob.
-  await expect.poll(() => lastMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
+  // Track 3 also plays offline from its cached blob. Poll the BLOB COUNT
+  // first — the only signal the async advance landed — then the playhead:
+  // the reverse order is the documented vacuous-poll race (a passing time
+  // poll can ride the previous track's element while the read races the
+  // load; DEVLOG 2026-09-10 "smoke flake part 3").
+  await expect
+    .poll(async () => (await mediaSrcs(page)).filter((s) => s.startsWith('blob:')).length, { timeout: 15_000 })
+    .toBeGreaterThanOrEqual(2)
+  await expect.poll(() => playingMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
   const srcs3 = await mediaSrcs(page)
   expect(srcs3[srcs3.length - 1]).toMatch(/^blob:/)
   expect(srcs3.filter((s) => s.includes('id=s3')), 'track 3 never touches the dead raw URL').toEqual([])
@@ -257,7 +297,10 @@ test('the bg handoff mid-track with a dead connection still plays the preloaded 
   await instrumentMediaSrc(page)
   await bootApp(page)
   await bootAndPlay(page, 5)
+  // Same decode-rescue runway as scenario 1: s2 AND s3 cached (see the
+  // comment there — CI-load NotSupportedError rescue needs s3 to land on).
   await expect.poll(() => preloadCacheHas(page, 'id=s2'), { timeout: 20_000, intervals: [500, 1_000] }).toBe(true)
+  await expect.poll(() => preloadCacheHas(page, 'id=s3'), { timeout: 30_000, intervals: [500, 1_000] }).toBe(true)
 
   await dropConnection(page)
 
@@ -272,7 +315,7 @@ test('the bg handoff mid-track with a dead connection still plays the preloaded 
 
   // The enter-bg swap must not pause playback: the bg element keeps the
   // playhead moving with the network dead.
-  await expect.poll(() => lastMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
+  await expect.poll(() => playingMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
 
   // Advance WHILE bg-engaged (the lock-screen Next path routes through the
   // same manager) — the bg load must resolve through the preload cache.
@@ -284,7 +327,7 @@ test('the bg handoff mid-track with a dead connection still plays the preloaded 
   const srcs = await mediaSrcs(page)
   expect(srcs[srcs.length - 1], 'the bg advance ended on a cached blob src').toMatch(/^blob:/)
   expect(srcs.filter((s) => s.includes('id=s2')), 'track 2 is never loaded from the dead raw URL').toEqual([])
-  await expect.poll(() => lastMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
+  await expect.poll(() => playingMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
 
   // Returning to the foreground carries the bg position back — still the
   // same (cached) track, still playing.
@@ -293,7 +336,7 @@ test('the bg handoff mid-track with a dead connection still plays the preloaded 
     Object.defineProperty(document, 'hidden', { value: false, configurable: true })
     document.dispatchEvent(new Event('visibilitychange'))
   })
-  await expect.poll(() => lastMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
+  await expect.poll(() => playingMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
 })
 
 // ── 4. A13 transcode sweep: format-bearing entries die, raw survive ────
@@ -412,7 +455,9 @@ test('engaging low data mode mid-fill does not stop the preload window from fill
 
   // Wait for the FIRST fill to land (s2), then engage LDM through the real
   // Settings toggle while the window is still filling (s3..s6 pending).
+  // s3 is awaited too — the decode-rescue runway (see scenario 1).
   await expect.poll(() => preloadCacheHas(page, 'id=s2'), { timeout: 20_000, intervals: [500, 1_000] }).toBe(true)
+  await expect.poll(() => preloadCacheHas(page, 'id=s3'), { timeout: 30_000, intervals: [500, 1_000] }).toBe(true)
   await openSettingsSection(page, 'playback')
   await page.getByTestId('low-data-mode').click()
   await expect(page.getByTestId('low-data-mode')).toBeChecked()
@@ -424,7 +469,7 @@ test('engaging low data mode mid-fill does not stop the preload window from fill
 
   // Playback is untouched by the toggle (LDM gates background traffic, never
   // the playing track): the playhead is still moving.
-  await expect.poll(() => lastMediaTime(page), { timeout: 10_000 }).toBeGreaterThan(0.5)
+  await expect.poll(() => playingMediaTime(page), { timeout: 10_000 }).toBeGreaterThan(0.5)
 
   // And the offline promise still holds under LDM: dead connection, advance,
   // the cached next track plays.
@@ -433,7 +478,7 @@ test('engaging low data mode mid-fill does not stop the preload window from fill
   await expect
     .poll(async () => (await mediaSrcs(page)).filter((s) => s.startsWith('blob:')).length, { timeout: 15_000 })
     .toBeGreaterThanOrEqual(1)
-  await expect.poll(() => lastMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
+  await expect.poll(() => playingMediaTime(page), { timeout: 15_000 }).toBeGreaterThan(0.5)
   const srcs = await mediaSrcs(page)
   expect(srcs.filter((s) => s.includes('id=s2')), 'no dead raw-URL load even under LDM').toEqual([])
 })
@@ -480,7 +525,7 @@ test('an undecodable cached track is skipped instead of freezing playback', asyn
   await expect
     .poll(async () => (await mediaSrcs(page)).filter((s) => s.startsWith('blob:')).length, { timeout: 20_000 })
     .toBeGreaterThanOrEqual(1)
-  await expect.poll(() => lastMediaTime(page), { timeout: 20_000 }).toBeGreaterThan(0.5)
+  await expect.poll(() => playingMediaTime(page), { timeout: 20_000 }).toBeGreaterThan(0.5)
   const srcs = await mediaSrcs(page)
   expect(srcs.filter((s) => s.includes('id=s2') || s.includes('id=s3')), 'neither track touches a raw URL').toEqual([])
 })
