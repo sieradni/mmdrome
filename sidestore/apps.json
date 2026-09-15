@@ -27,7 +27,8 @@
           "date": "2026-09-15T09:37:46.036Z",
           "localizedDescription": "EQ: classic preset switch (apply + confirm), manual vertical zoom + pinch",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.16/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4872956
         },
         {
           "version": "1.2.15",
