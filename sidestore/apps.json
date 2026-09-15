@@ -27,7 +27,8 @@
           "date": "2026-09-15T05:38:44.905Z",
           "localizedDescription": "Fix 1.2.13 launch crash: spectrum tap attached before connect",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.14/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4872081
         },
         {
           "version": "1.2.13",
