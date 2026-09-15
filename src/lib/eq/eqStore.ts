@@ -13,7 +13,6 @@ import {
   type EqSessionPersistencePlan,
   type EqWorkingSession,
 } from './eqSession'
-import { rebaseSession } from './eqSession'
 
 const USER_PRESET_PREFIX = 'eq_user_preset_'
 const ACTIVE_PRESET_KEY = 'active_eq_preset'
@@ -204,24 +203,6 @@ export async function applyPreset(id: string): Promise<EqPreset | undefined> {
   resetWorkingEq(preset)
   await persistEqState(preset, id)
   return preset
-}
-
-/**
- * The EQ view's preset-switch: re-base the working session on the newly
- * selected preset while CARRYING the user's edits (2026-09-15 — the old
- * discard-on-switch flow discarded them, so "Save as Current" could never
- * offer itself after a switch and the switch dialog's Save created a NEW
- * preset instead of saving over the selection). The dirty overlay survives
- * as a continuous working state over the new base — the user's sound never
- * changes (their edits ARE the working state), only what Save will
- * overwrite. Does NOT switch the engine push (the state is unchanged).
- */
-export function switchSessionBase(preset: EqPreset): void {
-  const prev = get(workingEq)
-  const next = rebaseSession(prev, preset)
-  workingEq.set(next)
-  currentEqState.set(next.state)
-  commitWorkingState(next, prev.dirty)
 }
 
 /**

@@ -14,8 +14,8 @@
     resetWorkingEq,
     deleteUserPreset,
     saveEqSession,
+    applyPreset,
     findPresetById,
-    switchSessionBase,
   } from '../lib/eq/eqStore'
   import { parseEqText } from '../lib/eq/eqParser'
   import { BUILTIN_PRESETS, mergeFiltersIntoDefaultGrid } from '../lib/eq/builtInPresets'
@@ -31,6 +31,12 @@
   import { SpectrumSampler } from '../lib/eq/spectrumSampler'
 
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
+
+  /** Bumped whenever a NEW preset-shaped state loads (apply/import/reset):
+   *  the graph auto-fits its vertical scale ONCE per load — the scale is
+   *  otherwise manual (the graph's side ± control), so dragging a band can
+   *  never rescale the axis under the user's finger. */
+  let graphFitToken = $state(0)
 
   let showImport = $state(false)
   let importText = $state('')
@@ -262,6 +268,9 @@
   let saveDialogOpen = $state(false)
   let newPresetName = $state('')
 
+  /** Preset id to apply once the save modal finishes (Save → switch, Cancel → stay). */
+  let pendingSwitchAfterSave: string | null = null
+
   function onSaveTap() {
     // Never disabled: even a CLEAN session offers Save as New, which is how
     // an existing preset gets DUPLICATED (user request — copying must work).
@@ -269,18 +278,25 @@
     saveDialogOpen = true
   }
 
+  function closeSaveDialog() {
+    saveDialogOpen = false
+    newPresetName = ''
+  }
+
+  function finishSaveAndPendingSwitch() {
+    saveDialogOpen = false
+    newPresetName = ''
+    const target = pendingSwitchAfterSave
+    pendingSwitchAfterSave = null
+    if (target) void applyPreset(target)
+  }
+
   function saveOverwrite() {
-    void saveEqSession(undefined, 'auto').then(() => {
-      saveDialogOpen = false
-      newPresetName = ''
-    })
+    void saveEqSession(undefined, 'auto').then(finishSaveAndPendingSwitch)
   }
 
   function saveAsNew() {
-    void saveEqSession(newPresetName, 'new').then(() => {
-      saveDialogOpen = false
-      newPresetName = ''
-    })
+    void saveEqSession(newPresetName, 'new').then(finishSaveAndPendingSwitch)
   }
 
   // ── Add-band MODAL (was an inline prompt row): the user picks the
@@ -302,27 +318,51 @@
   }
 
   // ── Preset flows ────────────────────────────────────────────────────
-  // The dirty-switch dialog is GONE (2026-09-15): switching presets re-bases
-  // the continuous session and carries the edits — there is nothing to
-  // discard, force-save, or cancel.
+  // CLASSIC SWITCH (2026-09-15, user decision — replaces the continuous
+  // re-base): selecting a preset APPLIES it immediately (sound + engine +
+  // select); with unsaved edits a confirm dialog offers Keep (stay),
+  // Discard (apply anyway), or Save first (opens the save modal — after a
+  // save the switch is applied). The native <select> can't be cancelled, so
+  // the dialog reverts the select visually until a choice is made.
 
-  async function selectPreset(id: string) {
-    // Continuous-session switch (2026-09-15): the working edits are never
-    // discarded or force-saved — the session re-bases on the selection and
-    // CARRIES the edits, so the sound is unchanged and Save reliably offers
-    // "Save as Current" over the selected preset. The old flow discarded
-    // the dirty overlay ("Save as Current" vanished after a switch) or
-    // force-created a new preset from the switch dialog.
-    if (id === $workingEq.base.id && !$workingEq.dirty) return // no-op selection
-    const preset = findPresetById(id)
-    if (!preset) return
-    activePresetId.set(id)
-    switchSessionBase(preset)
-    applyEqToEngine($workingEq.state)
+  let switchModal = $state<{ targetId: string } | null>(null)
+
+  function selectPreset(id: string) {
+    if (id === $activePresetId && !$workingEq.dirty) return // no-op selection
+    if ($workingEq.dirty) {
+      // Park the select on the CURRENT base while the user decides —
+      // otherwise it shows the target preset as if already applied.
+      const sel = document.querySelector<HTMLSelectElement>('[data-eq-preset-select]')
+      if (sel) sel.value = $activePresetId
+      switchModal = { targetId: id }
+      return
+    }
+    void applyPreset(id).then(() => {
+      graphFitToken++
+    })
   }
 
   function handlePresetChange(e: Event) {
-    void selectPreset((e.target as HTMLSelectElement).value)
+    selectPreset((e.target as HTMLSelectElement).value)
+  }
+
+  function confirmSwitchDiscard() {
+    const target = switchModal?.targetId
+    switchModal = null
+    if (target) void applyPreset(target)
+  }
+
+  function confirmSwitchSave() {
+    const target = switchModal?.targetId
+    if (!target) return
+    switchModal = null
+    // Reopen the save dialog; finishing it applies the pending switch.
+    pendingSwitchAfterSave = target
+    onSaveTap()
+  }
+
+  function confirmSwitchKeep() {
+    switchModal = null
   }
 
   function resetAll() {
@@ -342,6 +382,7 @@
         : structuredClone(base)
     applyEqToEngine(target)
     resetWorkingEq(target)
+    graphFitToken++
   }
 
   async function removePreset(id: string) {
@@ -382,6 +423,7 @@
 
     applyEqToEngine(imported)
     resetWorkingEq(imported)
+    graphFitToken++
     showImport = false
     importText = ''
   }
@@ -423,6 +465,7 @@
     <div class="flex items-center gap-2">
       <div class="relative flex-1">
         <select
+          data-eq-preset-select
           class="w-full appearance-none rounded-lg bg-surface px-3 py-2 text-xs text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40"
           value={$activePresetId}
           onchange={handlePresetChange}
@@ -437,14 +480,6 @@
         <span class="shrink-0 text-[10px] font-medium text-amber-400" title="Unsaved changes over {findPresetById($workingEq.base.id)?.name ?? 'the active preset'} — they persist with the working state until you save or reset">(edited)</span>
       {/if}
     </div>
-
-    <!-- DIRTY HINT (2026-09-15, user ask): the continuous-rebase session
-         made the two controls' roles subtle — one line, only while dirty. -->
-    {#if $workingEq.dirty}
-      <p class="text-[10px] leading-snug text-muted/70">
-        Edits keep playing from the graph; the preset above is what Save overwrites.
-      </p>
-    {/if}
 
     <!-- ACTIONS ROW: one Save (opens the modal with both choices), Import,
          Delete. Labels are short so all three fit a 360px row. -->
@@ -516,6 +551,7 @@
       onBandTap={openBandEditor}
       spectrum={spectrumFrame}
       spectrumLive={spectrumLive}
+      fitToken={graphFitToken}
     />
 
     <!-- BAND EDITOR CONTROLS: each action says what it does -->
@@ -681,7 +717,7 @@
 
 <!-- SAVE MODAL: both choices explicit — overwrite the active user preset,
      or save as a NEW preset (the copy path, always available) -->
-<EqSheetModal open={saveDialogOpen} title="Save preset" onclose={() => (saveDialogOpen = false)}>
+<EqSheetModal open={saveDialogOpen} title="Save preset" onclose={closeSaveDialog}>
   <div class="space-y-3">
     {#if baseIsUserPreset}
       <button
@@ -706,7 +742,7 @@
       <p class="mt-1.5 text-[10px] text-muted/60">{newPresetName.trim() ? `“${newPresetName.trim()}”` : `“${$workingEq.base.name} (modified)”`} will be created — the current preset stays untouched.</p>
     </div>
     <div class="flex justify-end">
-      <button onclick={() => (saveDialogOpen = false)} class="rounded px-3 py-1.5 text-xs text-muted hover:text-primary">Cancel</button>
+      <button onclick={closeSaveDialog} class="rounded px-3 py-1.5 text-xs text-muted hover:text-primary">Cancel</button>
     </div>
   </div>
 </EqSheetModal>
@@ -729,6 +765,43 @@
     <div class="flex justify-end gap-2">
       <button onclick={() => (addBandPrompt = false)} class="rounded px-3 py-1.5 text-xs text-muted hover:text-primary">Cancel</button>
       <button onclick={confirmAddBand} class="rounded-lg bg-white/15 px-4 py-1.5 text-xs font-medium text-primary hover:bg-white/25">Add</button>
+    </div>
+  </div>
+</EqSheetModal>
+
+<!-- DIRTY-SWITCH MODAL (classic switch, 2026-09-15): selecting a preset
+     with unsaved edits asks — Keep (stay editing), Discard (apply the
+     selection anyway), or Save first (the save modal opens and finishing
+     it applies the selection). -->
+<EqSheetModal open={switchModal !== null} title="Unsaved changes" onclose={confirmSwitchKeep}>
+  <div class="space-y-3">
+    <p class="text-xs leading-relaxed text-muted">
+      You have unsaved edits. Switching to
+      <span class="font-medium text-primary">“{findPresetById(switchModal?.targetId ?? '')?.name ?? ''}”</span>
+      will discard them.
+    </p>
+    <div class="space-y-2">
+      <button
+        onclick={confirmSwitchSave}
+        class="w-full rounded-lg bg-sky-500/15 px-3 py-2.5 text-left text-xs font-medium text-sky-400 ring-1 ring-sky-500/30 hover:bg-sky-500/25"
+      >
+        Save first, then switch
+        <span class="block text-[10px] font-normal text-sky-400/70">Keep your edits in a preset, then apply the selection</span>
+      </button>
+      <button
+        onclick={confirmSwitchDiscard}
+        class="w-full rounded-lg px-3 py-2.5 text-left text-xs font-medium text-red-400 ring-1 ring-red-500/30 hover:bg-red-500/10"
+      >
+        Discard and switch
+        <span class="block text-[10px] font-normal text-red-400/70">Drop the edits and apply the selection</span>
+      </button>
+      <button
+        onclick={confirmSwitchKeep}
+        class="w-full rounded-lg px-3 py-2.5 text-left text-xs font-medium text-primary ring-1 ring-white/10 hover:bg-white/10"
+      >
+        Keep editing
+        <span class="block text-[10px] font-normal text-muted/70">Stay on the current preset with your edits</span>
+      </button>
     </div>
   </div>
 </EqSheetModal>

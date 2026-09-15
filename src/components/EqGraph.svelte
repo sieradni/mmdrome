@@ -19,15 +19,10 @@
     /** Tap (not drag) on a band dot — the view opens the FULL band editor
      *  (modal with frequency, gain, Q, curve kind, remove). Replaces the old
      *  cramped SVG popover (2026-09-15: dots were also hard to press). */
-    onBandTap?: (index: number) => void
-    /** Live spectrum levels (0..1 per band, the shared 20 Hz–20 kHz log
-     *  ladder from spectrumCore) rendered as a filled shape BEHIND the grid
-     *  and response curve. Empty/absent = no overlay (nothing playing, or
-     *  a platform without the tap). `spectrumLive` gates the subtle
-     *  fade-in so a stale last frame doesn't linger after pause. */
+    onBandTap?: (index: number) => void    /** Live spectrum levels (0..1 per band, the shared 20 Hz–20 kHz log     *  ladder from spectrumCore) rendered as a filled shape BEHIND the grid     *  and response curve. Empty/absent = no overlay (nothing playing, or     *  a platform without the tap). `spectrumLive` gates the subtle     *  fade-in so a stale last frame doesn't linger after pause. */
     spectrum?: Float32Array | null
-    spectrumLive?: boolean
-  }
+    spectrumLive?: boolean    /** Bump to auto-FIT the vertical scale to the curve ONCE (preset load /     *  import / reset). The scale is otherwise manual (zoomV control). */
+    fitToken?: number  }
 
   let {
     preampDb = 0,
@@ -41,6 +36,7 @@
     onBandTap,
     spectrum = null,
     spectrumLive = false,
+    fitToken = 0,
   }: Props = $props()
 
   const GAIN_STEP = 0.5
@@ -51,8 +47,8 @@
   const LOG_MAX = Math.log10(MAX_FREQ)
 
   // ── Viewport (2026-09-15): the frequency axis pans and zooms ─────────────
-  // Horizontal view window [viewMin, viewMax] in Hz. Vertical stays
-  // auto-scaled (maxAbsGain below) — vertical pan has no meaning there.
+  // Horizontal view window [viewMin, viewMax] in Hz. Vertical is MANUAL
+  // (vZoomDb below) — the view owns a side zoom control.
   const MIN_SPAN_DECADES = 0.35
   const FULL_SPAN_DECADES = LOG_MAX - LOG_MIN
   let viewMin = $state(MIN_FREQ)
@@ -99,16 +95,38 @@
   let height = $state(180)
   let svgEl: SVGSVGElement | null = $state(null)
 
-  // Calculate dynamic dB scale based on actual response curve
-  let maxAbsGain = $derived.by(() => {
-    if (!points || points.length === 0) return 12
+  // ── Vertical scale (2026-09-15, user decision): MANUAL, not auto. The
+  //    old auto-scaler re-derived the dB range from the curve on every
+  //    render, so dragging ONE band past a 6 dB boundary rescaled the whole
+  //    axis mid-drag — every other dot visibly shifted under the finger
+  //    ("moving one point results in the other points shifting"). Now the
+  //    scale changes only through the side zoom control, and the graph
+  //    auto-fits ONCE when `fitToken` changes (preset load / import /
+  //    reset — the view bumps it). Snapped to 6 dB steps so the grid and
+  //    the mapping are stable between snaps.
+  const VZOOM_MIN = 6
+  const VZOOM_MAX = 36
+  let vZoomDb = $state(12)
+  let maxAbsGain = $derived(Math.max(VZOOM_MIN, Math.min(VZOOM_MAX, Math.ceil(vZoomDb / 6) * 6)))
+
+  /** The dB half-range that fits `pts` with headroom, snapped to the 6 dB
+   *  ladder (±6 … ±36). */
+  function fitDbFor(pts: FrequencyPoint[]): number {
+    if (!pts || pts.length === 0) return 12
     let maxVal = 0
-    for (const p of points) {
+    for (const p of pts) {
       const abs = Math.abs(p.gainDb)
       if (abs > maxVal) maxVal = abs
     }
-    maxVal = Math.max(6, maxVal + 4) // add 4dB headroom, minimum ±6dB
-    return Math.min(36, Math.ceil(maxVal / 6) * 6) // round up to nearest 6dB, max ±36
+    const wanted = Math.max(6, maxVal + 4) // 4 dB headroom, minimum ±6 dB
+    return Math.min(VZOOM_MAX, Math.max(VZOOM_MIN, Math.ceil(wanted / 6) * 6))
+  }
+
+  let lastFitToken = -1
+  $effect(() => {
+    if (fitToken === lastFitToken) return
+    lastFitToken = fitToken
+    vZoomDb = fitDbFor(points)
   })
 
   let dbGrid = $derived.by(() => {
@@ -400,6 +418,12 @@
     setView(Math.pow(10, lo), Math.pow(10, lo + spanLog))
   }
 
+  // ── Vertical zoom (2026-09-15, manual): the graph's ONLY vertical-scale
+  //    control — 6 dB steps on the snapped ladder, symmetric around 0 dB.
+  function zoomV(dir: 1 | -1) {
+    vZoomDb = Math.max(VZOOM_MIN, Math.min(VZOOM_MAX, vZoomDb + dir * 6))
+  }
+
   function handleSvgClick(e: MouseEvent) {
     if (!editable || eqBypassed || !onAddFilter) return
     // A click on a handle group (the dot) belongs to the dot — never add.
@@ -479,13 +503,16 @@
           stroke-dasharray={db === 0 ? 'none' : '3,3'}
           class={db === 0 ? 'text-white/25 stroke-[1.5]' : 'text-white/10 stroke-[1]'}
         />
-        <text
-          x="4"
-          y={y - 3}
-          class="fill-muted/40 text-[9px] font-mono select-none"
-        >
-          {db > 0 ? '+' : ''}{db}dB
-        </text>
+        <!-- The bottom-most label collides with the 20 Hz axis label — skip it -->
+        {#if db !== -maxAbsGain}
+          <text
+            x="4"
+            y={y - 3}
+            class="fill-muted/40 text-[9px] font-mono select-none"
+          >
+            {db > 0 ? '+' : ''}{db}dB
+          </text>
+        {/if}
       {/each}
 
       <!-- Vertical Frequency Grid Lines (dynamic 1-2-5 per the view window) -->
@@ -596,5 +623,29 @@
         title="Reset the frequency view (20 Hz – 20 kHz)"
       >Reset view</button>
     {/if}
+
+    <!-- Vertical zoom (right edge, vertically centered): ± 6 dB per step;
+         the scale only changes HERE (or on a preset load's auto-fit). -->
+    <div class="absolute right-0.5 top-1/2 flex -translate-y-1/2 flex-col gap-1">
+      <button
+        onclick={() => zoomV(-1)}
+        disabled={maxAbsGain <= VZOOM_MIN}
+        class="flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white/85 backdrop-blur transition-colors hover:bg-black/75 disabled:opacity-30"
+        title="Zoom in vertically (±{maxAbsGain} dB now)"
+        aria-label="Zoom in vertically"
+      >
+        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12h14" /></svg>
+      </button>
+      <span class="text-center text-[8px] font-mono text-muted/70" title="Vertical scale">±{maxAbsGain}</span>
+      <button
+        onclick={() => zoomV(1)}
+        disabled={maxAbsGain >= VZOOM_MAX}
+        class="flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white/85 backdrop-blur transition-colors hover:bg-black/75 disabled:opacity-30"
+        title="Zoom out vertically (±{maxAbsGain} dB now)"
+        aria-label="Zoom out vertically"
+      >
+        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 12h14" /></svg>
+      </button>
+    </div>
   </div>
 </div>
