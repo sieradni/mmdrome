@@ -578,17 +578,17 @@ public final class NativeAudioEngine: NSObject {
         spectrumTapInstalled = true
         spectrumTapBuffer = [Float](repeating: 0, count: spectrumFFTSize)
         spectrumWindow = [Float](repeating: 0, count: spectrumFFTSize)
-        vDSP_hann_window(&spectrumWindow, UInt(spectrumFFTSize))
+        vDSP_hann_window(&spectrumWindow, UInt(spectrumFFTSize), vDSP_HANN_NORM)
         spectrumFFTSetup = vDSP_create_fftsetup(spectrumLog2n, FFTRadix(FFT_RADIX2))
         spectrumTap.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buffer, _ in
             guard let self, let channel = buffer.floatChannelData?[0] else { return }
             let frames = min(Int(buffer.frameLength), self.spectrumFFTSize)
             guard frames > 0 else { return }
-            // No locks/allocation: copy into the preallocated buffer. A torn
-            // frame (main thread reading mid-copy) is fine for a visualizer.
-            channel.withMemoryBound(to: Float.self, capacity: frames) { ptr in
-                for i in 0..<frames { self.spectrumTapBuffer[i] = ptr[i] }
-            }
+            // No locks/allocation: copy channel 0 into the preallocated
+            // buffer (`channel` is already UnsafeMutablePointer<Float>). A
+            // torn frame (main thread reading mid-copy) is fine for a
+            // visualizer.
+            for i in 0..<frames { self.spectrumTapBuffer[i] = channel[i] }
             for i in frames..<self.spectrumFFTSize { self.spectrumTapBuffer[i] = 0 }
             self.spectrumHasNewFrame = true
         }
@@ -613,12 +613,17 @@ public final class NativeAudioEngine: NSObject {
             var realp = [Float](repeating: 0, count: halfN)
             var imagp = [Float](repeating: 0, count: halfN)
             var mags = [Double](repeating: 0, count: halfN)
+            // Pack the real signal the way vDSP_fft_zrip expects: even
+            // samples → realp, odd samples → imagp (what vDSP_ctoz does
+            // for a contiguous float buffer — spelled out here to keep the
+            // stride semantics unambiguous).
+            for i in 0..<halfN {
+                realp[i] = windowed[2 * i]
+                imagp[i] = windowed[2 * i + 1]
+            }
             realp.withUnsafeMutableBufferPointer { realPtr in
                 imagp.withUnsafeMutableBufferPointer { imagPtr in
                     var split = DSPSplitComplex(realp: realPtr.baseAddress!, imagp: imagPtr.baseAddress!)
-                    windowed.withUnsafeBufferPointer { winPtr in
-                        vDSP_ctoz(winPtr.baseAddress!, 2, &split, 1, UInt(halfN))
-                    }
                     vDSP_fft_zrip(setup, &split, 1, spectrumLog2n, FFTDirection(FFT_FORWARD))
                     // Forward transform is unscaled (results ×2): normalize
                     // by 1/2N so a full-scale sine lands ≈0.5 (Hann coherent
