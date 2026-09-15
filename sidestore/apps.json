@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.14",
-      "versionDate": "2026-09-15T05:38:44.905Z",
-      "versionDescription": "Fix 1.2.13 launch crash: spectrum tap attached before connect",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.14/mmdrome.ipa",
+      "version": "1.2.15",
+      "versionDate": "2026-09-15T06:40:46.013Z",
+      "versionDescription": "Fix play crash: spectrum tap wired in-line, play() guards engine start",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.15/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.15",
+          "buildVersion": "19",
+          "date": "2026-09-15T06:40:46.013Z",
+          "localizedDescription": "Fix play crash: spectrum tap wired in-line, play() guards engine start",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.15/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.14",
           "buildVersion": "18",
@@ -179,6 +187,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.15",
+      "identifier": "ios-v1.2.15",
+      "appID": "com.mmdrome.player",
+      "caption": "Fix play crash: spectrum tap wired in-line, play() guards engine start",
+      "date": "2026-09-15T06:40:46.013Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.14",
       "identifier": "ios-v1.2.14",
       "appID": "com.mmdrome.player",
@@ -211,15 +228,6 @@
       "appID": "com.mmdrome.player",
       "caption": "EQ graph: pan & zoom the frequency axis, easy-to-press dots, dialogs are proper modals now",
       "date": "2026-09-15T00:36:51.455Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.10",
-      "identifier": "ios-v1.2.10",
-      "appID": "com.mmdrome.player",
-      "caption": "EQ redesign: unified Save with overwrite/new-preset choice, curve-snapped graph dots with tap editors, add-band frequency prompt, per-band s",
-      "date": "2026-09-14T23:02:26.195Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
