@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.10",
-      "versionDate": "2026-09-14T23:02:26.195Z",
-      "versionDescription": "EQ redesign: unified Save with overwrite/new-preset choice, curve-snapped graph dots with tap editors, add-band frequency prompt, per-band settings",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.10/mmdrome.ipa",
+      "version": "1.2.11",
+      "versionDate": "2026-09-15T00:36:51.455Z",
+      "versionDescription": "EQ graph: pan & zoom the frequency axis, easy-to-press dots, dialogs are proper modals now",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.11/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.11",
+          "buildVersion": "15",
+          "date": "2026-09-15T00:36:51.455Z",
+          "localizedDescription": "EQ graph: pan & zoom the frequency axis, easy-to-press dots, dialogs are proper modals now",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.11/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.10",
           "buildVersion": "14",
@@ -143,6 +151,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.11",
+      "identifier": "ios-v1.2.11",
+      "appID": "com.mmdrome.player",
+      "caption": "EQ graph: pan & zoom the frequency axis, easy-to-press dots, dialogs are proper modals now",
+      "date": "2026-09-15T00:36:51.455Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.10",
       "identifier": "ios-v1.2.10",
       "appID": "com.mmdrome.player",
@@ -175,15 +192,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Preload indicators: engine-derived window — every upcoming row now lights reliably, and the current track's seek-bar layer appears even when",
       "date": "2026-09-14T10:52:40.115Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.6",
-      "identifier": "ios-v1.2.6",
-      "appID": "com.mmdrome.player",
-      "caption": "Instant preload indicators: downloads light up the moment they finish, seekbar loaded layer on fast servers; search clear buttons",
-      "date": "2026-09-14T08:50:36.935Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
