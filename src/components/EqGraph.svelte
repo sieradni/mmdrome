@@ -106,8 +106,10 @@
   //    the mapping are stable between snaps.
   const VZOOM_MIN = 6
   const VZOOM_MAX = 36
-  let vZoomDb = $state(12)
-  let maxAbsGain = $derived(Math.max(VZOOM_MIN, Math.min(VZOOM_MAX, Math.ceil(vZoomDb / 6) * 6)))
+  /** Continuous vertical half-range — pinch drives it fluidly; the RENDERED
+   *  scale snaps to the 6 dB ladder (maxAbsGain) so gridlines stay stable. */
+  let vZoomRaw = $state(12)
+  let maxAbsGain = $derived(Math.max(VZOOM_MIN, Math.min(VZOOM_MAX, Math.ceil(vZoomRaw / 6) * 6)))
 
   /** The dB half-range that fits `pts` with headroom, snapped to the 6 dB
    *  ladder (±6 … ±36). */
@@ -126,7 +128,7 @@
   $effect(() => {
     if (fitToken === lastFitToken) return
     lastFitToken = fitToken
-    vZoomDb = fitDbFor(points)
+    vZoomRaw = fitDbFor(points)
   })
 
   let dbGrid = $derived.by(() => {
@@ -249,6 +251,19 @@
   let dragStartX = 0
   let dragStartY = 0
 
+  /** Capture the pointer if the browser still considers it active — a
+   *  NotFoundError here (pointer released between down and capture; some
+   *  synthetic/hostile input) used to THROW out of graphPointerDown and
+   *  abort the whole gesture before registration. Losing capture only
+   *  means moves outside the SVG stop tracking; the gesture must survive. */
+  function captureSafe(el: Element, pointerId: number) {
+    try {
+      el.setPointerCapture?.(pointerId)
+    } catch {
+      /* pointer not active — continue un-captured */
+    }
+  }
+
   function svgPointFromEvent(e: PointerEvent | MouseEvent): { freq: number; db: number } {
     const rect = svgEl?.getBoundingClientRect()
     if (!rect || rect.width <= 0) return { freq: MIN_FREQ, db: 0 }
@@ -270,7 +285,7 @@
       if (!editable || eqBypassed) return
       e.preventDefault()
       e.stopPropagation() // the graph's pan gesture must not start from a dot
-      ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
+      captureSafe(e.currentTarget as Element, e.pointerId)
       dragIndex = index
       dragMoved = false
       dragStartX = e.clientX
@@ -359,7 +374,7 @@
       const [p1, p2] = [...pointers.values()]
       lastPinch = { dist: Math.hypot(p2.x - p1.x, p2.y - p1.y), contentLogF: 0 }
     }
-    ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
+    captureSafe(e.currentTarget as Element, e.pointerId)
   }
 
   function graphPointerMove(e: PointerEvent) {
@@ -377,7 +392,9 @@
       if (gestureDist > TAP_SLOP_PX) gestureMoved = true
       if (!gestureMoved || dx === 0) return
       // Dragging right moves the WINDOW left in frequency (content follows
-      // the finger). Horizontal only — vertical is auto-scaled.
+      // the finger). Horizontal only — vertical panning has no meaning on a
+      // symmetric dB scale; vertical zoom is the pinch (below) or the side
+      // buttons.
       const logDelta = (dx / rect.width) * (logViewMax - logViewMin)
       setView(Math.pow(10, logViewMin - logDelta), Math.pow(10, logViewMax - logDelta))
     } else if (pointers.size === 2) {
@@ -396,6 +413,10 @@
         // and zoom in one transform.
         const lo = contentLogF - frac * spanLog
         setView(Math.pow(10, lo), Math.pow(10, lo + spanLog))
+        // The SAME gesture drives the manual vertical scale: fingers apart →
+        // zoom IN (smaller dB half-range), fingers together → zoom out.
+        // Fluid internally; the rendered scale snaps to the 6 dB ladder.
+        vZoomRaw = Math.max(VZOOM_MIN, Math.min(VZOOM_MAX, vZoomRaw * clamped))
       }
       lastPinch = { dist, contentLogF }
     }
@@ -418,10 +439,14 @@
     setView(Math.pow(10, lo), Math.pow(10, lo + spanLog))
   }
 
-  // ── Vertical zoom (2026-09-15, manual): the graph's ONLY vertical-scale
-  //    control — 6 dB steps on the snapped ladder, symmetric around 0 dB.
+  // ── Vertical zoom (2026-09-15, manual): the side +/− buttons (6 dB steps)
+  //    and a two-finger pinch ON the graph (fluid, snapped on render).
+  //    Symmetric around 0 dB — there is no vertical pan to anchor.
   function zoomV(dir: 1 | -1) {
-    vZoomDb = Math.max(VZOOM_MIN, Math.min(VZOOM_MAX, vZoomDb + dir * 6))
+    // Step from the VISIBLE rung (raw may sit mid-ladder after a pinch) so
+    // button presses always land exactly one 6 dB step away from what's shown.
+    const base = Math.ceil(vZoomRaw / 6) * 6
+    vZoomRaw = Math.max(VZOOM_MIN, Math.min(VZOOM_MAX, base + dir * 6))
   }
 
   function handleSvgClick(e: MouseEvent) {
