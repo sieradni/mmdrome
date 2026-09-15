@@ -172,6 +172,26 @@ function playingMediaTime(page: Page): Promise<number> {
   })
 }
 
+/** Max playhead across ALL media elements (paused included). Failure
+ *  diagnostics only — a paused standby's frozen time must never feed a
+ *  pass, but seeing a nonzero FROZEN time distinguishes "audio decoded,
+ *  output stuck" (engine/worklet problem) from "time never left 0"
+ *  (decode/load never succeeded) when this spec fails. */
+async function anyMediaTime(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    const els = (window as unknown as { __mediaEls?: HTMLMediaElement[] }).__mediaEls ?? []
+    let t = 0
+    for (const el of els) if (el.currentTime > t) t = el.currentTime
+    return t
+  })
+}
+
+/** A capped tail of the media-src instrument log (newest last). */
+async function lastMediaSrcs(page: Page, n = 4): Promise<string[]> {
+  const s = await mediaSrcs(page)
+  return s.slice(-n)
+}
+
 /**
  * Shared boot for every scenario: load the 6-song mocked library, set the
  * preload window, play Song One, and wait for the fill-start gate. Returns
@@ -525,7 +545,22 @@ test('an undecodable cached track is skipped instead of freezing playback', asyn
   await expect
     .poll(async () => (await mediaSrcs(page)).filter((s) => s.startsWith('blob:')).length, { timeout: 20_000 })
     .toBeGreaterThanOrEqual(1)
-  await expect.poll(() => playingMediaTime(page), { timeout: 20_000 }).toBeGreaterThan(0.5)
+  // Window (2026-09-15, CI run 35035794940): ≥20 s failed with the playhead
+  // still at 0. Worst-case wait ≈ s2's full 3-attempt chain (≈7 s: decode
+  // + 1 s/2 s backoffs) + the SAME for s3 when the mock WAV transiently
+  // surfaces NotSupportedError under load (probe evidence in the comment
+  // above) + the final load/decode stretch. Widen to 45 s — the blob poll
+  // above and the raw-URL checks below keep the assertion's teeth.
+  try {
+    await expect
+      .poll(() => playingMediaTime(page), { timeout: 45_000, intervals: [500, 1_000, 2_000] })
+      .toBeGreaterThan(0.5)
+  } catch (e) {
+    throw new Error(
+      `playhead never moved after the skip chain: playing=${await playingMediaTime(page)} anyTime=${await anyMediaTime(page)} srcs=${(await lastMediaSrcs(page, 4)).join(' | ').slice(0, 400)}`,
+      { cause: e instanceof Error ? e : undefined },
+    )
+  }
   const srcs = await mediaSrcs(page)
   expect(srcs.filter((s) => s.includes('id=s2') || s.includes('id=s3')), 'neither track touches a raw URL').toEqual([])
 })
