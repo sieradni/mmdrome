@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.11",
-      "versionDate": "2026-09-15T00:36:51.455Z",
-      "versionDescription": "EQ graph: pan & zoom the frequency axis, easy-to-press dots, dialogs are proper modals now",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.11/mmdrome.ipa",
+      "version": "1.2.12",
+      "versionDate": "2026-09-15T02:27:24.961Z",
+      "versionDescription": "EQ: Save as Current works after preset switches (continuous session rebasing); all dialogs centered on phones; preset switching no longer discards or force-saves edits",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.12/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.12",
+          "buildVersion": "16",
+          "date": "2026-09-15T02:27:24.961Z",
+          "localizedDescription": "EQ: Save as Current works after preset switches (continuous session rebasing); all dialogs centered on phones; preset switching no longer discards or force-saves edits",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.12/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 4863921
+        },
         {
           "version": "1.2.11",
           "buildVersion": "15",
@@ -152,6 +161,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.12",
+      "identifier": "ios-v1.2.12",
+      "appID": "com.mmdrome.player",
+      "caption": "EQ: Save as Current works after preset switches (continuous session rebasing); all dialogs centered on phones; preset switching no longer di",
+      "date": "2026-09-15T02:27:24.961Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.11",
       "identifier": "ios-v1.2.11",
       "appID": "com.mmdrome.player",
@@ -184,15 +202,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Slider knobs mark the exact value with a lighter track; Art/Lyrics button only appears for songs that have lyrics",
       "date": "2026-09-14T21:21:17.553Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.7",
-      "identifier": "ios-v1.2.7",
-      "appID": "com.mmdrome.player",
-      "caption": "Preload indicators: engine-derived window — every upcoming row now lights reliably, and the current track's seek-bar layer appears even when",
-      "date": "2026-09-14T10:52:40.115Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
