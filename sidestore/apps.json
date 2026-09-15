@@ -27,7 +27,8 @@
           "date": "2026-09-15T02:27:24.961Z",
           "localizedDescription": "EQ: Save as Current works after preset switches (continuous session rebasing); all dialogs centered on phones; preset switching no longer discards or force-saves edits",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.12/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4863921
         },
         {
           "version": "1.2.11",
