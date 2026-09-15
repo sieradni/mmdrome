@@ -27,7 +27,8 @@
           "date": "2026-09-15T04:39:09.013Z",
           "localizedDescription": "EQ spectrum overlay: live audio behind the curve while music plays, so you can see which frequencies to target; plus a one-line hint under the preset select while edits are unsaved",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.13/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4872050
         },
         {
           "version": "1.2.12",
