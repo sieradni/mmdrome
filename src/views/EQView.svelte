@@ -13,9 +13,9 @@
     editWorkingEq,
     resetWorkingEq,
     deleteUserPreset,
-    applyPreset,
     saveEqSession,
     findPresetById,
+    switchSessionBase,
   } from '../lib/eq/eqStore'
   import { parseEqText } from '../lib/eq/eqParser'
   import { BUILTIN_PRESETS, mergeFiltersIntoDefaultGrid } from '../lib/eq/builtInPresets'
@@ -34,7 +34,6 @@
   let showImport = $state(false)
   let importText = $state('')
   let importErrors = $state('')
-  let selectEl: HTMLSelectElement | null = $state(null)
 
   const presets = $derived([...BUILTIN_PRESETS, ...$userPresets])
 
@@ -280,43 +279,24 @@
     if (idx >= 0) openBandEditor(idx)
   }
 
-  // ── Preset flows (dirty-guarded) ────────────────────────────────────────
-
-  type DirtyChoice = 'save' | 'discard' | 'cancel'
-  let dirtyDialog = $state<{ open: boolean; resolve?: (c: DirtyChoice) => void }>({ open: false })
-
-  function askDirtyChoice(): Promise<DirtyChoice> {
-    return new Promise((resolve) => {
-      dirtyDialog = { open: true, resolve }
-    })
-  }
-
-  function settleDirty(choice: DirtyChoice) {
-    dirtyDialog.resolve?.(choice)
-    dirtyDialog = { open: false }
-  }
+  // ── Preset flows ────────────────────────────────────────────────────
+  // The dirty-switch dialog is GONE (2026-09-15): switching presets re-bases
+  // the continuous session and carries the edits — there is nothing to
+  // discard, force-save, or cancel.
 
   async function selectPreset(id: string) {
-    // Dirty overlay over a DIFFERENT preset: ask before discarding (user
-    // decision 2026-09-13 — Save / Discard / Cancel).
-    if ($workingEq.dirty && id !== $workingEq.base.id) {
-      const choice = await askDirtyChoice()
-      if (choice === 'cancel') {
-        // Revert the select's visual value to the actual active preset.
-        if (selectEl) selectEl.value = $activePresetId
-        return
-      }
-      if (choice === 'save') {
-        // Unified save: user-preset base → overwrite; builtin/import → new
-        // "(modified)" preset (no name prompt mid-switch — the default name
-        // is the old Save-as-Current behavior).
-        await saveEqSession()
-      }
-      // 'discard' falls through — applyPreset resets the session clean.
-    }
-    const preset = await applyPreset(id)
+    // Continuous-session switch (2026-09-15): the working edits are never
+    // discarded or force-saved — the session re-bases on the selection and
+    // CARRIES the edits, so the sound is unchanged and Save reliably offers
+    // "Save as Current" over the selected preset. The old flow discarded
+    // the dirty overlay ("Save as Current" vanished after a switch) or
+    // force-created a new preset from the switch dialog.
+    if (id === $workingEq.base.id && !$workingEq.dirty) return // no-op selection
+    const preset = findPresetById(id)
     if (!preset) return
-    applyEqToEngine(preset)
+    activePresetId.set(id)
+    switchSessionBase(preset)
+    applyEqToEngine($workingEq.state)
   }
 
   function handlePresetChange(e: Event) {
@@ -421,7 +401,6 @@
     <div class="flex items-center gap-2">
       <div class="relative flex-1">
         <select
-          bind:this={selectEl}
           class="w-full appearance-none rounded-lg bg-surface px-3 py-2 text-xs text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40"
           value={$activePresetId}
           onchange={handlePresetChange}
@@ -722,14 +701,3 @@
   </div>
 </EqSheetModal>
 
-<!-- DIRTY PRESET-SWITCH MODAL -->
-<EqSheetModal open={dirtyDialog.open} title="Unsaved changes" onclose={() => settleDirty('cancel')} label="Unsaved changes dialog">
-  <div class="space-y-3">
-    <p class="text-xs text-primary">You have unsaved changes. Switch presets?</p>
-    <div class="flex justify-end gap-2">
-      <button onclick={() => settleDirty('save')} class="rounded bg-sky-500/15 px-3 py-1.5 text-xs text-sky-400 ring-1 ring-sky-500/30 hover:bg-sky-500/25">Save</button>
-      <button onclick={() => settleDirty('discard')} class="rounded bg-white/15 px-3 py-1.5 text-xs text-primary hover:bg-white/25">Discard</button>
-      <button onclick={() => settleDirty('cancel')} class="rounded px-3 py-1.5 text-xs text-muted hover:text-primary">Cancel</button>
-    </div>
-  </div>
-</EqSheetModal>

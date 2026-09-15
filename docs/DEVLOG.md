@@ -11,6 +11,16 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-15 — EQ Save-as-Current regression: three UI-design lessons from one user report
+
+The user reported: "There is still no way to save as current, pressing save only shows save as new, the popup shows at the bottom, and switching away and saving also saves as a new preset." All three traced to design decisions of the 1.2.11 save-modal rework, and fixing them produced a semantic change worth pinning:
+
+1. **Bottom-parked modal = wrong containing idiom.** `EqSheetModal` used `items-end sm:items-center`, so on any viewport under 640 px (i.e. every phone, the app's primary target) the dialog rendered as a bottom sheet. The app's own modal idiom (TrackDetailsModal, FilterSortBar) is centered at ALL widths — breakpoints were an invention, not a convention. Lesson: when copying app idioms, copy them from the app's actual components, not from generic Tailwind patterns.
+2. **"Save as Current never appears" was a SESSION-CONTINUITY flaw, not a modal bug.** The dirty-switch flow (pre-1.2.11) DISCARDED the edits when the user switched presets, so after any switch the session was either clean (no Save needed) or based on a builtin (no Save-as-Current possible) — the choice was unreachable in the exact flow the user described. Fix: preset switches are now CONTINUOUS REBASES (`eqSession.rebaseSession` + `eqStore.switchSessionBase`) — the working state is carried across the switch, dirty recomputed against the new base, and the engine never re-pushed (the sound is unchanged; the edits ARE the working state). "Save as Current" now reliably offers itself over the selected user preset after a switch, and there is no discard dialog to lose edits in. The trade-off is deliberate: switching presets no longer changes the sound until Reset is used; the select is "what Save will overwrite", the graph is "what you hear".
+3. **The modal-shows-X-only-over-user-presets rule is now load-bearing UX.** Over a builtin/import base the modal intentionally shows only "Save as New" (there is nothing of yours to overwrite). Verified live: builtin base → Save-as-New only; user base (after switch-back) → both choices with an "Overwrite \"<name>\"" subtitle; overwrite lands in place (id stable, bands saved, dirty cleared, `(edited)` marker gone).
+
+Unit pins: `rebaseSession` (carry/equal-lands-clean/identity-ignored) in tests/eqSession.test.ts; `switchSessionBase` (rebase+carry+persist, equal-preset no-fake-dirty) in tests/eqStore.test.ts. The store wrapper deliberately does NOT move `activePresetId` (the view does, mirroring applyPreset callers) — asserted by the test that sets the id first.
+
 ## 2026-09-15 — Offline-advance e2e de-flaked: the probe watched the wrong element
 
 The spec flaked on CI across three release commits (runs 34433551570, 34437082807, 34824985802 — always a `lastMediaTime > 0.5` poll timing out AFTER the blob-src poll had resolved, once a blob-count tail assertion), and a rerun always went green, which meant the assertion was measuring something load-sensitive, not the product. Root cause was in the PROBE, twice over:

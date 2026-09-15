@@ -15,6 +15,7 @@ import {
   planWorkingPersist,
   resolveSession,
   reconcileOnRestore,
+  rebaseSession,
 } from '../src/lib/eq/eqSession'
 import { BUILTIN_PRESETS } from '../src/lib/eq/builtInPresets'
 import type { EqPreset } from '../src/lib/eq/eqTypes'
@@ -179,4 +180,44 @@ test('reconcileOnRestore: matching ids adopt the saved overlay; mismatched → t
   const session = startSession(preset({ id: 'p1' }))
   assert.deepEqual(reconcileOnRestore(session, 'p1'), { adoptSaved: true, activePresetId: 'p1' })
   assert.deepEqual(reconcileOnRestore(session, 'p2'), { adoptSaved: false, activePresetId: 'p2' })
+})
+
+// ── rebaseSession (2026-09-15 continuous preset-switch) ──────────────────
+
+test('rebaseSession carries the edits as a dirty overlay over the new base', () => {
+  const p1 = preset({ id: 'p1', preampDb: 0 })
+  const p2 = preset({ id: 'p2', preampDb: -6 })
+  const session = editDraft(startSession(p1), (st) => {
+    st.preampDb = -3
+    return st
+  })
+  assert.equal(session.dirty, true)
+  const rebased = rebaseSession(session, p2)
+  assert.equal(rebased.state, session.state, 'the working state object is carried (sound unchanged)')
+  assert.equal(rebased.base.id, 'p2', 'the new base is the selection')
+  assert.equal(rebased.dirty, true, 'edits still differ from the new base → still dirty')
+})
+
+test('rebaseSession lands clean when the working state equals the new base', () => {
+  const p1 = preset({ id: 'p1', preampDb: 0 })
+  const p2 = preset({ id: 'p2', preampDb: -6 })
+  // Clean session over p1, switch to p2: state != p2 → dirty.
+  const rebased = rebaseSession(startSession(p1), p2)
+  assert.equal(rebased.dirty, true)
+  // An edit that RETURNS to p1's values (dirty cleared), then switch: state == p2?
+  const carried = editDraft(rebased, (st) => {
+    st.preampDb = -6
+    return st
+  })
+  assert.equal(carried.dirty, false, 'edit converged on the new base')
+  const rebased2 = rebaseSession(carried, p2)
+  assert.equal(rebased2.dirty, false, 're-base on an equal preset never fake-dirties')
+})
+
+test('rebaseSession ignores preset identity in the deep compare', () => {
+  const p1 = preset({ id: 'p1', name: 'One' })
+  const p1SameValues = preset({ id: 'p2', name: 'Two', preampDb: 0 })
+  const rebased = rebaseSession(startSession(p1), p1SameValues)
+  assert.equal(rebased.dirty, false, 'same values under a different id/name = clean')
+  assert.equal(rebased.base.id, 'p2')
 })

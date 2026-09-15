@@ -88,6 +88,27 @@ export function startSession(basePreset: EqPreset): EqWorkingSession {
 }
 
 /**
+ * Re-base a session on a NEW preset while keeping the working state (2026-
+ * 09-15 preset-switch semantics): the user's edits survive the switch as a
+ * dirty overlay over the newly selected preset — the sound never changes,
+ * and "Save as Current" now correctly offers to overwrite the selection.
+ * Dirty is recomputed against the new base (a switch to a preset that
+ * happens to equal the working state lands clean, never fake-dirty).
+ */
+export function rebaseSession(
+  session: EqWorkingSession,
+  newBase: EqPreset
+): EqWorkingSession {
+  const next: EqWorkingSession = {
+    base: clonePreset(newBase),
+    state: session.state,
+    dirty: false,
+  }
+  next.dirty = !sessionEqualsPreset(session.state, newBase)
+  return next
+}
+
+/**
  * Apply an edit to the session. `dirty` is recomputed against the session's
  * own base — never set blindly true, so an edit that returns the working
  * state to the preset's exact values clears the marker.

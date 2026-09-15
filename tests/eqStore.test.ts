@@ -26,6 +26,7 @@ import {
   applyPreset,
   saveAsCurrentPreset,
   saveEqSession,
+  switchSessionBase,
   editWorkingEq,
   cancelPendingWorkingCommit,
 } from '../src/lib/eq/eqStore'
@@ -351,4 +352,49 @@ test("saveEqSession mode 'new' duplicates a user-preset session instead of overw
   const original = get(userPresets).find((p) => p.id === 'user_probe')
   assert.equal(original?.preampDb, 0, 'the original preset is untouched (duplicate semantics)')
   assert.equal(get(userPresets).length, 2, 'both presets exist')
+})
+
+// ── switchSessionBase (2026-09-15 continuous preset-switch) ──────────────
+
+test('switchSessionBase re-bases on the selection, carries edits, and persists the selection', async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore()
+  await saveUserPreset({ id: 'user_probe', name: 'Probe', mode: 'parametric', preampDb: -6, filters: BUILTIN_PRESETS[0].filters.map((f) => ({ ...f })) })
+  // Reset lands the session clean on user_probe (saveUserPreset re-bases).
+  editWorkingEq((st) => {
+    st.preampDb = -9
+    return st
+  })
+  assert.equal(get(workingEq).dirty, true)
+
+  // Mirror the view's selectPreset contract: it sets activePresetId, then
+  // re-bases (switchSessionBase persists base.id as the active key itself).
+  activePresetId.set('flat')
+  switchSessionBase(BUILTIN_PRESETS[0]) // switch away to Flat
+  assert.equal(get(activePresetId), 'flat', 'the selection persisted')
+  assert.equal(get(workingEq).base.id, 'flat', 'the session re-based on the selection')
+  assert.equal(get(workingEq).state.preampDb, -9, 'the edits CARRIED (sound unchanged)')
+  assert.equal(get(workingEq).dirty, true, 'still dirty against the new base')
+  assert.equal(get(currentEqState)?.preampDb, -9, 'engine state mirrors the working copy')
+
+  // Save as Current now correctly offers itself: an 'auto' save overwrites the
+  // SELECTED user preset — wait, Flat is builtin, so 'auto' creates new. The
+  // fix is that switching BACK to the user preset keeps the edits:
+  activePresetId.set('user_probe')
+  switchSessionBase(get(userPresets)[0])
+  assert.equal(get(workingEq).state.preampDb, -9, 'edits still carried')
+  assert.equal(get(workingEq).dirty, true, 'Save as Current is now offered over user_probe')
+  const committed = await saveEqSession()
+  assert.equal(committed.id, 'user_probe', 'auto-save overwrote the selection in place')
+  assert.equal(get(workingEq).dirty, false)
+})
+
+test('switchSessionBase to an equal preset lands clean (no fake dirty)', async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore()
+  await saveUserPreset({ id: 'user_probe', name: 'Probe', mode: 'parametric', preampDb: 0, filters: BUILTIN_PRESETS[0].filters.map((f) => ({ ...f })) })
+  switchSessionBase(get(userPresets)[0]) // same values as flat? Probe==flat values here
+  assert.equal(get(workingEq).dirty, false, 'identical values = clean, never fake-dirty')
 })

@@ -3,10 +3,9 @@
 
   interface Props {
     open: boolean
-    /** Shown on sm+ and above the sheet on mobile. */
     title: string
     onclose: () => void
-    /** A11y name for narrow viewports (defaults to title). */
+    /** A11y name (defaults to title). */
     label?: string
     children: Snippet
   }
@@ -17,14 +16,19 @@
 <svelte:window onkeydown={(e) => { if (open && e.key === 'Escape') onclose() }} />
 
 {#if open}
+  <!-- Centered modal at ALL widths (2026-09-15 revision): the sm:-gated
+       bottom-sheet rendered bottom-anchored in the app's narrow window AND
+       on every phone (both < 640px), which the user called out as extra
+       movement. This is now the TrackDetailsModal/FilterSortBar idiom —
+       centered card, max-w-lg, Esc + backdrop close. -->
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
   <div
-    class="fixed inset-0 z-50 flex items-end justify-center bg-black/60 sm:items-center"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
     onclick={onclose}
     role="presentation"
   >
     <div
-      class="flex max-h-[88vh] w-full flex-col overflow-hidden rounded-t-2xl border border-white/10 bg-surface shadow-2xl sm:max-w-lg sm:rounded-2xl"
+      class="flex max-h-[80vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl border border-white/10 bg-surface shadow-2xl"
       onclick={(e) => e.stopPropagation()}
       role="dialog"
       aria-modal="true"
