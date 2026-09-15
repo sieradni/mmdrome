@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.13",
-      "versionDate": "2026-09-15T04:39:09.013Z",
-      "versionDescription": "EQ spectrum overlay: live audio behind the curve while music plays, so you can see which frequencies to target; plus a one-line hint under the preset select while edits are unsaved",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.13/mmdrome.ipa",
+      "version": "1.2.14",
+      "versionDate": "2026-09-15T05:38:44.905Z",
+      "versionDescription": "Fix 1.2.13 launch crash: spectrum tap attached before connect",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.14/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.14",
+          "buildVersion": "18",
+          "date": "2026-09-15T05:38:44.905Z",
+          "localizedDescription": "Fix 1.2.13 launch crash: spectrum tap attached before connect",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.14/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 4872081
+        },
         {
           "version": "1.2.13",
           "buildVersion": "17",
@@ -170,6 +179,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.14",
+      "identifier": "ios-v1.2.14",
+      "appID": "com.mmdrome.player",
+      "caption": "Fix 1.2.13 launch crash: spectrum tap attached before connect",
+      "date": "2026-09-15T05:38:44.905Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.13",
       "identifier": "ios-v1.2.13",
       "appID": "com.mmdrome.player",
@@ -202,15 +220,6 @@
       "appID": "com.mmdrome.player",
       "caption": "EQ redesign: unified Save with overwrite/new-preset choice, curve-snapped graph dots with tap editors, add-band frequency prompt, per-band s",
       "date": "2026-09-14T23:02:26.195Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.9",
-      "identifier": "ios-v1.2.9",
-      "appID": "com.mmdrome.player",
-      "caption": "Album/artist covers load ahead of your scroll: wider pre-roll, faster thumbnail pipeline",
-      "date": "2026-09-14T22:04:04.482Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
