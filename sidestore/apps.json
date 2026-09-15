@@ -27,7 +27,8 @@
           "date": "2026-09-15T06:40:46.013Z",
           "localizedDescription": "Fix play crash: spectrum tap wired in-line, play() guards engine start",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.15/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4872144
         },
         {
           "version": "1.2.14",
