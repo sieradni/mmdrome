@@ -578,7 +578,7 @@ public final class NativeAudioEngine: NSObject {
         spectrumTapInstalled = true
         spectrumTapBuffer = [Float](repeating: 0, count: spectrumFFTSize)
         spectrumWindow = [Float](repeating: 0, count: spectrumFFTSize)
-        vDSP_hann_window(&spectrumWindow, UInt(spectrumFFTSize), vDSP_HANN_NORM)
+        vDSP_hann_window(&spectrumWindow, UInt(spectrumFFTSize), Int32(vDSP_HANN_NORM))
         spectrumFFTSetup = vDSP_create_fftsetup(spectrumLog2n, FFTRadix(FFT_RADIX2))
         spectrumTap.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buffer, _ in
             guard let self, let channel = buffer.floatChannelData?[0] else { return }
