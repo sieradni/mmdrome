@@ -506,6 +506,13 @@ public final class NativeAudioEngine: NSObject {
 
     public override init() {
         super.init()
+        // The real fix for the 1.2.13 launch crash is in setupGraph(): every
+        // node is attached before it is connected (the crash was an
+        // unattached spectrumTap). Kept simple on purpose — AVFoundation
+        // raises ObjC NSExceptions that Swift's do/catch cannot intercept,
+        // and a wrong-graph-silently-playing app is worse than a loud
+        // developer-visible crash in a build the store never shipped.
+        // Defense = the attach/connect audit in the docs + this comment.
         setupGraph()
         loader.onDownloadFinished = { [weak self] trackId, succeeded in
             self?.handleDownloadFinished(trackId, succeeded)
@@ -522,6 +529,12 @@ public final class NativeAudioEngine: NSObject {
         engine.attach(varispeed)
         engine.attach(eq)
         engine.attach(preamp)
+        // The spectrum tap MUST be attached before engine.connect touches it —
+        // connecting an unattached node throws at graph build (the 1.2.13
+        // launch crash: the plugin instantiates the engine at app open, so
+        // the exception killed every launch). Found by inspection after the
+        // crash report — add a node here AND attach it here.
+        engine.attach(spectrumTap)
 
         engine.connect(playerA, to: gainA, format: nil)
         engine.connect(playerB, to: gainB, format: nil)
