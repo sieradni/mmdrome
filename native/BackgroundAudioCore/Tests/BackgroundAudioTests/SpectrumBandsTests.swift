@@ -22,12 +22,15 @@ final class SpectrumBandsTests: XCTestCase {
     }
 
     func testLevelNormalizationWindow() {
-        // -92 dBFS (floor) → 0, -22 dBFS (ceiling) → 1, midpoint → 0.5.
+        // -92 dBFS (floor) → 0, -22 dBFS (ceiling) → 1, the dB-domain
+        // midpoint → 0.5 (NOT the linear magnitude midpoint — dB is
+        // logarithmic; the linear average of the endpoints sits at ≈0.91).
         let floorLinear = pow(10, SpectrumBands.floorDb / 20)
         let ceilLinear = pow(10, SpectrumBands.ceilDb / 20)
         XCTAssertEqual(SpectrumBands.level(linear: floorLinear), 0, accuracy: 1e-9)
         XCTAssertEqual(SpectrumBands.level(linear: ceilLinear), 1, accuracy: 1e-9)
-        XCTAssertEqual(SpectrumBands.level(linear: (floorLinear + ceilLinear) / 2), 0.5, accuracy: 0.02)
+        let midDb = (SpectrumBands.floorDb + SpectrumBands.ceilDb) / 2 // -57 dBFS
+        XCTAssertEqual(SpectrumBands.level(linear: pow(10, midDb / 20)), 0.5, accuracy: 1e-9)
         XCTAssertEqual(SpectrumBands.level(linear: 0), 0, "silence/DC bin")
         XCTAssertEqual(SpectrumBands.level(linear: 5), 1, "above ceiling clamps")
     }
