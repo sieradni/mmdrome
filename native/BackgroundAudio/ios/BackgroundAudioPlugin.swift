@@ -34,7 +34,8 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setEq", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getDebugState", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getNetworkState", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "getNetworkState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getSpectrum", returnType: CAPPluginReturnPromise)
     ]
 
     private let engine = NativeAudioEngine()
@@ -395,6 +396,23 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
             call.resolve(self.engine.debugState())
+        }
+    }
+
+    /// Live spectrum for the EQ overlay: per-band 0..1 levels on the shared
+    /// 20 Hz–20 kHz log ladder (SpectrumBands.bandCount bands) + the
+    /// audio-active flag. Zeros while paused (the tap freezes; the JS
+    /// overlay decays to silence instead of a stale picture). MUST be in
+    /// `pluginMethods` above — Capacitor's getMethod gate silently drops
+    /// unregistered names and the JS promise never resolves (§3.4 lesson).
+    @objc func getSpectrum(_ call: CAPPluginCall) {
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            let spectrum = self.engine.spectrum()
+            call.resolve([
+                "bands": spectrum.bands,
+                "playing": spectrum.playing
+            ])
         }
     }
 

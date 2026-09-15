@@ -77,6 +77,12 @@ interface BackgroundAudioPlugin {
   setEq(options: { filters: NativeFilterSnapshot[]; bypassed: boolean }): Promise<void>
   getState(): Promise<NativeEngineState>
   getDebugState(): Promise<Record<string, unknown>>
+  /** Live spectrum bands for the EQ overlay: `bands` holds SPECTRUM_BAND_COUNT
+   *  normalized 0..1 levels on the shared 20 Hz–20 kHz log ladder (zeros when
+   *  paused — the native tap freezes its snapshot at pause); `playing`
+   *  mirrors the engine's audio-active flag so the JS sampler can decay the
+   *  overlay instead of showing a frozen picture. */
+  getSpectrum(): Promise<{ bands: number[]; playing: boolean }>
   getNetworkState(): Promise<{ isExpensive: boolean; isConstrained: boolean }>
   addListener(
     eventName: 'trackChanged',

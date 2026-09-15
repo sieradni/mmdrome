@@ -54,6 +54,9 @@ class AudioManager {
   private _graphicEqMode = false
   private _graphicEqCurves: EqPoint[][] = []
   private _preamp: GainNode | null = null
+  /** Spectrum tap (parallel AnalyserNode — see _reconnectChain). */
+  private _spectrumAnalyser: AnalyserNode | null = null
+  private _spectrumBuffer: Float32Array<ArrayBuffer> | null = null
   private _eqPreamp: GainNode | null = null
   private _eqPreampDb = 0
   private _activeElement: 'a' | 'b' = 'a'
@@ -137,6 +140,15 @@ class AudioManager {
   }
 
   get ctx(): AudioContext | null { return this._ctx }
+
+  /** Whether either element is actively producing audio (not paused, not
+   *  ended) — the cheap "is there signal" truth the spectrum overlay and
+   *  other visualizers gate on. No AudioContext work. */
+  get isPlaying(): boolean {
+    const a = this.a
+    const b = this.b
+    return (!a.paused && !a.ended) || (!b.paused && !b.ended)
+  }
   get webAudioReady(): boolean { return this._webAudioReady }
   get gainA(): GainNode | null { return this._gainA }
   get gainB(): GainNode | null { return this._gainB }
@@ -148,6 +160,24 @@ class AudioManager {
   get snapTolerance(): number { return this._snapTolerance }
   get eqBypassed(): boolean { return this._eqBypassed }
   get preamp(): GainNode | null { return this._preamp }
+
+  /**
+   * Read one spectrum frame: per-bin dBm magnitudes into `out` (a
+   * Float32Array of at least frequencyBinCount) plus the bin width in Hz.
+   * Returns null when there is no engine/analyser yet — the caller shows a
+   * flat overlay. Synchronous and cheap (~1 float read); the EQ view's
+   * sampler drives the cadence.
+   */
+  readSpectrum(out: Float32Array<ArrayBuffer>): { binHz: number } | null {
+    const an = this._spectrumAnalyser
+    const buf = this._spectrumBuffer
+    const ctx = this._ctx
+    if (!an || !buf || !ctx || ctx.state !== 'running') return null
+    an.getFloatFrequencyData(buf)
+    const n = Math.min(out.length, buf.length)
+    out.set(buf.subarray(0, n))
+    return { binHz: ctx.sampleRate / an.fftSize }
+  }
   get preampDb(): number { return this._eqPreampDb }
   get eqFilterConfigs(): EqFilterConfig[] { return this._eqFilterConfigs }
   get graphicEqMode(): boolean { return this._graphicEqMode }
@@ -310,6 +340,21 @@ class AudioManager {
       this._preamp.gain.value = 1
       this._eqPreamp = this._ctx.createGain()
       this._eqPreamp.gain.value = 1
+
+      // Spectrum tap: a PARALLEL branch off the preamp into an AnalyserNode
+      // (the only Web Audio node that reads without consuming). The main
+      // chain (preamp → destination) is untouched — the overlay can never
+      // affect the audio path. Recreated only with the graph (ctx loss).
+      try {
+        this._spectrumAnalyser = this._ctx.createAnalyser()
+        this._spectrumAnalyser.fftSize = 2048
+        this._spectrumAnalyser.smoothingTimeConstant = 0
+        this._spectrumAnalyser.minDecibels = -100
+        this._spectrumAnalyser.maxDecibels = -10
+        this._spectrumBuffer = new Float32Array(this._spectrumAnalyser.frequencyBinCount)
+      } catch {
+        this._spectrumAnalyser = null
+      }
 
       try {
         await this._ctx.audioWorklet.addModule(`eq-processor.js?v=${WORKLET_CACHE_BUST}`)
@@ -881,6 +926,11 @@ class AudioManager {
 
     this._eqPreamp.connect(this._preamp)
     this._preamp.connect(this._ctx.destination)
+    // The spectrum tap rides the preamp at every reconnect — a parallel
+    // AnalyserNode connection consumes nothing, so this is unconditional.
+    if (this._spectrumAnalyser) {
+      try { this._preamp.connect(this._spectrumAnalyser) } catch {}
+    }
   }
 
   private _applyTempo(): void {

@@ -2,6 +2,7 @@
   import { calculateTotalResponse } from '../lib/eq/eqResponseCalculator'
   import { calculateGraphicTotalResponse } from '../lib/eq/graphicEqResponseCalculator'
   import { effectiveCurve } from '../lib/eq/eqCurveTopology'
+  import { spectrumBandEdges, visibleBands } from '../lib/eq/spectrumCore'
   import type { EqFilterConfig, EqPoint, EqCurveType } from '../lib/eq/eqTypes'
   import type { FrequencyPoint } from '../lib/eq/eqResponseCalculator'
 
@@ -19,6 +20,13 @@
      *  (modal with frequency, gain, Q, curve kind, remove). Replaces the old
      *  cramped SVG popover (2026-09-15: dots were also hard to press). */
     onBandTap?: (index: number) => void
+    /** Live spectrum levels (0..1 per band, the shared 20 Hz–20 kHz log
+     *  ladder from spectrumCore) rendered as a filled shape BEHIND the grid
+     *  and response curve. Empty/absent = no overlay (nothing playing, or
+     *  a platform without the tap). `spectrumLive` gates the subtle
+     *  fade-in so a stale last frame doesn't linger after pause. */
+    spectrum?: Float32Array | null
+    spectrumLive?: boolean
   }
 
   let {
@@ -31,6 +39,8 @@
     onMoveFilter,
     onAddFilter,
     onBandTap,
+    spectrum = null,
+    spectrumLive = false,
   }: Props = $props()
 
   const GAIN_STEP = 0.5
@@ -274,6 +284,44 @@
   //    wheel = zoom about the cursor. Tap-to-add stays: a gesture that moved
   //    ≥ 6 px suppresses the click that follows the pointerup. ──────────────
   const TAP_SLOP_PX = 6
+
+  // ── Spectrum overlay geometry ──────────────────────────────────────────
+  // The bands ride the SAME log-x / dB-y mapping as the response curve, so
+  // a spectral peak visually aligns with the frequency it will affect.
+  // The overlay's full height is capped at the 0 dB line's half (energy
+  // above 0 dB would hide the curve) and only the bands inside the current
+  // pan/zoom window render — the overlay follows the viewport exactly.
+  const SPECTRUM_BANDS = 48
+  const spectrumEdges = spectrumBandEdges(SPECTRUM_BANDS)
+  let spectrumPath = $derived.by(() => {
+    if (!spectrum || spectrumLive === false || spectrum.length === 0) return ''
+    const vis = visibleBands(
+      Array.from(spectrum),
+      spectrumEdges,
+      Math.pow(10, logViewMin),
+      Math.pow(10, logViewMax)
+    )
+    if (vis.levels.length === 0) return ''
+    const zeroY = dbToY(0)
+    const floorY = dbToY(-maxAbsGain) // chart floor
+    const halfSpan = (zeroY - floorY) * 0.55 // cap: 55% of the lower half
+    const logStart = Math.log10(vis.startEdgeHz)
+    const logEnd = Math.log10(vis.endEdgeHz)
+    const xOf = (f: number) => ((Math.log10(f) - logViewMin) / (logViewMax - logViewMin)) * width
+    // Band-bar polygon: one rectangle per band, stepping through the
+    // shared edges — reads as a classic spectrum analyzer and keeps each
+    // band's contribution visually separable.
+    const stepX = ((logEnd - logStart) / vis.levels.length / (logViewMax - logViewMin)) * width
+    const pts: string[] = [`M ${xOf(vis.startEdgeHz).toFixed(1)},${zeroY.toFixed(1)}`]
+    for (let i = 0; i < vis.levels.length; i++) {
+      const h = Math.max(0, Math.min(1, vis.levels[i])) * halfSpan
+      const x0 = xOf(vis.startEdgeHz) + i * stepX
+      pts.push(`L ${x0.toFixed(1)},${(zeroY - h).toFixed(1)}`)
+      pts.push(`L ${(x0 + stepX).toFixed(1)},${(zeroY - h).toFixed(1)}`)
+    }
+    pts.push(`L ${xOf(vis.endEdgeHz).toFixed(1)},${zeroY.toFixed(1)}`)
+    return pts.join(' ')
+  })
   type Pt = { x: number; y: number }
   let pointers = new Map<number, Pt>()
   let gestureDist = 0
@@ -407,6 +455,17 @@
           <stop offset="100%" stop-color="var(--app-accent, #ffffff)" stop-opacity="0.02" />
         </linearGradient>
       </defs>
+
+      <!-- Spectrum overlay: BEHIND the grid lines and curve (the EQ is the
+           foreground subject; the spectrum is context). Muted accent so it
+           reads as live audio without competing. -->
+      {#if spectrumPath}
+        <path
+          d={spectrumPath}
+          class="fill-accent/20 stroke-accent/50 stroke-[1]"
+          stroke-linejoin="round"
+        />
+      {/if}
 
       <!-- Horizontal dB Grid Lines -->
       {#each dbGrid as db}

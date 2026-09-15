@@ -5,6 +5,7 @@ import { BackgroundAudio, type NativeFilterSnapshot } from './nativePlugin'
 import { eqBypassed, currentEqState } from './eq/eqStore'
 import { playbackSpeed, pitchOctaves, tapeMode, snapTolerance, masterGain } from '../stores/appState'
 import { snapPitchToSemitone } from './playbackCore/pitchSnap'
+import { mapBinsToBandsInto } from './eq/spectrumCore'
 import type { EqFilterConfig, EqPoint } from './eq/eqTypes'
 
 /**
@@ -208,6 +209,42 @@ class EngineFacade {
     this._pushNativeEq()
     BackgroundAudio.setPreampDb({ db: state.preampDb }).catch(() => {})
   }
+
+  /**
+   * One spectrum frame as per-band 0..1 display levels (SPECTRUM_BAND_COUNT
+   * bands, 20 Hz–20 kHz log ladder — see spectrumCore). Web reads the
+   * AnalyserNode tap synchronously; native polls the engine's Accelerate-FFT
+   * snapshot over the bridge (throttled by the caller's sampler). Returns
+   * null when the engine can't provide audio data (not playing, no analyser,
+   * bridge error) — the overlay then decays to silence.
+   */
+  async readSpectrumBands(out: Float32Array): Promise<boolean> {
+    if (this.isNative) {
+      try {
+        const res = await BackgroundAudio.getSpectrum()
+        const bands = (res?.bands as number[] | undefined) ?? []
+        if (bands.length === 0) return false
+        const n = Math.min(out.length, bands.length)
+        for (let i = 0; i < n; i++) out[i] = bands[i]
+        return res?.playing === true
+      } catch {
+        return false
+      }
+    }
+    const frame = audioManager.readSpectrum(this._binScratch)
+    if (!frame) return false
+    mapBinsToBandsInto(
+      this._binScratch,
+      frame.binHz,
+      out
+    )
+    // "Playing" on web = the context is running AND an element reports
+    // audio time advancing; the analyser alone reads silence on pause. The
+    // manager exposes the cheap truth: is either element actively playing.
+    return audioManager.isPlaying
+  }
+
+  private _binScratch = new Float32Array(1024)
 
   private _pushNativeEq(): void {
     const filters: NativeFilterSnapshot[] = this._filters.map((f) => ({

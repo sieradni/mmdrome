@@ -11,6 +11,18 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-15 — EQ spectrum overlay: tap architecture, vDSP API traps, and a preview-probe lesson
+
+The user asked for live audio behind the EQ curve. The shape that survived review: a pure twin core (`spectrumCore.ts` / `SpectrumBands.swift`) owning the 48-band log ladder, bin aggregation (max over overlapped bins, sub-binwidth inheritance toward the lows), a −92/−22 dB window, and asymmetric smoothing; platform taps feed it. Web: a PARALLEL AnalyserNode off the preamp (the only read-without-consuming node; the audio path is untouched). Native: `spectrumTap` (AVAudioMixerNode) connected FROM the preamp with output unconnected + `installTap`; the realtime callback ONLY copies channel 0 into a preallocated buffer — FFT and aggregation run on the main thread inside `spectrum()`.
+
+Traps hit and fixed:
+1. **vDSP argument order**: `vDSP_fft_zrip(setup, &split, stride, log2n, direction)` — the radix is NOT an argument (it's baked into the setup via `vDSP_create_fftsetup(log2n, FFTRadix(FFT_RADIX2))`). First draft passed `FFTRadix(FFT_RADIX2)` and a nil pointer in the stride/log2n slots — would not compile. Self-review caught it before CI; the API surface has no macOS-local compile (E5), so careful reading is the only gate before push.
+2. **Realtime-safety contract**: no locks/allocations in the tap callback; a torn frame is acceptable for a visualizer. The main-thread read mutates `spectrumHasNewFrame` — a benign race (worst case: one extra or skipped FFT frame).
+3. **`getSpectrum` is registered in `pluginMethods`** — the third time this session's docs carry the §3.4 lesson; any new bridge method without registration silently never resolves its JS promise.
+4. **Preview-probe lesson (dev tooling)**: the dev server serves HMR-epoch query URLs (`?t=…`) per module graph, so `import('./x.ts')` in a probe can hit a DIFFERENT module instance than the mounted view — stubs on the wrong instance are invisible. Enumerate `performance.getEntriesByType('resource')` and import the URL the view actually loaded. Also: a backgrounded/occluded preview page throttles rAF to ~1 Hz, so short-window sampler probes read as dead; wait in wall-clock sleeps and screenshot instead.
+
+Display semantics: bars grow DOWN from the 0 dB line (capped at 55% of the lower half so the curve stays readable), frequency-aligned with the axis and following pan/zoom; the overlay decays to silence when the engine reports no data (paused / no analyser / bridge error) — never freezes. The one-line dirty hint ("Edits keep playing from the graph; the preset above is what Save overwrites") ships in the same change (user ask).
+
 ## 2026-09-15 — EQ Save-as-Current regression: three UI-design lessons from one user report
 
 The user reported: "There is still no way to save as current, pressing save only shows save as new, the popup shows at the bottom, and switching away and saving also saves as a new preset." All three traced to design decisions of the 1.2.11 save-modal rework, and fixing them produced a semantic change worth pinning:

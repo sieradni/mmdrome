@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Accelerate
 import BackgroundAudioCore
 
 // MARK: - Shared models
@@ -354,6 +355,26 @@ public final class NativeAudioEngine: NSObject {
     private let eq = AVAudioUnitEQ(numberOfBands: 24)
     private let preamp = AVAudioMixerNode()
 
+    // ── Spectrum tap (2026-09-15) ────────────────────────────────────────
+    // A TAP node connected FROM the preamp in parallel with the main path
+    // (preamp → mainMixerNode stays untouched); the tap's own output is
+    // left unconnected — AVAudioEngine renders any tapped node, so the
+    // engine copies frames into `spectrumTapBuffer` on the realtime thread
+    // (preallocated, no locks/no allocation in the callback — a torn frame
+    // is acceptable for a visualization). The FFT + band aggregation run
+    // on the MAIN thread at read time (`spectrum()`), publishing the
+    // per-band snapshot under `spectrumLock`.
+    private let spectrumTap = AVAudioMixerNode()
+    private let spectrumLock = NSLock()
+    private var spectrumSnapshot: [Double] = Array(repeating: 0, count: SpectrumBands.bandCount)
+    private var spectrumTapBuffer: [Float] = []
+    private var spectrumWindow: [Float] = []
+    private var spectrumHasNewFrame = false
+    private var spectrumTapInstalled = false
+    private var spectrumFFTSetup: FFTSetup? = nil
+    private let spectrumLog2n: UInt = 11 // 2048-point FFT
+    private var spectrumFFTSize: Int { 1 << spectrumLog2n }
+
     // MARK: - State
 
     private let loader = TrackFileLoader()
@@ -512,6 +533,9 @@ public final class NativeAudioEngine: NSObject {
         engine.connect(eq, to: preamp, format: nil)
         engine.connect(preamp, to: engine.mainMixerNode, format: nil)
 
+        // Spectrum tap: preamp → tap (output deliberately unconnected).
+        engine.connect(preamp, to: spectrumTap, format: nil)
+
         mixer.outputVolume = 1.0
         gainA.outputVolume = 1.0
         gainB.outputVolume = 1.0
@@ -531,12 +555,91 @@ public final class NativeAudioEngine: NSObject {
             // Non-fatal: engine.start may still succeed if session already active.
             print("[native] ensureEngineRunning session activate failed: \(error.localizedDescription)")
         }
+        installSpectrumTapIfNeeded()
         engine.prepare()
         do {
             try engine.start()
         } catch {
             onError?("Failed to start audio engine: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Spectrum tap
+
+    /// Installs the AVAudioEngine tap on the spectrum node once (idempotent).
+    /// The tap callback runs on a REALTIME audio thread: it only copies
+    /// channel 0 into the preallocated `spectrumTapBuffer` and flags the
+    /// frame — no locks, no allocation. FFT/aggregation happen on the main
+    /// thread in `spectrum()`.
+    private func installSpectrumTapIfNeeded() {
+        guard !spectrumTapInstalled else { return }
+        let fmt = spectrumTap.outputFormat(forBus: 0)
+        guard fmt.sampleRate > 0 else { return }
+        spectrumTapInstalled = true
+        spectrumTapBuffer = [Float](repeating: 0, count: spectrumFFTSize)
+        spectrumWindow = [Float](repeating: 0, count: spectrumFFTSize)
+        vDSP_hann_window(&spectrumWindow, UInt(spectrumFFTSize))
+        spectrumFFTSetup = vDSP_create_fftsetup(spectrumLog2n, FFTRadix(FFT_RADIX2))
+        spectrumTap.installTap(onBus: 0, bufferSize: 1024, format: fmt) { [weak self] buffer, _ in
+            guard let self, let channel = buffer.floatChannelData?[0] else { return }
+            let frames = min(Int(buffer.frameLength), self.spectrumFFTSize)
+            guard frames > 0 else { return }
+            // No locks/allocation: copy into the preallocated buffer. A torn
+            // frame (main thread reading mid-copy) is fine for a visualizer.
+            channel.withMemoryBound(to: Float.self, capacity: frames) { ptr in
+                for i in 0..<frames { self.spectrumTapBuffer[i] = ptr[i] }
+            }
+            for i in frames..<self.spectrumFFTSize { self.spectrumTapBuffer[i] = 0 }
+            self.spectrumHasNewFrame = true
+        }
+    }
+
+    /// Bridge-facing read: FFT the latest tap frame (standard vDSP real-FFT
+    /// split-complex pattern, main thread), aggregate into SpectrumBands,
+    /// and return the per-band 0..1 levels + the audio-active flag. While
+    /// paused the snapshot reads ZEROS — the tap freezes on the last real
+    /// frame, so the JS overlay must decay to silence, never show a stale
+    /// picture.
+    public func spectrum() -> (bands: [Double], playing: Bool) {
+        let playing = isPlaying
+        if playing && spectrumHasNewFrame, let setup = spectrumFFTSetup {
+            spectrumHasNewFrame = false
+            let n = spectrumFFTSize
+            let halfN = n / 2
+            var windowed = [Float](repeating: 0, count: n)
+            spectrumTapBuffer.withUnsafeBufferPointer { src in
+                vDSP_vmul(src.baseAddress!, 1, spectrumWindow, 1, &windowed, 1, UInt(n))
+            }
+            var realp = [Float](repeating: 0, count: halfN)
+            var imagp = [Float](repeating: 0, count: halfN)
+            var mags = [Double](repeating: 0, count: halfN)
+            realp.withUnsafeMutableBufferPointer { realPtr in
+                imagp.withUnsafeMutableBufferPointer { imagPtr in
+                    var split = DSPSplitComplex(realp: realPtr.baseAddress!, imagp: imagPtr.baseAddress!)
+                    windowed.withUnsafeBufferPointer { winPtr in
+                        vDSP_ctoz(winPtr.baseAddress!, 2, &split, 1, UInt(halfN))
+                    }
+                    vDSP_fft_zrip(setup, &split, 1, spectrumLog2n, FFTDirection(FFT_FORWARD))
+                    // Forward transform is unscaled (results ×2): normalize
+                    // by 1/2N so a full-scale sine lands ≈0.5 (Hann coherent
+                    // gain) on the display ladder. Skip DC (bin 0).
+                    for i in 1..<halfN {
+                        let re = Double(split.realp[i])
+                        let im = Double(split.imagp[i])
+                        mags[i] = 2.0 * sqrt(re * re + im * im) / Double(n)
+                    }
+                }
+            }
+            let sampleRate = spectrumTap.outputFormat(forBus: 0).sampleRate
+            let bands = SpectrumBands.bands(from: mags, binHz: sampleRate / Double(n))
+            spectrumLock.lock()
+            spectrumSnapshot = bands
+            spectrumLock.unlock()
+        }
+        spectrumLock.lock()
+        defer { spectrumLock.unlock() }
+        let bands = playing ? spectrumSnapshot : Array(repeating: 0, count: SpectrumBands.bandCount)
+        return (bands, playing)
     }
 
     // MARK: - Queue & playback control

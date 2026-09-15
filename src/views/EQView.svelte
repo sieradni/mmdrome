@@ -28,12 +28,34 @@
     suggestInsertFrequency,
   } from '../lib/eq/eqCurveTopology'
   import type { EqPreset } from '../lib/eq/eqTypes'
+  import { SpectrumSampler } from '../lib/eq/spectrumSampler'
 
   let { onback, oncloseall }: { onback: () => void; oncloseall: () => void } = $props()
 
   let showImport = $state(false)
   let importText = $state('')
   let importErrors = $state('')
+
+  // ── Spectrum overlay (2026-09-15) ──────────────────────────────────────
+  // Lives ONLY while this view is mounted (the sampler owns an rAF loop).
+  // `spectrumFrame` is the smoothed per-band 0..1 ladder the graph renders;
+  // `spectrumLive` gates the overlay so a paused/absent engine decays to
+  // nothing instead of freezing. Native uses a 20 Hz bridge cadence (the
+  // sampler coalesces), web reads the analyser every frame.
+  let spectrumFrame = $state<Float32Array | null>(null)
+  let spectrumLive = $state(false)
+  const spectrumSampler = new SpectrumSampler(
+    { readSpectrumBands: (out) => engine.readSpectrumBands(out) },
+    (levels) => {
+      spectrumFrame = levels.slice()
+      spectrumLive = true
+    },
+    engine.isNative
+  )
+  $effect(() => {
+    spectrumSampler.start()
+    return () => spectrumSampler.stop()
+  })
 
   const presets = $derived([...BUILTIN_PRESETS, ...$userPresets])
 
@@ -416,6 +438,14 @@
       {/if}
     </div>
 
+    <!-- DIRTY HINT (2026-09-15, user ask): the continuous-rebase session
+         made the two controls' roles subtle — one line, only while dirty. -->
+    {#if $workingEq.dirty}
+      <p class="text-[10px] leading-snug text-muted/70">
+        Edits keep playing from the graph; the preset above is what Save overwrites.
+      </p>
+    {/if}
+
     <!-- ACTIONS ROW: one Save (opens the modal with both choices), Import,
          Delete. Labels are short so all three fit a 360px row. -->
     <div class="flex items-center gap-2">
@@ -484,6 +514,8 @@
         if (idx >= 0) openBandEditor(idx)
       }}
       onBandTap={openBandEditor}
+      spectrum={spectrumFrame}
+      spectrumLive={spectrumLive}
     />
 
     <!-- BAND EDITOR CONTROLS: each action says what it does -->
