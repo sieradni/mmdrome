@@ -150,13 +150,22 @@ async function verifyIosGatingSteps(runId) {
   }
 }
 
-// ── Phase 2: bump, commit, push main ─────────────────────────────────────
+// ── Phase 2: bump, commit, push main ─────────────────────────────────
 step(`Bump ${version} (release:ios)`)
 // execFileSync — NO shell: release notes are user text and must never be
 // interpreted by bash (execSync cannot take an argv array).
 runFile('node', ['scripts/release-ios.mjs', version, notes])
 run(`git add package.json ios/App/App.xcodeproj/project.pbxproj sidestore/apps.json`)
-run(`git commit -m "release: ${version}"`)
+// Re-run tolerance (2026-09-15: the first 1.2.11 attempt aborted in Phase 3
+// on the manifest tests' in-flight window — after fixing THAT, the re-run
+// finds no diff to commit). A no-op bump commit is fine; any OTHER failure
+// (index lock, identity) still aborts via the command's non-zero exit.
+const staged = runOut('git diff --cached --name-only')
+if (staged) {
+  run(`git commit -m "release: ${version}"`)
+} else {
+  ok('bump already committed (re-run)')
+}
 run('git push origin main')
 const sha = runOut('git rev-parse HEAD')
 ok(`release commit ${sha.slice(0, 7)} pushed`)
