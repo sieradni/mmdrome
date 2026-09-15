@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.12",
-      "versionDate": "2026-09-15T02:27:24.961Z",
-      "versionDescription": "EQ: Save as Current works after preset switches (continuous session rebasing); all dialogs centered on phones; preset switching no longer discards or force-saves edits",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.12/mmdrome.ipa",
+      "version": "1.2.13",
+      "versionDate": "2026-09-15T04:39:09.013Z",
+      "versionDescription": "EQ spectrum overlay: live audio behind the curve while music plays, so you can see which frequencies to target; plus a one-line hint under the preset select while edits are unsaved",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.13/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.13",
+          "buildVersion": "17",
+          "date": "2026-09-15T04:39:09.013Z",
+          "localizedDescription": "EQ spectrum overlay: live audio behind the curve while music plays, so you can see which frequencies to target; plus a one-line hint under the preset select while edits are unsaved",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.13/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.12",
           "buildVersion": "16",
@@ -161,6 +169,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.13",
+      "identifier": "ios-v1.2.13",
+      "appID": "com.mmdrome.player",
+      "caption": "EQ spectrum overlay: live audio behind the curve while music plays, so you can see which frequencies to target; plus a one-line hint under t",
+      "date": "2026-09-15T04:39:09.013Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.12",
       "identifier": "ios-v1.2.12",
       "appID": "com.mmdrome.player",
@@ -193,15 +210,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Album/artist covers load ahead of your scroll: wider pre-roll, faster thumbnail pipeline",
       "date": "2026-09-14T22:04:04.482Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.8",
-      "identifier": "ios-v1.2.8",
-      "appID": "com.mmdrome.player",
-      "caption": "Slider knobs mark the exact value with a lighter track; Art/Lyrics button only appears for songs that have lyrics",
-      "date": "2026-09-14T21:21:17.553Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
