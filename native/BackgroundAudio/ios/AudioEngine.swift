@@ -543,11 +543,16 @@ public final class NativeAudioEngine: NSObject {
         engine.connect(mixer, to: timePitch, format: nil)
         engine.connect(timePitch, to: varispeed, format: nil)
         engine.connect(varispeed, to: eq, format: nil)
+        // Spectrum tap is IN-LINE: preamp → tap → mainMixer. A mixer with an
+        // input but NO output connection is a dead-end render branch, and a
+        // dead-end in the graph makes engine.start() FAIL on device — which
+        // used to crash at play(): the failed start was swallowed and
+        // player.play() on a stopped engine raises an NSException (1.2.14
+        // play crash). An in-line mixer is pass-through (unity gain, like
+        // gainA/gainB) so the tap cannot color the audio.
         engine.connect(eq, to: preamp, format: nil)
-        engine.connect(preamp, to: engine.mainMixerNode, format: nil)
-
-        // Spectrum tap: preamp → tap (output deliberately unconnected).
         engine.connect(preamp, to: spectrumTap, format: nil)
+        engine.connect(spectrumTap, to: engine.mainMixerNode, format: nil)
 
         mixer.outputVolume = 1.0
         gainA.outputVolume = 1.0
@@ -559,8 +564,14 @@ public final class NativeAudioEngine: NSObject {
         for band in eq.bands { band.bypass = true }
     }
 
-    private func ensureEngineRunning() {
-        guard !engine.isRunning else { return }
+    /// Starts the engine if needed. Returns whether the engine IS RUNNING
+    /// afterward. Callers MUST check the result before `player.play()` —
+    /// playing into a stopped engine raises an NSException (SIGABRT; the
+    /// 1.2.14 play crash). The failure itself only logs here; the call site
+    /// reports the honest error.
+    @discardableResult
+    private func ensureEngineRunning() -> Bool {
+        guard !engine.isRunning else { return true }
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: SessionController.categoryOptions(for: audioMixingMode))
             try AVAudioSession.sharedInstance().setActive(true)
@@ -572,8 +583,10 @@ public final class NativeAudioEngine: NSObject {
         engine.prepare()
         do {
             try engine.start()
+            return true
         } catch {
-            onError?("Failed to start audio engine: \(error.localizedDescription)")
+            print("[native] engine start failed: \(error.localizedDescription)")
+            return false
         }
     }
 
@@ -1404,7 +1417,13 @@ public final class NativeAudioEngine: NSObject {
         crossfade = .idle
 
         if autoPlay {
-            ensureEngineRunning()
+            // Never play() into a stopped engine — that raises (1.2.14 play
+            // crash). Degrade to the error event instead; the JS retry
+            // machinery re-plays, which re-attempts the engine start.
+            guard ensureEngineRunning() else {
+                onError?("Audio engine failed to start for \(track.title)")
+                return
+            }
             player.play()
             setPlaying(true)
             setupCrossfadeMonitor()
