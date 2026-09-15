@@ -27,7 +27,8 @@
           "date": "2026-09-15T00:36:51.455Z",
           "localizedDescription": "EQ graph: pan & zoom the frequency axis, easy-to-press dots, dialogs are proper modals now",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.11/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4864224
         },
         {
           "version": "1.2.10",
