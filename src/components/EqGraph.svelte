@@ -152,10 +152,21 @@
     return halfH - (clampedDb / maxAbsGain) * halfH
   }
 
-  /** Hybrid response: when ANY enabled band is a graphic point the whole
-   *  EQ renders through the interpolated-curve calculator (the engine's
-   *  convolution path — one visual truth, §0.4); parametric mode keeps the
-   *  per-biquad response sum. 300 points so a zoomed-in view stays smooth. */
+  /** Convolver-path parity (2026-09-15): when ANY enabled band is a graphic
+   *  point the ENGINE renders the whole EQ through the FFT convolver as ONE
+   *  interpolated curve over ALL enabled band points
+   *  (audioManager._updateConvolverBuffer → bandsToCurvePoints →
+   *  createGraphicEqAudioBuffer) — a convolver cannot be summed with the
+   *  biquad chain, so parametric bands contribute their GAIN as points.
+   *  The display previously ADDED the per-biquad response sum on TOP of the
+   *  interpolated curve: a peaking filter's skirt spreads across neighbors,
+   *  so dragging one dot shifted the calculated position of the surrounding
+   *  dots AND the drawn curve double-counted gains against what you hear.
+   *  Render the same single curve the engine renders — the drawn line
+   *  passes through every dot by construction and the dots are mutually
+   *  independent. Graphic IMPORT mode already rendered this way; hybrid
+   *  import overlays keep their dedicated curves. 300 points so a
+   *  zoomed-in view stays smooth. */
   const hybrid = $derived(filters.some((f) => f.enabled && effectiveCurve(f) === 'graphic'))
 
   // Frequency response points
@@ -165,12 +176,12 @@
       return calculateGraphicTotalResponse(preampDb, filters, graphicEqCurves, 300)
     }
     if (hybrid) {
-      const linear = calculateTotalResponse(0, filters, 300)
+      // One interpolated curve through ALL enabled band points — the exact
+      // input the convolver path renders. `calculateGraphicTotalResponse`
+      // with undefined curves falls back to `filtersToPoints(filters)`
+      // (frequency-sorted, enabled-only), matching `bandsToCurvePoints`.
       const curve = calculateGraphicTotalResponse(0, filters, undefined, 300)
-      return linear.map((p, i) => ({
-        frequency: p.frequency,
-        gainDb: preampDb + p.gainDb + curve[i].gainDb,
-      }))
+      return curve.map((p) => ({ frequency: p.frequency, gainDb: p.gainDb + preampDb }))
     }
     return calculateTotalResponse(preampDb, filters, 300)
   })
