@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.15",
-      "versionDate": "2026-09-15T06:40:46.013Z",
-      "versionDescription": "Fix play crash: spectrum tap wired in-line, play() guards engine start",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.15/mmdrome.ipa",
+      "version": "1.2.16",
+      "versionDate": "2026-09-15T09:37:46.036Z",
+      "versionDescription": "EQ: classic preset switch (apply + confirm), manual vertical zoom + pinch",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.16/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.16",
+          "buildVersion": "20",
+          "date": "2026-09-15T09:37:46.036Z",
+          "localizedDescription": "EQ: classic preset switch (apply + confirm), manual vertical zoom + pinch",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.16/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 4872956
+        },
         {
           "version": "1.2.15",
           "buildVersion": "19",
@@ -188,6 +197,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.16",
+      "identifier": "ios-v1.2.16",
+      "appID": "com.mmdrome.player",
+      "caption": "EQ: classic preset switch (apply + confirm), manual vertical zoom + pinch",
+      "date": "2026-09-15T09:37:46.036Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.15",
       "identifier": "ios-v1.2.15",
       "appID": "com.mmdrome.player",
@@ -220,15 +238,6 @@
       "appID": "com.mmdrome.player",
       "caption": "EQ: Save as Current works after preset switches (continuous session rebasing); all dialogs centered on phones; preset switching no longer di",
       "date": "2026-09-15T02:27:24.961Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.11",
-      "identifier": "ios-v1.2.11",
-      "appID": "com.mmdrome.player",
-      "caption": "EQ graph: pan & zoom the frequency axis, easy-to-press dots, dialogs are proper modals now",
-      "date": "2026-09-15T00:36:51.455Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
