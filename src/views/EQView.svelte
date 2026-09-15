@@ -3,6 +3,7 @@
   import EqGraph from '../components/EqGraph.svelte'
   import EqSlider from '../components/EqSlider.svelte'
   import AppSlider from '../components/AppSlider.svelte'
+  import EqSheetModal from '../components/EqSheetModal.svelte'
   import { get } from 'svelte/store'
   import {
     activePresetId,
@@ -33,8 +34,6 @@
   let showImport = $state(false)
   let importText = $state('')
   let importErrors = $state('')
-  let saveDialogOpen = $state(false)
-  let newPresetName = $state('')
   let selectEl: HTMLSelectElement | null = $state(null)
 
   const presets = $derived([...BUILTIN_PRESETS, ...$userPresets])
@@ -168,16 +167,79 @@
   const canFlipCurves = $derived(!isGraphicImport && eqState.filters.length > 0)
   const anyGraphic = $derived(hasGraphicBands(eqState.filters))
 
-  // ── Save (2026-09-14 UX pass, revised after user feedback): the button
-  //    opens a dialog with the two EXPLICIT choices — "Save as Current"
-  //    (overwrite the active user preset; hidden when the base is a builtin
-  //    or an import, where there is nothing of the user's to overwrite) and
-  //    "Save as New" with an optional name (always available — this is the
-  //    copy/duplicate path). The SESSION BASE decides (not activePresetId —
-  //    an import keeps the old preset selected while base.id is 'imported';
-  //    same rule as the store). ──
+  // ── Band editor MODAL (2026-09-15): tapping a graph dot (with its new
+  //    22px hit target) or a band's frequency label opens the FULL editor —
+  //    frequency, gain, width (Q), curve kind, remove — as a centered modal.
+  //    The old cramped SVG popover (value + × only) and the inline
+  //    shifting-UI rows are gone. ──
+  let bandModalIndex = $state<number | null>(null)
+  let bandFreqDraft = $state('')
+  let bandGainDraft = $state('')
+
+  const modalBand = $derived(bandModalIndex !== null ? eqState.filters[bandModalIndex] : undefined)
+
+  function openBandEditor(i: number) {
+    const f = eqState.filters[i]
+    if (!f || isGraphicImport) return
+    bandModalIndex = i
+    bandFreqDraft = String(f.frequency)
+    bandGainDraft = String(f.gain)
+  }
+
+  function closeBandModal() {
+    bandModalIndex = null
+  }
+
+  function commitModalFreq() {
+    const i = bandModalIndex
+    const f = modalBand
+    if (i === null || !f) return
+    const parsed = Number(bandFreqDraft)
+    if (!Number.isFinite(parsed)) {
+      bandFreqDraft = String(f.frequency)
+      return
+    }
+    const freq = Math.min(20000, Math.max(20, Math.round(parsed)))
+    moveFilter(i, freq, f.gain)
+    bandFreqDraft = String(freq)
+  }
+
+  function commitModalGain() {
+    const i = bandModalIndex
+    const f = modalBand
+    if (i === null || !f) return
+    const parsed = Number(bandGainDraft)
+    if (!Number.isFinite(parsed)) {
+      bandGainDraft = String(f.gain)
+      return
+    }
+    const gain = Math.min(12, Math.max(-12, Math.round(parsed * 2) / 2))
+    moveFilter(i, f.frequency, gain)
+    bandGainDraft = String(gain)
+  }
+
+  function modalGainChip(v: number) {
+    const i = bandModalIndex
+    const f = modalBand
+    if (i === null || !f) return
+    moveFilter(i, f.frequency, v)
+    bandGainDraft = String(v)
+  }
+
+  function removeModalBand() {
+    const i = bandModalIndex
+    closeBandModal()
+    if (i !== null) removeBand(i)
+  }
+
+  // ── Save MODAL (2026-09-15): the two explicit choices live in a real
+  //    centered modal instead of an inline block that shifted the UI. The
+  //    SESSION BASE decides (not activePresetId — an import keeps the old
+  //    preset selected while base.id is 'imported'; same rule as the store). ──
   const basePreset = $derived(presets.find((p) => p.id === $workingEq.base.id))
   const baseIsUserPreset = $derived(!!basePreset && !basePreset.isBuiltin && $workingEq.base.id !== 'imported')
+  let saveDialogOpen = $state(false)
+  let newPresetName = $state('')
 
   function onSaveTap() {
     // Never disabled: even a CLEAN session offers Save as New, which is how
@@ -200,34 +262,8 @@
     })
   }
 
-  // ── Per-band popover (frequency edit + Q + curve kind + remove) — the
-  //    band row itself is just value / slider / frequency, so 12+ bands stay
-  //    readable on a phone. ──
-  let bandPopover = $state<number | null>(null)
-  let bandFreqDraft = $state('')
-
-  function openBandEditor(i: number) {
-    const f = eqState.filters[i]
-    if (!f || isGraphicImport) return
-    bandPopover = i
-    bandFreqDraft = String(f.frequency)
-  }
-
-  function applyBandFreq() {
-    const i = bandPopover
-    if (i === null) return
-    const f = eqState.filters[i]
-    if (!f) return
-    const parsed = Number(bandFreqDraft)
-    if (!Number.isFinite(parsed)) return
-    const freq = Math.min(20000, Math.max(20, Math.round(parsed)))
-    moveFilter(i, freq, f.gain)
-    bandFreqDraft = String(freq)
-  }
-
-  // ── Add-band frequency prompt (2026-09-14: the user picks the frequency
-  //    instead of accepting a magic widest-gap default — graph taps already
-  //    place by position, the button now matches that mental model). ──
+  // ── Add-band MODAL (was an inline prompt row): the user picks the
+  //    frequency; graph taps still add at the tapped spot. ──
   let addBandPrompt = $state(false)
   let addBandFreq = $state(1000)
 
@@ -401,9 +437,8 @@
       {/if}
     </div>
 
-    <!-- ACTIONS ROW: one Save (unified — overwrites user presets, asks for a
-         name over builtins/imports), Import, Delete. Labels are short so all
-         three fit a 360px row without truncation. -->
+    <!-- ACTIONS ROW: one Save (opens the modal with both choices), Import,
+         Delete. Labels are short so all three fit a 360px row. -->
     <div class="flex items-center gap-2">
       <button
         onclick={onSaveTap}
@@ -418,46 +453,6 @@
         <button onclick={() => removePreset($activePresetId)} class="rounded-lg bg-surface px-2.5 py-2 text-xs text-red-400 transition-colors hover:bg-red-500/10 ring-1 ring-white/10" title="Delete preset">Delete</button>
       {/if}
     </div>
-
-    <!-- SAVE DIALOG: both choices explicit — overwrite the active user
-         preset, or save as a NEW preset (the copy path, always available) -->
-    {#if saveDialogOpen}
-      <div class="flex flex-col gap-2 rounded-lg bg-surface px-3 py-3 ring-1 ring-white/10">
-        {#if baseIsUserPreset}
-          <button
-            onclick={saveOverwrite}
-            class="rounded-lg bg-sky-500/15 px-3 py-2 text-left text-xs font-medium text-sky-400 ring-1 ring-sky-500/30 hover:bg-sky-500/25"
-          >
-            Save as Current
-            <span class="block text-[10px] font-normal text-sky-400/70">Overwrite “{basePreset?.name}” with these settings</span>
-          </button>
-        {/if}
-        <div class="flex items-center gap-2">
-          <input
-            type="text"
-            placeholder="New preset name…"
-            bind:value={newPresetName}
-            class="min-w-0 flex-1 rounded-lg bg-white/5 px-3 py-2 text-xs text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40 placeholder:text-muted/50"
-            onkeydown={(e) => { if (e.key === 'Enter') saveAsNew() }}
-          />
-          <button onclick={saveAsNew} class="shrink-0 rounded-lg bg-white/15 px-3 py-2 text-xs font-medium text-primary hover:bg-white/25">Save as New</button>
-        </div>
-        <p class="text-[10px] text-muted/60">{newPresetName.trim() ? `“${newPresetName.trim()}”` : `“${$workingEq.base.name} (modified)”`} will be created — the current preset stays untouched.</p>
-        <button onclick={() => (saveDialogOpen = false)} class="self-end rounded px-2 py-1 text-xs text-muted hover:text-primary">Cancel</button>
-      </div>
-    {/if}
-
-    <!-- DIRTY PRESET-SWITCH DIALOG -->
-    {#if dirtyDialog.open}
-      <div class="flex flex-col gap-2 rounded-lg bg-surface px-3 py-3 ring-1 ring-amber-500/30">
-        <span class="text-xs text-primary">You have unsaved changes. Switch presets?</span>
-        <div class="flex justify-end gap-2">
-          <button onclick={() => settleDirty('save')} class="rounded bg-sky-500/15 px-2.5 py-1 text-xs text-sky-400 ring-1 ring-sky-500/30 hover:bg-sky-500/25">Save</button>
-          <button onclick={() => settleDirty('discard')} class="rounded bg-white/15 px-2.5 py-1 text-xs text-primary hover:bg-white/25">Discard</button>
-          <button onclick={() => settleDirty('cancel')} class="rounded px-2.5 py-1 text-xs text-muted hover:text-primary">Cancel</button>
-        </div>
-      </div>
-    {/if}
 
     <!-- AUTO EQ IMPORT TEXTBOX -->
     {#if showImport}
@@ -494,8 +489,9 @@
       <span class="w-14 text-right text-[10px] tabular-nums text-muted/60">{preampDb > 0 ? '+' : ''}{preampDb.toFixed(1)} dB</span>
     </div>
 
-    <!-- FREQUENCY RESPONSE GRAPH (editable: drag points, tap a dot for
-         value/delete, tap empty space to add) -->
+    <!-- FREQUENCY RESPONSE GRAPH (editable: drag points, tap a dot for the
+         full band editor, tap empty space to add; drag = pan, wheel/pinch =
+         zoom the frequency axis) -->
     <EqGraph
       preampDb={$eqBypassed ? 0 : preampDb}
       filters={eqState.filters}
@@ -508,7 +504,7 @@
         const idx = addBand(freq)
         if (idx >= 0) openBandEditor(idx)
       }}
-      onRemoveFilter={removeBand}
+      onBandTap={openBandEditor}
     />
 
     <!-- BAND EDITOR CONTROLS: each action says what it does -->
@@ -533,9 +529,8 @@
     </div>
 
     <!-- BAND SLIDERS: one slim column per band — value / vertical slider /
-         tappable frequency. Q, curve kind and remove live in the dot's
-         popover on the graph (and Q stays in the popover for parametric
-         bands), so 12+ columns stay readable on a phone. -->
+         tappable frequency (opens the full band editor modal), so 12+
+         columns stay readable on a phone. -->
     <div class="overflow-x-auto pb-1">
       <div class="flex items-stretch justify-between gap-1" style="height: 190px; min-width: min-content;">
         {#each eqState.filters as f, i (i)}
@@ -553,7 +548,7 @@
               <button
                 onclick={() => openBandEditor(i)}
                 class="rounded px-1 text-[10px] leading-tight {f.curve === 'graphic' ? 'text-accent' : 'text-muted/70'} hover:text-primary"
-                title="Band settings: frequency, width (Q), curve kind, remove"
+                title="Band settings: frequency, gain, width (Q), curve kind, remove"
                 disabled={$eqBypassed}
               >{freqLabel(f.frequency)}{f.curve === 'graphic' ? ' ■' : ''}</button>
             {:else}
@@ -564,84 +559,177 @@
       </div>
     </div>
 
-    <!-- PER-BAND POPOVER: frequency (typed!), width (Q), curve kind, remove -->
-    {#if bandPopover !== null && eqState.filters[bandPopover]}
-      {@const bi = bandPopover}
-      {@const bf = eqState.filters[bi]}
-      <div class="rounded-lg bg-surface px-3 py-2.5 ring-1 ring-white/10">
-        <div class="mb-2 flex items-center justify-between">
-          <span class="text-xs font-medium text-primary">Band · {freqLabel(bf.frequency)} Hz {bf.curve === 'graphic' ? '(graphic point)' : '(parametric)'}</span>
-          <button onclick={() => (bandPopover = null)} class="rounded-full p-1 text-muted hover:text-primary" aria-label="Close band editor">
-            <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6l-12 12" /></svg>
-          </button>
-        </div>
-        <div class="flex flex-wrap items-center gap-x-4 gap-y-2">
-          <label class="flex items-center gap-1.5 text-[10px] text-muted">
-            Freq
-            <input
-              type="number"
-              min="20"
-              max="20000"
-              bind:value={bandFreqDraft}
-              onchange={applyBandFreq}
-              onkeydown={(e) => { if (e.key === 'Enter') applyBandFreq() }}
-              class="w-20 rounded bg-white/5 px-2 py-1 text-xs tabular-nums text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40"
-            />
-            Hz
-          </label>
-          {#if bf.curve !== 'graphic'}
-            <label class="flex items-center gap-2 text-[10px] text-muted" title="Bandwidth: low = broad, high = narrow">
-              Width (Q)
-              <AppSlider
-                value={bf.q}
-                min={0.2}
-                max={8}
-                step={0.1}
-                label="Q for {freqLabel(bf.frequency)} Hz band"
-                onInput={(v) => setBandQ(bi, v)}
-                disabled={$eqBypassed}
-                class="w-28"
-              />
-              <span class="w-8 text-right text-[10px] tabular-nums text-muted/70">{bf.q.toFixed(1)}</span>
-            </label>
-          {/if}
-          <button
-            onclick={() => toggleBandCurve(bi)}
-            class="rounded px-2 py-1 text-[10px] ring-1 ring-white/10 {bf.curve === 'graphic' ? 'text-accent' : 'text-muted'} hover:bg-white/10"
-            title={bf.curve === 'graphic' ? 'Graphic curve point — tap to give this band its own peak' : 'Parametric band — tap to make it a point the curve passes through'}
-            disabled={$eqBypassed}
-          >{bf.curve === 'graphic' ? '■ Graphic' : '● Parametric'}</button>
-          <button
-            onclick={() => { const i = bandPopover; bandPopover = null; if (i !== null) removeBand(i) }}
-            class="rounded px-2 py-1 text-[10px] text-red-400/90 ring-1 ring-white/10 hover:bg-red-500/10"
-            title="Remove this band"
-            disabled={$eqBypassed || eqState.filters.length <= 1}
-          >Remove</button>
-        </div>
-      </div>
-    {/if}
-
-    <!-- ADD-BAND FREQUENCY PROMPT -->
-    {#if addBandPrompt}
-      <div class="flex items-center gap-2 rounded-lg bg-surface px-3 py-2 ring-1 ring-white/10">
-        <span class="text-xs text-muted">New band at</span>
-        <input
-          type="number"
-          min="20"
-          max="20000"
-          bind:value={addBandFreq}
-          onkeydown={(e) => { if (e.key === 'Enter') confirmAddBand() }}
-          class="w-24 rounded bg-white/5 px-2 py-1 text-xs tabular-nums text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40"
-        />
-        <span class="text-xs text-muted">Hz</span>
-        <button onclick={confirmAddBand} class="ml-auto rounded bg-white/15 px-2.5 py-1 text-xs font-medium text-primary hover:bg-white/25">Add</button>
-        <button onclick={() => (addBandPrompt = false)} class="rounded px-2 py-1 text-xs text-muted">Cancel</button>
-      </div>
-    {/if}
-
     <!-- RESET -->
     <div class="flex justify-center">
       <button onclick={resetAll} class="rounded px-3 py-1.5 text-xs text-muted transition-colors hover:text-primary ring-1 ring-white/10">Reset All</button>
     </div>
   </div>
 </div>
+
+<!-- ══════════ MODALS (2026-09-15): centered sheets instead of inline rows
+     that shifted the UI. Band editor / Save / Add-band / dirty-switch. ════ -->
+
+<!-- BAND EDITOR MODAL -->
+<EqSheetModal
+  open={bandModalIndex !== null && !!modalBand}
+  title={modalBand ? `Band · ${freqLabel(modalBand.frequency)} Hz` : 'Band'}
+  onclose={closeBandModal}
+>
+  {#if modalBand && bandModalIndex !== null}
+    <div class="space-y-4">
+      <!-- Frequency + gain -->
+      <div class="flex items-center gap-3">
+        <label class="flex flex-1 items-center gap-1.5 text-[10px] text-muted">
+          Freq
+          <input
+            type="number"
+            min="20"
+            max="20000"
+            bind:value={bandFreqDraft}
+            onchange={commitModalFreq}
+            onkeydown={(e) => { if (e.key === 'Enter') commitModalFreq() }}
+            class="w-24 rounded bg-white/5 px-2 py-1.5 text-sm tabular-nums text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40"
+          />
+          Hz
+        </label>
+        <label class="flex flex-1 items-center gap-1.5 text-[10px] text-muted">
+          Gain
+          <input
+            type="number"
+            min="-12"
+            max="12"
+            step="0.5"
+            bind:value={bandGainDraft}
+            onchange={commitModalGain}
+            onkeydown={(e) => { if (e.key === 'Enter') commitModalGain() }}
+            class="w-20 rounded bg-white/5 px-2 py-1.5 text-sm tabular-nums text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40"
+          />
+          dB
+        </label>
+      </div>
+
+      <!-- Gain quick chips -->
+      <div class="flex items-center gap-1.5">
+        <span class="text-[10px] text-muted/60">Quick:</span>
+        {#each [-6, -3, 0, 3, 6] as g}
+          <button
+            onclick={() => modalGainChip(g)}
+            class="rounded px-2 py-1 text-[10px] tabular-nums ring-1 transition-colors {modalBand.gain === g ? 'bg-primary/15 text-primary ring-primary/40' : 'text-muted ring-white/10 hover:bg-white/10'}"
+          >{g > 0 ? '+' : ''}{g}</button>
+        {/each}
+      </div>
+
+      <!-- Width (Q) — parametric bands only -->
+      {#if modalBand.curve !== 'graphic'}
+        <div class="flex items-center gap-3">
+          <span class="w-16 text-[10px] text-muted" title="Bandwidth: low = broad, high = narrow">Width (Q)</span>
+          <AppSlider
+            value={modalBand.q}
+            min={0.2}
+            max={8}
+            step={0.1}
+            label="Q for {freqLabel(modalBand.frequency)} Hz band"
+            onInput={(v) => setBandQ(bandModalIndex ?? 0, v)}
+            disabled={$eqBypassed}
+            class="flex-1"
+          />
+          <span class="w-8 text-right text-[10px] tabular-nums text-muted/70">{modalBand.q.toFixed(1)}</span>
+        </div>
+      {/if}
+
+      <!-- Curve kind: the two explicit choices with descriptions -->
+      <div class="space-y-1.5">
+        <span class="text-[10px] text-muted">Curve type</span>
+        <button
+          onclick={() => toggleBandCurve(bandModalIndex ?? 0)}
+          class="w-full rounded-lg px-3 py-2 text-left text-xs ring-1 transition-colors {modalBand.curve === 'parametric' ? 'bg-primary/10 text-primary ring-primary/30' : 'text-muted ring-white/10 hover:bg-white/10'}"
+        >
+          ● Parametric
+          <span class="block text-[10px] text-muted/70">Its own peak/biquad filter at this frequency</span>
+        </button>
+        <button
+          onclick={() => toggleBandCurve(bandModalIndex ?? 0)}
+          class="w-full rounded-lg px-3 py-2 text-left text-xs ring-1 transition-colors {modalBand.curve === 'graphic' ? 'bg-accent/10 text-accent ring-accent/30' : 'text-muted ring-white/10 hover:bg-white/10'}"
+        >
+          ■ Graphic
+          <span class="block text-[10px] text-muted/70">A point the response curve passes through</span>
+        </button>
+      </div>
+
+      <!-- Remove -->
+      <button
+        onclick={removeModalBand}
+        class="w-full rounded-lg px-3 py-2 text-xs text-red-400 ring-1 ring-red-500/30 transition-colors hover:bg-red-500/10"
+        disabled={$eqBypassed || eqState.filters.length <= 1}
+      >
+        Remove band
+      </button>
+    </div>
+  {/if}
+</EqSheetModal>
+
+<!-- SAVE MODAL: both choices explicit — overwrite the active user preset,
+     or save as a NEW preset (the copy path, always available) -->
+<EqSheetModal open={saveDialogOpen} title="Save preset" onclose={() => (saveDialogOpen = false)}>
+  <div class="space-y-3">
+    {#if baseIsUserPreset}
+      <button
+        onclick={saveOverwrite}
+        class="w-full rounded-lg bg-sky-500/15 px-3 py-2.5 text-left text-xs font-medium text-sky-400 ring-1 ring-sky-500/30 hover:bg-sky-500/25"
+      >
+        Save as Current
+        <span class="block text-[10px] font-normal text-sky-400/70">Overwrite “{basePreset?.name}” with these settings</span>
+      </button>
+    {/if}
+    <div>
+      <div class="flex items-center gap-2">
+        <input
+          type="text"
+          placeholder="New preset name…"
+          bind:value={newPresetName}
+          class="min-w-0 flex-1 rounded-lg bg-white/5 px-3 py-2 text-xs text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40 placeholder:text-muted/50"
+          onkeydown={(e) => { if (e.key === 'Enter') saveAsNew() }}
+        />
+        <button onclick={saveAsNew} class="shrink-0 rounded-lg bg-white/15 px-3 py-2 text-xs font-medium text-primary hover:bg-white/25">Save as New</button>
+      </div>
+      <p class="mt-1.5 text-[10px] text-muted/60">{newPresetName.trim() ? `“${newPresetName.trim()}”` : `“${$workingEq.base.name} (modified)”`} will be created — the current preset stays untouched.</p>
+    </div>
+    <div class="flex justify-end">
+      <button onclick={() => (saveDialogOpen = false)} class="rounded px-3 py-1.5 text-xs text-muted hover:text-primary">Cancel</button>
+    </div>
+  </div>
+</EqSheetModal>
+
+<!-- ADD-BAND MODAL -->
+<EqSheetModal open={addBandPrompt} title="Add band" onclose={() => (addBandPrompt = false)}>
+  <div class="space-y-3">
+    <div class="flex items-center gap-2">
+      <span class="text-xs text-muted">New band at</span>
+      <input
+        type="number"
+        min="20"
+        max="20000"
+        bind:value={addBandFreq}
+        onkeydown={(e) => { if (e.key === 'Enter') confirmAddBand() }}
+        class="w-28 rounded bg-white/5 px-2 py-1.5 text-sm tabular-nums text-primary outline-none ring-1 ring-white/10 focus:ring-primary/40"
+      />
+      <span class="text-xs text-muted">Hz</span>
+    </div>
+    <div class="flex justify-end gap-2">
+      <button onclick={() => (addBandPrompt = false)} class="rounded px-3 py-1.5 text-xs text-muted hover:text-primary">Cancel</button>
+      <button onclick={confirmAddBand} class="rounded-lg bg-white/15 px-4 py-1.5 text-xs font-medium text-primary hover:bg-white/25">Add</button>
+    </div>
+  </div>
+</EqSheetModal>
+
+<!-- DIRTY PRESET-SWITCH MODAL -->
+<EqSheetModal open={dirtyDialog.open} title="Unsaved changes" onclose={() => settleDirty('cancel')} label="Unsaved changes dialog">
+  <div class="space-y-3">
+    <p class="text-xs text-primary">You have unsaved changes. Switch presets?</p>
+    <div class="flex justify-end gap-2">
+      <button onclick={() => settleDirty('save')} class="rounded bg-sky-500/15 px-3 py-1.5 text-xs text-sky-400 ring-1 ring-sky-500/30 hover:bg-sky-500/25">Save</button>
+      <button onclick={() => settleDirty('discard')} class="rounded bg-white/15 px-3 py-1.5 text-xs text-primary hover:bg-white/25">Discard</button>
+      <button onclick={() => settleDirty('cancel')} class="rounded px-3 py-1.5 text-xs text-muted hover:text-primary">Cancel</button>
+    </div>
+  </div>
+</EqSheetModal>

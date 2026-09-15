@@ -15,7 +15,10 @@
     editable?: boolean
     onMoveFilter?: (index: number, frequency: number, gain: number) => void
     onAddFilter?: (frequency: number) => void
-    onRemoveFilter?: (index: number) => void
+    /** Tap (not drag) on a band dot — the view opens the FULL band editor
+     *  (modal with frequency, gain, Q, curve kind, remove). Replaces the old
+     *  cramped SVG popover (2026-09-15: dots were also hard to press). */
+    onBandTap?: (index: number) => void
   }
 
   let {
@@ -27,17 +30,60 @@
     editable = false,
     onMoveFilter,
     onAddFilter,
-    onRemoveFilter,
+    onBandTap,
   }: Props = $props()
 
-  const FREQ_GRID = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-  const FREQ_LABELS = ['20', '50', '100', '200', '500', '1k', '2k', '5k', '10k', '20k']
   const GAIN_STEP = 0.5
 
   const MIN_FREQ = 20
   const MAX_FREQ = 20000
   const LOG_MIN = Math.log10(MIN_FREQ)
   const LOG_MAX = Math.log10(MAX_FREQ)
+
+  // ── Viewport (2026-09-15): the frequency axis pans and zooms ─────────────
+  // Horizontal view window [viewMin, viewMax] in Hz. Vertical stays
+  // auto-scaled (maxAbsGain below) — vertical pan has no meaning there.
+  const MIN_SPAN_DECADES = 0.35
+  const FULL_SPAN_DECADES = LOG_MAX - LOG_MIN
+  let viewMin = $state(MIN_FREQ)
+  let viewMax = $state(MAX_FREQ)
+  let logViewMin = $derived(Math.log10(viewMin))
+  let logViewMax = $derived(Math.log10(viewMax))
+  const isZoomed = $derived(logViewMin > LOG_MIN + 1e-9 || logViewMax < LOG_MAX - 1e-9)
+
+  /** Clamp a requested window: span within [MIN_SPAN, FULL], window inside
+   *  the absolute 20 Hz–20 kHz range. */
+  function setView(minFreq: number, maxFreq: number) {
+    let lo = Math.log10(minFreq)
+    let hi = Math.log10(maxFreq)
+    let span = hi - lo
+    if (span > FULL_SPAN_DECADES) {
+      const c = (lo + hi) / 2
+      span = FULL_SPAN_DECADES
+      lo = c - span / 2
+      hi = c + span / 2
+    }
+    if (span < MIN_SPAN_DECADES) {
+      const c = (lo + hi) / 2
+      span = MIN_SPAN_DECADES
+      lo = c - span / 2
+      hi = c + span / 2
+    }
+    if (lo < LOG_MIN) {
+      lo = LOG_MIN
+      hi = lo + span
+    }
+    if (hi > LOG_MAX) {
+      hi = LOG_MAX
+      lo = hi - span
+    }
+    viewMin = Math.pow(10, lo)
+    viewMax = Math.pow(10, hi)
+  }
+
+  function resetView() {
+    setView(MIN_FREQ, MAX_FREQ)
+  }
 
   let width = $state(600)
   let height = $state(180)
@@ -67,7 +113,7 @@
 
   function freqToX(freq: number): number {
     const logF = Math.log10(Math.max(MIN_FREQ, Math.min(MAX_FREQ, freq)))
-    return ((logF - LOG_MIN) / (LOG_MAX - LOG_MIN)) * width
+    return ((logF - logViewMin) / (logViewMax - logViewMin)) * width
   }
 
   function dbToY(db: number): number {
@@ -79,24 +125,24 @@
   /** Hybrid response: when ANY enabled band is a graphic point the whole
    *  EQ renders through the interpolated-curve calculator (the engine's
    *  convolution path — one visual truth, §0.4); parametric mode keeps the
-   *  per-biquad response sum. */
+   *  per-biquad response sum. 300 points so a zoomed-in view stays smooth. */
   const hybrid = $derived(filters.some((f) => f.enabled && effectiveCurve(f) === 'graphic'))
 
   // Frequency response points
   let points = $derived.by<FrequencyPoint[]>(() => {
-    if (eqBypassed) return calculateTotalResponse(0, [], 100)
+    if (eqBypassed) return calculateTotalResponse(0, [], 300)
     if (eqMode === 'graphic') {
-      return calculateGraphicTotalResponse(preampDb, filters, graphicEqCurves, 150)
+      return calculateGraphicTotalResponse(preampDb, filters, graphicEqCurves, 300)
     }
     if (hybrid) {
-      const linear = calculateTotalResponse(0, filters, 150)
-      const curve = calculateGraphicTotalResponse(0, filters, undefined, 150)
+      const linear = calculateTotalResponse(0, filters, 300)
+      const curve = calculateGraphicTotalResponse(0, filters, undefined, 300)
       return linear.map((p, i) => ({
         frequency: p.frequency,
         gainDb: preampDb + p.gainDb + curve[i].gainDb,
       }))
     }
-    return calculateTotalResponse(preampDb, filters, 150)
+    return calculateTotalResponse(preampDb, filters, 300)
   })
 
   let pathD = $derived.by(() => {
@@ -167,25 +213,20 @@
   // ── Editor interaction (pointer capture, SeekBar pattern) ──────────────
 
   let dragIndex: number | null = $state(null)
+  /** True once a handle drag moved beyond the tap slop — a drag-end must
+   *  stay quiet (no editor modal), only a genuine TAP opens it (2026-09-15:
+   *  the rewrite initially dropped this and every drag-end popped the
+   *  modal — caught by the live probe, contract from 2026-09-14). */
   let dragMoved = $state(false)
-  /** The band whose popover (value + delete) is open; null = none.
-   *  Replaces the always-visible × button (2026-09-14: every handle rendered
-   *  TWO dots — the band dot plus a permanent remove-button circle). */
-  let popoverIndex: number | null = $state(null)
+  let dragStartX = 0
+  let dragStartY = 0
 
-  // A structural change (band added/removed, curve flipped) invalidates the
-  // open popover's index — close rather than point at the wrong band.
-  $effect(() => {
-    void filters.length
-    popoverIndex = null
-  })
-
-  function svgPointFromEvent(e: PointerEvent): { freq: number; db: number } {
+  function svgPointFromEvent(e: PointerEvent | MouseEvent): { freq: number; db: number } {
     const rect = svgEl?.getBoundingClientRect()
     if (!rect || rect.width <= 0) return { freq: MIN_FREQ, db: 0 }
     const px = ((e.clientX - rect.left) / rect.width) * width
     const py = ((e.clientY - rect.top) / rect.height) * height
-    const logF = LOG_MIN + (Math.min(Math.max(px, 0), width) / width) * (LOG_MAX - LOG_MIN)
+    const logF = logViewMin + (Math.min(Math.max(px, 0), width) / width) * (logViewMax - logViewMin)
     const freq = Math.pow(10, logF)
     const db =
       ((height / 2 - Math.min(Math.max(py, 0), height)) / (height / 2)) * maxAbsGain
@@ -200,17 +241,18 @@
     return (e: PointerEvent) => {
       if (!editable || eqBypassed) return
       e.preventDefault()
-      e.stopPropagation()
+      e.stopPropagation() // the graph's pan gesture must not start from a dot
       ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
       dragIndex = index
       dragMoved = false
-      popoverIndex = null // a drag is not a popover interaction
+      dragStartX = e.clientX
+      dragStartY = e.clientY
     }
   }
 
   function handleHandleMove(e: PointerEvent) {
     if (dragIndex === null || !onMoveFilter) return
-    dragMoved = true
+    if (Math.hypot(e.clientX - dragStartX, e.clientY - dragStartY) > TAP_SLOP_PX) dragMoved = true
     const { freq, db } = svgPointFromEvent(e)
     // The pointer's dB is on the DISPLAYED curve (includes preamp); the
     // caller wants the band's own gain — subtract the preamp offset so the
@@ -221,35 +263,126 @@
   }
 
   function handleHandleUp(index: number | null) {
+    // A TAP (no meaningful drag) opens the FULL band editor; a drag-end stays
+    // quiet: the user was placing the band, not asking.
+    if (index !== null && !dragMoved && dragIndex === index && onBandTap) onBandTap(index)
     dragIndex = null
-    // A TAP (no meaningful drag) opens the band's popover — value + delete.
-    // A drag-end stays quiet: the user was placing the band, not asking.
-    if (index !== null && !dragMoved && popoverIndex !== index) popoverIndex = index
     dragMoved = false
+  }
+
+  // ── Pan / zoom gestures (2026-09-15): 1 finger = pan, 2 = pinch+pan,
+  //    wheel = zoom about the cursor. Tap-to-add stays: a gesture that moved
+  //    ≥ 6 px suppresses the click that follows the pointerup. ──────────────
+  const TAP_SLOP_PX = 6
+  type Pt = { x: number; y: number }
+  let pointers = new Map<number, Pt>()
+  let gestureDist = 0
+  /** True once the active gesture moved/pinched meaningfully — eats the
+   *  click that follows, so a pan never adds a band. Cleared on down. */
+  let gestureMoved = false
+  /** Pinch anchor: previous two-finger distance + the log-frequency under
+   *  the midpoint (the content point that stays under the fingers). */
+  let lastPinch: { dist: number; contentLogF: number } | null = null
+
+  function graphPointerDown(e: PointerEvent) {
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    gestureDist = 0
+    if (pointers.size === 1) gestureMoved = false // fresh gesture
+    if (pointers.size === 2) {
+      gestureMoved = true // a pinch is never a tap
+      const [p1, p2] = [...pointers.values()]
+      lastPinch = { dist: Math.hypot(p2.x - p1.x, p2.y - p1.y), contentLogF: 0 }
+    }
+    ;(e.currentTarget as Element).setPointerCapture?.(e.pointerId)
+  }
+
+  function graphPointerMove(e: PointerEvent) {
+    const prev = pointers.get(e.pointerId)
+    if (!prev) return
+    const rect = svgEl?.getBoundingClientRect()
+    if (!rect || rect.width <= 0) return
+    const cur = { x: e.clientX, y: e.clientY }
+    pointers.set(e.pointerId, cur)
+
+    if (pointers.size === 1) {
+      const dx = cur.x - prev.x
+      const dy = cur.y - prev.y
+      gestureDist += Math.hypot(dx, dy)
+      if (gestureDist > TAP_SLOP_PX) gestureMoved = true
+      if (!gestureMoved || dx === 0) return
+      // Dragging right moves the WINDOW left in frequency (content follows
+      // the finger). Horizontal only — vertical is auto-scaled.
+      const logDelta = (dx / rect.width) * (logViewMax - logViewMin)
+      setView(Math.pow(10, logViewMin - logDelta), Math.pow(10, logViewMax - logDelta))
+    } else if (pointers.size === 2) {
+      gestureMoved = true
+      const [p1, p2] = [...pointers.values()]
+      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y)
+      const midX = (p1.x + p2.x) / 2
+      const frac = Math.min(Math.max((midX - rect.left) / rect.width, 0), 1)
+      // Content point currently under the midpoint (pre-move view bounds).
+      const contentLogF = logViewMin + frac * (logViewMax - logViewMin)
+      if (lastPinch && lastPinch.dist > 0) {
+        const ratio = lastPinch.dist / Math.max(dist, 1) // fingers apart → span shrinks
+        const clamped = Math.max(0.2, Math.min(5, ratio))
+        const spanLog = Math.max(MIN_SPAN_DECADES, Math.min(FULL_SPAN_DECADES, (logViewMax - logViewMin) * clamped))
+        // Keep the anchored content point at the (moving) midpoint — pan
+        // and zoom in one transform.
+        const lo = contentLogF - frac * spanLog
+        setView(Math.pow(10, lo), Math.pow(10, lo + spanLog))
+      }
+      lastPinch = { dist, contentLogF }
+    }
+  }
+
+  function graphPointerUp(e: PointerEvent) {
+    pointers.delete(e.pointerId)
+    if (pointers.size < 2) lastPinch = null
+  }
+
+  function graphWheel(e: WheelEvent) {
+    const rect = svgEl?.getBoundingClientRect()
+    if (!rect || rect.width <= 0) return
+    e.preventDefault()
+    const frac = Math.min(Math.max((e.clientX - rect.left) / rect.width, 0), 1)
+    const anchorLog = logViewMin + frac * (logViewMax - logViewMin)
+    const factor = Math.exp(e.deltaY * 0.0018) // wheel down = zoom out
+    const spanLog = Math.max(MIN_SPAN_DECADES, Math.min(FULL_SPAN_DECADES, (logViewMax - logViewMin) * factor))
+    const lo = anchorLog - frac * spanLog
+    setView(Math.pow(10, lo), Math.pow(10, lo + spanLog))
   }
 
   function handleSvgClick(e: MouseEvent) {
     if (!editable || eqBypassed || !onAddFilter) return
-    // A click anywhere on a handle group (dot, popover, its buttons) must
-    // never register as add-point — check the ancestor, not just the target.
+    // A click on a handle group (the dot) belongs to the dot — never add.
     if ((e.target as Element)?.closest?.('[data-eq-handle]')) return
-    // First tap on empty graph closes an open popover; the next tap adds.
-    if (popoverIndex !== null) {
-      popoverIndex = null
+    // A pan/pinch/wheel gesture must not register as tap-to-add.
+    if (gestureMoved) {
+      gestureMoved = false
       return
     }
-    const { freq } = svgPointFromEvent(e as unknown as PointerEvent)
+    const { freq } = svgPointFromEvent(e)
     onAddFilter(freq)
   }
 
-  function handleRemove(index: number) {
-    return (e: { stopPropagation(): void }) => {
-      e.stopPropagation()
-      onRemoveFilter?.(index)
+  // ── Dynamic 1-2-5 frequency grid: self-similar under zoom (density is
+  //    constant), and at the full view it reproduces the classic fixed
+  //    grid 20/50/100/200/500/1k/2k/5k/10k/20k exactly. ─────────────────────
+  let freqGrid = $derived.by(() => {
+    const out: number[] = []
+    const kStart = Math.floor(logViewMin)
+    const kEnd = Math.ceil(logViewMax)
+    for (let k = kStart; k <= kEnd; k++) {
+      for (const m of [1, 2, 5]) {
+        const f = m * Math.pow(10, k)
+        if (f >= viewMin * 0.999 && f <= viewMax * 1.001) out.push(f)
+      }
     }
-  }
+    return out
+  })
 
-  const fmtFreq = (f: number): string => (f >= 1000 ? `${(f / 1000).toFixed(1)}k` : `${Math.round(f)}`)
+  const fmtGrid = (f: number): string =>
+    f >= 1000 ? `${(f / 1000).toFixed(f >= 10000 ? 0 : 1).replace(/\.0$/, '')}k` : `${f}`
 </script>
 
 <div class="relative w-full overflow-hidden rounded-xl bg-surface/80 p-3 backdrop-blur border border-white/5 shadow-inner">
@@ -258,10 +391,15 @@
          band list below the graph (add button + per-row controls). -->
     <svg
       bind:this={svgEl}
-      class="h-full w-full select-none overflow-visible"
+      class="h-full w-full touch-none select-none overflow-visible"
       class:cursor-crosshair={editable && !eqBypassed}
       viewBox={`0 0 ${width} ${height}`}
       onclick={handleSvgClick}
+      onpointerdown={graphPointerDown}
+      onpointermove={graphPointerMove}
+      onpointerup={graphPointerUp}
+      onpointercancel={graphPointerUp}
+      onwheel={graphWheel}
     >
       <defs>
         <linearGradient id="eqFillGradient" x1="0" y1="0" x2="0" y2="1">
@@ -291,8 +429,8 @@
         </text>
       {/each}
 
-      <!-- Vertical Frequency Grid Lines -->
-      {#each FREQ_GRID as freq, i}
+      <!-- Vertical Frequency Grid Lines (dynamic 1-2-5 per the view window) -->
+      {#each freqGrid as freq}
         {@const x = freqToX(freq)}
         <line
           x1={x}
@@ -309,7 +447,7 @@
           text-anchor="middle"
           class="fill-muted/50 text-[9px] font-mono select-none"
         >
-          {FREQ_LABELS[i]}
+          {fmtGrid(freq)}
         </text>
       {/each}
 
@@ -326,18 +464,17 @@
       />
 
       <!-- Band Handles: round solid = parametric biquad; square hollow =
-           graphic curve point (the two curve kinds are visually distinct). -->
+           graphic curve point (the two curve kinds are visually distinct).
+           Each carries a 22 px INVISIBLE hit circle — a 5 px dot alone is
+           unusable on a phone (2026-09-15 "dots are hard to press"). -->
       {#if !eqBypassed}
         {#each bandNodes as node (node.index)}
           {#if editable && !eqBypassed}
-            <!-- ONE dot per band (2026-09-14: the old always-visible × circle
-                 beside each handle was the mystery "second dot"). Tap = value
-                 + delete popover; drag = move. -->
             <g
               data-eq-handle="1"
               role="button"
               tabindex="0"
-              aria-label="{node.kind === 'graphic' ? 'Curve point' : 'Parametric band'} {fmtFreq(node.freq)} Hz"
+              aria-label="{node.kind === 'graphic' ? 'Curve point' : 'Parametric band'} {fmtGrid(node.freq)} Hz — tap to edit, drag to move"
               class="cursor-grab touch-none"
               onpointerdown={handleHandleDown(node.index)}
               onpointermove={handleHandleMove}
@@ -346,67 +483,31 @@
               onkeydown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
-                  popoverIndex = popoverIndex === node.index ? null : node.index
+                  onBandTap?.(node.index)
                 }
               }}
             >
+              <!-- Hit target: far larger than the visible dot -->
+              <circle cx={node.x} cy={node.y} r="22" fill="transparent" />
               {#if node.kind === 'graphic'}
                 <rect
-                  x={node.x - (popoverIndex === node.index ? 6 : 5)}
-                  y={node.y - (popoverIndex === node.index ? 6 : 5)}
-                  width={popoverIndex === node.index ? 12 : 10}
-                  height={popoverIndex === node.index ? 12 : 10}
+                  x={node.x - (dragIndex === node.index ? 6 : 5)}
+                  y={node.y - (dragIndex === node.index ? 6 : 5)}
+                  width={dragIndex === node.index ? 12 : 10}
+                  height={dragIndex === node.index ? 12 : 10}
                   class="fill-background stroke-primary stroke-[2]"
                 />
               {:else}
                 <circle
                   cx={node.x}
                   cy={node.y}
-                  r={popoverIndex === node.index ? 5.5 : 4.5}
+                  r={dragIndex === node.index ? 6 : 5}
                   class="fill-primary stroke-background stroke-[2]"
                 />
               {/if}
             </g>
-            {#if popoverIndex === node.index}
-              {@const px = Math.min(Math.max(node.x - 34, 2), Math.max(width - 70, 2))}
-              {@const py = Math.max(node.y - 56, 2)}
-              <g data-eq-handle="1" class="select-none">
-                <rect
-                  x={px}
-                  y={py}
-                  width="68"
-                  height="24"
-                  rx="6"
-                  class="fill-[#161616] stroke-white/15 stroke-[1]"
-                />
-                <text x={px + 8} y={py + 15.5} class="fill-primary text-[10px] font-mono">
-                  {fmtFreq(node.freq)}Hz {node.gain > 0 ? '+' : ''}{node.gain.toFixed(1)}dB
-                </text>
-                <circle
-                  cx={px + 58}
-                  cy={py + 12}
-                  r="7"
-                  role="button"
-                  tabindex="0"
-                  aria-label="Remove band {fmtFreq(node.freq)}"
-                  class="fill-white/10 text-muted/90 cursor-pointer hover:text-red-400 hover:fill-red-500/20"
-                  onclick={handleRemove(node.index)}
-                  onkeydown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      handleRemove(node.index)(e)
-                    }
-                  }}
-                />
-                <text
-                  x={px + 58}
-                  y={py + 14.5}
-                  text-anchor="middle"
-                  class="pointer-events-none fill-current text-[9px] font-mono"
-                >×</text>
-              </g>
-            {/if}
           {:else}
+            <circle cx={node.x} cy={node.y} r="22" fill="transparent" />
             {#if node.kind === 'graphic'}
               <rect
                 x={node.x - 5}
@@ -419,7 +520,7 @@
               <circle
                 cx={node.x}
                 cy={node.y}
-                r="4.5"
+                r="5"
                 class="fill-background stroke-primary stroke-[2] shadow-md"
               />
             {/if}
@@ -427,5 +528,14 @@
         {/each}
       {/if}
     </svg>
+
+    <!-- Reset-view chip: appears only when zoomed/panned -->
+    {#if isZoomed}
+      <button
+        onclick={resetView}
+        class="absolute right-1 top-1 rounded-full bg-black/55 px-2.5 py-0.5 text-[10px] font-medium text-white/85 backdrop-blur transition-colors hover:bg-black/75"
+        title="Reset the frequency view (20 Hz – 20 kHz)"
+      >Reset view</button>
+    {/if}
   </div>
 </div>
