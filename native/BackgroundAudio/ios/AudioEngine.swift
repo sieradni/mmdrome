@@ -842,7 +842,19 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func play() {
-        ensureEngineRunning()
+        // The start MUST be guarded here: the plain-resume tail below executes
+        // activeNode.play() DIRECTLY (no schedule hop), and a player.play()
+        // into a stopped engine raises in AVAudioPlayerNodeImpl::StartImpl —
+        // the 1.2.14 crash shape. The schedule-based returns below re-guard
+        // inside scheduleCurrentTrack; this is the one direct-play path.
+        // Degrade honestly: the JS retry machinery re-plays, re-attempting
+        // the engine start.
+        guard ensureEngineRunning() else {
+            if tracks.indices.contains(activeIndex) {
+                onError?("Audio engine failed to start for \(tracks[activeIndex].title)")
+            }
+            return
+        }
         guard !tracks.isEmpty else { return }
         // An end-of-track sleep paused us right as the previous track finished;
         // its segment is gone, so resume by advancing like a natural next track.
@@ -1053,6 +1065,11 @@ public final class NativeAudioEngine: NSObject {
         crossfadeDuration = max(0, min(15, duration))
         crossfadeCurve = curve
         self.sigmoidSteepness = sigmoidSteepness
+        // The window derivation reads crossfadeDuration (the successor
+        // reservation) — re-derive so the completion hook's guard matches the
+        // chain the toggle just resized. Stale here = the reserved successor
+        // downloads but its `done` is dropped (the 1.2.6 nothing-lights class).
+        syncPreloadWindow()
         if isPlaying {
             prefetchUpcoming(from: activeIndex)
             setupCrossfadeMonitor()
@@ -1680,6 +1697,16 @@ public final class NativeAudioEngine: NSObject {
     }
 
     private func startCrossfade(to nextIdx: Int) {
+        // Third direct-play path (standbyNode.play() below): the monitor timer
+        // keeps ticking on the main run loop even after iOS tears the engine
+        // down (interruption / background death), so the next due fade can
+        // arrive with a stopped engine. Re-start it; a failed start idles the
+        // fade (the monitor re-evaluates next tick) instead of raising in
+        // AVAudioPlayerNodeImpl::StartImpl.
+        guard ensureEngineRunning() else {
+            crossfade = .idle
+            return
+        }
         let nextTrack = tracks[nextIdx]
         guard let localURL = loader.localURL(for: nextTrack) else {
             reportCrossfadeReadiness(.targetNotReady)
