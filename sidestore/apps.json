@@ -27,7 +27,8 @@
           "date": "2026-09-16T02:12:22.833Z",
           "localizedDescription": "Crash breadcrumb in Debug HUD (no more .ips needed); compile-time guard on engine starts; e2e failure diagnostics",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.19/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4876689
         },
         {
           "version": "1.2.18",
