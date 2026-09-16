@@ -27,7 +27,8 @@
           "date": "2026-09-16T01:25:17.449Z",
           "localizedDescription": "Native robustness: guarded engine starts on every resume/fade path, preload window re-derives on crossfade toggle, deferred-arm fixes for paused window growth",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.18/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4873938
         },
         {
           "version": "1.2.17",
