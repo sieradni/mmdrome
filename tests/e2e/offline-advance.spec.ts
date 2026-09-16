@@ -192,6 +192,24 @@ async function lastMediaSrcs(page: Page, n = 4): Promise<string[]> {
   return s.slice(-n)
 }
 
+/** Per-element state snapshot for failure diagnostics only: src tail,
+ *  playhead, paused, readyState, MediaError code. The error code is the
+ *  discriminator the src log cannot give: err4 (SRC_NOT_SUPPORTED) means
+ *  "decode genuinely failed and the advance machinery stalled"; no error
+ *  with a stuck-low readyState means "play()/load never resolved". */
+async function mediaElSnapshot(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const els = (window as unknown as { __mediaEls?: HTMLMediaElement[] }).__mediaEls ?? []
+    return els
+      .map((el) => {
+        const src = el.currentSrc || el.src
+        const tail = src ? src.split('/').pop() : '-'
+        return `${tail}:${el.currentTime.toFixed(2)}${el.paused ? 'P' : '!'}rs${el.readyState}${el.error ? `err${el.error.code}` : ''}`
+      })
+      .join(' | ')
+  })
+}
+
 /**
  * Shared boot for every scenario: load the 6-song mocked library, set the
  * preload window, play Song One, and wait for the fill-start gate. Returns
@@ -557,7 +575,7 @@ test('an undecodable cached track is skipped instead of freezing playback', asyn
       .toBeGreaterThan(0.5)
   } catch (e) {
     throw new Error(
-      `playhead never moved after the skip chain: playing=${await playingMediaTime(page)} anyTime=${await anyMediaTime(page)} srcs=${(await lastMediaSrcs(page, 4)).join(' | ').slice(0, 400)}`,
+      `playhead never moved after the skip chain: playing=${await playingMediaTime(page)} anyTime=${await anyMediaTime(page)} srcs=${(await lastMediaSrcs(page, 4)).join(' | ').slice(0, 400)} els=${await mediaElSnapshot(page)}`,
       { cause: e instanceof Error ? e : undefined },
     )
   }
