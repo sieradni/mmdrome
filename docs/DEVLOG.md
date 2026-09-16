@@ -11,6 +11,16 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-16 — The offline-advance flake root-caused: the silent queue, and the progress-aware settle watch
+
+The flake that rode three releases finally named its mechanism — by instrumentation, not theory:
+
+1. **The failure signature decoded.** CI diagnostics (`srcs=A|A|B|B`, `playing=0 anyTime=0`) looked like "the advance never happened" — but healthy runs end in the SAME src shape (`s1, s1, blob, blob, blob, blob` = s2's poisoned blob mirrored to both elements, then s3's valid blob mirrored after the give-up advance). The failing runs showed s3's VALID blob already assigned to both elements with zero re-assignments for 45 s: **the advance machinery worked; the last `el.play()` never produced progress**. Not a rejection (those are routed), not an advance stall — a play() pending forever.
+2. **Repro attempts and why they failed.** Local dev server, built bundle via `vite preview`, 6-way parallel, full suite, CDP CPU throttling (6×) — all pass; 20× throttle broke the boot itself (emulation artifact). The dev box outruns CI's 2-vCPU contention, so the exact starvation window never reproduced locally. The mechanism was closed analytically on the evidence instead.
+3. **The fix: a progress-aware settle watch** in `webTransport.playLoaded`. Each play() is raced against 3 s windows; a window only counts as "stalled" when the element shows NO progress (readyState + buffered end + time fingerprint unchanged across 2 consecutive windows). A buffering element — the healthy-slow case — resets the counter and is never declared stalled; "slow" must never convert to "failed" (the watch must not punish cold starts on slow networks). A stalled play() rides the same 1s/2s backoff and re-issue as a real rejection (a re-issued play() returns the still-pending promise — free), and a genuinely superseded hung promise self-rejects AbortError on the next src assignment. Three exhausted attempts reject synthetic `PlaySettleTimeout`, which the manager routes through the SAME bounded undecodable-advance rescue (one advance, flag-guarded) — the queue stays alive with honest feedback instead of sitting silent at playhead 0 forever. Test-harness lessons along the way: `fireAll` collapses chained watch windows into one instant (fire ONE timer per step), and fired-but-done entries stay non-cancelled in the fake's log (fire the NEWEST pending, never the first).
+
+Pinned: two webTransport watch tests (stall bounded after 2×2 no-progress windows; buffering never declared stalled) + two manager routing tests (PlaySettleTimeout advances once; consecutive stalls stop).
+
 ## 2026-09-16 — Closing the crash-report loop: breadcrumb, and why the extraction proposal was declined
 
 Three follow-ups from the 1.2.18 sweep, two landed, one deliberately NOT:

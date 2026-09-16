@@ -54,6 +54,34 @@ const defaultTimers: WebTransportTimers = {
 
 const WEB_RETRY: RetryPolicyConfig = { maxAttempts: 3, baseDelayMs: 1000 }
 
+/** A pending-forever el.play() — observed under extreme CPU/memory pressure
+ *  where the element starts neither decoding nor erroring — is the ONE
+ *  pre-start failure the rejection loop below cannot see (the promise never
+ *  rejects, so the attempts never advance and the queue sits silent at
+ *  playhead 0). The settle watch races each play() and declares it dead only
+ *  after CONSECUTIVE NO-PROGRESS windows: a healthy element that is merely
+ *  BUFFERING (slow network, cold start) shows readyState/buffered/time
+ *  movement and is never declared stalled — the watch must not convert
+ *  "slow" into "failed". A stalled attempt then rides the SAME 1 s/2 s
+ *  backoff and re-issue as a real rejection (calling play() again returns
+ *  the still-pending promise, so the re-issue is free). A genuinely
+ *  superseded hung promise self-rejects with AbortError when a later load
+ *  re-assigns src. The watch uses the injectable `schedule` so the suite
+ *  can drive it deterministically. */
+const PLAY_WATCH_MS = 3000
+const PLAY_WATCH_STALLED_WINDOWS = 2
+
+/** Cheap progress fingerprint of a media element: any change across watch
+ *  windows means the element is working (loading/decoding/playing). */
+function elProgress(el: HTMLMediaElement): string {
+  let end = 0
+  try {
+    const b = el.buffered
+    for (let i = 0; i < b.length; i++) end = Math.max(end, b.end(i))
+  } catch { /* torn-down element */ }
+  return `${el.readyState}|${end.toFixed(3)}|${el.currentTime.toFixed(3)}`
+}
+
 export class WebTransport implements PlaybackTransport {
   private readonly _engine: WebTransportEngine
   private readonly _timers: WebTransportTimers
@@ -114,14 +142,17 @@ export class WebTransport implements PlaybackTransport {
     let errorName: string | null = null
     while (playAttempt < 3 && !played) {
       try {
-        await el.play()
+        await this._playWithSettleWatch(el)
         played = true
       } catch (err) {
         // The rejection NAME is the diagnosis the manager routes on
         // (NotAllowedError = policy → stay; NotSupportedError = bad bytes →
         // advance; AbortError = superseded → silent). Never invented: an
         // exotic rejection keeps whatever name it carried (or none), which
-        // routes to the legacy stop.
+        // routes to the legacy stop. PlaySettleTimeout (synthetic, from the
+        // settle watch) also routes to the legacy stop — conservative: a
+        // device too starved to START audio must not auto-advance forever,
+        // and a slow network is excluded by the watch's progress check.
         errorName = err instanceof Error ? err.name : null
         playAttempt++
         if (playAttempt >= 3) return { started: false, errorName }
@@ -133,6 +164,54 @@ export class WebTransport implements PlaybackTransport {
     this._resetRetry()
     this._lastTrackId = track.trackId
     return { started: true, errorName: null }
+  }
+
+  /** One el.play() raced against the progress-aware settle watch. The
+   *  underlying promise is not cancellable; the loser of the race is simply
+   *  unobserved (its handlers are attached here, so no unhandled-rejection
+   *  noise). Re-arming rides the injectable `schedule`. */
+  private _playWithSettleWatch(el: HTMLAudioElement): Promise<void> {
+    const playPromise = el.play()
+    return new Promise<void>((resolve, reject) => {
+      let settled = false
+      let stalledWindows = 0
+      let lastState = elProgress(el)
+      const finish = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        fn()
+      }
+      const armWatch = (): void => {
+        const cancel = this._timers.schedule(PLAY_WATCH_MS, () => {
+          const state = elProgress(el)
+          if (state !== lastState) {
+            // The element is working (buffering/decoding) — healthy-slow.
+            lastState = state
+            stalledWindows = 0
+            armWatch()
+            return
+          }
+          stalledWindows++
+          if (stalledWindows >= PLAY_WATCH_STALLED_WINDOWS) {
+            finish(() => reject(Object.assign(new Error('play() pending with no element progress'), { name: 'PlaySettleTimeout' })))
+            return
+          }
+          armWatch()
+        })
+        cancelRef.cancel = cancel
+      }
+      const cancelRef: { cancel: () => void } = { cancel: () => {} }
+      // `finish` must also stop the CURRENT watch arm.
+      const finishAll = (fn: () => void) => {
+        cancelRef.cancel()
+        finish(fn)
+      }
+      armWatch()
+      playPromise.then(
+        () => finishAll(resolve),
+        (err) => finishAll(() => reject(err)),
+      )
+    })
   }
 
   prepareNext(

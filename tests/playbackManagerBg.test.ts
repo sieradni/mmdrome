@@ -483,6 +483,38 @@ test('two consecutive undecodable tracks stop instead of looping forever', async
   assert.equal(h.qm.calls.filter((c) => c === 'advanceQueue').length, 1, 'exactly one rescue advance')
 })
 
+test('a bounded stall (PlaySettleTimeout) advances past the dead attempt — never strands the queue', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['navidrome-t2', 'navidrome-t3'], [t2, t3], 0)
+  h.qm.nextTrack = t3
+  h.web.playLoadedScript = [
+    { started: false, errorName: 'PlaySettleTimeout' },
+    { started: true, errorName: null },
+  ]
+
+  await h.m._loadAndPlay(t2)
+
+  assert.ok(h.qm.calls.includes('advanceQueue'), 'the stall rescue advances via the A4 chain')
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t3')
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('two consecutive stalls stop instead of skipping forever', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['navidrome-t2', 'navidrome-t3'], [t2, t3], 0)
+  h.qm.nextTrack = t3
+  h.web.playLoadedOk = false
+  h.web.playLoadedErrorName = 'PlaySettleTimeout'
+
+  await h.m._loadAndPlay(t2)
+
+  assert.equal(get(currentTrack), null)
+  assert.equal(get(playbackState), 'stopped')
+  assert.equal(h.qm.calls.filter((c) => c === 'advanceQueue').length, 1, 'exactly one rescue advance')
+})
+
 test('undecodable track under loop-one stays (rewind + single play attempt, no loop)', async () => {
   const h = makeHarness()
   resetStores()

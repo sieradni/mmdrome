@@ -888,6 +888,24 @@ export class PlaybackManager {
         }
         return
       }
+      // PlaySettleTimeout (synthetic, webTransport's progress-aware watch):
+      // the element never settled play() AND showed no buffering/decode
+      // progress across consecutive windows — the CI-observed "silent queue
+      // at playhead 0" shape. Same BOUNDED rescue as undecodable bytes: one
+      // advance through the fromError chain (the flag bounds it; a nested
+      // second stall stops instead of skipping again). Auto-advancing past a
+      // starved-but-recoverable device is deliberate — the queue stays
+      // alive, and a device that cannot start audio stops one track later
+      // rather than sitting silent forever with zero feedback.
+      if (result.errorName === 'PlaySettleTimeout' && !this._advancingPastUndecodable && !this._handlingEnd) {
+        this._advancingPastUndecodable = true
+        try {
+          await this._onTrackEnded(true)
+        } finally {
+          this._advancingPastUndecodable = false
+        }
+        return
+      }
       setCurrentTrack(null)
       setPlaybackState('stopped')
       return

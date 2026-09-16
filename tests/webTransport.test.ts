@@ -11,9 +11,20 @@ class FakeEl {
   paused = true
   src = ''
   currentTime = 0
+  readyState = 0
+  private _bufferedEnd = 0
+  /** Simulated buffered extent; elProgress reads it via the buffered shim. */
+  set bufferedEnd(v: number) { this._bufferedEnd = v }
+  get buffered(): { length: number; end: (i: number) => number } {
+    return { length: this._bufferedEnd > 0 ? 1 : 0, end: () => this._bufferedEnd }
+  }
   private _playRejections = 0
   private _playCalls = 0
   rejectErrorName = 'Error'
+  /** When true, play() returns a promise that NEVER settles on its own —
+   *  the pending-forever shape the settle watch exists for. */
+  hangPlays = false
+  private _pendingResolvers: Array<() => void> = []
 
   set rejectPlays(n: number) { this._playRejections = n }
   get playCalls(): number { return this._playCalls }
@@ -26,7 +37,19 @@ class FakeEl {
       err.name = this.rejectErrorName
       throw err
     }
+    if (this.hangPlays) {
+      this.paused = true
+      return new Promise((resolve) => { this._pendingResolvers.push(resolve) })
+    }
     this.paused = false
+  }
+
+  /** Resolves every hung play() (the "device recovered, play() started"
+   *  late-settle case the watch must not break). */
+  resolveHangs(): void {
+    this.paused = false
+    for (const r of this._pendingResolvers) r()
+    this._pendingResolvers = []
   }
 
   pause(): void { this.paused = true }
@@ -214,7 +237,10 @@ test('stream error schedules web backoff 1s/2s/4s; the 4th error gives up via na
   await t.playLoaded({ trackId: 't1' })
   for (let i = 0; i < 3; i++) engine.a.dispatch('error')
   assert.deepEqual(ended, [])
-  assert.deepEqual(timers.scheduled.map((e) => e.delayMs), [1000, 2000, 4000])
+  // Pending timers only — the settled play()'s CANCELLED settle-watch entry
+  // stays in the log by design (the fake never mutates history).
+  const pendingMs = () => timers.scheduled.filter((e) => !e.cancelled).map((e) => e.delayMs)
+  assert.deepEqual(pendingMs(), [1000, 2000, 4000])
   engine.a.dispatch('error')
   assert.deepEqual(ended, [{ kind: 'natural', fromError: true }])
 })
@@ -224,7 +250,8 @@ test('retry timer fire → onRetry with the last-played track', async () => {
   await t.init()
   await t.playLoaded({ trackId: 't1' })
   engine.a.dispatch('error')
-  timers.fire(0)
+  const pending = timers.scheduled.filter((e) => !e.cancelled)
+  pending[0].fn()
   assert.deepEqual(retried, ['t1'])
   assert.deepEqual(ended, [])
 })
@@ -296,6 +323,54 @@ test('playLoaded reports the rejection name the manager routes on (e.g. NotSuppo
   engine.a.rejectErrorName = 'NotSupportedError'
   const res = await t.playLoaded({ trackId: 't1' })
   assert.deepEqual(res, { started: false, errorName: 'NotSupportedError' })
+})
+
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
+
+/** Fire the NEWEST pending timer: each watch window arms its successor, and
+ *  fired entries stay non-cancelled in the log — firing the first match would
+ *  re-run STALE closures and corrupt the sequence (real timers can't). */
+function fireOne(timers: FakeTimers): void {
+  let idx = -1
+  for (let i = timers.scheduled.length - 1; i >= 0; i--) {
+    if (!timers.scheduled[i].cancelled) { idx = i; break }
+  }
+  if (idx >= 0) timers.fire(idx)
+}
+
+test('playLoaded bounds a pending-forever play(): consecutive no-progress watch windows → not-started (the CI stall shape)', async () => {
+  const { t, engine, timers } = makeTransport()
+  await t.init()
+  engine.a.hangPlays = true
+  const pending = t.playLoaded({ trackId: 't1' })
+  // Per attempt: TWO consecutive no-progress windows declare the stall (a
+  // single window could be a scheduler hiccup). The rejection rides the SAME
+  // 1s/2s backoff as a real rejection and play() is re-issued.
+  for (let i = 0; i < 3; i++) {
+    await flush(); fireOne(timers); await flush()
+    fireOne(timers); await flush()
+  }
+  const res = await pending
+  assert.deepEqual(res, { started: false, errorName: 'PlaySettleTimeout' })
+  assert.equal(engine.a.playCalls, 3)
+})
+
+test('playLoaded never calls a buffering element stalled: progress resets the stall counter, late settle still plays', async () => {
+  const { t, engine, timers } = makeTransport()
+  await t.init()
+  engine.a.hangPlays = true
+  const pending = t.playLoaded({ trackId: 't1' })
+  await flush()
+  fireOne(timers) // window 1: no progress yet → stalledWindows = 1
+  await flush()
+  engine.a.bufferedEnd = 0.5 // bytes arrived — the element is working
+  fireOne(timers) // window 2: progress → counter reset, watch re-armed
+  await flush()
+  engine.a.resolveHangs() // the starved start completes
+  const res = await pending
+  assert.deepEqual(res, { started: true, errorName: null })
+  assert.equal(engine.a.paused, false)
+  assert.equal(engine.a.playCalls, 1) // never re-issued — healthy-slow
 })
 
 // ── destroy ────────────────────────────────────────────────────────────────
