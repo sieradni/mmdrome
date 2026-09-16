@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.16",
-      "versionDate": "2026-09-15T09:37:46.036Z",
-      "versionDescription": "EQ: classic preset switch (apply + confirm), manual vertical zoom + pinch",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.16/mmdrome.ipa",
+      "version": "1.2.17",
+      "versionDate": "2026-09-16T00:41:05.121Z",
+      "versionDescription": "Native preload: chain re-arm after queue refresh; played-row tint kept; diff baseline fixed",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.17/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.17",
+          "buildVersion": "21",
+          "date": "2026-09-16T00:41:05.121Z",
+          "localizedDescription": "Native preload: chain re-arm after queue refresh; played-row tint kept; diff baseline fixed",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.17/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.16",
           "buildVersion": "20",
@@ -197,6 +205,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.17",
+      "identifier": "ios-v1.2.17",
+      "appID": "com.mmdrome.player",
+      "caption": "Native preload: chain re-arm after queue refresh; played-row tint kept; diff baseline fixed",
+      "date": "2026-09-16T00:41:05.121Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.16",
       "identifier": "ios-v1.2.16",
       "appID": "com.mmdrome.player",
@@ -229,15 +246,6 @@
       "appID": "com.mmdrome.player",
       "caption": "EQ spectrum overlay: live audio behind the curve while music plays, so you can see which frequencies to target; plus a one-line hint under t",
       "date": "2026-09-15T04:39:09.013Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.12",
-      "identifier": "ios-v1.2.12",
-      "appID": "com.mmdrome.player",
-      "caption": "EQ: Save as Current works after preset switches (continuous session rebasing); all dialogs centered on phones; preset switching no longer di",
-      "date": "2026-09-15T02:27:24.961Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
