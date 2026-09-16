@@ -819,10 +819,11 @@ public final class NativeAudioEngine: NSObject {
         loopMode = mode
         syncPreloadWindow() // wrap behavior feeds the window walk
         // Switching TO loop-all unwraps the chain's tail (the walk now wraps);
-        // an idle tail (paused, or every upcoming row already cached) never
-        // restarted, so rows past the old end never filled. Restart only on
-        // this edge — the other transitions don't change the walk's reach.
-        if mode == .all, isPlaying, !tracks.isEmpty {
+        // an idle tail never restarted, so rows past the old end never filled.
+        // Restart only on this edge — the other transitions don't change the
+        // walk's reach. Fires paused too: play()'s plain resume only re-arms
+        // the PREVIOUS window (2026-09-15 deferred-arm fix).
+        if mode == .all, !tracks.isEmpty {
             prefetchUpcoming(from: activeIndex)
         }
         let hadCrossfade = crossfade.isActive
@@ -863,6 +864,14 @@ public final class NativeAudioEngine: NSObject {
             restartForParams()
             return
         }
+        // Window-growth changes made while PAUSED deferred their chain arm
+        // (guard isPlaying) — a plain resume never re-arms it, so the deferred
+        // rows never fill until the next track load. The earlier returns above
+        // (loadAndStart / restartForParams → scheduleCurrentTrack) arm the
+        // chain themselves; only this plain-resume path needs the explicit
+        // arm. Like every other arm site, the walk follows nextIndex (the
+        // successor fills even under loop-one — harmless, a skip needs it).
+        prefetchUpcoming(from: activeIndex)
         activeNode.play()
         standbyNode.play()
         setPlaying(true)
@@ -1047,6 +1056,12 @@ public final class NativeAudioEngine: NSObject {
         if isPlaying {
             prefetchUpcoming(from: activeIndex)
             setupCrossfadeMonitor()
+        } else if crossfadeDuration > 0 {
+            // Paused + the successor reservation changed (0 ⇄ >0): the chain
+            // length changed while the arm was deferred — arm it now; play()
+            // would never cover rows the old window didn't (2026-09-15).
+            prefetchUpcoming(from: activeIndex)
+            stopCrossfadeMonitor()
         } else {
             stopCrossfadeMonitor()
         }
@@ -1079,10 +1094,15 @@ public final class NativeAudioEngine: NSObject {
     public func setPreloadCount(_ count: Int) {
         let clamped = max(0, min(5, count))
         guard clamped != preloadCount else { return }
+        let grew = clamped > preloadCount
         preloadCount = clamped
         syncPreloadWindow()
-        guard isPlaying else { return }
-        prefetchUpcoming(from: activeIndex)
+        // A GROWTH made while paused must not wait for the next track load:
+        // the plain-resume path in play() only re-arms what the previous
+        // window covered, so the deferred arm happens here (2026-09-15).
+        if grew || isPlaying {
+            prefetchUpcoming(from: activeIndex)
+        }
     }
 
     // MARK: - Preload progress (queue-row tint parity with web)
