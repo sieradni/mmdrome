@@ -32,6 +32,7 @@ import { queueManager } from '../src/lib/queueManager'
 import { sleepTimerManager } from '../src/lib/sleepTimer'
 import { get } from 'svelte/store'
 import { setCachedConfig } from '../src/lib/navidromeApi'
+import { emitPreloadEvent, preloadEntries, resetLoadStatusForTests } from '../src/stores/loadStatus'
 import type { NativeTransport } from '../src/lib/playbackCore/nativeTransport'
 import type { TransportEndedEvent } from '../src/lib/playbackCore/types'
 
@@ -212,6 +213,7 @@ function seed(h: ReturnType<typeof makeHarness>, ids: string[], tracks: Track[],
 }
 
 function resetStores(): void {
+  resetLoadStatusForTests()
   queue.set({ userQueue: [], autoQueue: [], recentTrackIds: [], activeIndex: -1 })
   library.set([])
   setCurrentTrack(null)
@@ -384,6 +386,26 @@ test('_onNativeTrackChanged re-adopts a track that left the combined queue', asy
   assert.equal(get(currentTrack)?.trackId, 't2')
   assert.equal(get(queue).userQueue.length, 2)
   assert.equal(get(queue).userQueue[1], 't2')
+})
+
+test("_onNativeTrackChanged keeps the previous track's preload tint — the engine owns terminal states", async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1', 't2'], [t1, t2], 0)
+  // The engine's instant completion hook (or the outgoing-row announcement)
+  // already put the played row's terminal state in the store. trackChanged
+  // must NOT evict it: the 2026-09-15 report — autoplayed songs never showed
+  // as preloaded while manual skips did — traced to this evict racing the
+  // engine's terminal announcement and deleting the entry after it.
+  emitPreloadEvent({ type: 'done', trackId: 't1' })
+  emitPreloadEvent({ type: 'start', trackId: 't2' })
+  emitPreloadEvent({ type: 'progress', trackId: 't2', progress: 0.4 })
+
+  await h.m._onNativeTrackChanged('t2')
+
+  assert.equal(get(preloadEntries)['t1']?.state, 'cached', 'the played row keeps its cached tint')
+  assert.equal(get(preloadEntries)['t2']?.state, 'fetching', 'the incoming row\'s in-flight entry is untouched')
+  assert.equal(get(currentTrack)?.trackId, 't2')
 })
 
 test('_nativeLoadPlay skips post-work when a newer load superseded it', async () => {

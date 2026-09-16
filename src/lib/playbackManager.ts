@@ -686,15 +686,16 @@ export class PlaybackManager {
 
   private _onNativeTrackChanged(trackId: string): void {
     if (this._handlingNativeEnd) return
-    // The PREVIOUS track's preload entry must not outlive its play: rows left
-    // the window when they played, so a re-entering played row would resurface
-    // a stale partial tint (the "played rows got their indicator back, frozen
-    // partial" report). Native never evicts past tracks otherwise (web's
-    // preloader evicts by URL on track change). Same-id re-engages keep theirs.
-    const prevTrack = get(currentTrack)
-    if (prevTrack && prevTrack.trackId !== trackId) {
-      emitPreloadEvent({ type: 'evict', trackId: prevTrack.trackId })
-    }
+    // The previous track's preload tint is KEPT (2026-09-15, the "autoplayed
+    // songs never show as preloaded, manual skips did" report). The engine
+    // announces the OUTGOING row's terminal state (`done` when its bytes are
+    // on disk, `gone` otherwise) from playTrack BEFORE the new row's events
+    // land, so the store converges on cached-or-empty by itself. The old
+    // unconditional evict here raced that terminal event and deleted the
+    // entry right after it — hiding rows the user just heard even though
+    // their files are cached. Re-entry staleness is covered engine-side: a
+    // re-entering window row is re-diffed against the loader cache every
+    // sampler tick (a cached row re-announces `done` once).
     const combined = this._qm.getCombinedQueue()
     let idx = combined.indexOf(trackId)
     const track = this._qm.findTrack(trackId)

@@ -715,6 +715,19 @@ public final class NativeAudioEngine: NSObject {
         // suppression latched by seeking inside the PREVIOUS track's window
         // must not leak (loop-one restarts clear it too; same id, new play).
         seekSuppressedTrackId = nil
+        // The outgoing row's terminal preload state (2026-09-15, the "played
+        // songs don't show as preloaded unless you skip around" report): a row
+        // that was mid-download when it became current must report its FINAL
+        // state before the new row's events land — otherwise its entry freezes
+        // at a partial `fetching`, and pass 2 of the sampler (which only diffs
+        // WINDOW rows) never corrects a row that just left the window. `done`
+        // when bytes are on disk, else `gone`.
+        if oldTrackId != tracks[clamped].trackId, !oldTrackId.isEmpty,
+           let last = lastPreloadEmitted[oldTrackId], last.state == "fetching" {
+            let prefix = oldTrackId + "|"
+            let cached = loader.cacheKeys.contains { $0.hasPrefix(prefix) }
+            emitPreload(oldTrackId, cached ? "done" : "gone", nil)
+        }
         activeIndex = clamped
         syncPreloadWindow()
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
@@ -763,6 +776,14 @@ public final class NativeAudioEngine: NSObject {
         lastPreloadEmitted = [:]
         syncPreloadWindow()
         prefetchGeneration += 1
+        // Restart the prefetch chain (2026-09-15, the "preload stops after the
+        // first few songs" report): the bump above killed any in-flight chain
+        // and nothing re-armed it — every natural advance rewrites the JS queue
+        // store (trackChanged → advanceTo/replenish), so each advance issued a
+        // refreshQueue and preloading only ever finished while the tail stayed
+        // quiet. In-flight rows chain onto the loader's existing task (no
+        // duplicate download); the fresh generation re-diffs the sampler.
+        prefetchUpcoming(from: synchronizedIndex)
         let newTargetIndex: Int? = oldTargetId.flatMap { targetId -> Int? in
             guard let candidate = tracks.firstIndex(where: { $0.trackId == targetId }),
                   self.nextIndex(after: synchronizedIndex) == candidate else { return nil }
@@ -797,6 +818,13 @@ public final class NativeAudioEngine: NSObject {
     public func setLoopMode(_ mode: NativeLoopMode) {
         loopMode = mode
         syncPreloadWindow() // wrap behavior feeds the window walk
+        // Switching TO loop-all unwraps the chain's tail (the walk now wraps);
+        // an idle tail (paused, or every upcoming row already cached) never
+        // restarted, so rows past the old end never filled. Restart only on
+        // this edge — the other transitions don't change the walk's reach.
+        if mode == .all, isPlaying, !tracks.isEmpty {
+            prefetchUpcoming(from: activeIndex)
+        }
         let hadCrossfade = crossfade.isActive
         stopCrossfadeMonitor()
         stopVolumeRamp()
@@ -1067,7 +1095,13 @@ public final class NativeAudioEngine: NSObject {
     /// BackgroundAudioCore/PreloadWindow.swift.
 
     private func emitPreload(_ trackId: String, _ state: String, _ progress: Double?) {
-        lastPreloadEmitted[trackId] = PreloadProgress(state: state, progress: progress)
+        // The bridge's event name is "progress"; the diff BASELINE stores the
+        // semantic state ("fetching") so PreloadProgress.event's 1 % window
+        // actually dedupes steady ticks (a "progress"-vs-"fetching" compare
+        // was always different → every in-flight row re-emitted every second)
+        // and pass 2's `last?.state == "fetching"` gone-transition can match.
+        let baselineState = state == "progress" ? "fetching" : state
+        lastPreloadEmitted[trackId] = PreloadProgress(state: baselineState, progress: progress)
         onPreloadProgress?(trackId, state, progress)
     }
 
@@ -1724,6 +1758,11 @@ public final class NativeAudioEngine: NSObject {
 
         activeIndex = targetIndex
         syncPreloadWindow()
+        // A crossfade switched WITHOUT playTrack: a refreshQueue during the
+        // fade killed the in-flight chain (generation bump) and the old chain
+        // was sized for the PREVIOUS position anyway. Restart from the new
+        // current index so the window keeps filling (2026-09-15).
+        prefetchUpcoming(from: targetIndex)
         isActiveB.toggle()
         standbyNode.stop()
         standbyGain.outputVolume = 0
