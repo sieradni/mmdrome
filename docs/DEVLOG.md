@@ -11,6 +11,14 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-16 — Closing the crash-report loop: breadcrumb, and why the extraction proposal was declined
+
+Three follow-ups from the 1.2.18 sweep, two landed, one deliberately NOT:
+
+- **Web sweep: no analog exists.** The unguarded-resume class is native-only because AVFoundation's player `play()` raises synchronously (NSException, uncatchable in Swift), while the web engine's failures are promise rejections (routed through the A5 retry machinery) and `reviveContext` is async/catchable. No invented changes — the web's `preloadNext` poll is its own re-arm.
+- **Pure-core extraction: declined.** The extractable decisions were ALREADY pure and tested (`crossfadeReadiness`, `isSeekInCrossfadeWindow`, `preloadWindowIndexes`, `QueueDivergence`, `ArtworkRequestGuard`). Every real bug lived in call-site discipline — a discarded Bool result, a missing re-derive, a missed re-arm. A new policy layer would have added indirection without removing any failure mode; the lever that actually bites is compile-time, not architectural. Two cheap hardenings landed instead: `ensureEngineRunning` lost `@discardableResult` (an ignored result now WARNS, so the 1.2.14 shape can't recur silently), and the §3.4 anchor was corrected — BOTH→ALL THREE player-node play sites (schedule autoplay, plain resume, crossfade standby) now guarded; only the first was documented.
+- **Crash breadcrumb landed.** Both historical `.ips` files were `objc_exception_throw`. `CrashBreadcrumb.swift` installs an `NSSetUncaughtExceptionHandler` writing name/reason/12 stack frames to a Caches file; engine init reads + clears it; `debugState()` carries `lastLaunchCrash` — which the Debug HUD already dumps wholesale, so zero new bridge methods, zero JS changes. Scope is deliberately narrow: NSSetUncaughtExceptionHandler catches ObjC exceptions only (Swift fatalError/abort don't route through it; signal handlers can't write files safely). Best-effort by design — under crash conditions a failed write just loses the breadcrumb.
+
 ## 2026-09-15 — Generation/kill-site sweep: the class audit, and the deferred-arm gap that survived it
 
 After the prefetch-chain fix (below), a systematic sweep of the engine for OTHER work that dies at a kill site without being re-armed. Method (reusable): enumerate every kill primitive (`generation += 1`, `.invalidate()`, `.cancel()`, `.stop()`), classify each by whether playback continues past it, then ask per site: what work died, and what re-arms it?

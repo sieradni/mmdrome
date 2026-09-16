@@ -503,6 +503,8 @@ public final class NativeAudioEngine: NSObject {
     /// DIFFERENT track loads (`playTrack`), so the suppression never leaks
     /// into the next track. Web parity: audioManager `_seekSuppressed`.
     private var seekSuppressedTrackId: String?
+    /// Previous run's NSException breadcrumb, when present (debugState only).
+    private var lastLaunchCrash: String?
 
     public override init() {
         super.init()
@@ -514,6 +516,15 @@ public final class NativeAudioEngine: NSObject {
         // developer-visible crash in a build the store never shipped.
         // Defense = the attach/connect audit in the docs + this comment.
         setupGraph()
+        // Last-launch crash breadcrumb (the 1.2.13/1.2.14 .ips files were
+        // NSException crashes): the handler writes a small Caches file during
+        // the crash; init reads and clears it and debugState() surfaces it —
+        // a crash report reaches the Debug HUD without a user-exported .ips.
+        CrashBreadcrumb.installHook()
+        if let breadcrumb = CrashBreadcrumb.readAndClear() {
+            print("[native] LAST-LAUNCH CRASH: \(breadcrumb)")
+            lastLaunchCrash = breadcrumb
+        }
         loader.onDownloadFinished = { [weak self] trackId, succeeded in
             self?.handleDownloadFinished(trackId, succeeded)
         }
@@ -569,7 +580,9 @@ public final class NativeAudioEngine: NSObject {
     /// playing into a stopped engine raises an NSException (SIGABRT; the
     /// 1.2.14 play crash). The failure itself only logs here; the call site
     /// reports the honest error.
-    @discardableResult
+    /// Deliberately NOT `@discardableResult` (the bare call in play() was the
+    /// 1.2.14 crash shape): an ignored Bool result warns at compile time, so
+    /// a future direct-play site can't silently skip the guard.
     private func ensureEngineRunning() -> Bool {
         guard !engine.isRunning else { return true }
         do {
@@ -1314,6 +1327,7 @@ public final class NativeAudioEngine: NSObject {
             "standbyGain": standbyGain.outputVolume,
             "preampVolume": preamp.outputVolume,
             "masterVolume": masterVolume,
+            "lastLaunchCrash": lastLaunchCrash ?? "none",
             "preampDb": preampDb,
             "hasLocalURL": hasLocal,
             "computedDurations": computedDurations.count,
