@@ -27,7 +27,8 @@
           "date": "2026-09-16T00:41:05.121Z",
           "localizedDescription": "Native preload: chain re-arm after queue refresh; played-row tint kept; diff baseline fixed",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.17/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4873765
         },
         {
           "version": "1.2.16",
