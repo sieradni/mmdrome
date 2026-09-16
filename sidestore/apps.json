@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.17",
-      "versionDate": "2026-09-16T00:41:05.121Z",
-      "versionDescription": "Native preload: chain re-arm after queue refresh; played-row tint kept; diff baseline fixed",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.17/mmdrome.ipa",
+      "version": "1.2.18",
+      "versionDate": "2026-09-16T01:25:17.449Z",
+      "versionDescription": "Native robustness: guarded engine starts on every resume/fade path, preload window re-derives on crossfade toggle, deferred-arm fixes for paused window growth",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.18/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.18",
+          "buildVersion": "22",
+          "date": "2026-09-16T01:25:17.449Z",
+          "localizedDescription": "Native robustness: guarded engine starts on every resume/fade path, preload window re-derives on crossfade toggle, deferred-arm fixes for paused window growth",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.18/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 4873938
+        },
         {
           "version": "1.2.17",
           "buildVersion": "21",
@@ -206,6 +215,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.18",
+      "identifier": "ios-v1.2.18",
+      "appID": "com.mmdrome.player",
+      "caption": "Native robustness: guarded engine starts on every resume/fade path, preload window re-derives on crossfade toggle, deferred-arm fixes for pa",
+      "date": "2026-09-16T01:25:17.449Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.17",
       "identifier": "ios-v1.2.17",
       "appID": "com.mmdrome.player",
@@ -238,15 +256,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Fix 1.2.13 launch crash: spectrum tap attached before connect",
       "date": "2026-09-15T05:38:44.905Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.13",
-      "identifier": "ios-v1.2.13",
-      "appID": "com.mmdrome.player",
-      "caption": "EQ spectrum overlay: live audio behind the curve while music plays, so you can see which frequencies to target; plus a one-line hint under t",
-      "date": "2026-09-15T04:39:09.013Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
