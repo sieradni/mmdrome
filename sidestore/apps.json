@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.18",
-      "versionDate": "2026-09-16T01:25:17.449Z",
-      "versionDescription": "Native robustness: guarded engine starts on every resume/fade path, preload window re-derives on crossfade toggle, deferred-arm fixes for paused window growth",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.18/mmdrome.ipa",
+      "version": "1.2.19",
+      "versionDate": "2026-09-16T02:12:22.833Z",
+      "versionDescription": "Crash breadcrumb in Debug HUD (no more .ips needed); compile-time guard on engine starts; e2e failure diagnostics",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.19/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.19",
+          "buildVersion": "23",
+          "date": "2026-09-16T02:12:22.833Z",
+          "localizedDescription": "Crash breadcrumb in Debug HUD (no more .ips needed); compile-time guard on engine starts; e2e failure diagnostics",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.19/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.18",
           "buildVersion": "22",
@@ -215,6 +223,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.19",
+      "identifier": "ios-v1.2.19",
+      "appID": "com.mmdrome.player",
+      "caption": "Crash breadcrumb in Debug HUD (no more .ips needed); compile-time guard on engine starts; e2e failure diagnostics",
+      "date": "2026-09-16T02:12:22.833Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.18",
       "identifier": "ios-v1.2.18",
       "appID": "com.mmdrome.player",
@@ -247,15 +264,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Fix play crash: spectrum tap wired in-line, play() guards engine start",
       "date": "2026-09-15T06:40:46.013Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.14",
-      "identifier": "ios-v1.2.14",
-      "appID": "com.mmdrome.player",
-      "caption": "Fix 1.2.13 launch crash: spectrum tap attached before connect",
-      "date": "2026-09-15T05:38:44.905Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
