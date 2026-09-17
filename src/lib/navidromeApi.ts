@@ -131,9 +131,58 @@ let _cachedAuthPassword: string | null = null
 let _cachedAuthSalt: string | null = null
 let _cachedAuthToken: string | null = null
 
+/**
+ * Session-STABLE salt: md5(password + salt). Every consumer of the auth
+ * params — cover URLs (getCoverArt), stream URLs (stream.view), the SW cover
+ * cache key, the preload Cache-API keys, the native snapshot cover URLs —
+ * bakes these params into a URL that then acts as a CACHE KEY across requests
+ * and sessions. A fresh random salt per process (the pre-2026-09-17 behavior)
+ * rotated EVERY such URL on every app boot: the native snapshot 401'd after a
+ * restart (DEVLOG 903), the server's `no-cache` + ETag revalidation never hit
+ * (new URL = unconditional re-fetch), and the SW cover cache started every
+ * session cold. The stored salt makes every such URL survive a restart.
+ *
+ * localStorage, deliberately: the read is SYNCHRONOUS, so the very first
+ * buildAuthParams of a session reuses the previous session's salt — no async
+ * hydration race before the first request, no db.ts import into this module
+ * (Dexie would drag into every Node test importing navidromeApi). The salt is
+ * NOT a credential: it is sent cleartext in every request URL by protocol
+ * (Subsonic auth = the client supplies salt+token; the server validates
+ * t === md5(password + s-as-sent), so ANY salt is valid — stability is purely
+ * a cache-key concern). Storage unavailable/cleared → a fresh in-memory salt:
+ * cold caches for one session, still fully correct. Reusing a stored salt
+ * across a credential change is likewise valid — the new password yields a
+ * new token, and art/cache identity is unaffected.
+ */
+const SALT_STORAGE_KEY = 'mmdrome:authSalt'
+function readStoredSalt(): string | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const existing = localStorage.getItem(SALT_STORAGE_KEY)
+      if (existing) return existing
+    }
+  } catch {
+    // Storage blocked (private mode / quota) — fall through.
+  }
+  return null
+}
+
+function storeSalt(salt: string): void {
+  try {
+    if (typeof localStorage !== 'undefined') localStorage.setItem(SALT_STORAGE_KEY, salt)
+  } catch {
+    // In-memory only this session; caches stay cold but correct.
+  }
+}
+
 function buildAuthParams(username: string, password: string, jsonFormat = true): Record<string, string> {
   if (username !== _cachedAuthUsername || password !== _cachedAuthPassword) {
-    _cachedAuthSalt = generateSalt(16)
+    const stored = readStoredSalt()
+    _cachedAuthSalt = stored ?? (() => {
+      const fresh = generateSalt(16)
+      storeSalt(fresh)
+      return fresh
+    })()
     _cachedAuthToken = md5(password + _cachedAuthSalt)
     _cachedAuthUsername = username
     _cachedAuthPassword = password

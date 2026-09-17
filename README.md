@@ -75,7 +75,7 @@ WebDAV is optional and lets mmdrome read and write audio metadata (rating, loved
 - **Web Audio API dependency.** Audio processing (EQ, SoundTouch, crossfading, ReplayGain) requires Web Audio API. If the AudioContext fails to resume, playback falls back to the raw HTMLAudioElement without effects.
 - **iOS background mode bypasses effects.** Pitch/speed shifting and EQ are unavailable while the app is backgrounded on iOS.
 - **No gapless for different-codec tracks.** Gapless playback crossfades between tracks regardless of codec, but seamless sample-accurate gapless (no crossfade) is not supported across format boundaries.
-- **Service worker limited.** The PWA service worker (`public/sw.js`) is a minimal cache-first strategy. Full offline support is limited to previously cached assets, not streamed audio.
+- **Service worker limited.** The PWA service worker (`public/sw.js`) is a minimal cache-first strategy (static assets). Full offline support is limited to previously cached assets, not streamed audio. Cover art is intentionally not app-cached — the session-stable Subsonic salt lets the browser's HTTP cache do that job (with ETag revalidation).
 - **Single user.** No multi-user support. One Navidrome account per instance.
 
 ## Tech Stack

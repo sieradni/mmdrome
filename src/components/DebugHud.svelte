@@ -11,6 +11,7 @@
     nativeBridgeTrailSnapshot,
     clearNativeBridgeTrail,
   } from '../lib/playbackCore/nativeBridgeTrail'
+  import { thumbLoaderDebugSnapshot } from '../lib/thumbLoader'
   import { audioManager } from '../lib/audioManager'
 
   let { onclose }: { onclose?: () => void } = $props()
@@ -25,7 +26,7 @@
   // 2026-09-17: section collapse state — the state dumps are bulky; the trail
   // and log are the diagnosis surfaces and stay open. Sections persist only
   // for the session (no Dexie: debug-only preference).
-  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true })
+  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false })
   let poll: ReturnType<typeof setInterval> | null = null
   let jsPoll: ReturnType<typeof setInterval> | null = null
   let listeners: any[] = []
@@ -168,6 +169,7 @@
       lastTrackChanged,
       errorLog: errorLog.slice(0, 20),
       nativeBridgeTrail: nativeBridgeTrailSnapshot(),
+      thumbnails: getThumbDebug(),
       settings: scrubSettings(st8 as unknown as Record<string, unknown>),
     }
     const text = JSON.stringify(payload, null, 2)
@@ -181,6 +183,16 @@
     errorLog = []
     lastError = ''
     lastTrackChanged = ''
+  }
+
+  /** Thumb-queue counters for the HUD + Copy dump (counters only — no DOM or
+   *  credential surface; same scrub posture as `scrubSettings`). */
+  function getThumbDebug() {
+    try {
+      return thumbLoaderDebugSnapshot()
+    } catch {
+      return null
+    }
   }
 
   function clearAll() {
@@ -226,6 +238,12 @@
   let bridgeTrail = $derived.by(() => {
     void jsTick
     return nativeBridgeTrailSnapshot()
+  })
+  // Thumb loader counters sampled per tick (the snapshot is a plain read of
+  // module state; identity changes each poll so the section re-renders).
+  let thumbDebug = $derived.by(() => {
+    void jsTick
+    return getThumbDebug()
   })
 </script>
 
@@ -287,6 +305,25 @@
             {:else}
               <div class="text-white/30">empty — Clear all resets it</div>
             {/each}
+          </div>
+        {/if}
+      </div>
+
+      <!-- Thumb loader (scroll-gating diagnosis): pending = queue depth,
+           blocked = the velocity gate's verdict, visible = the nearest row
+           is inside the holdout radius (arms even mid-gesture), armed/dropped
+           = session totals. A flick should show visible:true for the
+           on-screen rows while blocked holds the pre-roll, then a burst of
+           arming when it settles. -->
+      <div class="mb-1 rounded bg-white/5 p-2">
+        <button onclick={() => toggleSection('thumbs')} class="mb-1 flex w-full items-center justify-between font-bold text-yellow-300">
+          <span>{openSections.thumbs ? '▾' : '▸'} THUMBS {thumbDebug ? `(${thumbDebug.pending})` : ''}</span>
+        </button>
+        {#if openSections.thumbs && thumbDebug}
+          <div class="text-[10px]">
+            <div>pending: {thumbDebug.pending} state: {thumbDebug.blocked ? (thumbDebug.visibleTier ? 'VISIBLE (scrolling)' : 'BLOCKED (scrolling)') : 'open'}</div>
+            <div>armed total: {thumbDebug.armedTotal} dropped: {thumbDebug.droppedTotal}</div>
+            <div>last armed: {thumbDebug.lastArmedAt ? `${Math.floor((Date.now() - thumbDebug.lastArmedAt) / 1000)}s ago` : 'never'}</div>
           </div>
         {/if}
       </div>

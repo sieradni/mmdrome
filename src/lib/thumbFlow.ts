@@ -1,0 +1,131 @@
+/**
+ * Pure thumb-flow policy (F2): the velocity-gated arming state machine behind
+ * `thumbLoader.ts`. DOM-free and clock-injectable so the whole decision surface
+ * is unit-pinned; the loader adapter only reads rects and executes the plan.
+ *
+ * Problem this solves (the "user quickly scrolling" report): arming was
+ * one-way — a flick queued rows several screens ahead (IO 800 px pre-roll) and
+ * armed them mid-flight, so covers for rows the user already flew past raced
+ * the rows now on screen for connection slots. Holding arming while scrolling
+ * lets the per-frame distance sort stay current, so the instant the flick ends
+ * the FIRST batch armed is the resting view.
+ *
+ * Deliberate shape of the signal: scroll-event TIMING, not a px/s velocity
+ * estimate. A scroll gesture = a stream of scroll events (any speed); a resting
+ * view emits none. An estimate adds state without adding a decision — every
+ * interesting branch is already covered by "recent scroll events" vs "none".
+ * This also means a slow held drag holds correctly (the view isn't resting)
+ * and momentum/keyboard paging hold too.
+ *
+ * ONE exception to the hold (2026-09-17, the "slow scrolling shows
+ * placeholders" re-review): the screen the user is LOOKING at must never wait
+ * for the gesture to end. Arming splits into two distance tiers — rows whose
+ * center is within half a viewport of center (i.e. fully on screen) arm
+ * IMMEDIATELY even mid-gesture ("load what I can see" is always correct),
+ * while the far pre-roll stays held until the motion stops. A slow drag thus
+ * paints at the reading position continuously; a fast flick fills the settled
+ * screen in the first post-stop batch and pre-rolls only after.
+ */
+
+/**
+ * How long arming stays blocked after the LAST scroll event. A flick's event
+ * stream runs 150–300 ms; 250 ms doesn't re-open mid-glide but feels instant
+ * when the gesture stops.
+ */
+export const SCROLL_HOLD_MS = 250
+
+/**
+ * Minimum wall-clock gap between armed batches. While open, this reproduces
+ * the old 8-per-frame cadence (a frame is ≥16 ms) but survives an
+ * environment where frames are long (backgrounded rAF) without hammering.
+ * It gates BATCHES, not the tick loop — a resting page keeps its per-frame
+ * housekeeping cadence.
+ */
+export const MIN_ARM_INTERVAL_MS = 33
+
+/**
+ * The visible-holdout radius, as a fraction of viewport height from center.
+ * 0.5 ⇒ any row whose center is within half a viewport of the viewport
+ * center is at least partially (and for grid cells typically fully) on
+ * screen — those arm even while `blocked`. The far pre-roll (IO 800 px,
+ * multi-row ahead) stays held. Nothing outside ±0.5·vh is ever armed during
+ * a gesture, so a flick still queues nothing ahead of the settle.
+ */
+export const VISIBLE_HOLDOUT_RATIO = 0.5
+
+export interface ThumbFlowState {
+  /** Recent scroll activity (gesture or momentum) — the far pre-roll is held. */
+  blocked: boolean
+  /** The visible-holdout tier is OPEN (the nearest queued row is inside the
+   *  holdout radius). When true, the adapter may arm the nearest batch even
+   *  while `blocked`. */
+  visible: boolean
+}
+
+export interface ThumbFlowDeps {
+  now(): number
+  /** Tracked scroll activity, as the timestamp of the last scroll event
+   *  (0 = none this session). The adapter feeds it from its listener. */
+  lastScrollAt(): number
+  /** Distance of the NEAREST queued row from the viewport center, as a
+   *  FRACTION of viewport height (the adapter measures rects per tick;
+   *  Infinity when nothing is queued). The `visible` tier compares this
+   *  against VISIBLE_HOLDOUT_RATIO. */
+  nearestRatio(): number
+}
+
+/**
+ * The verdict for one tick. `blocked` = (now − lastScrollAt) < SCROLL_HOLD_MS;
+ * `visible` = the nearest queued row sits inside the holdout radius — the
+ * "user is looking at it" tier that opens even mid-gesture. There is
+ * deliberately NO mount warmup: the visible tier already bounds what a mount
+ * can arm (only rows actually near the viewport), so a first tick arms the
+ * reading position immediately and the far pre-roll only after stillness.
+ */
+export function thumbFlowSignal(deps: ThumbFlowDeps): ThumbFlowState {
+  const now = deps.now()
+  const blocked = deps.lastScrollAt() > 0 && now - deps.lastScrollAt() < SCROLL_HOLD_MS
+  const visible = deps.nearestRatio() <= VISIBLE_HOLDOUT_RATIO
+  return { blocked, visible }
+}
+
+export interface ArmPlan {
+  /** How many entries to arm this tick (0 = hold). */
+  count: number
+  /** Whether the batch bookkeeping should remember this tick as armed. */
+  markArmed: boolean
+}
+
+/**
+ * Batch pacing: arm `MAX_PER_TICK`-capped counts no more often than
+ * `MIN_ARM_INTERVAL_MS`. `lastArmedAt` of 0 means "never armed" (first batch
+ * is immediate). A zero `available` plans nothing.
+ */
+export function planArming(
+  available: number,
+  maxPerTick: number,
+  now: number,
+  lastArmedAt: number,
+): ArmPlan {
+  if (available <= 0) return { count: 0, markArmed: false }
+  if (lastArmedAt !== 0 && now - lastArmedAt < MIN_ARM_INTERVAL_MS) {
+    return { count: 0, markArmed: false }
+  }
+  return { count: Math.min(available, maxPerTick), markArmed: true }
+}
+
+/**
+ * Zero-size retry deadline (the loader's stranding fix): an entry with a
+ * 0×0 rect (not laid out yet) retries for `RETRY_FRAMES` ticks before the
+ * loader gives up on it. Pure here so the deadline is pinned; the loader owns
+ * the counter.
+ */
+export const RETRY_FRAMES = 10
+
+/**
+ * Whether a zero-size entry survives this tick. `retries` is the remaining
+ * counter (10 at enqueue, decremented per held tick).
+ */
+export function shouldHoldZeroSize(retries: number): boolean {
+  return retries > 0
+}

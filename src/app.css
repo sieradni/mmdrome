@@ -33,6 +33,19 @@
   background: color-mix(in srgb, var(--app-accent) 15%, #141414);
 }
 
+/* Content-visibility cell (2026-09-16, large-library scroll cost): skips
+   paint (and layout of offscreen descendants) for long grid cells —
+   Albums/Artists grid cards. contain-intrinsic-size keeps the scroll height
+   stable while skipped; `auto` remembers the last-rendered size so the
+   estimate only matters before first render. TRAP: content-visibility applies
+   PAINT CONTAINMENT even while visible — it clips absolutely-positioned
+   descendants that overflow the box. NEVER put this on TrackRow (its ⋮ menu
+   overflows the row) or any element hosting a popover/dropdown. */
+.cv-cell {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 240px;
+}
+
 /* App-wide font — a bundled monospace (Appearance tab offers the choice).
    Set on :root so every Tailwind `font-sans` default resolves through it.
    The root font-size runs at 93.75% (15px): monospace glyphs are wider and
