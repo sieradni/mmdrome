@@ -35,7 +35,10 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getDebugState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getNetworkState", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "getSpectrum", returnType: CAPPluginReturnPromise)
+        CAPPluginMethod(name: "getSpectrum", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "secureGet", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "secureSet", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "secureDelete", returnType: CAPPluginReturnPromise)
     ]
 
     private let engine = NativeAudioEngine()
@@ -434,6 +437,44 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     /// (the "only one row ever shows preloaded" report). The engine now
     /// derives the window from its own live queue (AudioEngine.
     /// syncPreloadWindow; pure core: BackgroundAudioCore/PreloadWindow.swift).
+
+    // MARK: - SecureStore (Keychain)
+
+    /// Keychain-backed credential storage. Secrets live OUTSIDE IndexedDB so
+    /// they never ride an app backup or a JS-readable store; `value` is an
+    /// arbitrary JSON string written by the JS adapter.
+    @objc func secureGet(_ call: CAPPluginCall) {
+        let key = call.getString("key", "")
+        guard !key.isEmpty else { call.reject("key required"); return }
+        do {
+            call.resolve(["value": try KeychainStore.get(key: key) ?? ""])
+        } catch {
+            call.reject("keychain get failed: \(error.localizedDescription)")
+        }
+    }
+
+    @objc func secureSet(_ call: CAPPluginCall) {
+        let key = call.getString("key", "")
+        let value = call.getString("value", "")
+        guard !key.isEmpty else { call.reject("key required"); return }
+        do {
+            try KeychainStore.set(key: key, value: value)
+            call.resolve()
+        } catch {
+            call.reject("keychain set failed: \(error.localizedDescription)")
+        }
+    }
+
+    @objc func secureDelete(_ call: CAPPluginCall) {
+        let key = call.getString("key", "")
+        guard !key.isEmpty else { call.reject("key required"); return }
+        do {
+            try KeychainStore.delete(key: key)
+            call.resolve()
+        } catch {
+            call.reject("keychain delete failed: \(error.localizedDescription)")
+        }
+    }
 
     // MARK: - Now Playing
 

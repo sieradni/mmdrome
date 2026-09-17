@@ -85,6 +85,11 @@ interface BackgroundAudioPlugin {
    *  overlay instead of showing a frozen picture. */
   getSpectrum(): Promise<{ bands: number[]; playing: boolean }>
   getNetworkState(): Promise<{ isExpensive: boolean; isConstrained: boolean }>
+  /** Keychain-backed credential storage (native only). `value` is a
+   *  JSON-encoded string; secureGet resolves `''` when the key is absent. */
+  secureGet(options: { key: string }): Promise<{ value: string }>
+  secureSet(options: { key: string; value: string }): Promise<void>
+  secureDelete(options: { key: string }): Promise<void>
   addListener(
     eventName: 'trackChanged',
     listenerFunc: (data: { trackId: string }) => void

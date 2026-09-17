@@ -1,6 +1,7 @@
 import Dexie, { type EntityTable } from 'dexie'
 import type { FileMetadata } from './metadataReader'
 import type { ScrobbleKind } from './lastfmCore'
+import { isSecretSettingKey } from './secretKeys'
 
 export interface LocalMetadataStore {
   trackId: string
@@ -246,16 +247,35 @@ export async function getPendingSyncMetadata(): Promise<LocalMetadataStore[]> {
   return db.localMetadata.where('syncStatus').equals('pending_sync').toArray()
 }
 
+// The secureStore delegation rides a DYNAMIC import: a static one makes
+// db -> secureStore -> db a circular dependency, which the build hard-fails
+// on (same pattern as the manager's resyncNativeSnapshotAfterReconnect —
+// never "simplify" it to a static import).
+
 export async function getSetting<T = string>(key: string): Promise<T | undefined> {
+  if (isSecretSettingKey(key)) {
+    const { secureGet } = await import('./secureStore')
+    return secureGet<T>(key)
+  }
   const entry = await db.userSettings.get(key)
   return entry?.value as T | undefined
 }
 
 export async function setSetting(key: string, value: string | number | boolean | object): Promise<void> {
+  if (isSecretSettingKey(key)) {
+    const { secureSet } = await import('./secureStore')
+    await secureSet(key, value)
+    return
+  }
   await db.userSettings.put({ key, value })
 }
 
 export async function deleteSetting(key: string): Promise<void> {
+  if (isSecretSettingKey(key)) {
+    const { secureDelete } = await import('./secureStore')
+    await secureDelete(key)
+    return
+  }
   await db.userSettings.delete(key)
 }
 
