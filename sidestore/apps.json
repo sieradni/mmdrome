@@ -27,7 +27,8 @@
           "date": "2026-09-17T10:08:46.986Z",
           "localizedDescription": "Chunked Albums/Artists grids (50-cell render windows with IO sentinel growth — 5,000-cell libraries mount 50 cells, not 5,000); thumbnail velocity gate without the mount warmup; session-stable Subsonic salt so cover URLs (and their HTTP-cache revalidation) survive restarts.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.23/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4895645
         },
         {
           "version": "1.2.22",
