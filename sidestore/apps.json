@@ -27,7 +27,8 @@
           "date": "2026-09-17T03:57:11.132Z",
           "localizedDescription": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.21/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4883477
         },
         {
           "version": "1.2.20",
