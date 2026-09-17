@@ -21,6 +21,7 @@ import { sleepTimerManager } from './sleepTimer'
 import { WebTransport } from './playbackCore/webTransport'
 import { WebBgTransport, type BgFacts, type LoadDecision } from './playbackCore/webBgTransport'
 import { NativeTransport } from './playbackCore/nativeTransport'
+import { trailBridge } from './playbackCore/nativeBridgeTrail'
 import { reconcileReload } from './playbackCore/nativeReconcile'
 import { decideAdvance, type LoopMode } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
@@ -686,6 +687,7 @@ export class PlaybackManager {
 
   private _onNativeTrackChanged(trackId: string): void {
     if (this._handlingNativeEnd) return
+    trailBridge('event', `jsTrackChanged ${trackId}`)
     // The previous track's preload tint is KEPT (2026-09-15, the "autoplayed
     // songs never show as preloaded, manual skips did" report). The engine
     // announces the OUTGOING row's terminal state (`done` when its bytes are
@@ -744,6 +746,10 @@ export class PlaybackManager {
    */
   private async _onNativeTrackEnded(fromError = false): Promise<void> {
     if (this._handlingNativeEnd) return
+    // Bridge trail: this handler and `_onNativeTrackChanged` are the two JS
+    // reactions to engine events — recording the DECISION (not just the raw
+    // event) tells the HUD dump whether the A4 chain itself advanced.
+    trailBridge('event', `jsEndHandler fromError=${fromError}`)
     const decision = decideAdvance({
       fromError,
       parkArmed: false,
@@ -754,6 +760,7 @@ export class PlaybackManager {
 
     this._handlingNativeEnd = true
     try {
+      trailBridge('event', `jsAdvance decision=${decision}`)
       switch (decision) {
         case 'restart': {
           const track = get(currentTrack)

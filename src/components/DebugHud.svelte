@@ -7,6 +7,10 @@
   import { transcodeParams } from '../lib/transcodePolicy'
   import { getCachedConfig } from '../lib/navidromeApi'
   import { BackgroundAudio } from '../lib/nativePlugin'
+  import {
+    nativeBridgeTrailSnapshot,
+    clearNativeBridgeTrail,
+  } from '../lib/playbackCore/nativeBridgeTrail'
   import { audioManager } from '../lib/audioManager'
 
   let { onclose }: { onclose?: () => void } = $props()
@@ -122,6 +126,7 @@
       lastError,
       lastTrackChanged,
       errorLog: errorLog.slice(0, 20),
+      nativeBridgeTrail: nativeBridgeTrailSnapshot(),
       settings: get(settings),
     }
     const text = JSON.stringify(payload, null, 2)
@@ -131,7 +136,16 @@
     pushError('copied to clipboard / window.__debugHudText')
   }
 
-  function clearLog() { errorLog = []; lastError=''; lastTrackChanged='' }
+  function clearLog() {
+    errorLog = []
+    lastError = ''
+    lastTrackChanged = ''
+  }
+
+  function clearAll() {
+    clearLog()
+    clearNativeBridgeTrail()
+  }
 
   let q = $derived(get(queue))
   // reactive read via jsTick
@@ -166,6 +180,12 @@
     )
     return tp ? `${tp.format}@${tp.maxBitRate}` : 'original'
   })
+  // Bridge trail sampled per tick like the other panels (the trail buffer
+  // mutates in place; the snapshot array identity changes each poll).
+  let bridgeTrail = $derived.by(() => {
+    void jsTick
+    return nativeBridgeTrailSnapshot()
+  })
 </script>
 
 <div class="fixed bottom-20 right-2 z-[70] flex max-h-[70vh] w-[min(420px,calc(100vw-16px))] flex-col rounded-xl bg-black/85 text-[11px] leading-tight text-white shadow-2xl ring-1 ring-white/20 backdrop-blur">
@@ -174,6 +194,7 @@
       DEBUG HUD {expanded ? '▾' : '▸'} {Capacitor.isNativePlatform() ? 'NATIVE' : 'WEB'} {ps}
     </button>
     <button onclick={copy} class="rounded bg-white/10 px-2 py-1 text-[10px] hover:bg-white/20">Copy</button>
+    <button onclick={clearAll} class="rounded bg-white/10 px-2 py-1 text-[10px] hover:bg-white/20">Clear all</button>
     <button onclick={clearLog} class="rounded bg-white/10 px-2 py-1 text-[10px] hover:bg-white/20">Clear</button>
     <button onclick={() => onclose?.()} class="rounded bg-white/10 px-2 py-1 text-[10px] hover:bg-white/20">×</button>
   </div>
@@ -226,6 +247,23 @@
       </div>
     </div>
 
+    <!-- Bridge cmd/event trail (advance-bug diagnosis): cmds = JS positioned
+         the engine (engage/refreshQueue@index); events = the engine moved
+         itself (trackChanged/ended) or JS reacted (js*). Ordering + gaps
+         between entries are the signal. -->
+    {#if bridgeTrail.length > 0}
+      <div class="mt-2 rounded bg-white/5 p-2">
+        <div class="mb-1 font-bold text-yellow-300">BRIDGE TRAIL ({bridgeTrail.length})</div>
+        <div class="max-h-40 overflow-auto whitespace-pre-wrap break-words text-[10px] leading-tight">
+          {#each bridgeTrail as e}
+            <div class="border-t border-white/5 py-0.5" class:text-orange-300={e.kind === 'cmd'}>
+              +{(e.t - (bridgeTrail[0]?.t ?? e.t)) / 1000}s {e.kind === 'cmd' ? 'CMD' : 'EVT'} {e.name}
+            </div>
+          {/each}
+        </div>
+      </div>
+    {/if}
+
     {#if expanded}
       <div class="mt-2 rounded bg-white/5 p-2">
         <div class="mb-1 font-bold text-yellow-300">INSTRUCTIONS</div>
@@ -234,7 +272,8 @@
           2) Tap second song (adjacent + non-adjacent)<br/>
           3) Observe: JS activeId vs nativeState.trackId, isPlaying vs playing, position advancing, hasLiveSchedule / isRunning, gain values, error log.<br/>
           4) Press Copy → paste to issue.<br/>
-          Tap Copy after pause/play flicker to capture toggle.
+          Tap Copy after pause/play flicker to capture toggle.<br/>
+          Multi-skip bug: keep the HUD open through the repro. BRIDGE TRAIL shows the cmd/EVT timeline — two engine trackChanged events with no CMD between them = the engine advanced itself; a CMD (engage/refreshQueue) with a far index = JS positioned it.
         </div>
       </div>
     {/if}

@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
+import { trailBridge } from './playbackCore/nativeBridgeTrail'
 
 // MARK: - Types shared with the native engine
 
@@ -142,23 +143,30 @@ export class NativeAudioEngineApp {
     if (!this.isNative()) return
     const plugin = BackgroundAudio
 
+    // Every engine event lands on the bridge trail (2026-09-16 advance-bug
+    // diagnosis): paired with the cmd entries, the HUD dump discriminates an
+    // engine-side double-advance from a JS-positioned skip.
     this.listeners.push(
       await plugin.addListener('trackChanged', (data) => {
+        trailBridge('event', `trackChanged ${data.trackId}`)
         this.callbacks?.onTrackChanged(data.trackId)
       }),
     )
     this.listeners.push(
       await plugin.addListener('playbackStateChanged', (data) => {
+        trailBridge('event', `playbackState ${data.playing ? 'playing' : 'paused'}`)
         this.callbacks?.onPlaybackStateChanged(data.playing)
       }),
     )
     this.listeners.push(
       await plugin.addListener('ended', () => {
+        trailBridge('event', 'ended')
         this.callbacks?.onQueueEnded()
       }),
     )
     this.listeners.push(
       await plugin.addListener('error', (data) => {
+        trailBridge('event', `error ${data.message}`)
         this.callbacks?.onError(data.message)
       }),
     )

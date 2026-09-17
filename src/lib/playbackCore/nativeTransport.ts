@@ -59,6 +59,7 @@
  */
 
 import { RetryPolicy, type RetryPolicyConfig } from './retryPolicy'
+import { trailBridge } from './nativeBridgeTrail'
 import type { TransportEndedEvent } from './types'
 
 export type NativeLoopMode = 'none' | 'one' | 'all'
@@ -271,6 +272,11 @@ export class NativeTransport {
     }
     try {
       const plugin = this._client.plugin()
+      // Bridge trail (2026-09-16): engage is one of the TWO commands that can
+      // position the engine on an arbitrary row — recording snapshot size +
+      // activeIndex at issue time is the discriminator for the "skipped to a
+      // far row" report (see nativeBridgeTrail.ts).
+      trailBridge('cmd', `engage[${request.snapshot.length}]@${request.activeIndex}`)
       if (typeof plugin.setQueueAndPlay === 'function') {
         await plugin.setQueueAndPlay({
           tracks: request.snapshot,
@@ -399,6 +405,8 @@ export class NativeTransport {
     }
     if (!this._engaged) return
     try {
+      // Bridge trail: the other arbitrary-row positioning command.
+      trailBridge('cmd', `refreshQueue[${payload.tracks.length}]@${payload.activeIndex}`)
       await this._client.plugin().refreshQueue({ tracks: payload.tracks, activeIndex: payload.activeIndex })
     } catch (err) {
       console.error('[native] refreshQueue failed:', err)
@@ -441,6 +449,9 @@ export class NativeTransport {
     if (this._retryTrackId !== last) this._resetRetry()
     const decision = this._retry.onError()
     if (decision.kind === 'give-up') {
+      // Trail: a give-up rides the same fromError advance chain as a natural
+      // end — the HUD dump must be able to tell them apart.
+      trailBridge('event', 'retryGiveUp')
       this._resetRetry()
       this._seekMemory = null
       this.onTrackEnded?.({ kind: 'natural', fromError: true })
@@ -454,6 +465,7 @@ export class NativeTransport {
     this._retryCancel = this._timers.schedule(decision.delayMs, () => {
       this._retryCancel = null
       if (this._retryTrackId !== null && this._retryTrackId === this._lastTrackId) {
+        trailBridge('event', `retry ${this._retryTrackId}`)
         this.onRetry?.(this._retryTrackId)
       }
     })
