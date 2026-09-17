@@ -56,6 +56,15 @@ self.addEventListener('fetch', (event) => {
 
   const url = new URL(event.request.url)
 
+  // NOTE (2026-09-17): cover art (getCoverArt) is DELIBERATELY not app-cached
+  // here. The session-stable Subsonic salt (navidromeApi buildAuthParams,
+  // localStorage `mmdrome:authSalt`) makes cover URLs survive restarts, so the
+  // browser's own HTTP cache does this job correctly: Navidrome serves real
+  // art as `public, no-cache` + ETag (revalidated via 304, so changed art is
+  // picked up) and placeholders as `no-store` (never cached). An app-level
+  // cache-first layer would double-store bytes, serve stale art on changes,
+  // and persist unreadable placeholder bodies for cross-origin (opaque)
+  // servers. Do not re-add one without solving those three.
   if (url.origin !== self.location.origin) return
 
   if (isApiOrStreaming(url.pathname)) return

@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.22",
-      "versionDate": "2026-09-17T04:44:17.563Z",
-      "versionDescription": "Keychain-backed credential storage on iOS",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.22/mmdrome.ipa",
+      "version": "1.2.23",
+      "versionDate": "2026-09-17T10:08:46.986Z",
+      "versionDescription": "Chunked Albums/Artists grids (50-cell render windows with IO sentinel growth — 5,000-cell libraries mount 50 cells, not 5,000); thumbnail velocity gate without the mount warmup; session-stable Subsonic salt so cover URLs (and their HTTP-cache revalidation) survive restarts.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.23/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.23",
+          "buildVersion": "27",
+          "date": "2026-09-17T10:08:46.986Z",
+          "localizedDescription": "Chunked Albums/Artists grids (50-cell render windows with IO sentinel growth — 5,000-cell libraries mount 50 cells, not 5,000); thumbnail velocity gate without the mount warmup; session-stable Subsonic salt so cover URLs (and their HTTP-cache revalidation) survive restarts.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.23/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 4895645
+        },
         {
           "version": "1.2.22",
           "buildVersion": "26",
@@ -251,6 +260,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.23",
+      "identifier": "ios-v1.2.23",
+      "appID": "com.mmdrome.player",
+      "caption": "Chunked Albums/Artists grids (50-cell render windows with IO sentinel growth — 5,000-cell libraries mount 50 cells, not 5,000); thumbnail ve",
+      "date": "2026-09-17T10:08:46.986Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.22",
       "identifier": "ios-v1.2.22",
       "appID": "com.mmdrome.player",
@@ -283,15 +301,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Crash breadcrumb in Debug HUD (no more .ips needed); compile-time guard on engine starts; e2e failure diagnostics",
       "date": "2026-09-16T02:12:22.833Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.18",
-      "identifier": "ios-v1.2.18",
-      "appID": "com.mmdrome.player",
-      "caption": "Native robustness: guarded engine starts on every resume/fade path, preload window re-derives on crossfade toggle, deferred-arm fixes for pa",
-      "date": "2026-09-16T01:25:17.449Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
