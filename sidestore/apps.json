@@ -27,7 +27,8 @@
           "date": "2026-09-17T04:44:17.563Z",
           "localizedDescription": "Keychain-backed credential storage on iOS",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.22/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4894032
         },
         {
           "version": "1.2.21",
