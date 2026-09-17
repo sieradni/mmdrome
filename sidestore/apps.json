@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.21",
-      "versionDate": "2026-09-17T03:57:11.132Z",
-      "versionDescription": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.21/mmdrome.ipa",
+      "version": "1.2.22",
+      "versionDate": "2026-09-17T04:44:17.563Z",
+      "versionDescription": "Keychain-backed credential storage on iOS",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.22/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.22",
+          "buildVersion": "26",
+          "date": "2026-09-17T04:44:17.563Z",
+          "localizedDescription": "Keychain-backed credential storage on iOS",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.22/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 4894032
+        },
         {
           "version": "1.2.21",
           "buildVersion": "25",
@@ -242,6 +251,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.22",
+      "identifier": "ios-v1.2.22",
+      "appID": "com.mmdrome.player",
+      "caption": "Keychain-backed credential storage on iOS",
+      "date": "2026-09-17T04:44:17.563Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.21",
       "identifier": "ios-v1.2.21",
       "appID": "com.mmdrome.player",
@@ -274,15 +292,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Native robustness: guarded engine starts on every resume/fade path, preload window re-derives on crossfade toggle, deferred-arm fixes for pa",
       "date": "2026-09-16T01:25:17.449Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.17",
-      "identifier": "ios-v1.2.17",
-      "appID": "com.mmdrome.player",
-      "caption": "Native preload: chain re-arm after queue refresh; played-row tint kept; diff baseline fixed",
-      "date": "2026-09-16T00:41:05.121Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
