@@ -88,6 +88,21 @@
 
   let visibleGroups = $derived(applyFilterSort(albumGroups, $libraryFilters, getRating))
 
+  // Incremental render (the SongsView CHUNK pattern): the grid grows by
+  // GRID_CHUNK cells as the sentinel nears the viewport bottom, so a large
+  // library mounts 50 cells, not 5,000 — `.cv-cell` mitigates the paint cost
+  // of what IS mounted, this bounds the mount itself. The limit persists in
+  // view state alongside the scroll position so a restored session re-renders
+  // the grown chunk BEFORE restoring scrollTop (a 50-cell grid cannot
+  // scroll to row 400). Deliberately NO reset when FilterSortBar opens
+  // (SongsView resets): collapsing the grid under a scrolled user yanks the
+  // scroll position; the limit is honest "how deep they went".
+  const GRID_CHUNK = 50
+  let gridLimit = $state(GRID_CHUNK)
+  let gridSentinelEl = $state<HTMLDivElement>()
+  let renderedGroups = $derived(visibleGroups.slice(0, gridLimit))
+  let gridHasMore = $derived(gridLimit < visibleGroups.length)
+
   let selectedTracks = $derived(
     selectedAlbum ? albumGroups.find(g => g.album === selectedAlbum)?.tracks ?? [] : []
   )
@@ -104,6 +119,10 @@
   let jumpScrollPending = $state(false)
 
   function jumpToCurrent() {
+    // Grow the grid first if the target album is past the rendered chunk —
+    // the scroll-into-view below can only find a mounted cell.
+    const idx = currentAlbum ? visibleGroups.findIndex((g) => g.album === currentAlbum) : -1
+    if (idx >= gridLimit) gridLimit = idx + GRID_CHUNK
     jumpScrollPending = true
   }
 
@@ -129,7 +148,10 @@
 
   $effect(() => {
     if (!ready) return
-    saveViewState(viewName, { selectedAlbum })
+    saveViewState(viewName, {
+      selectedAlbum,
+      ...(selectedAlbum ? {} : { listGridLimit: gridLimit }),
+    })
   })
 
   let scrollRestorePending = $state(false)
@@ -144,6 +166,20 @@
       wasInDetail = false
       scrollRestorePending = true
     }
+  })
+
+  $effect(() => {
+    const lc = scrollContainer
+    const se = gridSentinelEl
+    if (!lc || !se) return
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && lc.offsetHeight > 0) gridLimit += GRID_CHUNK
+      },
+      { root: lc, rootMargin: '200px' }
+    )
+    observer.observe(se)
+    return () => observer.disconnect()
   })
 
   $effect(() => {
@@ -184,13 +220,19 @@
   }
 
   onMount(() => {
-    const saved = restoreViewState<{ listScrollTop: number; detailScrollTop: number; selectedAlbum: string | null }>(viewName)
+    const saved = restoreViewState<{ listScrollTop: number; detailScrollTop: number; selectedAlbum: string | null; listGridLimit?: number }>(viewName)
     if (saved) {
       selectedAlbum = saved.selectedAlbum
+      if (typeof saved.listGridLimit === 'number') gridLimit = Math.max(GRID_CHUNK, saved.listGridLimit)
     }
     ready = true
     if (saved) scrollRestorePending = true
   })
+
+  // Sentinel observer as an $effect (not onMount): it re-arms whenever the
+  // list branch binds — including returning from a restored detail view, where
+  // an onMount observer would have bailed on a null container and never
+  // re-registered (the grid would freeze at its first chunk).
 
 </script>
 
@@ -224,12 +266,12 @@
   <div class="relative flex h-full flex-col">
     <FilterSortBar />
     <div class="border-b border-white/10 px-4 py-3">
-      <h2 class="text-xs font-medium uppercase tracking-wider text-muted">Albums · {visibleGroups.length}</h2>
+      <h2 class="text-xs font-medium uppercase tracking-wider text-muted">Albums · {visibleGroups.length}{#if gridHasMore}{' '}({renderedGroups.length} shown){/if}</h2>
     </div>
     <div bind:this={scrollContainer} class="flex-1 overflow-y-auto pb-24"
          onscroll={() => { if (scrollContainer) saveViewState(viewName, { listScrollTop: scrollContainer.scrollTop }) }}>
       <div class="grid grid-cols-2 gap-4 px-4 py-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-        {#each visibleGroups as group (group.album)}
+        {#each renderedGroups as group (group.album)}
           <button onclick={() => selectedAlbum = group.album} data-album={group.album} class="cv-cell group text-left transition-transform hover:scale-[1.02]">
             <LazyThumb track={group.tracks.find(t => t.trackId === group.thumbnailTrackId) || group.tracks[0]} size={256} wrapperClass="mb-2 aspect-square w-full rounded-lg" />
             <p class="truncate text-sm font-bold text-primary">
@@ -252,6 +294,15 @@
       </div>
       {#if visibleGroups.length === 0}
         <p class="px-4 py-12 text-center text-xs text-muted">No albums found</p>
+      {/if}
+      {#if renderedGroups.length > 0}
+        <div bind:this={gridSentinelEl} class="py-6 text-center">
+          {#if gridHasMore}
+            <p class="text-sm text-muted">Loading more…</p>
+          {:else}
+            <p class="text-sm text-muted">All {visibleGroups.length} albums loaded</p>
+          {/if}
+        </div>
       {/if}
     </div>
     <JumpToCurrentButton show={canJumpList} onclick={jumpToCurrent} />
