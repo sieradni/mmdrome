@@ -53,6 +53,23 @@ export const MIN_ARM_INTERVAL_MS = 33
  */
 export const VISIBLE_HOLDOUT_RATIO = 0.5
 
+/**
+ * Mid-gesture arming pace (2026-09-17j, the "scrollbar-style jump breaks
+ * covers" field report): while the gate is BLOCKED, the visible tier arms at
+ * most one batch per SCROLL_HOLD_MS — the same cadence the far pre-roll gets
+ * once the gate opens — not 8 per 33 ms. A scrollbar-style teleport * continuously replaces the rows inside the holdout radius (every intermediate
+ * screen passes through "visible" for a tick), so at full cadence a fast drag
+ * launched a fetch for EVERY screen it flew past. On a real network those
+ * stale fetches saturate the connection pool; the landing screen's covers
+ * then queue behind hundreds of rows the user never looked at — the "no
+ * covers load after a big jump, then +5 s" report. GESTURE pace = at most
+ * ~4 rows per 250 ms ≈ 16 rows/s; OPEN pace = 8 rows per 33 ms. A slow drag
+ * (rows linger in the tier) still arms the screen within one window, and the
+ * settle fills the rest of the landing screen in the first post-gesture
+ * batches — all later, never never.
+ */
+export const GESTURE_VISIBLE_BATCH = 4
+
 export interface ThumbFlowState {
   /** Recent scroll activity (gesture or momentum) — the far pre-roll is held. */
   blocked: boolean
@@ -97,18 +114,25 @@ export interface ArmPlan {
 }
 
 /**
- * Batch pacing: arm `MAX_PER_TICK`-capped counts no more often than
- * `MIN_ARM_INTERVAL_MS`. `lastArmedAt` of 0 means "never armed" (first batch
- * is immediate). A zero `available` plans nothing.
+ * Batch pacing: arm `maxPerTick`-capped counts no more often than
+ * `minIntervalMs`. `lastArmedAt` of 0 means "never armed" (first batch is
+ * immediate). A zero `available` plans nothing.
+ *
+ * The adapter passes a DIFFERENT pace for the two states (2026-09-17j):
+ * gate open → (MAX_PER_TICK, MIN_ARM_INTERVAL_MS); gate blocked (visible
+ * tier only) → (GESTURE_VISIBLE_BATCH, SCROLL_HOLD_MS). The blocked pace is
+ * the scrollbar-firehose fix — see the constant's doc for the failure it
+ * eliminates.
  */
 export function planArming(
   available: number,
   maxPerTick: number,
   now: number,
   lastArmedAt: number,
+  minIntervalMs = MIN_ARM_INTERVAL_MS,
 ): ArmPlan {
   if (available <= 0) return { count: 0, markArmed: false }
-  if (lastArmedAt !== 0 && now - lastArmedAt < MIN_ARM_INTERVAL_MS) {
+  if (lastArmedAt !== 0 && now - lastArmedAt < minIntervalMs) {
     return { count: 0, markArmed: false }
   }
   return { count: Math.min(available, maxPerTick), markArmed: true }

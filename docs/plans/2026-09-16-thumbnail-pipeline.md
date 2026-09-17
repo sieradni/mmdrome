@@ -293,3 +293,96 @@ placeholder bodies for opaque cross-origin servers. The velocity gate, the
 distance queue, cv-cells, the HUD section, and the salt all stay. Do not
 re-add an app-level cover cache without solving revalidation, opaque-entry
 expiry, and storage accounting first.
+
+## 9. Amendment 2026-09-17j — the scrollbar-firehose (field report from 1.2.23)
+
+The user reported on 1.2.23: slow scroll fine; a scrollbar-style fast jump broke
+cover loading entirely, and a restart at a far position took +5 s before covers
+began. The e2e harness (tests/e2e/thumbflow.spec.ts, cover mock delayed 120 ms)
+reproduced and measured both root causes:
+
+1. **The visible tier was unthrottled mid-gesture.** A scrollbar teleport is a
+   continuous stamped-event stream; every intermediate screen passes through
+   the ±0.5 vh holdout for ≥1 tick, so the tier re-armed NEW rows at full
+   cadence (8/33 ms) — ~140 stale fetches per 1.5 s drag. The §5 §7 fixes
+   bounded WHICH rows and capped the batch, but nothing paced how OFTEN the
+   tier could re-arm on new rows. Fix: `planArming` takes a pace; the blocked
+   path uses (GESTURE_VISIBLE_BATCH=4, SCROLL_HOLD_MS), the open path (8,
+   MIN_ARM_INTERVAL_MS). Stale arming: O(screens) → O(hold windows).
+2. **LazyThumb latched loaded imgs forever.** 53 cover imgs mounted after one
+   fling, 6 near the viewport. In-flight stale fetches cannot be aborted from
+   JS while the element lives — the unmount IS the abort. Fix: a second IO
+   (±2400 px ≈ 3 vh, matching the loader's drop zone) unmounts the img when
+   the row leaves the far window; re-entry re-arms via the request observer;
+   the stable salt makes re-requests HTTP-cache hits.
+
+Measured after: mid-fling latched covers 29 → 0; post-fling mounted imgs
+53 (6 near) → 9 (all near). Slow-scroll behavior (the §7 visible tier) is
+unchanged — the gesture pace still paints the reading position within one
+hold window. Restart-at-position latency was the same firehose shape: the
+booted position queues while the previous session's bitmap memory is already
+gone, and the first paint waits on the queue drain — bounded now by the same
+pace fix.
+
+Design law this amendment adds: **an arming policy must be paced in BOTH
+states** — the open gate (batch pacing) and the blocked gate (tier pacing).
+A cap without a pace re-arms unboundedly whenever the capped set is replaced
+faster than the pace interval; a distance tier without an unlatch converts
+every gesture into permanent memory.
+
+## 10. Amendment 2026-09-17k — per-view + stress verification (the pipeline held; the assertions were the dishonest part)
+
+Follow-up to §9: are the pacing + unlatch fixes correct on EVERY long-list
+surface, not just Songs, and do they survive stress?
+
+**Per-view matrix (tests/e2e/thumbflow-views.spec.ts).** Albums grid, Artists
+grid, Queue view, view-switching — all pass against the same contract:
+bounded mid-gesture arming, a loading landing screen, a viewport-sized mounted
+set. The grids lean on the unlatch harder than Songs (chunking can mount the
+whole 220-group library under a fling); QueueView is UNCHUNKED by design (its
+drag/reorder reactivity needs the full list) and leans entirely on gate pacing
+plus the unlatch window — that leaning is now pinned by test.
+
+**Stress (tests/e2e/thumbflow-stress.spec.ts).** Compounding fling-and-settle
+rounds stay flat (no unlatch leak across gestures); mid-gesture reversal
+re-arms the landing; the grid slow-drag loads the reading position MID-gesture
+(sampled in-page while scroll events still fire — sampling after the drag
+proves nothing, the gate has re-opened); queue close/reopen mid-fling strands
+nothing.
+
+**Methodology corrections baked into tests/e2e/thumbflowHelpers.ts.** Two of
+the first suite's failures were the TEST lying, not the app: landings must be
+asserted as a near-band LOAD RATIO (absolute counts calibrated on Songs' 44 px
+list rows lie on 240 px grid cells and at clamped list ends, where the band is
+genuinely ~5 cells — a stuck band still fails: near=0 → ratio 0); queue
+counters must be SCOPED to the overlay scroller (the library stays mounted
+underneath the z-40 queue overlay); and the queue's real open path is mini
+player → Now Playing → Open queue, with closeQueue() deliberately reopening
+Now Playing when a track exists. The shared helpers are owned ONCE so the
+counting rules cannot drift between specs.
+
+Gates: 968 unit, 34/34 e2e.
+
+## 11. Amendment 2026-09-17l — realistic queue accumulation (play-through + 500-song flood)
+
+The §10 queue cases enqueued by button; the real long queue grows through
+PLAY: each advance promotes the played auto row into the user queue
+(promoteActiveTrack on the post-load path) while replenish refills the auto
+side, so history accumulates ABOVE current. Two suites in
+tests/e2e/queueflood.spec.ts drive exactly that:
+
+- Play-through: 40 mini-bar Next presses (scoped as offline-advance.spec
+  does) grow the user queue to 41 rows; mid-fling arming 4 (one pace batch);
+  history-top landing 8/8 loaded; 8 mounted total.
+- Mega-album flood: a 500-song single-album catalog + Play All renders 550
+  UNCHUNKED queue rows; down-fling arms 0 mid-gesture; landing 8/8; 8
+  mounted. The unchunked QueueView's reliance on gate pacing + the unlatch
+  window survives its worst case.
+
+Helpers generalized: bootSongLibrary(page, songs) takes a custom catalog
+(the stream mock's 74-hour WAV keeps advances explicit — nothing ends on its
+own). Test-authoring lessons: Play All does not open Now Playing (sanity =
+scoped row count in the queue scroller), and the bottom nav is directly
+reachable after playing from Songs.
+
+Gates: 968 unit, 36/36 e2e.

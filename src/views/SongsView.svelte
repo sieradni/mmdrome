@@ -21,7 +21,10 @@
   let detailsTrack: Track | null = $state(null)
 
   let listContainer = $state<HTMLDivElement | null>(null)
-  let sentinelEl: HTMLDivElement
+  // $state so the sentinel $effect below re-arms on rebinding — the same
+  // one-mechanism pattern the Albums/Artists grids use (a plain var is not
+  // tracked by effects, which is why the old code needed a second fallback).
+  let sentinelEl = $state<HTMLDivElement>()
 
   let ready = $state(false)
 
@@ -58,10 +61,20 @@
     if (saved?.scrollTop) scrollRestorePending = true
   })
 
-  onMount(() => {
+  // Growth is ONE mechanism, identical in all three library views: an IO
+  // observer owned by an $effect over the (tracked) container + sentinel
+  // bindings. The old dual mechanism (onMount observer + a
+  // getBoundingClientRect fallback $effect with an untracked plain sentinel
+  // var) existed because the var wasn't tracked — the fallback is redundant
+  // (IO always reports its initial intersection state on observe) and the
+  // onMount observer would freeze if the view ever gained a remounting branch
+  // (the exact bug the grids' detail toggles hit — see the 2026-09-17h/i
+  // DEVLOG entries). $effect re-runs on every rebinding: disconnect +
+  // re-observe is the re-arm.
+  $effect(() => {
     const lc = listContainer
     const se = sentinelEl
-    if (!lc || !se) return () => {}
+    if (!lc || !se) return
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && lc.offsetHeight > 0) limit += CHUNK
@@ -70,16 +83,6 @@
     )
     observer.observe(se)
     return () => observer.disconnect()
-  })
-
-  $effect(() => {
-    if (!listContainer || !sentinelEl) return
-    if (!hasMore) return
-    const sRect = sentinelEl.getBoundingClientRect()
-    const cRect = listContainer.getBoundingClientRect()
-    if (sRect.top <= cRect.bottom + 200) {
-      limit += CHUNK
-    }
   })
 
   function getMeta(trackId: string) {

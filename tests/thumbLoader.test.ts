@@ -9,6 +9,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  GESTURE_VISIBLE_BATCH,
   SCROLL_HOLD_MS,
   MIN_ARM_INTERVAL_MS,
   VISIBLE_HOLDOUT_RATIO,
@@ -156,20 +157,63 @@ test('a fast flick: blocked mid-gesture, then the resting view arms first', () =
   assert.equal(planArming(112, 8, planBatchAt(t0, 1), planArmedAt(t0)).count, 0)
 })
 
-test('a slow drag end-to-end: the visible batch arms mid-gesture, capped to the tier', () => {
+test('a slow drag end-to-end: the visible batch arms mid-gesture, capped to the tier AND the gesture pace', () => {
   const t0 = 100_000
   // 3 rows on screen (ratios 0.1/0.3/0.45), the rest pre-roll; the gesture
-  // keeps firing. The verdict: blocked + visible → arm.
+  // keeps firing. The verdict: blocked + visible → arm (at GESTURE pace).
   const mid = signalAt({ now: t0 + 40, lastScrollAt: t0 + 39, nearestRatio: 0.1 })
   assert.equal(mid.blocked, true)
   assert.equal(mid.visible, true)
   // The adapter's cap: blocked arms only the 3 visible-tier rows, not the
-  // nearest-8 (which would leak pre-roll rows into the gesture).
-  const plan = planArming(3, 8, t0 + 40, 0)
+  // nearest-8 (which would leak pre-roll rows into the gesture), paced at
+  // SCROLL_HOLD_MS (the 2026-09-17j scrollbar-firehose fix).
+  const plan = planArming(3, GESTURE_VISIBLE_BATCH, t0 + 40, 0, SCROLL_HOLD_MS)
   assert.equal(plan.count, 3)
   assert.equal(plan.markArmed, true)
-  // As the drag brings new rows into the tier, the next batch arms them.
-  assert.equal(planArming(4, 8, t0 + 40 + MIN_ARM_INTERVAL_MS, t0 + 40).count, 4)
+  // As the drag brings new rows into the tier, the next batch arms them —
+  // one hold window later, not 33 ms later.
+  assert.equal(
+    planArming(4, GESTURE_VISIBLE_BATCH, t0 + 40 + SCROLL_HOLD_MS, t0 + 40, SCROLL_HOLD_MS).count,
+    4,
+  )
+  // But NOT inside the gesture-pace window (the firehose fix: a fast drag
+  // must not arm one batch per 33 ms while rows keep streaming through the
+  // tier).
+  assert.equal(
+    planArming(4, GESTURE_VISIBLE_BATCH, t0 + 40 + MIN_ARM_INTERVAL_MS, t0 + 40, SCROLL_HOLD_MS)
+      .count,
+    0,
+  )
+})
+
+// --- The gesture pace (2026-09-17j, the scrollbar-firehose fix) -------------
+
+test('mid-gesture pace: one GESTURE_VISIBLE_BATCH per SCROLL_HOLD_MS, never faster', () => {
+  const t0 = 10_000
+  // First mid-gesture batch: immediate.
+  assert.equal(planArming(20, GESTURE_VISIBLE_BATCH, t0, 0, SCROLL_HOLD_MS).count, 4)
+  // Inside the window: nothing (this is what bounds a scrollbar-style
+  // teleport to ~one batch per hold window instead of one per 33 ms).
+  assert.equal(planArming(20, GESTURE_VISIBLE_BATCH, t0 + SCROLL_HOLD_MS - 1, t0, SCROLL_HOLD_MS).count, 0)
+  // At the boundary: the next 4.
+  assert.equal(planArming(16, GESTURE_VISIBLE_BATCH, t0 + SCROLL_HOLD_MS, t0, SCROLL_HOLD_MS).count, 4)
+})
+
+test('a scrollbar-style teleport: stale arming is bounded by O(hold windows), not O(screens)', () => {
+  // 1.5 s of continuous stamped scrolling at 40 ms/hop (the e2e fling shape):
+  // ~38 hops cross ~38 intermediate screens. At the OLD cadence the visible
+  // tier re-armed every 33 ms ⇒ ~45 batches × 8 = 360 stale fetches. At the
+  // gesture pace the same gesture arms at most 1.5 s / 250 ms ≈ 6 batches ×
+  // 4 = 24 rows — and each armed row that leaves the tier is dropped by the
+  // loader's 3×vh drop zone anyway.
+  const gestureMs = 1500
+  const oldBatches = Math.floor(gestureMs / MIN_ARM_INTERVAL_MS)
+  const newBatches = Math.floor(gestureMs / SCROLL_HOLD_MS)
+  assert.equal(newBatches * GESTURE_VISIBLE_BATCH, 24)
+  assert.ok(
+    newBatches * GESTURE_VISIBLE_BATCH < oldBatches * 8 / 2,
+    'the gesture pace must at least halve mid-gesture arming vs the open cadence',
+  )
 })
 
 /** The wall-clock instant the first post-gesture batch arms (test helper). */

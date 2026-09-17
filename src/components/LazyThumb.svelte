@@ -12,6 +12,20 @@
   let visible = $state(false)
   let container: HTMLDivElement
 
+  // Far-window unlatch (2026-09-17j, the "scrollbar-style jump broke covers"
+  // field report): once a row is FAR outside the viewport (~3 viewport
+  // heights, matching the loader's 3×vh drop zone) its loaded cover UNMOUNTS.
+  // The old latch kept every <img> the session ever armed mounted forever —
+  // each flown-past fetch ran to completion, each decoded bitmap stayed
+  // resident, and on a real network the in-flight stale fetches saturated the
+  // connection pool so the landing screen's covers queued behind them
+  // ("+5 seconds to load the current position"). Unmounting aborts the
+  // in-flight fetch, frees the decode, and lets the element's src (and the
+  // browser HTTP cache — the stable salt keeps URLs stable across sessions)
+  // serve the re-request instantly when the user scrolls back. Re-entry
+  // re-fires the request observer below (IO reports every crossing), so
+  // nothing strands.
+
   // Cover failure ladder (fixes the latched fallback): failed URLs are
   // remembered PER URL — never per component lifetime — so a transient error
   // steps down to the next smaller rendition (and retries the SAME url after
@@ -67,7 +81,7 @@
   }
 
   onMount(() => {
-    const obs = new IntersectionObserver(
+    const req = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && !visible) {
           requestThumb(container, () => { visible = true })
@@ -80,9 +94,26 @@
       // time for a fast server to have the cover ready before it scrolls in.
       { rootMargin: '800px' }
     )
-    obs.observe(container)
+    req.observe(container)
+
+    // The unlatch observer: a static ±2400px box ≈ 3 viewport heights on a
+    // phone. Crossing OUT of it drops the mounted img (visible=false); the
+    // request observer above re-arms on re-entry. Both observers live for the
+    // component's lifetime — visibility is a cycle, not a latch.
+    const far = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting && visible) {
+          visible = false
+          cancelThumb(container)
+        }
+      },
+      { rootMargin: '2400px' }
+    )
+    far.observe(container)
+
     return () => {
-      obs.disconnect()
+      req.disconnect()
+      far.disconnect()
       cancelThumb(container)
     }
   })

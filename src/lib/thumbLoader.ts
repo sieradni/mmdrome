@@ -1,5 +1,8 @@
 import {
+  GESTURE_VISIBLE_BATCH,
+  MIN_ARM_INTERVAL_MS,
   RETRY_FRAMES,
+  SCROLL_HOLD_MS,
   VISIBLE_HOLDOUT_RATIO,
   planArming,
   shouldHoldZeroSize,
@@ -129,12 +132,21 @@ function tick(): void {
     nearestRatio: () => lastNearestRatio,
   })
   // Mid-gesture (blocked + visible tier open) the batch is CAPPED to the
-  // holdout tier — the nearest-8 splice must never leak pre-roll rows into a
-  // live gesture. When the gate is fully open the whole queue is available.
+  // holdout tier AND PACED at the gesture cadence — one 4-row batch per hold
+  // window, not 8/33 ms. A scrollbar-style teleport continuously replaces the
+  // rows inside the holdout radius (every screen it passes is briefly
+  // "visible"), so full cadence launched a fetch for EVERY screen a fast
+  // drag flew past; those stale fetches then starved the landing screen on a
+  // real network (the 1.2.23 field report). The gesture pace keeps the
+  // reading position loading during a slow drag while bounding the stale
+  // fetch count to O(hold windows crossed), not O(screens passed). When the
+  // gate is fully open the whole queue is available at the open cadence.
   const plan =
     flow.blocked && !flow.visible
       ? { count: 0, markArmed: false }
-      : planArming(flow.blocked ? visibleCount : pending.length, MAX_PER_TICK, now, lastArmedAt)
+      : flow.blocked
+        ? planArming(visibleCount, GESTURE_VISIBLE_BATCH, now, lastArmedAt, SCROLL_HOLD_MS)
+        : planArming(pending.length, MAX_PER_TICK, now, lastArmedAt, MIN_ARM_INTERVAL_MS)
 
   if (plan.count > 0) {
     if (plan.markArmed) lastArmedAt = now
