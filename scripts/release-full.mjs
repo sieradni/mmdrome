@@ -105,9 +105,15 @@ try {
 ok(`clean tree, ${version} > ${pkgVersion}, tag unused, repo ${repo}`)
 
 // ── Phase 1: gates ────────────────────────────────────────────────────────
-step('Gates (check + test)')
+step('Gates (check + test + boot smoke)')
 run('npm run check')
 run('npm test')
+// The smoke e2e is the ONLY gate that executes the BUILT bundle — unit tests
+// run source ESM and `npm run build` never runs the app. The 1.2.21 CSP
+// attempt passed check+test+build locally and broke boot in CI (taglib-wasm
+// embind eval under a strict CSP); this gate exists so bundle-level breakage
+// dies on the dev box instead of on the release commit.
+run('npx playwright test tests/e2e/smoke.spec.ts')
 ok('gates green')
 
 // ── CI polling helpers ────────────────────────────────────────────────────
