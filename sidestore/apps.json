@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.20",
-      "versionDate": "2026-09-17T02:02:23.000Z",
-      "versionDescription": "Bridge trail in Debug HUD — one command/event timeline across the bridge to diagnose the multi-skip jump",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.20/mmdrome.ipa",
+      "version": "1.2.21",
+      "versionDate": "2026-09-17T03:57:11.132Z",
+      "versionDescription": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump; CSP",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.21/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.21",
+          "buildVersion": "25",
+          "date": "2026-09-17T03:57:11.132Z",
+          "localizedDescription": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump; CSP",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.21/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.20",
           "buildVersion": "24",
@@ -233,6 +241,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.21",
+      "identifier": "ios-v1.2.21",
+      "appID": "com.mmdrome.player",
+      "caption": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump; CSP",
+      "date": "2026-09-17T03:57:11.132Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.20",
       "identifier": "ios-v1.2.20",
       "appID": "com.mmdrome.player",
@@ -265,15 +282,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Native preload: chain re-arm after queue refresh; played-row tint kept; diff baseline fixed",
       "date": "2026-09-16T00:41:05.121Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.16",
-      "identifier": "ios-v1.2.16",
-      "appID": "com.mmdrome.player",
-      "caption": "EQ: classic preset switch (apply + confirm), manual vertical zoom + pinch",
-      "date": "2026-09-15T09:37:46.036Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
