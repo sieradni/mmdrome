@@ -28,13 +28,29 @@ export { SECRET_SETTING_KEYS, isSecretSettingKey }
 
 const isNative = (): boolean => Capacitor.isNativePlatform()
 
+/** The secure* bridge methods RESOLVE their errors (`{ error: string }`)
+ *  instead of rejecting: the Capacitor 8.5.0 binary xcframework gates
+ *  `CAPPluginCall.reject` behind `$NonescapableTypes`, which CI's macos-14
+ *  compiler does not define — `reject` literally does not exist at that
+ *  compilation site (a local Mac with current Xcode compiles it fine; only
+ *  CI catches the difference). This treats error results exactly like
+ *  rejected promises so the fallback paths stay one code path. Exported for
+ *  the contract test. */
+export async function bridgeCall<T>(p: Promise<T>): Promise<T> {
+  const res = (await p) as T & { error?: string }
+  if (res && typeof res === 'object' && typeof res.error === 'string') {
+    throw new Error(res.error)
+  }
+  return res
+}
+
 /** Bridge seam (default = the real Capacitor binding). Overridable in tests
  *  — the same injectable-adapter pattern as the transport/manager deps. */
 export const _bridge = {
   native: isNative,
-  get: (key: string) => BackgroundAudio.secureGet({ key }),
-  set: (key: string, value: string) => BackgroundAudio.secureSet({ key, value }),
-  del: (key: string) => BackgroundAudio.secureDelete({ key })
+  get: (key: string) => bridgeCall(BackgroundAudio.secureGet({ key })),
+  set: (key: string, value: string) => bridgeCall(BackgroundAudio.secureSet({ key, value })),
+  del: (key: string) => bridgeCall(BackgroundAudio.secureDelete({ key }))
 }
 
 /**

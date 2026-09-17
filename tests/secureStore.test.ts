@@ -155,6 +155,21 @@ test('missing secret reads as undefined on both platforms', async () => {
   assert.equal(await secureGet('navidromePassword'), undefined)
 })
 
+test('a resolved {error} result is treated as a bridge failure (Swift resolve-with-error contract)', async () => {
+  const { bridgeCall } = await import('../src/lib/secureStore')
+  // The native side RESOLVES errors as { error } — CAPPluginCall.reject does
+  // not exist in the 8.5.0 binary xcframework on CI's compiler. The seam
+  // translation turns that into a thrown failure so every fallback path
+  // stays one code path.
+  await assert.rejects(
+    bridgeCall(Promise.resolve({ error: 'keychain get failed: -25299' })),
+    /keychain get failed/
+  )
+  // A clean result passes through untouched (incl. legit falsy values).
+  assert.deepEqual(await bridgeCall(Promise.resolve({ value: '' })), { value: '' })
+  assert.deepEqual(await bridgeCall(Promise.resolve({ value: 'x' })), { value: 'x' })
+})
+
 test('db.ts choke point diverts secret keys and leaves plain keys on the row path', async () => {
   const { getSetting, setSetting, deleteSetting } = await import('../src/lib/db')
   native = true

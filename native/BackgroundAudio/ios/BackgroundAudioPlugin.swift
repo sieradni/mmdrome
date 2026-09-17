@@ -443,36 +443,44 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     /// Keychain-backed credential storage. Secrets live OUTSIDE IndexedDB so
     /// they never ride an app backup or a JS-readable store; `value` is an
     /// arbitrary JSON string written by the JS adapter.
+    ///
+    /// Errors resolve (NOT reject): the Capacitor 8.5.0 BINARY xcframework
+    /// gates `reject` behind `$NonescapableTypes` — a feature flag newer
+    /// Xcodes satisfy but CI's macos-14 compiler does not, so `reject` does
+    /// not exist at this compilation site (`resolve` is ungated; a local Mac
+    /// with current Xcode compiles this fine and only CI catches it). The JS
+    /// adapter (secureStore.ts) treats `{ error }` results exactly like
+    /// rejected promises — fallback paths stay intact.
     @objc func secureGet(_ call: CAPPluginCall) {
         let key = call.getString("key", "")
-        guard !key.isEmpty else { call.reject("key required"); return }
+        guard !key.isEmpty else { call.resolve(["error": "key required"]); return }
         do {
             call.resolve(["value": try KeychainStore.get(key: key) ?? ""])
         } catch {
-            call.reject("keychain get failed: \(error.localizedDescription)")
+            call.resolve(["error": "keychain get failed: \(error.localizedDescription)"])
         }
     }
 
     @objc func secureSet(_ call: CAPPluginCall) {
         let key = call.getString("key", "")
         let value = call.getString("value", "")
-        guard !key.isEmpty else { call.reject("key required"); return }
+        guard !key.isEmpty else { call.resolve(["error": "key required"]); return }
         do {
             try KeychainStore.set(key: key, value: value)
             call.resolve()
         } catch {
-            call.reject("keychain set failed: \(error.localizedDescription)")
+            call.resolve(["error": "keychain set failed: \(error.localizedDescription)"])
         }
     }
 
     @objc func secureDelete(_ call: CAPPluginCall) {
         let key = call.getString("key", "")
-        guard !key.isEmpty else { call.reject("key required"); return }
+        guard !key.isEmpty else { call.resolve(["error": "key required"]); return }
         do {
             try KeychainStore.delete(key: key)
             call.resolve()
         } catch {
-            call.reject("keychain delete failed: \(error.localizedDescription)")
+            call.resolve(["error": "keychain delete failed: \(error.localizedDescription)"])
         }
     }
 
