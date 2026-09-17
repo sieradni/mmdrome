@@ -2,6 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!-- CSP (2026-09-17 security audit): the app renders user-server content and
+         holds credentials in IndexedDB, so a single XSS would exfiltrate
+         everything. Baseline: no inline scripts (the only script is the module
+         bundle), styles need 'unsafe-inline' (Svelte/Tailwind style attributes),
+         img/media/connect open to http: https: because servers are BYO (LAN
+         plaintext is a documented tradeoff), blob: for object URLs, ws: for the
+         vite dev HMR socket (unused in prod), object-src/base-uri/form-action
+         locked. AudioWorklet modules (soundtouch-processor.js) are governed by
+         script-src and load from 'self'. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https: http: data: blob:; media-src 'self' https: http: blob:; connect-src 'self' https: http: ws:; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'" />
     <link rel="icon" type="image/png" href="/icon-512.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="apple-mobile-web-app-capable" content="yes">

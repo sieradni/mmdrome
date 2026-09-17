@@ -172,8 +172,20 @@ final class TrackFileLoader {
         // satisfies a lower one — no re-download just to downgrade.
         let requested = TrackVariant(url: track.url)
         if let url = servingURL(forTrackId: track.trackId, requested: requested) {
-            deliver(url, nil)
-            return
+            // 2026-09-17 multi-skip hardening: the multi-skip cascade served
+            // TRUNCATED cached files as good. A cache entry below the smallest
+            // plausible audio file is a poisoned partial download — never
+            // deliver it; evict so the fetch below re-downloads fresh bytes
+            // (no minimum existed: error==nil only proves the transfer
+            // completed, not that the bytes are audio). A missing file
+            // (Caches purge between lookup and read) also fails the size read.
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            if size >= TrackFileLoader.minimumAudioBytes {
+                deliver(url, nil)
+                return
+            }
+            print("[native] cache file under \(TrackFileLoader.minimumAudioBytes) bytes for \(track.trackId) (got \(size)) — evicting partial")
+            evict(track.trackId, variant: requested)
         }
         let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
         if state.isActive(cacheKey) {
@@ -201,6 +213,23 @@ final class TrackFileLoader {
             var moveError: Error? = nil
             if let temp = tempURL, error == nil {
                 do {
+                    // 2026-09-17 multi-skip hardening: the move-to-cache gate
+                    // accepted ANY completed transfer. A truncated download
+                    // (server cut, network death after the response header)
+                    // then "played" in milliseconds and chained the advance
+                    // (the completion cascade). Reject undersized bodies here
+                    // so they can never be stored, chained, or tinted done.
+                    // Routed through moveError (NOT an early return) so the
+                    // main-hop bookkeeping below still runs state.complete +
+                    // the error deliver — an early return would leave the
+                    // loader's in-flight entry active forever.
+                    let attrs = try FileManager.default.attributesOfItem(atPath: temp.path)
+                    let tempSize = (attrs[.size] as? Int) ?? 0
+                    if tempSize < TrackFileLoader.minimumAudioBytes {
+                        print("[native] download under \(TrackFileLoader.minimumAudioBytes) bytes for \(track.trackId) (got \(tempSize)) — treating as error")
+                        try? FileManager.default.removeItem(at: temp)
+                        moveError = NSError(domain: "mmdrome.loader", code: -7001, userInfo: [NSLocalizedDescriptionKey: "Download truncated (\(tempSize) bytes) for \(track.title)"])
+                    } else {
                     let parent = destination.deletingLastPathComponent()
                     try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
                     if FileManager.default.fileExists(atPath: destination.path) {
@@ -214,6 +243,22 @@ final class TrackFileLoader {
                         try? FileManager.default.removeItem(at: temp)
                     }
                     movedURL = destination
+                    // 2026-09-17 design hardening: validate at the TRUST
+                    // BOUNDARY. The loader is the only place bytes enter the
+                    // app — probe DECODABILITY here, before the file is ever
+                    // stored, so the downstream serve/schedule/completion
+                    // gates stay pure defense-in-depth (the multi-skip bug
+                    // existed because validation lagged the cache). A file
+                    // that opens but yields no frames is poison; reject it
+                    // exactly like an undersized body.
+                    let probeFrames = (try? AVAudioFile(forReading: destination).length) ?? 0
+                    if probeFrames <= 0 {
+                        print("[native] downloaded file decodes to 0 frames for \(track.trackId) — rejecting")
+                        try? FileManager.default.removeItem(at: destination)
+                        movedURL = nil
+                        moveError = NSError(domain: "mmdrome.loader", code: -7002, userInfo: [NSLocalizedDescriptionKey: "Downloaded file is not decodable audio: \(track.title)"])
+                    }
+                    }
                 } catch {
                     moveError = error
                     print("[native] final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(error.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: temp.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
@@ -280,6 +325,11 @@ final class TrackFileLoader {
             }
         }
     }
+
+    /// Cache entries whose size falls below this are partial downloads —
+    /// never served, never stored, always evicted (2026-09-17 multi-skip:
+    /// the cascade served truncated preloaded files as good).
+    static let minimumAudioBytes = 4096
 
     /// The trackId fragment of a composite cache key ("trackId|variant").
     private func trackId(of cacheKey: String) -> String {
@@ -1475,7 +1525,22 @@ public final class NativeAudioEngine: NSObject {
         let startFrame = AVAudioFramePosition(seconds * sr)
         let frames = totalFrames - startFrame
         guard frames > 0 else {
-            handleTrackEnd()
+            // 2026-09-17 multi-skip root cause: a ZERO-frame file (truncated
+            // download, lying header) used to call handleTrackEnd() here —
+            // declaring the WHOLE QUEUE ended over one bad row (the trace:
+            // engine paused+ended at row 4 of 55). Evict so the JS retry
+            // re-fetches fresh bytes; A5 bounds the retries and the fromError
+            // advance moves on if the server keeps poisoning the row.
+            if totalFrames <= 0 {
+                print("[native] zero-frame file for \(track.trackId) — evicting for re-fetch")
+                loader.evict(track.trackId, variant: TrackVariant(url: track.url))
+                onError?("Track file unreadable: \(track.title)")
+            } else {
+                // Seek/metadata landed past the real end of a DECODABLE file
+                // (duration metadata longer than the audio). End THIS track
+                // like a natural completion — not the queue.
+                handleSegmentCompletion(index: activeIndex, generation: scheduleGeneration, trackId: track.trackId)
+            }
             return
         }
 
@@ -1488,12 +1553,18 @@ public final class NativeAudioEngine: NSObject {
 
         let player = activeNode
         let scheduledIndex = activeIndex
+        // Schedule-time identity rides the completion (2026-09-17): the guard
+        // in handleSegmentCompletion compares BOTH the row and the trackId —
+        // queue reindexing (refreshQueue re-anchor) invalidates by id, so a
+        // reordered tail can never smuggle a stale completion through an
+        // accidental index coincidence.
+        let scheduledTrackId = track.trackId
         player.stop()
         // Both nodes are stopped now: apply speed/pitch/tape fields to the
         // units, which are only ever touched while nothing is rendering.
         refreshPlaybackParams()
         player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(frames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
-            self?.handleSegmentCompletion(index: scheduledIndex, generation: generation)
+            self?.handleSegmentCompletion(index: scheduledIndex, generation: generation, trackId: scheduledTrackId)
         }
 
         hasLiveSchedule = true
@@ -1544,7 +1615,7 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
-    private func handleSegmentCompletion(index completedIndex: Int, generation: Int, isStandby: Bool = false) {
+    private func handleSegmentCompletion(index completedIndex: Int, generation: Int, trackId: String? = nil, isStandby: Bool = false) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             guard generation == self.scheduleGeneration else { return }
@@ -1555,6 +1626,25 @@ public final class NativeAudioEngine: NSObject {
             // The active player finishing while a crossfade is in progress is the switch point.
             if self.crossfade.isInFlight {
                 self.finalizeCrossfadeSwitch()
+                return
+            }
+
+            // 2026-09-17 completion anti-cascade: outside a crossfade, a
+            // completion whose scheduled identity no longer matches the live
+            // active row is STALE (the trace showed rows 2→3→4 completing
+            // ~10-20 ms apart — each poison-fast row fired its completion
+            // while the NEXT row was already active, and every stale arrival
+            // chained another advance). The generation guard cannot see
+            // these: the cascade never cancelled anything, so the generation
+            // never bumped. Identity is ROW + TRACKID: the id closes the
+            // reindex hole (refreshQueue re-anchors activeIndex by id — an
+            // index-only compare could false-positive a reordered tail onto
+            // the wrong completion). A legit natural-end completion always
+            // matches; an early standby completion mid-fade is handled by
+            // the in-flight branch above; the standby carries no trackId —
+            // its schedule-generation guard already covers it.
+            if completedIndex != self.activeIndex || (trackId != nil && trackId != self.currentTrackId) {
+                print("[native] dropped stale completion for row \(completedIndex) id=\(trackId ?? "-") (active row \(self.activeIndex) id \(self.currentTrackId))")
                 return
             }
 
