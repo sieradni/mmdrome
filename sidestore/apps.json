@@ -18,14 +18,14 @@
       "category": "music",
       "version": "1.2.21",
       "versionDate": "2026-09-17T03:57:11.132Z",
-      "versionDescription": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump; CSP",
+      "versionDescription": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump",
       "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.21/mmdrome.ipa",
       "versions": [
         {
           "version": "1.2.21",
           "buildVersion": "25",
           "date": "2026-09-17T03:57:11.132Z",
-          "localizedDescription": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump; CSP",
+          "localizedDescription": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.21/mmdrome.ipa",
           "minOSVersion": "15.0"
         },
@@ -244,7 +244,7 @@
       "title": "mmdrome 1.2.21",
       "identifier": "ios-v1.2.21",
       "appID": "com.mmdrome.player",
-      "caption": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump; CSP",
+      "caption": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump",
       "date": "2026-09-17T03:57:11.132Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
