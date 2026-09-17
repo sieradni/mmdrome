@@ -27,7 +27,8 @@
           "date": "2026-09-17T02:02:23.000Z",
           "localizedDescription": "Bridge trail in Debug HUD — one command/event timeline across the bridge to diagnose the multi-skip jump",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.20/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4877562
         },
         {
           "version": "1.2.19",
