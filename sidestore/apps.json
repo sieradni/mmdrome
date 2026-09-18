@@ -27,7 +27,8 @@
           "date": "2026-09-18T03:05:21.879Z",
           "localizedDescription": "Thumbnail lead time doubled and widened to cover the whole screen during scrolls - fresh territory starts loading sooner, placeholders at the screen edges are gone, and scrolling back is instant since fetched covers stay alive in a wider window. Cached covers remain instant. Verified across songs, albums, artists, and 550-row queues.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.26/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4895904
         },
         {
           "version": "1.2.25",
