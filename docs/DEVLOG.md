@@ -11,6 +11,18 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-17o — The two-lane landing: the 5-second far-scroll was a self-inflicted server flood, and the pop-in was pacing a free operation
+
+The user's follow-up after 1.2.26 named two surviving symptoms: far-scroll landings still took ~5 s, and CACHED thumbnails visibly popped in while scrolling. A resource-timing diagnostic (`performance.getEntriesByType('resource')` over getCoverArt) split the blame, and it was NOT the user's pool-clog hypothesis in either direction we assumed:
+
+1. **At settle, nothing was in flight and the on-screen fetches started promptly** (~248 ms — the 250 ms gate decay) — the pace machinery worked as designed. But then **43 more fresh requests flooded out behind the screen's** at the full 8/33 ms cadence — the whole ±2000 px band (~90 rows) launched within half a second. On the mocked server that's invisible; on a real self-hosted Navidrome each getCoverArt is a disk hit + JPEG resize, and a 90-request burst melts the resize cache — so the SCREEN's covers sat behind server-side work. **The 5 s was a flood we caused.** The fix: `planFreshArming` (pure, replaces `planArming`) splits fresh rows into a TIER lane (on-screen, 8/33 ms — cadence priority) and a BAND lane (8/250 ms trickle; runs only on ticks the tier lane doesn't arm; independent clocks — a tier batch never delays the band and vice versa).
+2. **Cached rows re-arming were paced identically to fresh rows** — a revisit after unlatch is an immutable HTTP-cache hit (no network, no server load), yet it waited for a pace window and appeared in a visible batch: the pop-in. The fix: a CACHED lane at frame cadence in any flow state (tier cached first, band cached last — the screen has absolute priority). LazyThumb derives the claim from URL identity: `lastLoadedUrl` is set onload only, and `cached = currentUrl === lastLoadedUrl`, so a failed URL re-arms fresh and any identity change (track/config/LDM) invalidates the claim with zero bookkeeping.
+3. **The stability gate subsumed both the gesture pace and the settle-expiry waive**: mid-gesture fresh arming now requires `nearestStable` — a glide's churning identity arms NOTHING (the scrollbar-firehose is closed, not paced), and a stationary view (tap-stopped flick landing, slow drag) IS the settle screen, so it arms at the full open tier cadence with clocks never charged mid-flight. The old gesture-pace constant and the waive both disappeared — the E2E spec had to be re-anchored on `expect.poll` because the tap-stop batch timing it asserted was a phase coin-flip of the machinery it measured.
+
+Method note: the diagnostic spec (`thumbflow-diag`) earned its keep in one session and was converted into `tests/e2e/thumbflow-landing.spec.ts` — permanent pins: every on-screen fetch starts <1500 ms after settle, and band fetches never jump a still-waiting tier. Watch-item: the 250 ms band trickle was tuned against the mock; real-server feel is the signal (the HUD's THUMBS row now shows `cached:` counts).
+
+Gates: 985 unit, 38/38 e2e.
+
 ## 2026-09-17n — Widening the thumbnail windows: the pre-roll was smaller than momentum, and the mid-gesture tier was smaller than the screen
 
 Field report on 1.2.25: cached covers are instant on native, but a long fresh scroll takes ~5 s for thumbnails to catch up, and "the window can be larger in general to avoid even having to show unloaded thumbnails for a split second." Both instincts traced to the same geometry, in two parts:

@@ -50,30 +50,13 @@ export const MIN_ARM_INTERVAL_MS = 33
  * screen armed mid-gesture — rows entering at the edges showed unloaded for a
  * beat even on slow drags. At 1.0 the tier is "everything on screen": any row
  * whose center is within a viewport of the center is at least partially
- * visible. The firehose protection is UNTOUCHED by this — the mid-gesture
- * tier's `available` is still capped by GESTURE_VISIBLE_BATCH per pace
- * window; the scrollbar-teleport bound (O(hold windows), not O(screens))
- * comes from the PACE, not the tier size. What grows with the tier is how
- * much of the current screen arms promptly — which is the point.
+ * visible. The firehose protection is UNTOUCHED by this — mid-gesture fresh
+ * arming is capped by GESTURE_FRESH_BATCH per hold window (see
+ * planFreshArming); the scrollbar-teleport bound (O(hold windows), not
+ * O(screens)) comes from the PACE, not the tier size. What grows with the
+ * tier is how much of the current screen arms promptly — which is the point.
  */
 export const VISIBLE_HOLDOUT_RATIO = 1.0
-
-/**
- * Mid-gesture arming pace (2026-09-17j, the "scrollbar-style jump breaks
- * covers" field report): while the gate is BLOCKED, the visible tier arms at
- * most one batch per SCROLL_HOLD_MS — the same cadence the far pre-roll gets
- * once the gate opens — not 8 per 33 ms. A scrollbar-style teleport * continuously replaces the rows inside the holdout radius (every intermediate
- * screen passes through "visible" for a tick), so at full cadence a fast drag
- * launched a fetch for EVERY screen it flew past. On a real network those
- * stale fetches saturate the connection pool; the landing screen's covers
- * then queue behind hundreds of rows the user never looked at — the "no
- * covers load after a big jump, then +5 s" report. GESTURE pace = at most
- * ~4 rows per 250 ms ≈ 16 rows/s; OPEN pace = 8 rows per 33 ms. A slow drag
- * (rows linger in the tier) still arms the screen within one window, and the
- * settle fills the rest of the landing screen in the first post-gesture
- * batches — all later, never never.
- */
-export const GESTURE_VISIBLE_BATCH = 4
 
 export interface ThumbFlowState {
   /** Recent scroll activity (gesture or momentum) — the far pre-roll is held. */
@@ -158,41 +141,117 @@ export interface ArmPlan {
   markArmed: boolean
 }
 
+/** Fresh-arming pace while the gate is OPEN: rows per batch / ms between
+ *  batches. 8 per 250 ms — a TRICKLE, deliberately slower than the old full
+ *  cadence (8 per 33 ms). The resource-timing diagnostic measured why: after
+ *  a far teleport the old cadence flooded ~90 getCoverArt requests in half a
+ *  second and a self-hosted Navidrome serves that burst slowly (resize
+ *  cache, disk) — even the ON-SCREEN covers sat behind the server's work, the
+ *  "still 5 s to load" report. The band trickle-loads from the screen
+ *  outward; the screen itself never waits behind it (the tier lane below). */
+export const OPEN_FRESH_BATCH = 8
+export const OPEN_FRESH_INTERVAL_MS = 250
+
+/** Fresh-arming pace for the TIER lane (the rows the user is looking at):
+ *  one batch per MIN_ARM_INTERVAL_MS while the gate is open — cadence
+ *  priority over the band lane, so the screen is never queued behind the
+ *  pre-roll trickle. */
+export const TIER_BATCH = 8
+
+export interface FreshArmingInputs {
+  /** The flow verdict for this tick. */
+  blocked: boolean
+  visible: boolean
+  nearestStable: boolean
+  /** Fresh (uncached) rows waiting INSIDE the tier (on-screen holdout). */
+  tierCount: number
+  /** Fresh rows waiting OUTSIDE the tier (pre-roll band + far). */
+  bandCount: number
+  /** Wall clock now / last tier-lane arm / last band-lane arm (0 = never). */
+  now: number
+  lastTierArmAt: number
+  lastBandArmAt: number
+}
+
+export interface FreshArmingPlan {
+  /** Fresh rows to arm this tick; the caller executes nearest-first. */
+  count: number
+  tierArmed: boolean
+  bandArmed: boolean
+  /** Arm instants the caller must persist for the next tick. */
+  tierArmAt: number
+  bandArmAt: number
+}
+
 /**
- * Batch pacing: arm `maxPerTick`-capped counts no more often than
- * `minIntervalMs`. `lastArmedAt` of 0 means "never armed" (first batch is
- * immediate). A zero `available` plans nothing.
+ * The two-lane fresh-arming planner (2026-09-17, the resource-timing
+ * diagnostic: on-screen requests DID start promptly after settle — but 43
+ * more flooded out behind them at the full cadence, and a self-hosted server
+ * serves a 90-request burst slowly enough that the screen's covers landed
+ * late anyway). Replaces the single-queue `planArming`.
  *
- * The adapter passes a DIFFERENT pace for the two states (2026-09-17j):
- * gate open → (MAX_PER_TICK, MIN_ARM_INTERVAL_MS); gate blocked (visible
- * tier only) → (GESTURE_VISIBLE_BATCH, SCROLL_HOLD_MS). The blocked pace is
- * the scrollbar-firehose fix — see the constant's doc for the failure it
- * eliminates.
+ * TWO LANES by urgency, NOT one queue:
+ * - TIER (on-screen): one TIER_BATCH per MIN_ARM_INTERVAL_MS — cadence
+ *   priority. The screen never waits behind the band.
+ * - BAND (pre-roll and beyond): one OPEN_FRESH_BATCH per 250 ms — a trickle
+ *   that keeps the pool warm and lead time growing without flooding the
+ *   server. Runs only on a tick where the tier lane did NOT arm (the pool
+ *   belongs to the screen first).
+ * Cached rows are NOT planned here — the loader executes them on a separate
+ * fast path (a cached cover needs no network; pacing a free operation was
+ * the pop-in mechanism).
  *
- * `expireWindow` (2026-09-17, the settle-expiry): waives the pace window when
- * the caller has established that the nearest row is STABLE — the settled
- * landing after a stopped flick, whose pace clock was consumed by batches
- * that flew past. Deliberately argument-shaped: the policy itself cannot know
- * when a view has settled (that is the flow verdict's job); the adapter may
- * only pass true on a verdict where blocked ∧ visible ∧ nearestStable, so
- * the scrollbar-firehose case (identity churn → never stable) can never
- * reach it. A waived window still arms at most `maxPerTick` rows — the cap,
- * not the pace, is what keeps the firehose capped if the adapter ever
- * misjudges stability.
+ * MID-GESTURE (`blocked`): fresh arming only while `nearestStable` and
+ * `visible`, at the SAME open tier cadence — the stability gate IS the pace:
+ * a stationary view (tap-stopped flick landing, slow drag's reading position)
+ * arms at full speed because nothing stale was fetched mid-flight, and a
+ * glide's churning identity arms NOTHING (the scrollbar-firehose is closed,
+ * not paced). No gesture-specific constant survives.
  */
-export function planArming(
-  available: number,
-  maxPerTick: number,
-  now: number,
-  lastArmedAt: number,
-  minIntervalMs = MIN_ARM_INTERVAL_MS,
-  expireWindow = false,
-): ArmPlan {
-  if (available <= 0) return { count: 0, markArmed: false }
-  if (!expireWindow && lastArmedAt !== 0 && now - lastArmedAt < minIntervalMs) {
-    return { count: 0, markArmed: false }
+export function planFreshArming(inputs: FreshArmingInputs): FreshArmingPlan {
+  const plan: FreshArmingPlan = {
+    count: 0,
+    tierArmed: false,
+    bandArmed: false,
+    tierArmAt: inputs.lastTierArmAt,
+    bandArmAt: inputs.lastBandArmAt,
   }
-  return { count: Math.min(available, maxPerTick), markArmed: true }
+
+  const tierReady =
+    inputs.tierCount > 0 &&
+    (inputs.lastTierArmAt === 0 || inputs.now - inputs.lastTierArmAt >= MIN_ARM_INTERVAL_MS)
+  const bandReady =
+    inputs.bandCount > 0 &&
+    (inputs.lastBandArmAt === 0 || inputs.now - inputs.lastBandArmAt >= OPEN_FRESH_INTERVAL_MS)
+
+  if (inputs.blocked) {
+    // Mid-gesture: only a STABLE reading position may arm, at the SAME open
+    // tier cadence — the view is stationary relative to the queue, so this
+    // IS the landing/settle screen (tap-stopped flick, slow drag). A glide's
+    // churning identity arms nothing; the band never arms mid-gesture.
+    if (!inputs.nearestStable || !inputs.visible || !tierReady) return plan
+    const count = Math.min(inputs.tierCount, TIER_BATCH)
+    plan.count = count
+    plan.tierArmed = true
+    plan.tierArmAt = inputs.now
+    return plan
+  }
+
+  if (tierReady) {
+    const count = Math.min(inputs.tierCount, TIER_BATCH)
+    plan.count = count
+    plan.tierArmed = true
+    plan.tierArmAt = inputs.now
+    return plan
+  }
+  if (bandReady) {
+    const count = Math.min(inputs.bandCount, OPEN_FRESH_BATCH)
+    plan.count = count
+    plan.bandArmed = true
+    plan.bandArmAt = inputs.now
+    return plan
+  }
+  return plan
 }
 
 /**

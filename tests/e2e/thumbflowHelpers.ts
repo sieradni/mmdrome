@@ -92,20 +92,26 @@ export async function bootBigLibrary(page: Page): Promise<void> {
 }
 
 /** Continuous stamped scrolling on a specific scroller — the scrollbar-jump
- *  profile (12-screen hops, ~50 ms apart). */
+ *  profile (12-screen hops, ~50 ms apart). Resolves on the LAST hop — a
+ *  fire-and-forget timer kept hopping after return, so "settled" samples
+ *  recorded mid-teleport (the 2026-09-17n round's "9 mounted / 0 near"). */
 export async function fling(page: Page, selector: string, hops: number, intervalMs: number): Promise<void> {
   await page.evaluate(
-    ({ selector, hops, intervalMs }) => {
-      const scroller = document.querySelector<HTMLElement>(selector)
-      if (!scroller) throw new Error(`scroller not found: ${selector}`)
-      let done = 0
-      const timer = setInterval(() => {
-        done++
-        scroller.scrollTop += scroller.clientHeight * 12
-        scroller.dispatchEvent(new Event('scroll'))
-        if (done >= hops) clearInterval(timer)
-      }, intervalMs)
-    },
+    ({ selector, hops, intervalMs }) =>
+      new Promise<void>((resolve) => {
+        const scroller = document.querySelector<HTMLElement>(selector)
+        if (!scroller) throw new Error(`scroller not found: ${selector}`)
+        let done = 0
+        const timer = setInterval(() => {
+          done++
+          scroller.scrollTop += scroller.clientHeight * 12
+          scroller.dispatchEvent(new Event('scroll'))
+          if (done >= hops) {
+            clearInterval(timer)
+            resolve()
+          }
+        }, intervalMs)
+      }),
     { selector, hops, intervalMs },
   )
 }

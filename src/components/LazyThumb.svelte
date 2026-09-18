@@ -33,6 +33,16 @@
   let failedUrls = $state<ReadonlySet<string>>(new Set())
   let attemptIndex = $state(0)
 
+  /** The URL whose <img> last fired a successful LOAD. The loader's cached
+   *  lane claim is derived from it (currentUrl === lastLoadedUrl): a revisit
+   *  after unlatch re-requests the SAME URL — an immutable-cover HTTP-cache
+   *  hit, no network — so the loader arms it at frame cadence instead of
+   *  pacing it behind fresh rows (paced free operations were the pop-in).
+   *  Any identity change (track, config, LDM size) produces a different
+   *  currentUrl, which invalidates the claim with zero bookkeeping; a FAILED
+   *  url never sets it (onload only), so an error retry re-arms as fresh. */
+  let lastLoadedUrl: string | null = null
+
   const fallbackIcon = `${import.meta.env.BASE_URL}icon-192.png`
 
   // LDM steps the thumbnail down one canonical level (512→256→128→96); the
@@ -106,7 +116,8 @@
     const req = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && !visible) {
-          requestThumb(container, () => { visible = true })
+          const cached = currentUrl !== null && currentUrl === lastLoadedUrl
+          requestThumb(container, () => { visible = true }, cached)
         }
       },
       // 2000px pre-roll (widened 2026-09-17 from 800px, the "far scroll takes
@@ -162,6 +173,7 @@
       class="h-full w-full object-cover"
       decoding="async"
       onerror={handleImgError}
+      onload={() => { lastLoadedUrl = currentUrl }}
     />
   {:else if visible}
     <!-- No cover URL, the ladder exhausted, or no cover config: the app icon.

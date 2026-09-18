@@ -1,10 +1,7 @@
 import {
-  GESTURE_VISIBLE_BATCH,
-  MIN_ARM_INTERVAL_MS,
   RETRY_FRAMES,
-  SCROLL_HOLD_MS,
   VISIBLE_HOLDOUT_RATIO,
-  planArming,
+  planFreshArming,
   shouldHoldZeroSize,
   thumbFlowSignal,
 } from './thumbFlow'
@@ -15,24 +12,35 @@ interface PendingThumb {
   load: () => void
   distance: number
   retries: number
+  /** The row was ALREADY loaded once (a revisit after unlatch) — its cover
+   *  comes from the browser's HTTP cache (immutable covers: no revalidation),
+   *  so arming it is a local decode, not a network fetch. Pacing a free
+   *  operation was the pop-in mechanism: cached rows waited behind the same
+   *  pace windows as fresh rows and appeared in visible batches. */
+  cached: boolean
 }
 
-const MAX_PER_TICK = 8
+/** Cached-lane cap per tick (rows armed per frame — the decode cost bound). */
+const CACHED_PER_TICK = 8
 
 let pending: PendingThumb[] = []
 let running = false
 
 // --- Flow bookkeeping (the policy itself lives in the pure `thumbFlow.ts`) ---
 let lastScrollAt = 0
-let lastArmedAt = 0
+/** Fresh-lane arm clocks (one per lane — a tier batch never delays the band
+ *  trickle and vice versa). `lastArmedAt` (debug) is the latest of the two. */
+let lastTierArmAt = 0
+let lastBandArmAt = 0
 let flowInstalled = false
 let armedTotal = 0
+let cachedTotal = 0
 let droppedTotal = 0
 let lastNearestRatio = Infinity
 /** The nearest row's element as the last tick saw it. The debug snapshot must
  *  feed the SAME value back into thumbFlowSignal (which records what its deps
  *  hand it) — a snapshot without the id would clobber the baseline to
- *  undefined and delay the next tick's settle-expiry by a cycle. */
+ *  undefined and delay the next tick's settle detection by a cycle. */
 let lastNearestId: unknown
 
 /** Once per app session: stamp every scroll event. Scroll events do NOT
@@ -57,9 +65,11 @@ export interface ThumbLoaderDebug {
   /** The visible tier is open (nearest row inside the holdout radius). */
   visibleTier: boolean
   armedTotal: number
+  /** Rows armed through the free cached lane (revisits). */
+  cachedTotal: number
   droppedTotal: number
   lastArmedAt: number
-  /** The nearest row is the same as last tick (settle-expiry armed). */
+  /** The nearest row is the same as last tick (the view is stationary). */
   stationary: boolean
 }
 
@@ -80,8 +90,9 @@ export function thumbLoaderDebugSnapshot(): ThumbLoaderDebug {
     blocked: flow.blocked,
     visibleTier: flow.visible,
     armedTotal,
+    cachedTotal,
     droppedTotal,
-    lastArmedAt,
+    lastArmedAt: Math.max(lastTierArmAt, lastBandArmAt),
     stationary: flow.nearestStable,
   }
 }
@@ -94,10 +105,16 @@ function tick(): void {
   const midViewport = vh / 2
   const dropDistance = vh * 6 // in step with LazyThumb's ±4000px unlatch
 
-  const keep: PendingThumb[] = []
+  // Partition by (lane, urgency). The nearest/identity bookkeeping runs over
+  // ALL kept entries regardless of lane — identity stability is a property of
+  // the viewport's motion, not of what is cached.
   let nearestDistance = Infinity
   let nearestEntry: PendingThumb | undefined
-  let visibleCount = 0
+  const tierFresh: PendingThumb[] = []
+  const bandFresh: PendingThumb[] = []
+  const tierCached: PendingThumb[] = []
+  const bandCached: PendingThumb[] = []
+  const keep: PendingThumb[] = []
   for (const p of pending) {
     const rect = p.el.getBoundingClientRect()
     if (rect.width === 0 && rect.height === 0) {
@@ -125,20 +142,22 @@ function tick(): void {
       nearestDistance = dist
       nearestEntry = p
     }
-    if (dist <= vh * VISIBLE_HOLDOUT_RATIO) visibleCount++
+    const inTier = dist <= vh * VISIBLE_HOLDOUT_RATIO
+    if (p.cached) {
+      if (inTier) tierCached.push(p)
+      else bandCached.push(p)
+    } else {
+      if (inTier) tierFresh.push(p)
+      else bandFresh.push(p)
+    }
     keep.push(p)
   }
 
   pending = keep
   if (pending.length === 0) return
 
-  // Velocity gate (thumbFlow.ts), two tiers: the far pre-roll stays held
-  // while a scroll gesture is recent (or during the first-mount warmup), but
-  // the VISIBLE tier — the nearest row within half a viewport of center —
-  // arms even mid-gesture, because "load what the user can see" is correct
-  // at every scroll speed (the slow-drag placeholder regression). The
-  // distance bookkeeping above still runs every frame either way, so the
-  // queue is always current when the gate opens.
+  // Velocity gate (thumbFlow.ts). The distance bookkeeping above runs every
+  // frame regardless, so the queue is always current when the gate opens.
   const now = Date.now()
   lastNearestRatio = vh > 0 ? nearestDistance / vh : Infinity
   const flow = thumbFlowSignal({
@@ -150,40 +169,55 @@ function tick(): void {
     lastNearestId: () => nearestEntry?.el,
   })
   lastNearestId = nearestEntry?.el
-  // Mid-gesture (blocked + visible tier open) the batch is CAPPED to the
-  // holdout tier AND PACED at the gesture cadence — one 4-row batch per hold
-  // window, not 8/33 ms. A scrollbar-style teleport continuously replaces the
-  // rows inside the holdout radius (every screen it passes is briefly
-  // "visible"), so full cadence launched a fetch for EVERY screen a fast
-  // drag flew past; those stale fetches then starved the landing screen on a
-  // real network (the 1.2.23 field report). The gesture pace keeps the
-  // reading position loading during a slow drag while bounding the stale
-  // fetch count to O(hold windows crossed), not O(screens passed). When the
-  // gate is fully open the whole queue is available at the open cadence.
-  //
-  // Settle-expiry (2026-09-17, the "0.2–0.3 s before the first 4 center
-  // thumbnails" report): when the gesture has STOPPED on a view (nearest row
-  // is the same row as last tick — isNearestStable) but the hold window is
-  // still running, the pace clock is stale (consumed by batches the flick
-  // flew past) — waive it so the landing screen arms on the next frame. The
-  // scrollbar-firehose case can never reach the waive: churned identity keeps
-  // nearestStable false, and the waive lives in the blocked branch where
-  // `available` is visibleCount — the on-screen tier itself — so even a
-  // misjudged stability arms only what the user is looking at.
-  const settledLanding = flow.blocked && flow.visible && flow.nearestStable
-  const plan =
-    flow.blocked && !flow.visible
-      ? { count: 0, markArmed: false }
-      : flow.blocked
-        ? planArming(visibleCount, GESTURE_VISIBLE_BATCH, now, lastArmedAt, SCROLL_HOLD_MS, settledLanding)
-        : planArming(pending.length, MAX_PER_TICK, now, lastArmedAt, MIN_ARM_INTERVAL_MS)
 
-  if (plan.count > 0) {
-    if (plan.markArmed) lastArmedAt = now
-    pending.sort((a, b) => a.distance - b.distance)
-    const batch = pending.splice(0, plan.count)
-    armedTotal += batch.length
-    for (const p of batch) p.load()
+  let armedThisTick = 0
+  const armedEls = new Set<HTMLElement>()
+  const armBatch = (entries: PendingThumb[], count: number): number => {
+    if (count <= 0 || entries.length === 0) return 0
+    const sorted = [...entries].sort((a, b) => a.distance - b.distance)
+    let n = 0
+    for (const p of sorted) {
+      if (n >= count) break
+      armedEls.add(p.el)
+      p.load()
+      n++
+      armedThisTick++
+      if (p.cached) cachedTotal++
+      else armedTotal++
+    }
+    return n
+  }
+
+  // LANE 0 — cached tier: rows the user can SEE whose cover is already in the
+  // HTTP cache. No network, no server load — arm at the frame cadence, in any
+  // flow state (visible pop-in is exactly this lane; pacing it was pure loss).
+  if (flow.visible || !flow.blocked) armBatch(tierCached, CACHED_PER_TICK)
+
+  // LANES 1+2 — fresh rows, planned by the pure two-lane policy: the tier
+  // (on-screen) at the fast cadence, the band (pre-roll) as a trickle that
+  // never floods the server; mid-gesture fresh arming requires identity
+  // stability (a slow drag's reading position), so a glide charges nothing.
+  const plan = planFreshArming({
+    blocked: flow.blocked,
+    visible: flow.visible,
+    nearestStable: flow.nearestStable,
+    tierCount: tierFresh.length,
+    bandCount: bandFresh.length,
+    now,
+    lastTierArmAt,
+    lastBandArmAt,
+  })
+  if (plan.tierArmed) armBatch(tierFresh, plan.count)
+  else if (plan.bandArmed) armBatch(bandFresh, plan.count)
+  lastTierArmAt = plan.tierArmAt
+  lastBandArmAt = plan.bandArmAt
+
+  // LANE 3 — cached band (off-screen, cached): pre-warms scroll-back for free
+  // while the gate is open. Runs LAST — the screen has absolute priority.
+  if (!flow.blocked) armBatch(bandCached, CACHED_PER_TICK)
+
+  if (armedThisTick > 0) {
+    pending = pending.filter((p) => !armedEls.has(p.el))
   }
 
   if (pending.length > 0) {
@@ -199,28 +233,30 @@ function start(): void {
 }
 
 /**
- * Queue a thumbnail load so the browser fetches/decodes at most `MAX_PER_TICK`
- * per armed batch, always nearest-to-viewport first. Arming is two-tier
- * (thumbFlow.ts): the visible screen arms immediately at ANY scroll speed
- * (the nearest row within half a viewport of center is inside the visible
- * tier even mid-gesture); the far pre-roll holds while a scroll gesture is
- * recent, so a flick queues nothing ahead of itself and the settled view is
- * the first thing armed when the motion stops.
+ * Queue a thumbnail load. Arming is LANE-BASED (thumbFlow.ts `planFreshArming`):
+ * - rows already loaded once (`cached`) arm at the frame cadence in any flow
+ *   state — their cover is an HTTP-cache hit, and pacing a free operation was
+ *   the pop-in mechanism;
+ * - fresh rows split into the TIER (everything on screen — fast cadence, the
+ *   screen never waits behind the band) and the BAND (the pre-roll — a
+ *   deliberate 8-per-250 ms trickle that keeps lead time growing without
+ *   flooding a self-hosted server with a ~90-request burst, which is what
+ *   made even the on-screen covers land late);
+ * - mid-gesture, fresh arming additionally requires the nearest row's
+ *   identity to be STABLE (a slow drag's reading position) — a glide arms
+ *   nothing fresh mid-flight, so no stale fetch is ever launched and the
+ *   landing starts at full speed.
  *
- * 8/batch (2026-09-14, the "albums load slowly on a fast network" report):
- * the old 3/frame serialized ~7+ frames just to ARM a screenful of album-grid
- * cells before any byte moved — decode is already async (`decoding="async"`),
- * so the cap only throttled the fetch starts, not the main thread.
- * Velocity gate (2026-09-16, the "quickly scrolling" pass): batches are paced
- * ≥ MIN_ARM_INTERVAL_MS apart — arming is TIMING-only policy, it never changes
- * WHICH covers download, only their order. Visible tier (2026-09-17, the
- * slow-scroll regression): the original gate held ALL arming during a
- * gesture, which starved exactly the rows being looked at during a slow drag.
+ * The distance bookkeeping runs every frame in every state, so the queue is
+ * always ordered by the CURRENT viewport when any lane opens.
+ *
+ * `cached`: pass true when this row was already loaded once (LazyThumb's
+ * revisit flag). A wrong claim degrades to a normal load, never to breakage.
  */
-export function requestThumb(el: HTMLElement, load: () => void): void {
+export function requestThumb(el: HTMLElement, load: () => void, cached = false): void {
   ensureFlowListener()
   if (pending.some((p) => p.el === el)) return
-  pending.push({ el, load, distance: 0, retries: RETRY_FRAMES })
+  pending.push({ el, load, distance: 0, retries: RETRY_FRAMES, cached })
   start()
 }
 

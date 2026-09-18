@@ -1,21 +1,27 @@
 // Pins the pure thumb-flow policy (`src/lib/thumbFlow.ts`) — the velocity
-// gate behind the 2026-09-16 "quickly scrolling" rework. The invariant: the
-// loader's distance sort keeps the queue current every frame, but ARMING is
-// held while a scroll gesture is recent (and during the one-shot first-mount
-// warmup), so the instant a flick ends the first batch armed IS the resting
-// view. Arming is TIMING-only policy — it never changes which covers
-// download, only their order.
+// gate behind the 2026-09-16 "quickly scrolling" rework, the 2026-09-17j
+// gesture pace, and the 2026-09-17 two-lane fresh arming. The invariants:
+// - the loader's distance sort keeps the queue current every frame, but ARMING
+//   is lane-based: cached rows (revisits) are free and arm at frame cadence;
+//   fresh rows split into an on-screen TIER lane (fast cadence) and a BAND
+//   lane (a deliberate trickle that never floods a self-hosted server);
+// - mid-gesture, fresh arming requires the nearest row's identity to be
+//   STABLE — a glide charges nothing, so its landing starts at full speed;
+// - arming is TIMING-only policy — it never changes which covers download,
+//   only their order.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  GESTURE_VISIBLE_BATCH,
   SCROLL_HOLD_MS,
   MIN_ARM_INTERVAL_MS,
   VISIBLE_HOLDOUT_RATIO,
   RETRY_FRAMES,
+  OPEN_FRESH_BATCH,
+  OPEN_FRESH_INTERVAL_MS,
+  TIER_BATCH,
   thumbFlowSignal,
-  planArming,
+  planFreshArming,
   shouldHoldZeroSize,
 } from '../src/lib/thumbFlow'
 
@@ -79,8 +85,6 @@ test('there is NO mount warmup — a first tick arms the visible tier immediatel
   assert.equal(s.visible, true)
 })
 
-// (The warmup tests were removed with WARMUP_MS — 2026-09-17 trim.)
-
 // --- The visible tier (the slow-scroll fix) --------------------------------
 
 test('the visible tier opens when the nearest row is inside the holdout radius', () => {
@@ -109,34 +113,6 @@ test('a fast flick mid-flight: blocked AND nothing near — both tiers held', ()
   assert.equal(s.visible, false)
 })
 
-// --- Batch pacing ---------------------------------------------------------
-
-test('the first batch arms immediately (lastArmedAt 0)', () => {
-  const plan = planArming(50, 8, 10_000, 0)
-  assert.equal(plan.count, 8)
-  assert.equal(plan.markArmed, true)
-})
-
-test('a batch inside MIN_ARM_INTERVAL_MS plans nothing', () => {
-  const last = 10_000
-  const plan = planArming(50, 8, last + MIN_ARM_INTERVAL_MS - 1, last)
-  assert.equal(plan.count, 0)
-  assert.equal(plan.markArmed, false)
-})
-
-test('at the interval boundary a new batch arms (boundary is exclusive)', () => {
-  const last = 10_000
-  const plan = planArming(50, 8, last + MIN_ARM_INTERVAL_MS, last)
-  assert.equal(plan.count, 8)
-  assert.equal(plan.markArmed, true)
-})
-
-test('the batch is capped by MAX_PER_TICK and by availability', () => {
-  assert.equal(planArming(3, 8, 10_000, 0).count, 3)
-  assert.equal(planArming(0, 8, 10_000, 0).count, 0)
-  assert.equal(planArming(0, 8, 10_000, 0).markArmed, false)
-})
-
 // --- Zero-size retry deadline ---------------------------------------------
 
 test('zero-size entries hold while retries remain, then give up', () => {
@@ -149,168 +125,181 @@ test('RETRY_FRAMES matches the loader historical window (10 frames)', () => {
   assert.equal(RETRY_FRAMES, 10)
 })
 
-// --- Composition: the flick scenario end-to-end through the policy -------
+// --- The two-lane fresh-arming planner (open gate) --------------------------
+// Pins the 2026-09-17 resource-timing diagnostic: on-screen requests started
+// promptly, but the old single queue flooded ~90 fresh fetches out behind
+// them at the full cadence and a self-hosted server served the burst slowly
+// enough that even the SCREEN's covers landed late ("still 5 s to load").
+// The fix: two lanes with independent clocks — the tier at the fast cadence,
+// the band as a trickle; the screen is never behind the band.
 
-test('a fast flick: blocked mid-gesture, then the resting view arms first', () => {
-  const t0 = 100_000
-  // Gesture events at t0 and t0+120 (a flick's event stream); the queue is
-  // all pre-roll (nearest 2.5 vh away — the flick is in flight).
-  const mid = signalAt({ now: t0 + 120, lastScrollAt: t0 + 119, nearestRatio: 2.5 })
-  assert.equal(mid.blocked, true)
-  assert.equal(mid.visible, false)
-  // Loader ticks during the gesture plan nothing.
-  assert.equal(planArming(120, 8, t0 + 120, 0).markArmed, true, 'pacing alone never blocks — the FLOW verdict does')
-  // Momentum decays: at t0+120+SCROLL_HOLD_MS the gate opens.
-  const open = signalAt({ now: t0 + 120 + SCROLL_HOLD_MS, lastScrollAt: t0 + 119, nearestRatio: 2.5 })
-  assert.equal(open.blocked, false)
-  // The resting view (nearest entries) arms in the first post-gesture batch.
-  const plan = planArming(120, 8, t0 + 120 + SCROLL_HOLD_MS, 0)
-  assert.equal(plan.count, 8)
-  assert.equal(plan.markArmed, true)
-  // The next batch is paced behind it.
-  assert.equal(planArming(112, 8, planBatchAt(t0, 1), planArmedAt(t0)).count, 0)
-})
-
-test('a slow drag end-to-end: the visible batch arms mid-gesture, capped to the tier AND the gesture pace', () => {
-  const t0 = 100_000
-  // 3 rows on screen (ratios 0.1/0.3/0.45), the rest pre-roll; the gesture
-  // keeps firing. The verdict: blocked + visible → arm (at GESTURE pace).
-  const mid = signalAt({ now: t0 + 40, lastScrollAt: t0 + 39, nearestRatio: 0.1 })
-  assert.equal(mid.blocked, true)
-  assert.equal(mid.visible, true)
-  // The adapter's cap: blocked arms only the 3 visible-tier rows, not the
-  // nearest-8 (which would leak pre-roll rows into the gesture), paced at
-  // SCROLL_HOLD_MS (the 2026-09-17j scrollbar-firehose fix).
-  const plan = planArming(3, GESTURE_VISIBLE_BATCH, t0 + 40, 0, SCROLL_HOLD_MS)
-  assert.equal(plan.count, 3)
-  assert.equal(plan.markArmed, true)
-  // As the drag brings new rows into the tier, the next batch arms them —
-  // one hold window later, not 33 ms later.
-  assert.equal(
-    planArming(4, GESTURE_VISIBLE_BATCH, t0 + 40 + SCROLL_HOLD_MS, t0 + 40, SCROLL_HOLD_MS).count,
-    4,
-  )
-  // But NOT inside the gesture-pace window (the firehose fix: a fast drag
-  // must not arm one batch per 33 ms while rows keep streaming through the
-  // tier).
-  assert.equal(
-    planArming(4, GESTURE_VISIBLE_BATCH, t0 + 40 + MIN_ARM_INTERVAL_MS, t0 + 40, SCROLL_HOLD_MS)
-      .count,
-    0,
-  )
-})
-
-// --- The gesture pace (2026-09-17j, the scrollbar-firehose fix) -------------
-
-test('mid-gesture pace: one GESTURE_VISIBLE_BATCH per SCROLL_HOLD_MS, never faster', () => {
+test('the TIER lane arms first at the fast cadence (the screen never waits)', () => {
   const t0 = 10_000
-  // First mid-gesture batch: immediate.
-  assert.equal(planArming(20, GESTURE_VISIBLE_BATCH, t0, 0, SCROLL_HOLD_MS).count, 4)
-  // Inside the window: nothing (this is what bounds a scrollbar-style
-  // teleport to ~one batch per hold window instead of one per 33 ms).
-  assert.equal(planArming(20, GESTURE_VISIBLE_BATCH, t0 + SCROLL_HOLD_MS - 1, t0, SCROLL_HOLD_MS).count, 0)
-  // At the boundary: the next 4.
-  assert.equal(planArming(16, GESTURE_VISIBLE_BATCH, t0 + SCROLL_HOLD_MS, t0, SCROLL_HOLD_MS).count, 4)
+  // First arm: immediate (clock 0), capped at TIER_BATCH.
+  const plan = planFreshArming({ blocked: false, visible: true, nearestStable: false, tierCount: 50, bandCount: 90, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.tierArmed, true)
+  assert.equal(plan.count, TIER_BATCH)
+  assert.equal(plan.bandArmed, false, 'the band lane does not run on a tier tick — the pool belongs to the screen first')
+  assert.equal(plan.tierArmAt, t0)
 })
 
-test('a scrollbar-style teleport: stale arming is bounded by O(hold windows), not O(screens)', () => {
-  // 1.5 s of continuous stamped scrolling at 40 ms/hop (the e2e fling shape):
-  // ~38 hops cross ~38 intermediate screens. At the OLD cadence the visible
-  // tier re-armed every 33 ms ⇒ ~45 batches × 8 = 360 stale fetches. At the
-  // gesture pace the same gesture arms at most 1.5 s / 250 ms ≈ 6 batches ×
-  // 4 = 24 rows — and each armed row that leaves the tier is dropped by the
-  // loader's 3×vh drop zone anyway.
-  const gestureMs = 1500
-  const oldBatches = Math.floor(gestureMs / MIN_ARM_INTERVAL_MS)
-  const newBatches = Math.floor(gestureMs / SCROLL_HOLD_MS)
-  assert.equal(newBatches * GESTURE_VISIBLE_BATCH, 24)
-  assert.ok(
-    newBatches * GESTURE_VISIBLE_BATCH < oldBatches * 8 / 2,
-    'the gesture pace must at least halve mid-gesture arming vs the open cadence',
-  )
+test('the TIER lane is paced by MIN_ARM_INTERVAL_MS', () => {
+  const last = 10_000
+  const plan = planFreshArming({ blocked: false, visible: true, nearestStable: false, tierCount: 50, bandCount: 0, now: last + MIN_ARM_INTERVAL_MS - 1, lastTierArmAt: last, lastBandArmAt: 0 })
+  assert.equal(plan.tierArmed, false)
+  assert.equal(plan.count, 0, 'inside the tier window: nothing (bandCount 0 isolates the tier lane)')
+  const ready = planFreshArming({ blocked: false, visible: true, nearestStable: false, tierCount: 50, bandCount: 0, now: last + MIN_ARM_INTERVAL_MS, lastTierArmAt: last, lastBandArmAt: 0 })
+  assert.equal(ready.tierArmed, true)
+  assert.equal(ready.count, TIER_BATCH)
 })
 
-// --- Settle-expiry (2026-09-17, the "0.2–0.3 s before the first 4 center
-// thumbnails" report) ---------------------------------------------------------
-
-test('the nearest row repeating across verdicts is STABLE (the settle signal)', () => {
-  // First call establishes the baseline; the identical second call is stable.
-  signalWithId({ now: 10_000, id: 'row-a', nearestRatio: 0.2, lastScrollAt: 9_990 })
-  const second = signalWithId({ now: 10_050, id: 'row-a', nearestRatio: 0.2, lastScrollAt: 9_990 })
-  assert.equal(second.nearestStable, true)
+test('the BAND lane trickles: OPEN_FRESH_BATCH per OPEN_FRESH_INTERVAL_MS, only when the tier is quiet', () => {
+  const t0 = 10_000
+  // Tier empty → the band lane owns the tick. First arm immediate.
+  const plan = planFreshArming({ blocked: false, visible: false, nearestStable: false, tierCount: 0, bandCount: 90, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.bandArmed, true)
+  assert.equal(plan.count, OPEN_FRESH_BATCH)
+  assert.equal(plan.bandArmAt, t0)
+  // Inside the trickle window: nothing — this is the anti-flood bound (~90
+  // rows take ~2.8 s to LAUNCH, letting the server drain between batches).
+  const held = planFreshArming({ blocked: false, visible: false, nearestStable: false, tierCount: 0, bandCount: 82, now: t0 + OPEN_FRESH_INTERVAL_MS - 1, lastTierArmAt: 0, lastBandArmAt: t0 })
+  assert.equal(held.bandArmed, false)
+  // At the boundary: the next trickle batch.
+  const next = planFreshArming({ blocked: false, visible: false, nearestStable: false, tierCount: 0, bandCount: 82, now: t0 + OPEN_FRESH_INTERVAL_MS, lastTierArmAt: 0, lastBandArmAt: t0 })
+  assert.equal(next.bandArmed, true)
+  assert.equal(next.count, OPEN_FRESH_BATCH)
 })
 
-test('identity churn mid-gesture is NEVER stable (the firehose guard)', () => {
-  signalWithId({ now: 20_000, id: 'row-a', nearestRatio: 0.2, lastScrollAt: 19_990 })
-  const second = signalWithId({ now: 20_050, id: 'row-b', nearestRatio: 0.2, lastScrollAt: 20_040 })
-  assert.equal(second.nearestStable, false, 'a scrollbar-style teleport replaces the tier rows every hop — the pace window must NOT waive')
+test('a landing tier batch never delays the band clock (independent lanes)', () => {
+  const t0 = 10_000
+  // Tier arms at t0; the band was last armed at t0-250+1 (its window is up).
+  const plan = planFreshArming({ blocked: false, visible: true, nearestStable: false, tierCount: 4, bandCount: 90, now: t0, lastTierArmAt: 0, lastBandArmAt: t0 - OPEN_FRESH_INTERVAL_MS + 1 })
+  assert.equal(plan.tierArmed, true)
+  // The band clock is UNTOUCHED by the tier arm (it was not ready this tick,
+  // but the tier arm does not push it back either).
+  assert.equal(plan.bandArmAt, t0 - OPEN_FRESH_INTERVAL_MS + 1)
 })
 
-test('the very first verdict (no baseline) is not stable', () => {
-  const first = signalWithId({ now: 30_000, id: 'row-a', nearestRatio: 0.2 })
-  assert.equal(first.nearestStable, false)
+test('a fresh band arm defers to a ready tier on the same tick', () => {
+  const t0 = 20_000
+  // Tier ready (clock 0) AND band ready (clock 0): the tier wins the tick.
+  const plan = planFreshArming({ blocked: false, visible: true, nearestStable: false, tierCount: 3, bandCount: 90, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.tierArmed, true)
+  assert.equal(plan.bandArmed, false)
 })
 
-test('verdicts without an id are never stable (absence beats a stale baseline)', () => {
-  signalWithId({ now: 40_000, id: 'row-a', nearestRatio: 0.2 })
-  const noId = signalWithId({ now: 40_050, nearestRatio: 0.2 })
-  assert.equal(noId.nearestStable, false)
+test('the fresh planner is capped by availability', () => {
+  const t0 = 30_000
+  const tier = planFreshArming({ blocked: false, visible: true, nearestStable: false, tierCount: 3, bandCount: 0, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(tier.count, 3)
+  const band = planFreshArming({ blocked: false, visible: false, nearestStable: false, tierCount: 0, bandCount: 2, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(band.count, 2)
+  const none = planFreshArming({ blocked: false, visible: true, nearestStable: false, tierCount: 0, bandCount: 0, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(none.count, 0)
+  assert.equal(none.tierArmed, false)
+  assert.equal(none.bandArmed, false)
 })
 
-test('settle-expiry: the landing batch waives a stale pace window', () => {
-  // A flick consumed a mid-gesture batch at t0; the tap stops the gesture at
-  // t0+80 — the hold window still runs, the landing rows are queued, and the
-  // nearest row has been the same row for two verdicts (stable). The pace
-  // clock is stale — the batch must arm NOW, not at t0+250.
+// --- Mid-gesture fresh arming: the STABILITY gate ----------------------------
+// The stronger form of the old settle-expiry waive: a glide's churning
+// nearest-row identity arms NOTHING fresh mid-flight, so no stale fetch is
+// ever launched and the landing starts at full speed because its lane clocks
+// were never charged. A slow drag (identity stable between hops) still arms
+// its reading position at the gesture pace.
+
+test('mid-gesture with churning identity: NOTHING fresh arms (no stale fetches)', () => {
   const t0 = 100_000
-  const armedAt = t0
-  const now = t0 + 80
-  const plan = planArming(4, GESTURE_VISIBLE_BATCH, now, armedAt, SCROLL_HOLD_MS, true)
-  assert.equal(plan.count, 4, 'the stale window waives — the landing screen arms immediately')
-  assert.equal(plan.markArmed, true)
+  const plan = planFreshArming({ blocked: true, visible: true, nearestStable: false, tierCount: 4, bandCount: 90, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.count, 0)
+  assert.equal(plan.tierArmed, false)
+  assert.equal(plan.bandArmed, false, 'the band never arms mid-gesture at all')
 })
 
-test('settle-expiry never fires mid-teleport (identity churn keeps the window)', () => {
-  const t0 = 200_000
-  const armedAt = t0
-  const now = t0 + 80
-  // Same shape as the landing, but the adapter only passes expireWindow on a
-  // blocked∧visible∧stable verdict — churn (unstable) can never waive.
-  const plan = planArming(4, GESTURE_VISIBLE_BATCH, now, armedAt, SCROLL_HOLD_MS, false)
-  assert.equal(plan.count, 0, 'the firehose window holds when stability is not established')
+test('mid-gesture with a STABLE reading position: the landing arms at the full open tier cadence', () => {
+  const t0 = 100_000
+  // First arm: immediate (clock 0), full TIER_BATCH — the view is stationary,
+  // so this IS the settle screen; the hold window never throttles it.
+  const plan = planFreshArming({ blocked: true, visible: true, nearestStable: true, tierCount: 20, bandCount: 90, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.tierArmed, true)
+  assert.equal(plan.count, TIER_BATCH)
+  assert.equal(plan.tierArmAt, t0)
+  // The next tier batch is paced only by the normal 33 ms cadence — the hold
+  // window never throttles a stable view.
+  const next = planFreshArming({ blocked: true, visible: true, nearestStable: true, tierCount: 12, bandCount: 90, now: t0 + MIN_ARM_INTERVAL_MS, lastTierArmAt: t0, lastBandArmAt: 0 })
+  assert.equal(next.count, TIER_BATCH)
 })
 
-test('a waived window still respects the batch CAP (belt for the suspenders)', () => {
-  // Even if an adapter misjudged stability every tick, the cap — not the
-  // pace — bounds each waive: at most GESTURE_VISIBLE_BATCH rows per batch.
-  const plan = planArming(50, GESTURE_VISIBLE_BATCH, 300_000, 299_950, SCROLL_HOLD_MS, true)
-  assert.equal(plan.count, GESTURE_VISIBLE_BATCH)
+test('mid-gesture without the tier open: nothing (rows far away wait for settle)', () => {
+  const t0 = 110_000
+  const plan = planFreshArming({ blocked: true, visible: false, nearestStable: true, tierCount: 0, bandCount: 90, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.count, 0)
+  assert.equal(plan.bandArmed, false)
 })
 
-test('the stable-and-blocked shape composes end-to-end: tap-stopped flick arms on the next frame', () => {
+test('a scrollbar-style teleport now arms ZERO stale fetches mid-gesture', () => {
+  // The old gesture PACE bounded mid-gesture arming to ~24 rows per 1.5 s of
+  // continuous scrolling; the stability gate eliminates it entirely — during
+  // a teleport the nearest identity churns every hop (never stable), so the
+  // firehose is not paced, it is CLOSED. The landing screen arms the moment
+  // the gesture stops because the fresh clocks were never charged.
+  const gestureMs = 1500
+  const oldPacedBatches = Math.floor(gestureMs / SCROLL_HOLD_MS)
+  let armed = 0
+  for (let t = 0; t <= gestureMs; t += SCROLL_HOLD_MS) {
+    const plan = planFreshArming({ blocked: true, visible: true, nearestStable: false, tierCount: 4, bandCount: 90, now: t, lastTierArmAt: 0, lastBandArmAt: 0 })
+    armed += plan.count
+  }
+  assert.equal(armed, 0)
+  assert.ok(armed < oldPacedBatches * 4, 'strictly better than the paced bound it replaces')
+})
+
+// --- The landing (the subsumed settle-expiry) --------------------------------
+
+test('tap-stopped flick: the landing arms at full speed on the next frame', () => {
   const t0 = 400_000
-  // Flick: scroll stamped at t0+119, mid-flight batches armed at t0+100.
+  // Mid-glide: scroll stamped at t0+119, nearest identity churning — nothing
+  // fresh arms, no lane clock is charged.
   signalWithId({ now: t0 + 120, id: 'row-x', nearestRatio: 2.5, lastScrollAt: t0 + 119 })
+  const midPlan = planFreshArming({ blocked: true, visible: false, nearestStable: false, tierCount: 0, bandCount: 90, now: t0 + 120, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(midPlan.count, 0)
   // Tap at t0+150 stops the gesture; the landing row settles in the tier.
   const landing = signalWithId({ now: t0 + 160, id: 'row-y', nearestRatio: 0.1, lastScrollAt: t0 + 119 })
-  assert.equal(landing.blocked, true, 'the hold window (250 ms) still runs — the gesture only just stopped')
+  assert.equal(landing.blocked, true, 'the hold window still runs — the gesture only just stopped')
   assert.equal(landing.visible, true, 'the landing row is on screen')
   assert.equal(landing.nearestStable, false, 'first landing verdict — baseline was row-x')
-  // The NEXT tick (rAF, ~16 ms later): same row, still inside the window.
+  // The NEXT tick (~16 ms later): same row → stable. The landing screen arms
+  // DESPITE the still-running hold window — the whole point of the stability
+  // gate. Full TIER_BATCH, immediately (clock 0 — never charged mid-flight).
   const settled = signalWithId({ now: t0 + 176, id: 'row-y', nearestRatio: 0.1, lastScrollAt: t0 + 119 })
   assert.equal(settled.blocked, true)
   assert.equal(settled.visible, true)
-  assert.equal(settled.nearestStable, true, 'the view is stationary relative to the queue')
-  // The adapter waives the stale window on exactly this shape: the batch
-  // arms at t0+176 instead of t0+119+250 = t0+369.
-  const plan = planArming(4, GESTURE_VISIBLE_BATCH, t0 + 176, t0 + 100, SCROLL_HOLD_MS, settled.blocked && settled.visible && settled.nearestStable)
-  assert.equal(plan.count, 4, 'the landing screen arms ~190 ms earlier than the unwaived window')
+  assert.equal(settled.nearestStable, true)
+  const plan = planFreshArming({ blocked: settled.blocked, visible: settled.visible, nearestStable: settled.nearestStable, tierCount: 12, bandCount: 78, now: t0 + 176, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.tierArmed, true, 'the landing screen arms while the hold window still runs')
+  assert.equal(plan.count, TIER_BATCH)
+  // The band lane waits — the screen empties first.
+  assert.equal(plan.bandArmed, false)
 })
 
-/** The wall-clock instant the first post-gesture batch arms (test helper). */
-function planArmedAt(t0: number): number {
-  return t0 + 120 + SCROLL_HOLD_MS
-}
-function planBatchAt(t0: number, batch: number): number {
-  return planArmedAt(t0) + batch * MIN_ARM_INTERVAL_MS - 1
-}
+test('a mid-gesture slow drag still arms its reading position (stable identity)', () => {
+  const t0 = 500_000
+  // A slow touch drag: rows move gradually, the nearest row is stable between
+  // hops, and the tier is open. The reading position loads at the gesture
+  // pace — all later, never never.
+  signalWithId({ now: t0, id: 'row-a', nearestRatio: 0.2, lastScrollAt: t0 - 1 })
+  const stable = signalWithId({ now: t0 + 50, id: 'row-a', nearestRatio: 0.15, lastScrollAt: t0 + 49 })
+  assert.equal(stable.nearestStable, true)
+  const plan = planFreshArming({ blocked: stable.blocked, visible: stable.visible, nearestStable: stable.nearestStable, tierCount: 5, bandCount: 40, now: t0 + 50, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.tierArmed, true)
+  assert.equal(plan.count, 5, 'capped by availability — 5 tier rows, not the full batch')
+})
+
+// --- Constants sanity --------------------------------------------------------
+
+test('the lane constants keep the screen strictly ahead of the band', () => {
+  // The tier lane empties a screenful (≥8 rows) in ~2 frames while the band
+  // launches 8 per 250 ms — the screen is never queued behind the trickle.
+  assert.equal(TIER_BATCH, 8)
+  assert.equal(OPEN_FRESH_BATCH, 8)
+  assert.ok(OPEN_FRESH_INTERVAL_MS > MIN_ARM_INTERVAL_MS * 4, 'the band trickle must be strictly slower than the tier cadence')
+})

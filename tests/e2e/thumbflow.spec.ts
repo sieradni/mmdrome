@@ -142,10 +142,25 @@ test('a scrollbar-style fling does not launch a fetch for every screen it passes
   // POLLED, not a fixed wait: the arm moment depends on where the last pace
   // batch fell relative to the hold window (a phase coin-flip at a fixed
   // deadline — the full-suite flake), while the PROPERTY is "the landing
-  // loads within seconds of settling". The settle-expiry makes this fast.
-  await expect
-    .poll(async () => nearViewportCoverImgs(page, 3.0), { timeout: 10_000, intervals: [250] })
-    .toBeGreaterThanOrEqual(4)
+  // loads within seconds of settling". The stability gate makes this fast;
+  // the 20 s deadline absorbs full-suite CPU contention (the isolation run
+  // lands in ~4 s — a genuine landing deadlock still fails, loudly).
+  try {
+    await expect
+      .poll(async () => nearViewportCoverImgs(page, 3.0), { timeout: 20_000, intervals: [250] })
+      .toBeGreaterThanOrEqual(4)
+  } catch (e) {
+    // Failure diagnostics: the landing-deadlock signature distinguishes a
+    // dead tick loop (no imgs anywhere), a starved loop (imgs exist but not
+    // near), and a stuck gate (the view scrolled elsewhere).
+    const diag = await page.evaluate(() => ({
+      scrollTop: Math.round(document.querySelector('div.flex-1.overflow-y-auto')?.scrollTop ?? -1),
+      coverImgs: document.querySelectorAll('img[src*="getCoverArt"]').length,
+      allImgs: document.querySelectorAll('img').length,
+    }))
+    console.log(`[thumbflow] landing-deadlock diagnostics: ${JSON.stringify(diag)}`)
+    throw e
+  }
 })
 
 test('covers unmount when their row leaves the far window (fetch abort, no pile-up)', async ({ page }) => {

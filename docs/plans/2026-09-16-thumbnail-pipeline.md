@@ -410,3 +410,17 @@ In step: unlatch 2400→4000 px (free — keeps fetched images alive; makes scro
 Design law (extends §12's): **a pre-roll window must exceed the momentum the gesture carries; a mid-gesture tier must cover the whole screen — pacing, not tier size, bounds mid-gesture arming.**
 
 Gates: 988 unit, 36/36 e2e.
+
+## §13 — The two-lane landing (2026-09-17o): flood-averse fresh arming + a free cached lane
+
+The 1.2.26 geometry was right but the SINGLE fresh queue was wrong: the resource-timing diagnostic showed on-screen fetches starting promptly at settle while ~90 band requests flooded out behind them (the old 8/33 ms cadence) — a burst a self-hosted Navidrome serves slowly enough to delay even the screen. Separately, cached revisits were paced like fresh rows, producing the visible pop-in.
+
+Changes:
+- `planFreshArming` (pure) replaces `planArming` + `GESTURE_VISIBLE_BATCH`: TIER lane 8/33 ms, BAND lane 8/250 ms trickle (independent clocks; band only on tier-quiet ticks).
+- Mid-gesture fresh arming = `nearestStable ∧ visible` at the full open tier cadence — the stability gate closes the scrollbar-firehose outright and subsumes the gesture pace + settle-expiry waive (both constants/paths removed).
+- Cached lane (LazyThumb `currentUrl === lastLoadedUrl`, onload-only): revisits arm at frame cadence, any flow state; cached band pre-warms scroll-back last.
+- New permanent e2e: `thumbflow-landing.spec.ts` (on-screen starts <1500 ms after settle; band never jumps a waiting tier; nothing stale in flight at settle+2.5 s).
+
+Design law (extends §12's): **urgent work and cheap work are different lanes; pacing free operations is pure loss, and flooding the server with eager work delays the screen.**
+
+Gates: 985 unit, 38/38 e2e.
