@@ -27,7 +27,8 @@
           "date": "2026-09-18T09:37:18.269Z",
           "localizedDescription": "LDM multi-skip fix: truncated preload downloads are rejected and re-fetched; crossfade standby mid-fade abort keeps the queue alive; HUD Last.fm session indicator fixed",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.28/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4902776
         },
         {
           "version": "1.2.27",
