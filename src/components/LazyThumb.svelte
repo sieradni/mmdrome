@@ -4,7 +4,7 @@
   import { coverConfig } from '../lib/navidromeApi'
   import { requestThumb, cancelThumb } from '../lib/thumbLoader'
   import { effectiveLowData } from '../lib/networkMode'
-  import { effectiveThumbSize } from '../lib/transcodePolicy'
+  import { effectiveThumbSize, shouldSwapThumbSize } from '../lib/transcodePolicy'
   import type { Track } from '../stores/appState'
 
   let { track, wrapperClass = '', size = 128 }: { track: Track; wrapperClass?: string; size?: 96 | 128 | 256 | 512 } = $props()
@@ -42,13 +42,31 @@
   let lowDataActive = $derived($effectiveLowData)
   let effectiveSize = $derived(effectiveThumbSize({ size, lowDataActive }))
 
+  /** The size the row's cover was last RENDERED with — the render-derived
+   *  variant of `displayedSize`. When LDM toggles, the wanted size changes;
+   *  `shouldSwapThumbSize` decides whether that re-requests (an upsize always,
+   *  a downgrade only on the next arm) and holding the old ladder keeps the
+   *  loaded `<img>` mounted through the defer. Tracking it in $state (not a
+   *  Map keyed by trackId) means it resets naturally on unmount and on the
+   *  reset effect's identity change — no per-row bookkeeping to leak. */
+  let renderedSize = $state(0)
+
   let coverCfg = $derived($coverConfig)
 
+  // Downgrade-defer (shouldSwapThumbSize): while a size downgrade is deferred
+  // for a loaded cover, the ladder keeps the RENDERED size — the loaded img
+  // stays, no re-request. `renderTarget` is the size the ladder is actually
+  // built with; the effect below records exactly that (recording the wanted
+  // size on a defer would corrupt the baseline). On the next arm (re-entry
+  // after unlatch) renderedSize is 0 again and the new size flows through.
+  let renderTarget = $derived.by(() => {
+    if (!track || !coverCfg) return 0
+    const swap = shouldSwapThumbSize({ displayedSize: renderedSize, wantedSize: effectiveSize })
+    return swap ? effectiveSize : renderedSize
+  })
   let ladder = $derived.by(() => {
-    // lowDataActive is read through effectiveSize; track/config identity keys
-    // the ladder so the reset effect below re-runs on any change.
-    if (!track || !coverCfg) return [] as string[]
-    return coverLadderUrls(track, coverCfg, effectiveSize)
+    if (!track || !coverCfg || !renderTarget) return [] as string[]
+    return coverLadderUrls(track, coverCfg, renderTarget)
   })
 
   let currentUrl = $derived.by(() => {
@@ -62,7 +80,11 @@
   $effect(() => {
     // Any identity change (track, config, LDM size) resets the ladder AND its
     // failure memory — old-URL failures must not suppress the new attempts.
+    // Record exactly the size the ladder was built with: on a deferred
+    // downgrade that is the OLD size (a no-op — the defer holds); on an
+    // upsize/first-load it is the new wanted size.
     void ladder
+    renderedSize = renderTarget
     failedUrls = new Set()
     attemptIndex = 0
   })
@@ -104,6 +126,11 @@
       ([entry]) => {
         if (!entry.isIntersecting && visible) {
           visible = false
+          // The img unmounts — nothing is displayed anymore, so the render
+          // identity resets. The next arm re-derives the ladder at the wanted
+          // size (a deferred LDM downgrade lands here, costing nothing extra:
+          // the row was going to re-request anyway).
+          renderedSize = 0
           cancelThumb(container)
         }
       },

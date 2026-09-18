@@ -21,6 +21,13 @@ export interface Track {
   size?: number
   createdAt?: number
   navidromePath?: string
+  /** Navidrome's hash-suffixed artwork id (`mf-<id>_<16hex>`, from the Subsonic
+   *  `coverArt` attribute — captured verbatim at sync). Requesting covers with
+   *  it unlocks the server's `immutable` year-long cache (no revalidation
+   *  round trip on re-entry after an unlatch); absent on other servers, where
+   *  URL construction falls back to the plain id. Sanitization lives in
+   *  `requestableCoverArtId` — consumers never regex the raw field. */
+  coverArtId?: string
   replayGain?: number
   albumReplayGain?: number
   albumArtist?: string

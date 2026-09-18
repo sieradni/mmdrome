@@ -61,6 +61,13 @@ export interface NavidromeSong {
   explicit?: boolean
   streamId?: string
   path?: string
+  /** Hash-suffixed artwork id (e.g. `mf-<id>_<16hex>`); Navidrome populates
+   *  it from `CoverArtID()` (server helpers.go `childFromMediaFile`). Requesting
+   *  getCoverArt with this id lets the server answer
+   *  `Cache-Control: public, max-age=31536000, immutable` (imghttp/headers.go
+   *  matches the asserted hash) — no revalidation round trip on re-entry.
+   *  Other servers omit the field → we fall back to the plain id. */
+  coverArt?: string
   replayGain?: ReplayGainValues
   starred?: boolean | string
   userRating?: number
@@ -445,8 +452,29 @@ export function buildCoverArtUrl(config: NavidromeConfig, id: string, size?: num
   return url.toString()
 }
 
-export function resolveCoverArtId(track: Track): string {
+export function resolveCoverArtId(track: Pick<Track, 'trackId'>): string {
   return track.trackId.replace(/^navidrome-/, '')
+}
+
+/**
+ * The artwork id to REQUEST covers with: the server's hash-suffixed `coverArt`
+ * id when the sync captured one (unlocks Navidrome's immutable-year caching —
+ * see the `coverArt` doc on NavidromeSong), else the plain id (legacy servers:
+ * today's revalidation behavior, byte-identical URLs to before).
+ *
+ * Sanitization before the id rides a URL: only Subsonic artwork-id shapes pass
+ * (`<kind>-<id>[_<suffix>]`) — anything a server put in the field that could
+ * alter the request path (schemes, slashes, whitespace) falls back to the
+ * plain id. `resolveCoverArtId` above keeps its historical meaning (plain id,
+ * used by feedback/debug flows); the native snapshot routes through here so
+ * lock-screen art rides the same immutable path.
+ */
+export function requestableCoverArtId(track: Pick<Track, 'trackId' | 'coverArtId'>): string {
+  const captured = typeof track.coverArtId === 'string' ? track.coverArtId.trim() : ''
+  if (captured && /^[A-Za-z]{2}-[A-Za-z0-9_-]+(_[0-9a-fA-F]+)?$/.test(captured)) {
+    return captured
+  }
+  return resolveCoverArtId(track)
 }
 
 export async function triggerNavidromeScan(config: NavidromeConfig): Promise<void> {
@@ -520,6 +548,7 @@ export function navidromeSongToTrack(song: NavidromeSong): Track {
     size: song.size,
     createdAt: song.created ? new Date(song.created).getTime() : undefined,
     navidromePath: song.path,
+    coverArtId: song.coverArt,
     replayGain: song.replayGain?.trackGain,
     albumReplayGain: song.replayGain?.albumGain,
     albumArtist: song.albumArtist,

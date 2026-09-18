@@ -1,4 +1,4 @@
-import { buildCoverArtUrl, resolveCoverArtId, type NavidromeConfig } from './navidromeApi'
+import { buildCoverArtUrl, requestableCoverArtId, type NavidromeConfig } from './navidromeApi'
 import type { Track } from '../stores/appState'
 
 const urlCache = new Map<string, string>()
@@ -7,12 +7,16 @@ export function getCoverUrl(track: Track, config: NavidromeConfig, size?: number
   // Key on the full config too: auth token/salt and baseUrl are baked into the
   // URL, so switching servers or credentials must not reuse stale cached URLs.
   const cfgKey = `${config.baseUrl}|${config.username}|${config.password}`
-  const key = `${cfgKey}|${track.trackId}-${size ?? 'original'}`
+  // Key on the RESOLVED art id, not trackId: the hash suffix changes when the
+  // art itself changes (a re-tagged cover), so a key on trackId alone would
+  // keep serving the STALE pre-change URL from this cache after a re-sync.
+  const artId = requestableCoverArtId(track)
+  const key = `${cfgKey}|${artId || `track:${track.trackId}`}-${size ?? 'original'}`
   let url = urlCache.get(key)
   if (!url) {
-    const artId = resolveCoverArtId(track) || track.albumId
-    if (!artId) return ''
-    url = buildCoverArtUrl(config, artId, size)
+    const id = artId || track.albumId
+    if (!id) return ''
+    url = buildCoverArtUrl(config, id, size)
     urlCache.set(key, url)
   }
   return url

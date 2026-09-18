@@ -321,7 +321,7 @@
         </button>
         {#if openSections.thumbs && thumbDebug}
           <div class="text-[10px]">
-            <div>pending: {thumbDebug.pending} state: {thumbDebug.blocked ? (thumbDebug.visibleTier ? 'VISIBLE (scrolling)' : 'BLOCKED (scrolling)') : 'open'}</div>
+            <div>pending: {thumbDebug.pending} state: {thumbDebug.blocked ? (thumbDebug.visibleTier ? 'VISIBLE (scrolling)' : 'BLOCKED (scrolling)') : 'open'}{thumbDebug.stationary ? ' · settled' : ''}</div>
             <div>armed total: {thumbDebug.armedTotal} dropped: {thumbDebug.droppedTotal}</div>
             <div>last armed: {thumbDebug.lastArmedAt ? `${Math.floor((Date.now() - thumbDebug.lastArmedAt) / 1000)}s ago` : 'never'}</div>
           </div>

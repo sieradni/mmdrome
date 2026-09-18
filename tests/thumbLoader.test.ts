@@ -19,6 +19,20 @@ import {
   shouldHoldZeroSize,
 } from '../src/lib/thumbFlow'
 
+/** A deps object with an explicit, caller-controlled nearest identity — the
+ *  two-tap shape: call the signal twice with the same id to assert stability.
+ *  (The signal records what its deps hand it, so consecutive calls form the
+ *  comparison.) Fresh object per call is fine — the baseline is module state,
+ *  not deps state. */
+function signalWithId(opts: { now: number; lastScrollAt?: number; nearestRatio?: number; id?: unknown }) {
+  return thumbFlowSignal({
+    now: () => opts.now,
+    lastScrollAt: () => opts.lastScrollAt ?? 0,
+    nearestRatio: () => opts.nearestRatio ?? Infinity,
+    lastNearestId: () => opts.id,
+  })
+}
+
 /** Drives `thumbFlowSignal` with an explicit clock + scroll bookkeeping. */
 function signalAt(opts: {
   now: number
@@ -214,6 +228,83 @@ test('a scrollbar-style teleport: stale arming is bounded by O(hold windows), no
     newBatches * GESTURE_VISIBLE_BATCH < oldBatches * 8 / 2,
     'the gesture pace must at least halve mid-gesture arming vs the open cadence',
   )
+})
+
+// --- Settle-expiry (2026-09-17, the "0.2–0.3 s before the first 4 center
+// thumbnails" report) ---------------------------------------------------------
+
+test('the nearest row repeating across verdicts is STABLE (the settle signal)', () => {
+  // First call establishes the baseline; the identical second call is stable.
+  signalWithId({ now: 10_000, id: 'row-a', nearestRatio: 0.2, lastScrollAt: 9_990 })
+  const second = signalWithId({ now: 10_050, id: 'row-a', nearestRatio: 0.2, lastScrollAt: 9_990 })
+  assert.equal(second.nearestStable, true)
+})
+
+test('identity churn mid-gesture is NEVER stable (the firehose guard)', () => {
+  signalWithId({ now: 20_000, id: 'row-a', nearestRatio: 0.2, lastScrollAt: 19_990 })
+  const second = signalWithId({ now: 20_050, id: 'row-b', nearestRatio: 0.2, lastScrollAt: 20_040 })
+  assert.equal(second.nearestStable, false, 'a scrollbar-style teleport replaces the tier rows every hop — the pace window must NOT waive')
+})
+
+test('the very first verdict (no baseline) is not stable', () => {
+  const first = signalWithId({ now: 30_000, id: 'row-a', nearestRatio: 0.2 })
+  assert.equal(first.nearestStable, false)
+})
+
+test('verdicts without an id are never stable (absence beats a stale baseline)', () => {
+  signalWithId({ now: 40_000, id: 'row-a', nearestRatio: 0.2 })
+  const noId = signalWithId({ now: 40_050, nearestRatio: 0.2 })
+  assert.equal(noId.nearestStable, false)
+})
+
+test('settle-expiry: the landing batch waives a stale pace window', () => {
+  // A flick consumed a mid-gesture batch at t0; the tap stops the gesture at
+  // t0+80 — the hold window still runs, the landing rows are queued, and the
+  // nearest row has been the same row for two verdicts (stable). The pace
+  // clock is stale — the batch must arm NOW, not at t0+250.
+  const t0 = 100_000
+  const armedAt = t0
+  const now = t0 + 80
+  const plan = planArming(4, GESTURE_VISIBLE_BATCH, now, armedAt, SCROLL_HOLD_MS, true)
+  assert.equal(plan.count, 4, 'the stale window waives — the landing screen arms immediately')
+  assert.equal(plan.markArmed, true)
+})
+
+test('settle-expiry never fires mid-teleport (identity churn keeps the window)', () => {
+  const t0 = 200_000
+  const armedAt = t0
+  const now = t0 + 80
+  // Same shape as the landing, but the adapter only passes expireWindow on a
+  // blocked∧visible∧stable verdict — churn (unstable) can never waive.
+  const plan = planArming(4, GESTURE_VISIBLE_BATCH, now, armedAt, SCROLL_HOLD_MS, false)
+  assert.equal(plan.count, 0, 'the firehose window holds when stability is not established')
+})
+
+test('a waived window still respects the batch CAP (belt for the suspenders)', () => {
+  // Even if an adapter misjudged stability every tick, the cap — not the
+  // pace — bounds each waive: at most GESTURE_VISIBLE_BATCH rows per batch.
+  const plan = planArming(50, GESTURE_VISIBLE_BATCH, 300_000, 299_950, SCROLL_HOLD_MS, true)
+  assert.equal(plan.count, GESTURE_VISIBLE_BATCH)
+})
+
+test('the stable-and-blocked shape composes end-to-end: tap-stopped flick arms on the next frame', () => {
+  const t0 = 400_000
+  // Flick: scroll stamped at t0+119, mid-flight batches armed at t0+100.
+  signalWithId({ now: t0 + 120, id: 'row-x', nearestRatio: 2.5, lastScrollAt: t0 + 119 })
+  // Tap at t0+150 stops the gesture; the landing row settles in the tier.
+  const landing = signalWithId({ now: t0 + 160, id: 'row-y', nearestRatio: 0.1, lastScrollAt: t0 + 119 })
+  assert.equal(landing.blocked, true, 'the hold window (250 ms) still runs — the gesture only just stopped')
+  assert.equal(landing.visible, true, 'the landing row is on screen')
+  assert.equal(landing.nearestStable, false, 'first landing verdict — baseline was row-x')
+  // The NEXT tick (rAF, ~16 ms later): same row, still inside the window.
+  const settled = signalWithId({ now: t0 + 176, id: 'row-y', nearestRatio: 0.1, lastScrollAt: t0 + 119 })
+  assert.equal(settled.blocked, true)
+  assert.equal(settled.visible, true)
+  assert.equal(settled.nearestStable, true, 'the view is stationary relative to the queue')
+  // The adapter waives the stale window on exactly this shape: the batch
+  // arms at t0+176 instead of t0+119+250 = t0+369.
+  const plan = planArming(4, GESTURE_VISIBLE_BATCH, t0 + 176, t0 + 100, SCROLL_HOLD_MS, settled.blocked && settled.visible && settled.nearestStable)
+  assert.equal(plan.count, 4, 'the landing screen arms ~190 ms earlier than the unwaived window')
 })
 
 /** The wall-clock instant the first post-gesture batch arms (test helper). */

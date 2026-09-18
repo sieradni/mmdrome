@@ -5,6 +5,7 @@ import {
   resolveTranscodeFormat,
   isLosslessTranscodeFormat,
   effectiveThumbSize,
+  shouldSwapThumbSize,
   BUILTIN_TRANSCODE_FORMATS,
   type TranscodeInput,
 } from '../src/lib/transcodePolicy'
@@ -116,6 +117,29 @@ test('effectiveThumbSize: steps down one canonical level under LDM', () => {
 test('effectiveThumbSize: unchanged when LDM is off', () => {
   assert.equal(effectiveThumbSize({ size: 512, lowDataActive: false }), 512)
   assert.equal(effectiveThumbSize({ size: 128, lowDataActive: false }), 128)
+})
+
+// ── shouldSwapThumbSize (the LDM downgrade-defer, the user's data call) ─────
+
+test('a size downgrade never re-requests a loaded thumbnail', () => {
+  assert.equal(shouldSwapThumbSize({ displayedSize: 512, wantedSize: 256 }), false, 'replacing a paid-for decoded 512 with a fresh 128 download wastes data — the small size lands on the next arm instead')
+  assert.equal(shouldSwapThumbSize({ displayedSize: 256, wantedSize: 128 }), false)
+  assert.equal(shouldSwapThumbSize({ displayedSize: 128, wantedSize: 96 }), false)
+})
+
+test('an upsize always applies (restoring quality is explicit intent, and the immutable path makes the pre-LDM rendition a cache hit)', () => {
+  assert.equal(shouldSwapThumbSize({ displayedSize: 96, wantedSize: 128 }), true)
+  assert.equal(shouldSwapThumbSize({ displayedSize: 128, wantedSize: 256 }), true)
+  assert.equal(shouldSwapThumbSize({ displayedSize: 256, wantedSize: 512 }), true)
+})
+
+test('a first load is not a swap and always proceeds', () => {
+  assert.equal(shouldSwapThumbSize({ displayedSize: 0, wantedSize: 256 }), true)
+  assert.equal(shouldSwapThumbSize({ displayedSize: 0, wantedSize: 512 }), true)
+})
+
+test('an equal size never re-requests (no-op toggle)', () => {
+  assert.equal(shouldSwapThumbSize({ displayedSize: 256, wantedSize: 256 }), false)
 })
 
 // ── Navidrome scrobble LDM gate ─────────────────────────────────────────────

@@ -29,6 +29,11 @@ let flowInstalled = false
 let armedTotal = 0
 let droppedTotal = 0
 let lastNearestRatio = Infinity
+/** The nearest row's element as the last tick saw it. The debug snapshot must
+ *  feed the SAME value back into thumbFlowSignal (which records what its deps
+ *  hand it) — a snapshot without the id would clobber the baseline to
+ *  undefined and delay the next tick's settle-expiry by a cycle. */
+let lastNearestId: unknown
 
 /** Once per app session: stamp every scroll event. Scroll events do NOT
  *  bubble, but they DO capture-propagate — the views own their scroll
@@ -54,6 +59,8 @@ export interface ThumbLoaderDebug {
   armedTotal: number
   droppedTotal: number
   lastArmedAt: number
+  /** The nearest row is the same as last tick (settle-expiry armed). */
+  stationary: boolean
 }
 
 /** Debug HUD read-out — counters only, no DOM or credential surface. */
@@ -64,6 +71,9 @@ export function thumbLoaderDebugSnapshot(): ThumbLoaderDebug {
     // Last tick's measurement (the snapshot runs outside the tick loop; the
     // nearest ratio is only meaningful as the loader last saw it).
     nearestRatio: () => lastNearestRatio,
+    // Same id the last tick recorded — keeps the signal's baseline write
+    // idempotent (see lastNearestId's doc).
+    lastNearestId: () => lastNearestId,
   })
   return {
     pending: pending.length,
@@ -72,6 +82,7 @@ export function thumbLoaderDebugSnapshot(): ThumbLoaderDebug {
     armedTotal,
     droppedTotal,
     lastArmedAt,
+    stationary: flow.nearestStable,
   }
 }
 
@@ -85,6 +96,7 @@ function tick(): void {
 
   const keep: PendingThumb[] = []
   let nearestDistance = Infinity
+  let nearestEntry: PendingThumb | undefined
   let visibleCount = 0
   for (const p of pending) {
     const rect = p.el.getBoundingClientRect()
@@ -109,7 +121,10 @@ function tick(): void {
       continue
     }
     p.distance = dist
-    if (dist < nearestDistance) nearestDistance = dist
+    if (dist < nearestDistance) {
+      nearestDistance = dist
+      nearestEntry = p
+    }
     if (dist <= vh * VISIBLE_HOLDOUT_RATIO) visibleCount++
     keep.push(p)
   }
@@ -130,7 +145,11 @@ function tick(): void {
     now: () => now,
     lastScrollAt: () => lastScrollAt,
     nearestRatio: () => lastNearestRatio,
+    // THIS tick's nearest identity; the signal compares it against the last
+    // verdict's baseline internally and records it for the next tick.
+    lastNearestId: () => nearestEntry?.el,
   })
+  lastNearestId = nearestEntry?.el
   // Mid-gesture (blocked + visible tier open) the batch is CAPPED to the
   // holdout tier AND PACED at the gesture cadence — one 4-row batch per hold
   // window, not 8/33 ms. A scrollbar-style teleport continuously replaces the
@@ -141,11 +160,22 @@ function tick(): void {
   // reading position loading during a slow drag while bounding the stale
   // fetch count to O(hold windows crossed), not O(screens passed). When the
   // gate is fully open the whole queue is available at the open cadence.
+  //
+  // Settle-expiry (2026-09-17, the "0.2–0.3 s before the first 4 center
+  // thumbnails" report): when the gesture has STOPPED on a view (nearest row
+  // is the same row as last tick — isNearestStable) but the hold window is
+  // still running, the pace clock is stale (consumed by batches the flick
+  // flew past) — waive it so the landing screen arms on the next frame. The
+  // scrollbar-firehose case can never reach the waive: churned identity keeps
+  // nearestStable false, and the waive lives in the blocked branch where
+  // `available` is visibleCount — the on-screen tier itself — so even a
+  // misjudged stability arms only what the user is looking at.
+  const settledLanding = flow.blocked && flow.visible && flow.nearestStable
   const plan =
     flow.blocked && !flow.visible
       ? { count: 0, markArmed: false }
       : flow.blocked
-        ? planArming(visibleCount, GESTURE_VISIBLE_BATCH, now, lastArmedAt, SCROLL_HOLD_MS)
+        ? planArming(visibleCount, GESTURE_VISIBLE_BATCH, now, lastArmedAt, SCROLL_HOLD_MS, settledLanding)
         : planArming(pending.length, MAX_PER_TICK, now, lastArmedAt, MIN_ARM_INTERVAL_MS)
 
   if (plan.count > 0) {

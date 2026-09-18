@@ -12,7 +12,7 @@ import { mapNativePreloadEvent } from './loadStatus'
 import { emitPreloadEvent } from '../stores/loadStatus'
 import { setupMediaSession } from './mediaSession'
 import { getCoverUrl } from './coverArtCache'
-import { getCachedConfig, buildStreamUrl, buildCoverArtUrl, resolveCoverArtId } from './navidromeApi'
+import { getCachedConfig, buildStreamUrl, buildCoverArtUrl, requestableCoverArtId } from './navidromeApi'
 import { scrobbleManager } from './scrobbleManager'
 import { scrobbleFlushEngine } from './scrobbleFlush'
 import { effectiveLowData } from './networkMode'
@@ -583,7 +583,7 @@ export class PlaybackManager {
         url: config ? buildStreamUrl(config, id.replace(/^navidrome-/, ''), transcode ?? undefined) : '',
       }
       if (track) {
-        if (config) row.coverUrl = buildCoverArtUrl(config, resolveCoverArtId(track), 512)
+        if (config) row.coverUrl = buildCoverArtUrl(config, requestableCoverArtId(track), 512)
         if (track.replayGain != null) row.replayGain = track.replayGain
         if (track.albumReplayGain != null) row.albumReplayGain = track.albumReplayGain
       }

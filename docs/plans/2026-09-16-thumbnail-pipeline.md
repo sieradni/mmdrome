@@ -386,3 +386,14 @@ scoped row count in the queue scroller), and the bottom nav is directly
 reachable after playing from Songs.
 
 Gates: 968 unit, 36/36 e2e.
+
+## §12 Amendment — 2026-09-17m: the immutable cover path + the settle-expiry (the 0.2–0.3 s landing delay had two causes)
+
+The 1.2.24 field report (flick stopped by tap; first ~4 center thumbnails take 0.2–0.3 s; re-entry slow even when "cached") decomposed into a FETCH-time term and an ARM-time term, fixed separately:
+
+1. **Fetch term — the revalidation round trip.** Navidrome's `imghttp/headers.go` grants `max-age=31536000, immutable` to getCoverArt requests whose id carries the art's pixel-hash suffix; plain ids get `no-cache` (conditional GET every use). The API's `coverArt` field already ships the hash-suffixed id — we now capture it (`Track.coverArtId`), shape-validate it (`requestableCoverArtId`), and request with it everywhere covers are fetched (ladder + native snapshot). Re-entry after an unlatch becomes a body-less HTTP-cache hit cross-launch; legacy servers keep the old behavior. This is the server's own contract doing the caching — no client cache layer, nothing to corrupt, nothing to evict.
+2. **Arm term — the stale pace clock.** `planArming` gained `expireWindow`, waived only on a `blocked ∧ visible ∧ nearestStable` verdict (`isNearestStable`: the nearest row's identity is unchanged since the previous verdict — pure compare-then-record inside `thumbFlowSignal`). Tap-to-stop waives the leftover window (~190 ms sooner landing); a scrollbar teleport churns identity and never waives (the 2026-09-17j firehose window holds, pinned). Identity-gating instead of wall-clock tuning: zero new constants.
+
+Design law (extends §9's): **a cache question should first be asked of the server's own contract — the best cache layer is the one you don't own.** And: **a pace clock that a wasted batch can charge needs an expiry defined by stability, not by time.**
+
+Pins: `tests/navidromeApi.test.ts`, `tests/coverArtCache.test.ts`, `tests/thumbLoader.test.ts` (16 new). Gates: 984 unit, 36/36 e2e.

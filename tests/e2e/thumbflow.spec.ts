@@ -131,9 +131,13 @@ test('a scrollbar-style fling does not launch a fetch for every screen it passes
   expect(midFling).toBeLessThan(40)
 
   // After settling, the landing screen loads (the gate opens, nearest first).
-  await page.waitForTimeout(2500)
-  const landed = await nearViewportCoverImgs(page, 1.5)
-  expect(landed).toBeGreaterThanOrEqual(4)
+  // POLLED, not a fixed wait: the arm moment depends on where the last pace
+  // batch fell relative to the hold window (a phase coin-flip at a fixed
+  // deadline — the full-suite flake), while the PROPERTY is "the landing
+  // loads within seconds of settling". The settle-expiry makes this fast.
+  await expect
+    .poll(async () => nearViewportCoverImgs(page, 1.5), { timeout: 10_000, intervals: [250] })
+    .toBeGreaterThanOrEqual(4)
 })
 
 test('covers unmount when their row leaves the far window (fetch abort, no pile-up)', async ({ page }) => {
@@ -142,8 +146,20 @@ test('covers unmount when their row leaves the far window (fetch abort, no pile-
   await page.waitForTimeout(800)
 
   await fling(page, 14, 50)
-  // Let the gesture end, the gate open, and the landing batch load.
-  await page.waitForTimeout(2500)
+  // Let the gesture end, the gate open, and the landing batch load — POLLED
+  // until the unlatch invariant stabilizes (everything still mounted sits
+  // near the current position); in-flight arming transiently mounts pre-roll
+  // rows that the far window then drops, so an early fixed sample raced.
+  await expect
+    .poll(
+      async () => {
+        const total = await page.evaluate(() => document.querySelectorAll('img[src*="getCoverArt"]').length)
+        const near = await nearViewportCoverImgs(page, 2.5)
+        return total === near && total >= 1
+      },
+      { timeout: 10_000, intervals: [250] },
+    )
+    .toBe(true)
 
   const total = await page.evaluate(() => document.querySelectorAll('img[src*="getCoverArt"]').length)
   const near = await nearViewportCoverImgs(page, 2.5)

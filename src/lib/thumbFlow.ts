@@ -77,6 +77,12 @@ export interface ThumbFlowState {
    *  holdout radius). When true, the adapter may arm the nearest batch even
    *  while `blocked`. */
   visible: boolean
+  /** The nearest queued row is the SAME row as the previous verdict tick —
+   *  the viewport has stopped moving relative to the queue even though the
+   *  hold window may not have decayed yet (a tap/hold stopping a flick).
+   *  Drives the adapter's settle-expiry (see isNearestStable). Only computed
+   *  when the deps carry a `lastNearestId`. */
+  nearestStable: boolean
 }
 
 export interface ThumbFlowDeps {
@@ -89,7 +95,35 @@ export interface ThumbFlowDeps {
    *  Infinity when nothing is queued). The `visible` tier compares this
    *  against VISIBLE_HOLDOUT_RATIO. */
   nearestRatio(): number
+  /** Identity of the nearest queued row (the adapter's element). Changes
+   *  whenever the viewport flies past rows — the sole input that separates a
+   *  scrollbar-style teleport (identity churns every hop) from a resting view
+   *  (identity stays put). Absent → `isNearestStable` is always false. */
+  lastNearestId?(): unknown
 }
+
+/**
+ * Whether the nearest queued row is the same row as the previous verdict —
+ * the load-bearing signal of the settle-expiry (2026-09-17, the "0.2–0.3 s
+ * before the first 4 center thumbnails" report): after a flick stopped by a
+ * tap, the nearest row sits PUT (its identity stops changing) while the
+ * SCROLL_HOLD_MS window still runs — a window consumed mid-gesture by batches
+ * the flick immediately flew past. Waiting out that stale window delays the
+ * landing screen for nothing. This predicate distinguishes exactly that case
+ * from the scrollbar-firehose the 2026-09-17j pace exists for: a scrollbar
+ * drag continuously REPLACES the rows in the holdout tier, so the nearest
+ * identity churns every hop and the window never waives. Pure identity
+ * comparison — no wall-clock tuning, no epsilon to get wrong.
+ */
+export function isNearestStable(deps: ThumbFlowDeps): boolean {
+  const id = deps.lastNearestId?.()
+  return id !== undefined && id === lastSeenNearestId
+}
+
+/** The identity the previous verdict saw. INTERNAL: `thumbFlowSignal` updates
+ *  it after every verdict (the compare-then-record order makes consecutive
+ *  signal calls a proper two-tap comparison); pure callers never touch it. */
+let lastSeenNearestId: unknown
 
 /**
  * The verdict for one tick. `blocked` = (now − lastScrollAt) < SCROLL_HOLD_MS;
@@ -103,7 +137,13 @@ export function thumbFlowSignal(deps: ThumbFlowDeps): ThumbFlowState {
   const now = deps.now()
   const blocked = deps.lastScrollAt() > 0 && now - deps.lastScrollAt() < SCROLL_HOLD_MS
   const visible = deps.nearestRatio() <= VISIBLE_HOLDOUT_RATIO
-  return { blocked, visible }
+  const nearestStable = isNearestStable(deps)
+  // Record THIS verdict's identity as the next call's baseline (compare-
+  // then-record: consecutive calls form the two-tap comparison). An extra
+  // signal call with the same deps (the debug snapshot re-derives the verdict)
+  // is idempotent — same id in, same baseline out.
+  lastSeenNearestId = deps.lastNearestId?.()
+  return { blocked, visible, nearestStable }
 }
 
 export interface ArmPlan {
@@ -123,6 +163,17 @@ export interface ArmPlan {
  * tier only) → (GESTURE_VISIBLE_BATCH, SCROLL_HOLD_MS). The blocked pace is
  * the scrollbar-firehose fix — see the constant's doc for the failure it
  * eliminates.
+ *
+ * `expireWindow` (2026-09-17, the settle-expiry): waives the pace window when
+ * the caller has established that the nearest row is STABLE — the settled
+ * landing after a stopped flick, whose pace clock was consumed by batches
+ * that flew past. Deliberately argument-shaped: the policy itself cannot know
+ * when a view has settled (that is the flow verdict's job); the adapter may
+ * only pass true on a verdict where blocked ∧ visible ∧ nearestStable, so
+ * the scrollbar-firehose case (identity churn → never stable) can never
+ * reach it. A waived window still arms at most `maxPerTick` rows — the cap,
+ * not the pace, is what keeps the firehose capped if the adapter ever
+ * misjudges stability.
  */
 export function planArming(
   available: number,
@@ -130,9 +181,10 @@ export function planArming(
   now: number,
   lastArmedAt: number,
   minIntervalMs = MIN_ARM_INTERVAL_MS,
+  expireWindow = false,
 ): ArmPlan {
   if (available <= 0) return { count: 0, markArmed: false }
-  if (lastArmedAt !== 0 && now - lastArmedAt < minIntervalMs) {
+  if (!expireWindow && lastArmedAt !== 0 && now - lastArmedAt < minIntervalMs) {
     return { count: 0, markArmed: false }
   }
   return { count: Math.min(available, maxPerTick), markArmed: true }

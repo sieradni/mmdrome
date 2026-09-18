@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { submitNowPlaying, submitScrobble, paginateSearch3, cachedConfigMatches, getLyricsBySongId, type NavidromeConfig } from '../src/lib/navidromeApi'
+import { submitNowPlaying, submitScrobble, paginateSearch3, cachedConfigMatches, getLyricsBySongId, navidromeSongToTrack, requestableCoverArtId, type NavidromeConfig } from '../src/lib/navidromeApi'
 
 // The Subsonic/OpenSubsonic API has no `nowPlaying` endpoint: a "now playing"
 // notification is `scrobble?submission=false`, and a completed listen is
@@ -194,4 +194,51 @@ test('getLyricsBySongId: empty lyricsList → null', async (t) => {
     'subsonic-response': { status: 'ok', version: '1.16.1', lyricsList: {} },
   }), { status: 200, headers: { 'content-type': 'application/json' } })) as typeof fetch
   assert.equal(await getLyricsBySongId(config, 'song-1'), null)
+})
+
+// --- The immutable cover path (hash-suffixed coverArt id) -------------------
+// Navidrome's imghttp contract: a getCoverArt request whose id carries the
+// art's pixel-hash suffix (`mf-<id>_<16hex>`) is answered
+// `Cache-Control: public, max-age=31536000, immutable` — no revalidation round
+// trip on re-entry. A request with the plain id revalidates (`no-cache`). We
+// capture the server's own `coverArt` attribute verbatim at sync and prefer it
+// at request time; a missing/malformed value degrades to the plain id.
+
+test('navidromeSongToTrack captures the hash-suffixed coverArt id verbatim', () => {
+  const t = navidromeSongToTrack({
+    id: 'abc123', title: 'S', artist: 'A', album: 'AL', duration: 180,
+    coverArt: 'mf-abc123_9f8e7d6c5b4a3210',
+  })
+  assert.equal(t.coverArtId, 'mf-abc123_9f8e7d6c5b4a3210')
+})
+
+test('navidromeSongToTrack leaves coverArtId undefined when the server omits it', () => {
+  const t = navidromeSongToTrack({ id: 'abc123', title: 'S', artist: 'A', album: 'AL', duration: 180 })
+  assert.equal(t.coverArtId, undefined)
+})
+
+test('requestableCoverArtId prefers the captured hash-suffixed id', () => {
+  const track = { trackId: 'navidrome-abc123', coverArtId: 'mf-abc123_9f8e7d6c5b4a3210' }
+  assert.equal(requestableCoverArtId(track), 'mf-abc123_9f8e7d6c5b4a3210')
+})
+
+test('requestableCoverArtId falls back to the plain id without a capture (legacy servers)', () => {
+  assert.equal(requestableCoverArtId({ trackId: 'navidrome-abc123' }), 'abc123')
+  assert.equal(requestableCoverArtId({ trackId: 'navidrome-abc123', coverArtId: '  ' }), 'abc123')
+})
+
+test('requestableCoverArtId rejects non-artwork-id shapes (path/scheme injection)', () => {
+  // The captured field rides a URL — anything that could alter the request
+  // path must never be requested; the plain id is the safe fallback.
+  assert.equal(requestableCoverArtId({ trackId: 'navidrome-abc123', coverArtId: 'http://evil/x' }), 'abc123')
+  assert.equal(requestableCoverArtId({ trackId: 'navidrome-abc123', coverArtId: '../mf-x' }), 'abc123')
+  assert.equal(requestableCoverArtId({ trackId: 'navidrome-abc123', coverArtId: 'mf-x_y?q=1' }), 'abc123')
+})
+
+test('requestableCoverArtId accepts every known artwork kind and legacy timestamp suffix', () => {
+  // The 16-hex image hash (current servers) and the legacy `_<hexTimestamp>`
+  // form both parse server-side (artwork_id.go) — both must ride through.
+  assert.equal(requestableCoverArtId({ trackId: 'navidrome-x', coverArtId: 'al-42_0123456789abcdef' }), 'al-42_0123456789abcdef')
+  assert.equal(requestableCoverArtId({ trackId: 'navidrome-x', coverArtId: 'ar-9' }), 'ar-9')
+  assert.equal(requestableCoverArtId({ trackId: 'navidrome-x', coverArtId: 'mf-abc_1a2b3c4d5e6f7089' }), 'mf-abc_1a2b3c4d5e6f7089')
 })

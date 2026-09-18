@@ -95,3 +95,26 @@ export function effectiveThumbSize(input: ThumbSizeInput): number {
   if (input.size >= 128) return 96
   return input.size
 }
+
+export interface ThumbSwapInput {
+  /** The size the thumbnail currently displays (0 = nothing loaded). */
+  displayedSize: number
+  /** The size the row context now wants (already LDM-adjusted). */
+  wantedSize: number
+}
+
+/**
+ * Whether a size change should RE-REQUEST an already-loaded thumbnail
+ * (2026-09-17, the user's call on the LDM toggle): a DOWNGRADE never does —
+ * replacing a paid-for, already-decoded 512 with a fresh 128 download spends
+ * data for a worse image. The stepped-down size lands on the row's next arm
+ * (re-entry after the unlatch), where it costs nothing extra; rows not yet
+ * loaded just take the small size directly. An UPSIZE always applies —
+ * restoring quality is explicit user intent, and the immutable path makes the
+ * pre-LDM rendition a body-less cache hit. A first load (displayed 0) is not
+ * a swap at all and always proceeds. Pure so the defer rule is pinned.
+ */
+export function shouldSwapThumbSize(input: ThumbSwapInput): boolean {
+  if (input.displayedSize === 0) return true
+  return input.wantedSize > input.displayedSize
+}
