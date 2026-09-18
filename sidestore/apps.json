@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.26",
-      "versionDate": "2026-09-18T03:05:21.879Z",
-      "versionDescription": "Thumbnail lead time doubled and widened to cover the whole screen during scrolls - fresh territory starts loading sooner, placeholders at the screen edges are gone, and scrolling back is instant since fetched covers stay alive in a wider window. Cached covers remain instant. Verified across songs, albums, artists, and 550-row queues.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.26/mmdrome.ipa",
+      "version": "1.2.27",
+      "versionDate": "2026-09-18T04:37:23.252Z",
+      "versionDescription": "Two-lane thumbnail landing: the far-scroll 5s was a self-caused server flood (tier lane empties the screen before the band trickle starts); cached revisits arm instantly, ending pop-in; the stability gate closes the scrollbar firehose outright.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.27/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.27",
+          "buildVersion": "31",
+          "date": "2026-09-18T04:37:23.252Z",
+          "localizedDescription": "Two-lane thumbnail landing: the far-scroll 5s was a self-caused server flood (tier lane empties the screen before the band trickle starts); cached revisits arm instantly, ending pop-in; the stability gate closes the scrollbar firehose outright.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.27/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.26",
           "buildVersion": "30",
@@ -287,6 +295,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.27",
+      "identifier": "ios-v1.2.27",
+      "appID": "com.mmdrome.player",
+      "caption": "Two-lane thumbnail landing: the far-scroll 5s was a self-caused server flood (tier lane empties the screen before the band trickle starts); ",
+      "date": "2026-09-18T04:37:23.252Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.26",
       "identifier": "ios-v1.2.26",
       "appID": "com.mmdrome.player",
@@ -319,15 +336,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Chunked Albums/Artists grids (50-cell render windows with IO sentinel growth — 5,000-cell libraries mount 50 cells, not 5,000); thumbnail ve",
       "date": "2026-09-17T10:08:46.986Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.22",
-      "identifier": "ios-v1.2.22",
-      "appID": "com.mmdrome.player",
-      "caption": "Keychain-backed credential storage on iOS",
-      "date": "2026-09-17T04:44:17.563Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
