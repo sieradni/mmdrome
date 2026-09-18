@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.24",
-      "versionDate": "2026-09-17T20:57:22.282Z",
-      "versionDescription": "Thumbnail pipeline: paced mid-gesture arming and far-cover unlatching fix the scrollbar-jump stalls and the +5s landing loads from 1.2.23. Covers now load at every scroll speed on every view - songs, albums, artists grids, and long queues (verified to 550 rows). Slow drags paint the reading position live; flown-past fetches abort and free memory; scrolled-back covers re-arm instantly.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.24/mmdrome.ipa",
+      "version": "1.2.25",
+      "versionDate": "2026-09-18T02:28:55.895Z",
+      "versionDescription": "Covers are requested by content hash, so Navidrome serves them with immutable year-long caching - revisiting thumbnails no longer waits on revalidation, even across restarts. A flick stopped by a tap loads the landing screen immediately instead of waiting out the scroll gate. Low data mode no longer re-downloads thumbnails already on screen; the smaller size applies the next time the row loads. Verified across songs, albums, artists, and 550-row queues.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.25/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.25",
+          "buildVersion": "29",
+          "date": "2026-09-18T02:28:55.895Z",
+          "localizedDescription": "Covers are requested by content hash, so Navidrome serves them with immutable year-long caching - revisiting thumbnails no longer waits on revalidation, even across restarts. A flick stopped by a tap loads the landing screen immediately instead of waiting out the scroll gate. Low data mode no longer re-downloads thumbnails already on screen; the smaller size applies the next time the row loads. Verified across songs, albums, artists, and 550-row queues.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.25/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.24",
           "buildVersion": "28",
@@ -269,6 +277,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.25",
+      "identifier": "ios-v1.2.25",
+      "appID": "com.mmdrome.player",
+      "caption": "Covers are requested by content hash, so Navidrome serves them with immutable year-long caching - revisiting thumbnails no longer waits on r",
+      "date": "2026-09-18T02:28:55.895Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.24",
       "identifier": "ios-v1.2.24",
       "appID": "com.mmdrome.player",
@@ -301,15 +318,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Multi-skip fix (completion cascade + trust-boundary validation); non-blocking Debug HUD; credential-safe Copy dump",
       "date": "2026-09-17T03:57:11.132Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.20",
-      "identifier": "ios-v1.2.20",
-      "appID": "com.mmdrome.player",
-      "caption": "Bridge trail in Debug HUD — one command/event timeline across the bridge to diagnose the multi-skip jump",
-      "date": "2026-09-17T02:02:23.000Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
