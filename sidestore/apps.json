@@ -27,7 +27,8 @@
           "date": "2026-09-18T02:28:55.895Z",
           "localizedDescription": "Covers are requested by content hash, so Navidrome serves them with immutable year-long caching - revisiting thumbnails no longer waits on revalidation, even across restarts. A flick stopped by a tap loads the landing screen immediately instead of waiting out the scroll gate. Low data mode no longer re-downloads thumbnails already on screen; the smaller size applies the next time the row loads. Verified across songs, albums, artists, and 550-row queues.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.25/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4895913
         },
         {
           "version": "1.2.24",
