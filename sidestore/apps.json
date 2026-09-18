@@ -27,7 +27,8 @@
           "date": "2026-09-18T04:37:23.252Z",
           "localizedDescription": "Two-lane thumbnail landing: the far-scroll 5s was a self-caused server flood (tier lane empties the screen before the band trickle starts); cached revisits arm instantly, ending pop-in; the stability gate closes the scrollbar firehose outright.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.27/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4896229
         },
         {
           "version": "1.2.26",
