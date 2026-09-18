@@ -6,6 +6,7 @@
   import { effectiveLowData, networkStatusStore } from '../lib/networkMode'
   import { transcodeParams } from '../lib/transcodePolicy'
   import { getCachedConfig } from '../lib/navidromeApi'
+  import { getCachedLfmSession } from '../lib/lastfmAuth'
   import { BackgroundAudio } from '../lib/nativePlugin'
   import {
     nativeBridgeTrailSnapshot,
@@ -64,7 +65,12 @@
       hasNavidromeCreds: !!(s.navidromeUser && s.navidromePassword),
       hasWebdavCreds: !!(s.webdavUser && s.webdavToken),
       hasListenbrainzToken: !!s.listenbrainzToken,
-      hasLastfmSession: !!s.lastfmSession,
+      // The Last.fm session is a Keychain-diverted secret (2026-09-17c) and
+      // was NEVER part of the settings store's hydration list — reading
+      // `s.lastfmSession` here always reported false. The live session lives
+      // in lastfmAuth's module cache (`getCachedLfmSession`), restored at app
+      // init; that is also what scrobbling actually keys on.
+      hasLastfmSession: !!getCachedLfmSession(),
     }
   }
 

@@ -11,6 +11,13 @@ export interface NativeTrackSnapshot {
   album: string
   duration: number
   url: string
+  /** Original file size in bytes (Subsonic song.size; absent = unknown).
+   *  The native loader's truncation gate compares the completed download
+   *  against it (raw streams only): a truncated body still opens as a
+   *  "full-length" file because the container header keeps the original
+   *  duration — the announced byte count is the only honest evidence
+   *  (2026-09-18 LDM multi-skip). */
+  size?: number
   coverUrl?: string
   replayGain?: number
   albumReplayGain?: number

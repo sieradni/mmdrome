@@ -14,6 +14,14 @@ public struct LoaderState<Task> {
     /// fetch has claimed the same id, so completion must be token-checked before
     /// it can clear or populate the replacement request.
     public private(set) var requestIDs: [String: UUID] = [:]
+    /// Byte count of each stored cache file, recorded at store time (the loader
+    /// is the only place bytes enter the app, so it is also the only moment the
+    /// stored byte count is trustworthy — a later disk stat can race a purge).
+    /// Audio containers (FLAC/MP4/MPEG) keep their declared duration in the
+    /// HEADER, so a truncated download still probes as a full-length file; the
+    /// byte count is the evidence the header is lying (2026-09-18 LDM
+    /// multi-skip). Absent entry = unknown (older entries, failed stat).
+    public private(set) var storedBytes: [String: Int] = [:]
 
     public init() {}
 
@@ -53,8 +61,27 @@ public struct LoaderState<Task> {
         return pending.removeValue(forKey: id) ?? []
     }
 
-    public mutating func store(_ url: URL, for id: String) {
+    /// Stores a cache entry. Pass `bytes` when the file's byte count is known
+    /// (the loader records it right after the move-to-cache); a nil count
+    /// clears any previous record — an unknown count must never masquerade as
+    /// an old one.
+    public mutating func store(_ url: URL, for id: String, bytes: Int? = nil) {
         cache[id] = url
+        if let bytes {
+            storedBytes[id] = bytes
+        } else {
+            storedBytes.removeValue(forKey: id)
+        }
+    }
+
+    /// The recorded byte count for a cache file, matched by URL (the caller
+    /// holds the serve URL, not the composite key). nil = file not in the
+    /// cache map or count unknown.
+    public func storedBytes(forFileAt url: URL) -> Int? {
+        for (key, cachedURL) in cache where cachedURL.standardizedFileURL == url.standardizedFileURL {
+            return storedBytes[key]
+        }
+        return nil
     }
 
     /// Drops everything for `id`. The caller cancels the returned task and
@@ -63,6 +90,7 @@ public struct LoaderState<Task> {
         let task = inFlight.removeValue(forKey: id)
         requestIDs[id] = nil
         pending.removeValue(forKey: id)
+        storedBytes.removeValue(forKey: id)
         return (task, cache.removeValue(forKey: id))
     }
 }

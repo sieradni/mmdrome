@@ -120,7 +120,7 @@ type ManagerPrivates = {
   _subscribeShared(): Array<() => void>
   _initialized: boolean
   _resolveUrl(trackId: string): string
-  _buildSnapshot(combined: string[]): Array<{ trackId: string; url: string }>
+  _buildSnapshot(combined: string[]): Array<{ trackId: string; url: string; size?: number }>
 }
 
 function makeManager(opts: {
@@ -242,6 +242,30 @@ test('A3: no transcode params when LDM is off (the gate demonstrably gates the U
     const url = h.priv._resolveUrl('navidrome-s1')
     assert.ok(url.length > 0, 'a playable URL is still built')
     assert.ok(!url.includes('format='), `must stay byte-identical raw, got: ${url}`)
+  } finally {
+    resetState()
+  }
+})
+
+test('A5: snapshot rows carry the original file size for the native truncation gate (2026-09-18 LDM multi-skip)', () => {
+  resetState()
+  try {
+    const qm = new FakeQueueManager()
+    qm.seed(['s1', 's2'])
+    // One sized track, one bare: the snapshot must carry `size` when the
+    // library row has it and OMIT it otherwise (the Swift gate treats 0 as
+    // "unknown" and disables the server-length check — a fabricated 0 must
+    // never disable an honest gate, and a missing field must not crash the
+    // bridge map).
+    const sized = { ...mkTrack('s1'), size: 12_345_678 }
+    qm.tracks.set('navidrome-s1', sized)
+    const h = makeManager({ qm, nt: null })
+    liveConfig()
+
+    const rows = h.priv._buildSnapshot(['navidrome-s1', 'navidrome-s2'])
+    assert.equal(rows.length, 2)
+    assert.equal(rows[0].size, 12_345_678, 'the sized row must pass its byte size through')
+    assert.equal(rows[1].size, undefined, 'a size-less row must omit the field entirely (not coerce a 0)')
   } finally {
     resetState()
   }

@@ -12,6 +12,13 @@ public struct NativeTrack {
     public let artist: String
     public let album: String
     public let duration: Double
+    /** Server-reported file size in bytes (Subsonic song.size; 0 = unknown).
+     *  The loader's truncation gate compares the completed transfer against
+     *  it — a truncated file's container still reports more audio than the
+     *  delivered bytes contain (FLAC STREAMINFO header, Ogg last-page
+     *  granule positions, MP4 moov), so the announced byte count is the
+     *  only cut-position-independent honest evidence. */
+    public let size: Int
     public let url: URL
     public let coverUrl: URL?
     public let replayGain: Double?
@@ -32,6 +39,7 @@ public struct NativeTrack {
         self.artist = artist
         self.album = album
         self.duration = dict["duration"] as? Double ?? 0
+        self.size = dict["size"] as? Int ?? 0
         self.url = url
         if let coverStr = dict["coverUrl"] as? String, !coverStr.isEmpty {
             self.coverUrl = URL(string: coverStr)
@@ -150,6 +158,14 @@ final class TrackFileLoader {
         return servingURL(forTrackId: track.trackId, requested: TrackVariant(url: track.url))
     }
 
+    /// The byte count recorded when the file was stored (nil = unknown).
+    /// Read by the engine's schedule clamp — the header of a truncated
+    /// download still claims the original duration, the byte count is the
+    /// evidence.
+    func storedBytes(forFileAt url: URL) -> Int? {
+        state.storedBytes(forFileAt: url)
+    }
+
     func prefetch(_ track: NativeTrack, completion: @escaping (URL?, Error?) -> Void) {
         // Every completion is delivered on the main thread, including cache hits.
         // Capacitor invokes plugin methods on its bridge queue, while the audio
@@ -180,11 +196,18 @@ final class TrackFileLoader {
             // completed, not that the bytes are audio). A missing file
             // (Caches purge between lookup and read) also fails the size read.
             let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
-            if size >= TrackFileLoader.minimumAudioBytes {
+            // 2026-09-18: the byte count recorded at store time is the
+            // SECOND half of the serve check — a file the disk has since
+            // PURGED-down (or one stored before the count existed) fails the
+            // stat and falls back to the store-time record; both must clear
+            // the server-length gate before serving.
+            let recorded = state.storedBytes(forFileAt: url) ?? size
+            if size >= TrackFileLoader.minimumAudioBytes,
+               !DownloadSanity.isTruncatedAgainstServer(storedBytes: recorded, serverLength: requested == .raw ? Int64(track.size) : 0) {
                 deliver(url, nil)
                 return
             }
-            print("[native] cache file under \(TrackFileLoader.minimumAudioBytes) bytes for \(track.trackId) (got \(size)) — evicting partial")
+            print("[native] cache file rejected at serve (size \(size), recorded \(recorded)) for \(track.trackId) — evicting partial")
             evict(track.trackId, variant: requested)
         }
         let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
@@ -202,6 +225,13 @@ final class TrackFileLoader {
 
         let destination = Self.destinationURL(for: track, variant: requested)
         let requestID = UUID()
+        // The server's announced byte count for the gate at completion time.
+        // The snapshot's `size` is the ORIGINAL file's size: exact for raw
+        // streams (the only mode where the gate applies — a transcode's
+        // Content-Length is a server-side estimate and must not be judged
+        // against the source's bytes; its truncations are caught by the
+        // elapsed gate instead). 0 disables the server-length gate.
+        let expectedBytes: Int64 = requested == .raw ? Int64(track.size) : 0
         let task = session.downloadTask(with: track.url) { [weak self] tempURL, _, error in
             // The temp file is only valid until this handler returns. Move it
             // synchronously on the delegate queue before hopping to main — an
@@ -258,6 +288,24 @@ final class TrackFileLoader {
                         movedURL = nil
                         moveError = NSError(domain: "mmdrome.loader", code: -7002, userInfo: [NSLocalizedDescriptionKey: "Downloaded file is not decodable audio: \(track.title)"])
                     }
+                    // 2026-09-18 LDM multi-skip: the gates above prove the
+                    // TRANSFER completed, not that it is COMPLETE. A body cut
+                    // mid-stream still opens as a "full-length" file — the
+                    // container reports more audio than the delivered bytes
+                    // contain (FLAC STREAMINFO / MP4 moov duration headers,
+                    // Ogg cut inside a final page whose header arrived), so
+                    // nothing downstream can tell truncation from truth except
+                    // the promised byte count. Compare against the snapshot's
+                    // Subsonic `size` (raw only — see expectedBytes above).
+                    if moveError == nil, movedURL != nil,
+                       DownloadSanity.isTruncatedAgainstServer(
+                           storedBytes: tempSize,
+                           serverLength: expectedBytes) {
+                        print("[native] download truncated vs server size for \(track.trackId) (got \(tempSize) of \(expectedBytes)) — rejecting")
+                        try? FileManager.default.removeItem(at: destination)
+                        movedURL = nil
+                        moveError = NSError(domain: "mmdrome.loader", code: -7003, userInfo: [NSLocalizedDescriptionKey: "Download truncated vs server size: \(track.title)"])
+                    }
                     }
                 } catch {
                     moveError = error
@@ -275,7 +323,12 @@ final class TrackFileLoader {
                 }
                 let pendings = self.state.complete(cacheKey, requestID: requestID)
                 if let moved = movedURL {
-                    self.state.store(moved, for: cacheKey)
+                    // Record the delivered byte count at store time — the only
+                    // moment it is trustworthy (a later disk stat can race a
+                    // Caches purge). The schedule clamp reads it via
+                    // `storedBytes(forFileAt:)`.
+                    let storedSize = (try? FileManager.default.attributesOfItem(atPath: moved.path)[.size] as? Int) ?? 0
+                    self.state.store(moved, for: cacheKey, bytes: storedSize > 0 ? storedSize : nil)
                     self.variantOf[cacheKey] = requested
                     deliver(moved, nil)
                     pendings.forEach { $0(moved, nil) }
@@ -469,6 +522,14 @@ public final class NativeAudioEngine: NSObject {
 
     /// Seconds offset added to raw player time to account for seek position.
     private var positionBias: Double = 0
+    /// The scheduled segment's own end position in seconds (start + planned
+    /// frames over the file's sample rate) — the FILE's truth, not the
+    /// metadata duration. The premature-completion gate judges against this:
+    /// metadata can exceed the real audio (mis-tagged files would false-drop
+    /// legit completions), and a header-lying truncation schedules a segment
+    /// LONGER than its bytes, so the decoder's early EOF lands measurably
+    /// before this bound. 0 = never judged.
+    private var scheduledSegmentSeconds: Double = 0
     /// Cached position used while paused / not rendering.
     private var cachedPosition: Double = 0
 
@@ -1401,6 +1462,20 @@ public final class NativeAudioEngine: NSObject {
         return max(0, raw + positionBias)
     }
 
+    /// Whether the active player's clock is currently MEASURABLE. When it is
+    /// not (never rendered, or the OS dropped the time after data ran out),
+    /// `currentPosition` silently falls back to `cachedPosition` — a stale
+    /// value that must never be judged as elapsed audio. The premature-
+    /// completion gate in `handleSegmentCompletion` keys on this.
+    var isNodeTimeMeasured: Bool {
+        guard isPlaying,
+              let nodeTime = activeNode.lastRenderTime,
+              activeNode.playerTime(forNodeTime: nodeTime) != nil else {
+            return false
+        }
+        return true
+    }
+
     // MARK: - Scheduling internals
 
     private func effectiveDuration(of track: NativeTrack) -> Double {
@@ -1505,6 +1580,10 @@ public final class NativeAudioEngine: NSObject {
 
     /// Schedules the current track on the active node, ready to play.
     private func scheduleCurrentTrack(from seconds: Double, autoPlay: Bool) {
+        // Never-judged until this schedule proves its own length: an early
+        // return (not-ready, corrupt, zero-frame) must not leave the previous
+        // track's segment length behind for the gate to misread.
+        scheduledSegmentSeconds = 0
         guard tracks.indices.contains(activeIndex) else { return }
         let track = tracks[activeIndex]
         guard let localURL = loader.localURL(for: track) else {
@@ -1547,6 +1626,27 @@ public final class NativeAudioEngine: NSObject {
         scheduleGeneration += 1
         let generation = scheduleGeneration
 
+        // 2026-09-18 LDM multi-skip, schedule-side defense: the container of a
+        // truncated download still reports more audio than the delivered bytes
+        // contain (FLAC STREAMINFO / MP4 moov headers; Ogg cut inside a final
+        // page whose header arrived), so `frames` below can promise audio that
+        // was never downloaded. Clamp the planned
+        // segment to what the stored bytes could physically contain — the
+        // clamp turns an early EOF into a bounded segment instead of a
+        // poisoned promise. Identity falls back to headerFrames when the
+        // byte evidence doesn't constrain it.
+        let storedBytesForClamp = loader.storedBytes(forFileAt: localURL)
+        let clampBps = DownloadSanity.minimumBytesPerSecond(
+            sampleRateHz: file.processingFormat.sampleRate,
+            fileExtension: localURL.pathExtension)
+        let plannedFrames = DownloadSanity.clampedScheduledFrames(
+            headerFrames: frames,
+            storedBytes: storedBytesForClamp,
+            minimumBytesPerSecond: clampBps,
+            sampleRateHz: file.processingFormat.sampleRate)
+        // The gate reference: what THIS schedule actually promises (file truth).
+        scheduledSegmentSeconds = Double(startFrame + plannedFrames) / sr
+
         activeGain.outputVolume = Float(track.replayGainLinear(mode: replayGainMode))
         standbyGain.outputVolume = 0
         standbyNode.stop()
@@ -1563,7 +1663,7 @@ public final class NativeAudioEngine: NSObject {
         // Both nodes are stopped now: apply speed/pitch/tape fields to the
         // units, which are only ever touched while nothing is rendering.
         refreshPlaybackParams()
-        player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(frames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
+        player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(plannedFrames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
             self?.handleSegmentCompletion(index: scheduledIndex, generation: generation, trackId: scheduledTrackId)
         }
 
@@ -1625,6 +1725,24 @@ public final class NativeAudioEngine: NSObject {
 
             // The active player finishing while a crossfade is in progress is the switch point.
             if self.crossfade.isInFlight {
+                if isStandby {
+                    // 2026-09-18: the branch above could not tell WHICH node
+                    // completed — but the completion registration does
+                    // (isStandby). A STANDBY completion mid-fade means the
+                    // fade target's bytes ran out before the ramp finished
+                    // (a truncated target reaching its early EOF — the LDM
+                    // signature — or a pathological length tie). Finalizing
+                    // here would switch to an EXHAUSTED node whose only
+                    // pending completion just fired: the new "active" has no
+                    // completion pending and the queue stalls silently (and
+                    // a standby completion landing just AFTER finalize passes
+                    // the identity guard as the new track's "natural-end
+                    // trigger" — the double-advance shape). Cancel the fade
+                    // instead: the outgoing track keeps playing at restored
+                    // gain, and its real natural end drives the advance.
+                    self.abortCrossfadeKeepActive()
+                    return
+                }
                 self.finalizeCrossfadeSwitch()
                 return
             }
@@ -1645,6 +1763,37 @@ public final class NativeAudioEngine: NSObject {
             // its schedule-generation guard already covers it.
             if completedIndex != self.activeIndex || (trackId != nil && trackId != self.currentTrackId) {
                 print("[native] dropped stale completion for row \(completedIndex) id=\(trackId ?? "-") (active row \(self.activeIndex) id \(self.currentTrackId))")
+                return
+            }
+
+            // 2026-09-18 LDM multi-skip, final gate: elapsed-time sanity. If
+            // the measured position sits >= 1 s before the SCHEDULED SEGMENT's
+            // own length, this completion cannot be a real end-of-track: a
+            // truncated download's container reports more audio than the
+            // delivered bytes contain (FLAC/MP4 duration headers → a bogus
+            // EOF minutes early; Ogg last-page granule positions → a stop AT
+            // the cut when the header page arrived) — either shape used to
+            // chain the advance. The
+            // reference is the segment the file was scheduled for (file
+            // truth), NOT the metadata duration (a mis-tagged track must not
+            // false-drop). Judged only when the player clock is measurable —
+            // an unmeasurable clock means `currentPosition` fell back to the
+            // stale `cachedPosition`, which is not evidence. Drop the
+            // completion, report the error so JS's bounded retry re-fetches,
+            // and silence the dead node (loop-one restarts otherwise loop a
+            // half-audible file).
+            let elapsed = max(0, currentPosition)
+            let remaining = scheduledSegmentSeconds - elapsed
+            if DownloadSanity.isPrematureCompletion(
+                    elapsedSeconds: elapsed,
+                    totalSeconds: scheduledSegmentSeconds,
+                    timeMeasured: isNodeTimeMeasured,
+                    remainingSeconds: remaining) {
+                print("[native] dropped premature completion for row \(completedIndex) id=\(currentTrackId) elapsed=\(String(format: \"%.1f\", elapsed)) of \(String(format: \"%.1f\", scheduledSegmentSeconds))")
+                if isNodeTimeMeasured {
+                    activeNode.pause()
+                }
+                onError?("Track ended early: \(tracks[activeIndex].title)")
                 return
             }
 
@@ -1843,7 +1992,18 @@ public final class NativeAudioEngine: NSObject {
         standbyNode.stop()
         standbyGain.outputVolume = 0
         standbyGeneration = standbyScheduleGeneration
-        standbyNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(file.length), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
+        // Same header-vs-bytes clamp as scheduleCurrentTrack (2026-09-18): a
+        // truncated cached target still opens as a full-length file; the
+        // standby's planned segment gets the byte-plausible bound too.
+        let standbyBps = DownloadSanity.minimumBytesPerSecond(
+            sampleRateHz: file.processingFormat.sampleRate,
+            fileExtension: localURL.pathExtension)
+        let standbyPlannedFrames = DownloadSanity.clampedScheduledFrames(
+            headerFrames: file.length,
+            storedBytes: loader.storedBytes(forFileAt: localURL),
+            minimumBytesPerSecond: standbyBps,
+            sampleRateHz: file.processingFormat.sampleRate)
+        standbyNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(standbyPlannedFrames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
             self?.handleSegmentCompletion(index: nextIdx, generation: generation, isStandby: true)
         }
         standbyNode.play()
@@ -1901,6 +2061,29 @@ public final class NativeAudioEngine: NSObject {
         print("[native-crossfade] readiness=\(readiness) track=\(currentTrackId) position=\(formattedPosition) fade=\(crossfadeDuration)")
     }
 
+    /// Cancels an in-flight crossfade whose TARGET side died mid-render,
+    /// keeping the outgoing track in control: tear down the ramp, restore the
+    /// active side's gain, re-arm the monitor for its real end. The standby's
+    /// completion is the one being handled (already consumed), so no
+    /// bookkeeping invalidation is needed beyond dropping the fade state —
+    /// and no evict: a target that cleared the loader's byte gates but still
+    /// EOF'd early is either the small 90–100 % truncation band or a length
+    /// tie, and the natural advance re-routes it through the clamped schedule
+    /// either way. Poison that missed every byte gate and then skips audibly
+    /// is preferable to a false eviction of healthy bytes.
+    private func abortCrossfadeKeepActive() {
+        stopVolumeRamp()
+        stopCrossfadeMonitor()
+        crossfade = .idle
+        standbyGain.outputVolume = 0
+        // The ramp may have already faded the active side partway down.
+        refreshActiveGain()
+        if isPlaying {
+            setupCrossfadeMonitor()
+        }
+        print("[native-crossfade] abort-keep-active current=\(currentTrackId) (target ended mid-fade)")
+    }
+
     private func finalizeCrossfadeSwitch() {
         stopVolumeRamp()
         stopCrossfadeMonitor()
@@ -1908,6 +2091,23 @@ public final class NativeAudioEngine: NSObject {
         crossfade = .idle
 
         activeIndex = targetIndex
+        // The former standby's completion is this track's natural-end trigger
+        // and flows through the premature-completion gate — recompute the
+        // segment reference for the NEW track (scheduleCurrentTrack never ran
+        // for it; the outgoing track's value would misjudge the end).
+        if let url = loader.localURL(for: tracks[activeIndex]),
+           let file = try? AVAudioFile(forReading: url) {
+            let sr = file.processingFormat.sampleRate
+            let bps = DownloadSanity.minimumBytesPerSecond(sampleRateHz: sr, fileExtension: url.pathExtension)
+            let planned = DownloadSanity.clampedScheduledFrames(
+                headerFrames: file.length,
+                storedBytes: loader.storedBytes(forFileAt: url),
+                minimumBytesPerSecond: bps,
+                sampleRateHz: sr)
+            scheduledSegmentSeconds = Double(planned) / sr
+        } else {
+            scheduledSegmentSeconds = 0
+        }
         syncPreloadWindow()
         // A crossfade switched WITHOUT playTrack: a refreshQueue during the
         // fade killed the in-flight chain (generation bump) and the old chain

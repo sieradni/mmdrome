@@ -584,6 +584,11 @@ export class PlaybackManager {
       }
       if (track) {
         if (config) row.coverUrl = buildCoverArtUrl(config, requestableCoverArtId(track), 512)
+        // Original byte size → the native loader's truncation gate (raw
+        // streams): a completed-but-cut download still probes as a
+        // full-length file (header keeps the original duration), so the
+        // announced size is the only pre-play evidence of truncation.
+        if (track.size != null && track.size > 0) row.size = track.size
         if (track.replayGain != null) row.replayGain = track.replayGain
         if (track.albumReplayGain != null) row.albumReplayGain = track.albumReplayGain
       }
