@@ -85,14 +85,17 @@ final class DownloadSanityTests: XCTestCase {
 
     func testClampNeverZeroesASchedule() {
         let minBps = DownloadSanity.minimumBytesPerSecond(sampleRateHz: 44_100, fileExtension: "flac")
-        // A 1-byte store against a huge header still yields >= 1 frame.
+        // A 1-byte store against a huge header still yields >= 1 frame: the
+        // byte-plausible bound is 16 frames/byte (44.1 kHz / 2756 B/s), the
+        // 4% overhead divides it to 15 — never 0.
         let clamped = DownloadSanity.clampedScheduledFrames(
             headerFrames: 48_000_000,
             storedBytes: 1,
             minimumBytesPerSecond: minBps,
             sampleRateHz: 44_100
         )
-        XCTAssertEqual(clamped, 1)
+        XCTAssertEqual(clamped, 15)
+        XCTAssertGreaterThan(clamped, 0)
     }
 
     // MARK: - Elapsed-time completion gate
@@ -103,8 +106,12 @@ final class DownloadSanityTests: XCTestCase {
         XCTAssertTrue(DownloadSanity.isPrematureCompletion(elapsedSeconds: 3, totalSeconds: 180, timeMeasured: true, remainingSeconds: 100))
         // Near the real end: legitimate.
         XCTAssertFalse(DownloadSanity.isPrematureCompletion(elapsedSeconds: 179.5, totalSeconds: 180, timeMeasured: true, remainingSeconds: 0.1))
-        // Exactly at the 1 s margin passes (never test AT the boundary).
-        XCTAssertFalse(DownloadSanity.isPrematureCompletion(elapsedSeconds: 179.0, totalSeconds: 180, timeMeasured: true, remainingSeconds: 1.0))
+        // Exactly 1 s remaining IS premature (the contract is >= 1 s — the
+        // margin-side pin sits just below it, which a real completion can
+        // never land on).
+        XCTAssertTrue(DownloadSanity.isPrematureCompletion(elapsedSeconds: 179.0, totalSeconds: 180, timeMeasured: true, remainingSeconds: 1.0))
+        // Just inside the margin passes (never test AT the boundary).
+        XCTAssertFalse(DownloadSanity.isPrematureCompletion(elapsedSeconds: 179.2, totalSeconds: 180, timeMeasured: true, remainingSeconds: 0.8))
         // Unmeasurable clock (lastRenderTime/playerTime nil): the elapsed
         // read fell back to the stale cachedPosition — not evidence, never
         // judged.
