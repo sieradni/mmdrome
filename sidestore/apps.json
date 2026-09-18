@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.27",
-      "versionDate": "2026-09-18T04:37:23.252Z",
-      "versionDescription": "Two-lane thumbnail landing: the far-scroll 5s was a self-caused server flood (tier lane empties the screen before the band trickle starts); cached revisits arm instantly, ending pop-in; the stability gate closes the scrollbar firehose outright.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.27/mmdrome.ipa",
+      "version": "1.2.28",
+      "versionDate": "2026-09-18T09:37:18.269Z",
+      "versionDescription": "LDM multi-skip fix: truncated preload downloads are rejected and re-fetched; crossfade standby mid-fade abort keeps the queue alive; HUD Last.fm session indicator fixed",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.28/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.28",
+          "buildVersion": "32",
+          "date": "2026-09-18T09:37:18.269Z",
+          "localizedDescription": "LDM multi-skip fix: truncated preload downloads are rejected and re-fetched; crossfade standby mid-fade abort keeps the queue alive; HUD Last.fm session indicator fixed",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.28/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.27",
           "buildVersion": "31",
@@ -296,6 +304,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.28",
+      "identifier": "ios-v1.2.28",
+      "appID": "com.mmdrome.player",
+      "caption": "LDM multi-skip fix: truncated preload downloads are rejected and re-fetched; crossfade standby mid-fade abort keeps the queue alive; HUD Las",
+      "date": "2026-09-18T09:37:18.269Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.27",
       "identifier": "ios-v1.2.27",
       "appID": "com.mmdrome.player",
@@ -328,15 +345,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Thumbnail pipeline: paced mid-gesture arming and far-cover unlatching fix the scrollbar-jump stalls and the +5s landing loads from 1.2.23. C",
       "date": "2026-09-17T20:57:22.282Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.23",
-      "identifier": "ios-v1.2.23",
-      "appID": "com.mmdrome.player",
-      "caption": "Chunked Albums/Artists grids (50-cell render windows with IO sentinel growth — 5,000-cell libraries mount 50 cells, not 5,000); thumbnail ve",
-      "date": "2026-09-17T10:08:46.986Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
