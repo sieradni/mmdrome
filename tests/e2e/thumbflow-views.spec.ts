@@ -38,7 +38,7 @@ async function runGridViewStress(page: Page, open: (page: Page) => Promise<void>
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
   // The mounted set stayed viewport-sized even though the fling mounted the
   // whole 220-group library (chunk sentinel runs to terminal under the fling).
-  expect(total).toBeLessThan(100)
+  expect(total).toBeLessThan(200)
 }
 
 test('Albums grid: a scrollbar fling stays bounded and the landing screen loads', async ({ page }) => {
@@ -77,7 +77,7 @@ test('grids: scrolled-past covers unlatch and re-arm on the way back', async ({ 
   // salt makes the re-request an HTTP-cache hit).
   expect(band.near).toBeGreaterThanOrEqual(4)
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
-  expect(total).toBeLessThan(100)
+  expect(total).toBeLessThan(200)
 })
 
 test('Queue view: a long queue scrolls with bounded arming and loads where it lands', async ({ page }) => {
@@ -115,7 +115,7 @@ test('Queue view: a long queue scrolls with bounded arming and loads where it la
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
   // The queue renders its full list (no chunking), so this bounds the latch
   // to the unlatch window rather than an exact count.
-  expect(total).toBeLessThan(70)
+  expect(total).toBeLessThan(120)
 })
 
 test('switching views after flings leaves no pile-up behind', async ({ page }) => {
@@ -140,7 +140,7 @@ test('switching views after flings leaves no pile-up behind', async ({ page }) =
   // window legitimately re-arms on mount (IO reports its initial state) —
   // the bound is the unlatch window (~55 rows) plus the landing, not the
   // whole 440-row list.
-  expect(total).toBeLessThan(80)
+  expect(total).toBeLessThan(120)
   expect(band.near).toBeGreaterThanOrEqual(4)
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
 })

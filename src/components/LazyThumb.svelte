@@ -109,19 +109,24 @@
           requestThumb(container, () => { visible = true })
         }
       },
-      // 800px pre-roll (2026-09-14, the "albums load slowly on a fast network"
-      // report): at 100px a grid cell was queued when it was already nearly on
-      // screen, so the user always watched the placeholder through queue +
-      // fetch + decode. 800px arms a cell several rows early — enough scroll
-      // time for a fast server to have the cover ready before it scrolls in.
-      { rootMargin: '800px' }
+      // 2000px pre-roll (widened 2026-09-17 from 800px, the "far scroll takes
+      // ~5 s to catch up / placeholders flash for a split second" report): the
+      // pre-roll must exceed momentum travel (~3 viewports on a phone) so rows
+      // the flick decelerates THROUGH fetch before they arrive. ~2 viewports
+      // of lead ≈ several rows of list / one row of grid — paid only when the
+      // gate opens (the pace gate holds the whole band mid-gesture), so the
+      // widening costs bandwidth exactly when it buys lead time.
+      { rootMargin: '2000px' }
     )
     req.observe(container)
 
-    // The unlatch observer: a static ±2400px box ≈ 3 viewport heights on a
-    // phone. Crossing OUT of it drops the mounted img (visible=false); the
-    // request observer above re-arms on re-entry. Both observers live for the
-    // component's lifetime — visibility is a cycle, not a latch.
+    // The unlatch observer: a static ±4000px box ≈ 4 viewport heights on a
+    // phone (widened 2026-09-17 from ±2400px in step with the pre-roll — the
+    // unlatch is FREE bandwidth-wise, it only keeps fetched images alive, and
+    // a wider window is what makes scroll-BACK instant). Crossing OUT of it
+    // drops the mounted img (visible=false); the request observer above
+    // re-arms on re-entry. Both observers live for the component's lifetime
+    // — visibility is a cycle, not a latch.
     const far = new IntersectionObserver(
       ([entry]) => {
         if (!entry.isIntersecting && visible) {
@@ -134,7 +139,7 @@
           cancelThumb(container)
         }
       },
-      { rootMargin: '2400px' }
+      { rootMargin: '4000px' }
     )
     far.observe(container)
 

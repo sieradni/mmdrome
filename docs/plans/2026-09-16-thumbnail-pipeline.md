@@ -397,3 +397,16 @@ The 1.2.24 field report (flick stopped by tap; first ~4 center thumbnails take 0
 Design law (extends §9's): **a cache question should first be asked of the server's own contract — the best cache layer is the one you don't own.** And: **a pace clock that a wasted batch can charge needs an expiry defined by stability, not by time.**
 
 Pins: `tests/navidromeApi.test.ts`, `tests/coverArtCache.test.ts`, `tests/thumbLoader.test.ts` (16 new). Gates: 984 unit, 36/36 e2e.
+
+## §13 Amendment — 2026-09-17n: the windows widened to match the gesture (pre-roll ≥ momentum, tier = the screen)
+
+The 1.2.25 field report (far scroll ~5 s to catch up; "the window can be larger to avoid even having to show unloaded thumbnails for a split second") traced to two undersized windows:
+
+1. **Pre-roll 800→2000 px.** The old band was smaller than a flick's momentum travel (~3 viewports), and the gate holds the band mid-gesture by design — so lead was only ever earned in open windows, and momentum outran it. The widened band is paid ONLY when the gate opens: bandwidth spent exactly when it buys lead time.
+2. **Mid-gesture tier ±0.5→1.0 vh.** Rows entering at the screen edges flashed placeholders during slow scrolls — the "split second" symptom. The firehose bound is the PACE, not the tier size, so the widening is free of the 1.2.23 failure mode.
+
+In step: unlatch 2400→4000 px (free — keeps fetched images alive; makes scroll-back instant) and the loader's pending drop zone 3→6 vh. The first e2e round exposed a fire-and-forget `fling` helper ("9 mounted / 0 near" = settled poll sampled mid-teleport); it now resolves on the last hop. Post-fix numbers: mid-fling 12 (pace-bounded), post-settle 12 mounted / 12 near. Leak-bound caps raised with the geometry; load-ratio landings unchanged.
+
+Design law (extends §12's): **a pre-roll window must exceed the momentum the gesture carries; a mid-gesture tier must cover the whole screen — pacing, not tier size, bounds mid-gesture arming.**
+
+Gates: 988 unit, 36/36 e2e.

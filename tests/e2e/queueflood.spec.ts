@@ -127,7 +127,7 @@ test('album play-through: 40 advances grow the queue and the queue view stays bo
   console.log(`[queue-stress] history-top band: ${JSON.stringify(band)}, total: ${total}`)
   expect(band.near).toBeGreaterThanOrEqual(4)
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
-  expect(total).toBeLessThan(70)
+  expect(total).toBeLessThan(120)
 })
 
 test('mega-album flood: a 500-song queue scrolls bounded and its landing screen loads', async ({ page }) => {
@@ -172,5 +172,5 @@ test('mega-album flood: a 500-song queue scrolls bounded and its landing screen 
   console.log(`[queue-stress] flood band: ${JSON.stringify(band)}, total: ${total}`)
   expect(band.near).toBeGreaterThanOrEqual(4)
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
-  expect(total).toBeLessThan(70)
+  expect(total).toBeLessThan(120)
 })

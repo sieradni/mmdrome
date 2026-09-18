@@ -92,7 +92,7 @@ function tick(): void {
 
   const vh = window.innerHeight
   const midViewport = vh / 2
-  const dropDistance = vh * 3
+  const dropDistance = vh * 6 // in step with LazyThumb's ±4000px unlatch
 
   const keep: PendingThumb[] = []
   let nearestDistance = Infinity

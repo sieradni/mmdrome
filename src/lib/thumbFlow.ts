@@ -45,13 +45,18 @@ export const MIN_ARM_INTERVAL_MS = 33
 
 /**
  * The visible-holdout radius, as a fraction of viewport height from center.
- * 0.5 ⇒ any row whose center is within half a viewport of the viewport
- * center is at least partially (and for grid cells typically fully) on
- * screen — those arm even while `blocked`. The far pre-roll (IO 800 px,
- * multi-row ahead) stays held. Nothing outside ±0.5·vh is ever armed during
- * a gesture, so a flick still queues nothing ahead of the settle.
+ * Widened 2026-09-17 from 0.5 to 1.0 (the "placeholders flash at the screen
+ * edges during slow scrolls" report): at 0.5 only the middle half of the
+ * screen armed mid-gesture — rows entering at the edges showed unloaded for a
+ * beat even on slow drags. At 1.0 the tier is "everything on screen": any row
+ * whose center is within a viewport of the center is at least partially
+ * visible. The firehose protection is UNTOUCHED by this — the mid-gesture
+ * tier's `available` is still capped by GESTURE_VISIBLE_BATCH per pace
+ * window; the scrollbar-teleport bound (O(hold windows), not O(screens))
+ * comes from the PACE, not the tier size. What grows with the tier is how
+ * much of the current screen arms promptly — which is the point.
  */
-export const VISIBLE_HOLDOUT_RATIO = 0.5
+export const VISIBLE_HOLDOUT_RATIO = 1.0
 
 /**
  * Mid-gesture arming pace (2026-09-17j, the "scrollbar-style jump breaks

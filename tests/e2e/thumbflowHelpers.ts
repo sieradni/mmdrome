@@ -142,7 +142,9 @@ export function coverImgsIn(page: Page, scope: string): Promise<number> {
  *  sit within `radiusVh` viewport-heights of the viewport center, and how
  *  many of those have a COMPLETE img. An in-flight row shows the wrapper
  *  div, not an img — a band stuck before arming reports near=0 (ratio 0),
- *  which must fail. */
+ *  which must fail. Bands are sized to the CURRENT pre-roll geometry
+ *  (5.5 ≈ the ±4000px unlatch box on a 720px viewport) — whatever the band
+ *  size, near=0 still fails, so the assertion stays honest. */
 export function nearBandLoad(page: Page, scope: string, radiusVh: number): Promise<{ near: number; loaded: number; ratio: number }> {
   return page.evaluate(({ scope, radiusVh }) => {
     const root = document.querySelector(scope)

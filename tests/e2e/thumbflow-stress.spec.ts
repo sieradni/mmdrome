@@ -32,7 +32,7 @@ test('compounding: four fling-and-settle rounds never accumulate mounted covers'
     // round-bounded — a leaking unlatch would grow the total every round.
     expect(band.near).toBeGreaterThanOrEqual(4)
     expect(band.ratio).toBeGreaterThanOrEqual(0.8)
-    expect(total).toBeLessThan(60)
+    expect(total).toBeLessThan(120)
   }
 })
 
@@ -112,7 +112,7 @@ test('mid-gesture reversal: reversing a fling loads where you land', async ({ pa
   console.log(`[thumbflow-stress] reversal band: ${JSON.stringify(band)}, total: ${total}`)
   expect(band.near).toBeGreaterThanOrEqual(4)
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
-  expect(total).toBeLessThan(60)
+  expect(total).toBeLessThan(120)
 })
 
 test('queue: a fling followed by immediate close-and-reopen stays clean', async ({ page }) => {
@@ -144,5 +144,5 @@ test('queue: a fling followed by immediate close-and-reopen stays clean', async 
   console.log(`[thumbflow-stress] queue reopen band: ${JSON.stringify(band)}, total: ${total}`)
   expect(band.near).toBeGreaterThanOrEqual(4)
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
-  expect(total).toBeLessThan(70)
+  expect(total).toBeLessThan(120)
 })

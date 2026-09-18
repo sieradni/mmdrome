@@ -82,17 +82,25 @@ async function bootBigLibrary(page: Page): Promise<void> {
 
 async function fling(page: Page, hops: number, intervalMs: number): Promise<void> {
   await page.evaluate(
-    ({ hops, intervalMs }) => {
-      const scroller = document.querySelector<HTMLElement>('div.flex-1.overflow-y-auto')
-      if (!scroller) throw new Error('scroller not found')
-      let done = 0
-      const timer = setInterval(() => {
-        done++
-        scroller.scrollTop += scroller.clientHeight * 12
-        scroller.dispatchEvent(new Event('scroll'))
-        if (done >= hops) clearInterval(timer)
-      }, intervalMs)
-    },
+    ({ hops, intervalMs }) =>
+      // A Promise the LAST hop resolves — fling() must not return until the
+      // gesture is over, or the "settled" assertions sample mid-teleport
+      // (position still hopping; the mounted window lags the position). The
+      // pre-fix fire-and-forget shape made the wide-window round flaky.
+      new Promise<void>((resolve) => {
+        const scroller = document.querySelector<HTMLElement>('div.flex-1.overflow-y-auto')
+        if (!scroller) throw new Error('scroller not found')
+        let done = 0
+        const timer = setInterval(() => {
+          done++
+          scroller.scrollTop += scroller.clientHeight * 12
+          scroller.dispatchEvent(new Event('scroll'))
+          if (done >= hops) {
+            clearInterval(timer)
+            resolve()
+          }
+        }, intervalMs)
+      }),
     { hops, intervalMs },
   )
 }
@@ -136,7 +144,7 @@ test('a scrollbar-style fling does not launch a fetch for every screen it passes
   // deadline — the full-suite flake), while the PROPERTY is "the landing
   // loads within seconds of settling". The settle-expiry makes this fast.
   await expect
-    .poll(async () => nearViewportCoverImgs(page, 1.5), { timeout: 10_000, intervals: [250] })
+    .poll(async () => nearViewportCoverImgs(page, 3.0), { timeout: 10_000, intervals: [250] })
     .toBeGreaterThanOrEqual(4)
 })
 
@@ -154,7 +162,7 @@ test('covers unmount when their row leaves the far window (fetch abort, no pile-
     .poll(
       async () => {
         const total = await page.evaluate(() => document.querySelectorAll('img[src*="getCoverArt"]').length)
-        const near = await nearViewportCoverImgs(page, 2.5)
+        const near = await nearViewportCoverImgs(page, 5.5)
         return total === near && total >= 1
       },
       { timeout: 10_000, intervals: [250] },
@@ -162,12 +170,13 @@ test('covers unmount when their row leaves the far window (fetch abort, no pile-
     .toBe(true)
 
   const total = await page.evaluate(() => document.querySelectorAll('img[src*="getCoverArt"]').length)
-  const near = await nearViewportCoverImgs(page, 2.5)
+  const near = await nearViewportCoverImgs(page, 5.5)
   console.log(`[thumbflow] imgs total ${total}, near viewport ${near}`)
 
   // The unlatch means the mounted-img set tracks the viewport window instead
   // of growing with every screen the session ever visited. Everything still
-  // mounted must be near the current position (±2.5 vh covers the pre-roll).
+  // mounted must be near the current position (±5.5 vh covers the ±4000px
+  // pre-roll box + armed stragglers).
   expect(total).toBeLessThan(80)
   expect(total).toBe(near)
 })

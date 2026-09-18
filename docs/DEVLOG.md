@@ -11,6 +11,21 @@ Chronological record of technical discoveries, platform workarounds, and archite
 
 ## 6. Learned Information & Operational Log
 
+## 2026-09-17n — Widening the thumbnail windows: the pre-roll was smaller than momentum, and the mid-gesture tier was smaller than the screen
+
+Field report on 1.2.25: cached covers are instant on native, but a long fresh scroll takes ~5 s for thumbnails to catch up, and "the window can be larger in general to avoid even having to show unloaded thumbnails for a split second." Both instincts traced to the same geometry, in two parts:
+
+1. **The pre-roll (800 px) was smaller than the gesture's momentum travel (~3 viewports).** Any scroll slower than a teleport crossed territory that could have been pre-fetched but wasn't — the gate holds the pre-roll band mid-gesture (by design, the firehose fix), so the band only ever armed in the open windows between gestures, and 800 px of lead per stop lost the race against momentum. Widened to 2000 px (~2 viewports ≈ several rows of list / one row of grid). The cost structure makes this safe: the widened band is PAID only when the gate opens (mid-gesture it stays held), i.e. bandwidth spent exactly when it buys lead time.
+2. **The mid-gesture tier (±0.5·vh) was smaller than the screen.** Only the middle half armed during a gesture; rows entering at the screen edges flashed unloaded placeholders even on slow drags — the user's "split second" symptom. `VISIBLE_HOLDOUT_RATIO` → 1.0 ("everything on screen"). The scrollbar-firehose protection is UNTOUCHED: its bound is the PACE (one 4-row batch per hold window), not the tier size.
+
+Supporting widening, in step: the unlatch window 2400→4000 px (the unlatch is FREE bandwidth-wise — it only keeps fetched images alive; a wider one is what makes scroll-back instant), and the loader's pending drop zone 3→6 vh (mirror).
+
+Verification honesty: the first e2e round with the new geometry failed with "9 mounted / 0 near" — the local `fling` helper was fire-and-forget (setInterval kept hopping after the helper returned), so the "settled" poll sampled mid-teleport. The helper now resolves a Promise on the LAST hop. With the gesture truly over: 36/36 e2e, mid-fling 12 (bounded by pace, not the tier), post-settle 12 mounted / 12 near — the mounted set tracks the wide window exactly. The leak-bound total caps across the thumbflow suites were raised with the geometry (60/70/80/100 → 120/200); the load-RATIO landing assertions are band-size-independent and unchanged.
+
+Design law: **a pre-roll window must exceed the momentum the gesture carries, and a mid-gesture tier must cover the whole screen — pacing, not tier size, is what bounds mid-gesture arming.**
+
+`[test-enforced: tests/e2e/thumbflow*.spec.ts, tests/e2e/queueflood.spec.ts]`
+
 ## 2026-09-17m2 — The LDM downgrade-defer: "replacing a paid-for thumbnail with a worse one costs data for nothing" — and the flake it exposed in the fling pin
 
 Ship-review question on the immutable-cover work: entering LDM swaps every loaded thumbnail to a smaller rendition — "downloading a low quality version to replace an already existing high quality thumbnail is wasting data." The user was right; the fix is a pure predicate, `shouldSwapThumbSize` (`transcodePolicy.ts`): a DOWNGRADE never re-requests a loaded cover — the stepped-down size lands on the row's next arm (re-entry after the unlatch), where the row was going to re-request anyway, so the defer costs nothing. UPSIZES always apply (restoring quality is explicit intent; the immutable path makes the pre-LDM rendition a body-less cache hit), and a first load (displayed 0) always proceeds. LazyThumb implements it with `renderedSize` ($state) as the render identity: the ladder is built at `renderTarget` = wanted-or-rendered per the predicate, the effect records exactly `renderTarget` (recording the wanted size on a defer corrupts the baseline — caught in self-review), and the far-window unlatch resets `renderedSize = 0` (nothing displayed → the deferred size lands on re-entry).
