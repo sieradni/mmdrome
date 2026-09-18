@@ -1789,7 +1789,9 @@ public final class NativeAudioEngine: NSObject {
                     totalSeconds: scheduledSegmentSeconds,
                     timeMeasured: isNodeTimeMeasured,
                     remainingSeconds: remaining) {
-                print("[native] dropped premature completion for row \(completedIndex) id=\(currentTrackId) elapsed=\(String(format: \"%.1f\", elapsed)) of \(String(format: \"%.1f\", scheduledSegmentSeconds))")
+                let elapsedOneDp = String(format: "%.1f", elapsed)
+                let segmentOneDp = String(format: "%.1f", scheduledSegmentSeconds)
+                print("[native] dropped premature completion for row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp)")
                 if isNodeTimeMeasured {
                     activeNode.pause()
                 }
