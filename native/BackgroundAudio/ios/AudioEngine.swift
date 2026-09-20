@@ -218,7 +218,7 @@ final class TrackFileLoader {
                 deliver(url, nil)
                 return
             }
-            event(.danger, "cache file rejected at serve (size \(size), recorded \(recorded)) for \(track.trackId) — evicting partial")
+            self.event(.danger, "cache file rejected at serve (size \(size), recorded \(recorded)) for \(track.trackId) — evicting partial")
             evict(track.trackId, variant: requested)
         }
         let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
@@ -244,6 +244,11 @@ final class TrackFileLoader {
         // elapsed gate instead). 0 disables the server-length gate.
         let expectedBytes: Int64 = requested == .raw ? Int64(track.size) : 0
         let task = session.downloadTask(with: track.url) { [weak self] tempURL, _, error in
+            // Swift 6 capture semantics: `event` is an instance method, and the
+            // download completion closure is `@Sendable` — explicit `self.` is
+            // required at every call inside it (CI compile finding, 2026-09-20).
+            // The diagnostics sink is main-queue-pumped and thread-safe, so the
+            // delegate-queue calls here are safe by design.
             // The temp file is only valid until this handler returns. Move it
             // synchronously on the delegate queue before hopping to main — an
             // async hop would let the system delete the temp file first, which
@@ -267,7 +272,7 @@ final class TrackFileLoader {
                     let attrs = try FileManager.default.attributesOfItem(atPath: temp.path)
                     let tempSize = (attrs[.size] as? Int) ?? 0
                     if tempSize < TrackFileLoader.minimumAudioBytes {
-                        event(.danger, "download under \(TrackFileLoader.minimumAudioBytes) bytes for \(track.trackId) (got \(tempSize)) — treating as error")
+                        self.event(.danger, "download under \(TrackFileLoader.minimumAudioBytes) bytes for \(track.trackId) (got \(tempSize)) — treating as error")
                         try? FileManager.default.removeItem(at: temp)
                         moveError = NSError(domain: "mmdrome.loader", code: -7001, userInfo: [NSLocalizedDescriptionKey: "Download truncated (\(tempSize) bytes) for \(track.title)"])
                     } else {
@@ -279,7 +284,7 @@ final class TrackFileLoader {
                     do {
                         try FileManager.default.moveItem(at: temp, to: destination)
                     } catch {
-                        event(.info, "moveItem failed for \(track.trackId) \(error.localizedDescription) — trying copy (volume mismatch workaround)")
+                        self.event(.info, "moveItem failed for \(track.trackId) \(error.localizedDescription) — trying copy (volume mismatch workaround)")
                         try FileManager.default.copyItem(at: temp, to: destination)
                         try? FileManager.default.removeItem(at: temp)
                     }
@@ -294,7 +299,7 @@ final class TrackFileLoader {
                     // exactly like an undersized body.
                     let probeFrames = (try? AVAudioFile(forReading: destination).length) ?? 0
                     if probeFrames <= 0 {
-                        event(.danger, "downloaded file decodes to 0 frames for \(track.trackId) — rejecting")
+                        self.event(.danger, "downloaded file decodes to 0 frames for \(track.trackId) — rejecting")
                         try? FileManager.default.removeItem(at: destination)
                         movedURL = nil
                         moveError = NSError(domain: "mmdrome.loader", code: -7002, userInfo: [NSLocalizedDescriptionKey: "Downloaded file is not decodable audio: \(track.title)"])
@@ -312,7 +317,7 @@ final class TrackFileLoader {
                        DownloadSanity.isTruncatedAgainstServer(
                            storedBytes: tempSize,
                            serverLength: expectedBytes) {
-                        event(.danger, "download truncated vs server size for \(track.trackId) (got \(tempSize) of \(expectedBytes)) — rejecting")
+                        self.event(.danger, "download truncated vs server size for \(track.trackId) (got \(tempSize) of \(expectedBytes)) — rejecting")
                         try? FileManager.default.removeItem(at: destination)
                         movedURL = nil
                         moveError = NSError(domain: "mmdrome.loader", code: -7003, userInfo: [NSLocalizedDescriptionKey: "Download truncated vs server size: \(track.title)"])
@@ -320,7 +325,7 @@ final class TrackFileLoader {
                     }
                 } catch {
                     moveError = error
-                    event(.danger, "final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(error.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: temp.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
+                    self.event(.danger, "final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(error.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: temp.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
                 }
             }
             DispatchQueue.main.async { [weak self] in

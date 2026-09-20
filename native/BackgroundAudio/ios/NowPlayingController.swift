@@ -107,7 +107,7 @@ final class NowPlayingController {
     }
 
     private func fetchArtwork(trackId: String, url: URL) {
-        event(.debug, "artwork fetch start \(trackId)")
+        self.event(.debug, "artwork fetch start \(trackId)")
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
             guard let self = self else { return }
             guard let data = data, let image = UIImage(data: data) else {

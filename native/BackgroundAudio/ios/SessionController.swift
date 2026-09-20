@@ -47,10 +47,10 @@ final class SessionController {
         do {
             try session.setCategory(.playback, mode: .default, options: Self.categoryOptions(for: mode))
             try session.setActive(true)
-            event(.info, "setMixingMode → \(mode)")
+            self.event(.info, "setMixingMode → \(mode)")
         } catch {
             // Non-fatal: keep playing under the previous category.
-            event(.danger, "setMixingMode \(mode) category/activate FAILED: \(error.localizedDescription)")
+            self.event(.danger, "setMixingMode \(mode) category/activate FAILED: \(error.localizedDescription)")
         }
     }
 
@@ -65,7 +65,7 @@ final class SessionController {
             try session.setActive(true)
         } catch {
             // Non-fatal: playback will work in foreground, background may be suspended.
-            event(.danger, "configure category/activate FAILED (mode \(mixingMode)): \(error.localizedDescription) — background may suspend")
+            self.event(.danger, "configure category/activate FAILED (mode \(mixingMode)): \(error.localizedDescription) — background may suspend")
         }
 
         observerTokens.append(NotificationCenter.default.addObserver(
@@ -96,16 +96,16 @@ final class SessionController {
         switch type {
         case .began:
             wasPlayingBeforeInterruption = isPlaying()
-            event(.info, "interruption BEGAN wasPlaying=\(wasPlayingBeforeInterruption) → pause")
+            self.event(.info, "interruption BEGAN wasPlaying=\(wasPlayingBeforeInterruption) → pause")
             onPause?()
         case .ended:
             guard wasPlayingBeforeInterruption else {
-                event(.info, "interruption ended wasPlaying=false → stay paused")
+                self.event(.info, "interruption ended wasPlaying=false → stay paused")
                 break
             }
             let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
                 .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? false
-            event(.info, "interruption ended shouldResume=\(shouldResume) → \(shouldResume ? "resume" : "stay paused")")
+            self.event(.info, "interruption ended shouldResume=\(shouldResume) → \(shouldResume ? "resume" : "stay paused")")
             if shouldResume {
                 onResume?()
             }
@@ -119,10 +119,10 @@ final class SessionController {
               let rawReason = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
         if reason == .oldDeviceUnavailable {
-            event(.info, "route change oldDeviceUnavailable → pause")
+            self.event(.info, "route change oldDeviceUnavailable → pause")
             onPause?()
         } else {
-            event(.debug, "route change reason=\(reason.rawValue) (no action)")
+            self.event(.debug, "route change reason=\(reason.rawValue) (no action)")
         }
     }
 }
