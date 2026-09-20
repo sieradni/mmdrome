@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.28",
-      "versionDate": "2026-09-18T09:37:18.269Z",
-      "versionDescription": "LDM multi-skip fix: truncated preload downloads are rejected and re-fetched; crossfade standby mid-fade abort keeps the queue alive; HUD Last.fm session indicator fixed",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.28/mmdrome.ipa",
+      "version": "1.2.29",
+      "versionDate": "2026-09-20T22:56:21.488Z",
+      "versionDescription": "Structured event log (native + web at parity) for full Copy-dump diagnosability; fixed the 1.2.28 crossfade wedge and same-track loop; observe-only web truncation gate; loop-one restart bound",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.29/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.29",
+          "buildVersion": "33",
+          "date": "2026-09-20T22:56:21.488Z",
+          "localizedDescription": "Structured event log (native + web at parity) for full Copy-dump diagnosability; fixed the 1.2.28 crossfade wedge and same-track loop; observe-only web truncation gate; loop-one restart bound",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.29/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.28",
           "buildVersion": "32",
@@ -305,6 +313,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.29",
+      "identifier": "ios-v1.2.29",
+      "appID": "com.mmdrome.player",
+      "caption": "Structured event log (native + web at parity) for full Copy-dump diagnosability; fixed the 1.2.28 crossfade wedge and same-track loop; obser",
+      "date": "2026-09-20T22:56:21.488Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.28",
       "identifier": "ios-v1.2.28",
       "appID": "com.mmdrome.player",
@@ -337,15 +354,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Covers are requested by content hash, so Navidrome serves them with immutable year-long caching - revisiting thumbnails no longer waits on r",
       "date": "2026-09-18T02:28:55.895Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.24",
-      "identifier": "ios-v1.2.24",
-      "appID": "com.mmdrome.player",
-      "caption": "Thumbnail pipeline: paced mid-gesture arming and far-cover unlatching fix the scrollbar-jump stalls and the +5s landing loads from 1.2.23. C",
-      "date": "2026-09-17T20:57:22.282Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
