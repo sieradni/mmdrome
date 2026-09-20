@@ -2,6 +2,7 @@ import { get } from 'svelte/store'
 import { settings, currentTrack, queue } from '../stores/appState'
 import { emitPreloadEvent, resetLoadStatusForTests } from '../stores/loadStatus'
 import { advanceTargetIndex } from './queueMutation'
+import { dbgDanger } from './debugLog'
 // NOTE: the preloader deliberately does NOT read effectiveLowData — the LDM
 // plan's Principle (docs/plans/2026-09-06, §2) keeps auto-preload ON under
 // low data mode: it is bounded to the next few tracks, serialized one-fetch-
@@ -44,6 +45,14 @@ let preloading = false
  *  threshold move to `deadUrls` and are skipped by every later fill. */
 const nonOkFailures: Map<string, number> = new Map()
 const deadUrls: Set<string> = new Set()
+/** Network-exception strike counter per URL — exists ONLY to throttle the
+ *  danger log (strike 1, then every 8th): an outage retries the head row
+ *  every tick, and an unthrottled log would flood the 1000-entry debug ring
+ *  in ~16 min — exactly when you're debugging a dead connection. Cleared on
+ *  success. Deliberately separate from `nonOkFailures` (the server's verdict
+ *  has its own bounded lifetime via the dead threshold; network errors never
+ *  count toward it). */
+const netLogStrikes: Map<string, number> = new Map()
 
 export function setup(getEl: () => HTMLAudioElement, resolver: TrackUrlResolver): void {
   teardown()
@@ -199,6 +208,7 @@ export function __setFetchTimeoutForTests(ms: number): void {
 export function __resetForTests(): void {
   nonOkFailures.clear()
   deadUrls.clear()
+  netLogStrikes.clear()
   blobUrls.clear()
   resetLoadStatusForTests()
 }
@@ -306,6 +316,7 @@ async function fillOne(
           emitPreloadEvent({ type: 'progress', trackId: id, progress })
         })
         nonOkFailures.delete(url)
+        netLogStrikes.delete(url)
         emitPreloadEvent({ type: 'done', trackId: id })
         return id
       }
@@ -318,13 +329,29 @@ async function fillOne(
       if (fails >= NON_OK_DEAD_THRESHOLD) {
         deadUrls.add(url)
         emitPreloadEvent({ type: 'dead', trackId: id })
+        dbgDanger('playback', `preload dead: HTTP ${res.status} ×${fails} row=${id}`)
       } else {
         emitPreloadEvent({ type: 'evict', trackId: id })
+        dbgDanger('playback', `preload failed: HTTP ${res.status} row=${id} (strike ${fails}/${NON_OK_DEAD_THRESHOLD})`)
       }
-    } catch {
+    } catch (err) {
       // Abort/timeout/network: leave the slot uncached — the next tick's
       // window recomputes (a changed queue just re-ranks the priorities) and
       // retries this row only if it still belongs.
+      // Danger log, throttled (see netLogStrikes): the timeout/network
+      // discrimination is the flaky-connection evidence — a preloader fetch
+      // competing with the active stream shows up as repeated inactivity
+      // timeouts on the SAME rows (ledger #5's correlation question).
+      // Deliberately NO URL text: Subsonic URLs carry token/salt/password
+      // params — the dump-scrub rule applies to log messages too.
+      const strikes = (netLogStrikes.get(url) ?? 0) + 1
+      netLogStrikes.set(url, strikes)
+      if (strikes === 1 || strikes % 8 === 0) {
+        const reason = controller.signal.aborted
+          ? `timeout: no bytes for ${Math.round(fetchTimeoutMs / 1000)}s`
+          : `network: ${err instanceof Error ? err.message : String(err)}`
+        dbgDanger('playback', `preload ${reason} row=${id} (strike ${strikes})`)
+      }
       emitPreloadEvent({ type: 'evict', trackId: id })
     } finally {
       clearTimeout(timer)

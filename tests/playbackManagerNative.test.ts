@@ -493,3 +493,54 @@ test('_reconcileNativeReload skips when getState rejects', async () => {
   assert.equal(get(playbackState), 'stopped')
   assert.deepEqual(h.nt.adopted, [])
 })
+
+// ── refreshQueue divergence → ended chain (ledger #4) ──────────────────────
+// The native engine's refreshQueue DIVERGENT branch stops playback and fires
+// `onQueueEnded`; NativeTransport maps it to onTrackEnded(natural, fromError:
+// false) so the manager's A4 chain advances from JS's own authoritative queue.
+// The predicate is pinned in QueueDivergenceTests.swift and the transport
+// mapping in nativeTransport.test.ts — these pin the MANAGER-level outcome.
+
+test('divergence-ended advances from the JS-authoritative queue (1.4 chain)', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1', 't2'], [t1, t2], 0)
+  h.qm.nextTrack = t2
+  // The engine fires onQueueEnded (its refreshQueue saw a divergent snapshot);
+  // NativeTransport maps it to onTrackEnded(natural) → _onNativeTrackEnded is
+  // the manager entry (the transport→manager mapping is pinned in
+  // nativeTransport.test.ts) — the manager advances from ITS OWN queue.
+  await h.m._onNativeTrackEnded(false)
+
+  assert.ok(h.qm.calls.includes('advanceQueue'))
+  assert.equal(get(currentTrack)?.trackId, 't2')
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('divergence-ended at the tail stops cleanly (no phantom rows)', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1'], [t1], 0)
+  h.qm.nextTrack = null
+  await h.m._onNativeTrackEnded(false)
+
+  assert.equal(get(playbackState), 'stopped')
+  assert.ok(h.nt.calls.includes('disengage'))
+})
+
+test('divergence-ended resets the loop-one error cycle counter (healthy signal)', async () => {
+  // A divergence stop is a natural end — it must reset the track-keyed retry
+  // cycle count, not accumulate toward the loop-one bound (loop-one restart
+  // cycles from REAL errors are the accumulation path; this is not one).
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1', 't2'], [t1, t2], 0)
+  h.qm.nextTrack = t2
+  ;(h.m as any)._errorRestartCycles = 2
+  ;(h.m as any)._errorRestartTrackId = 't1'
+  await h.m._onNativeTrackEnded(false)
+
+  assert.equal(get(currentTrack)?.trackId, 't2')
+  assert.equal((h.m as any)._errorRestartCycles, 0)
+  assert.equal((h.m as any)._errorRestartTrackId, null)
+})

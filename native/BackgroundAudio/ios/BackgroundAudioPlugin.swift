@@ -426,9 +426,10 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     /// Structured engine events (2026-09-19): everything newer than the
-    /// caller's `sinceSeq` watermark, oldest first, capped at 400 from the
-    /// newest side. Danger + info always record; `debug`-level entries exist
-    /// only for domains the HUD enabled via `setDebugDomains`. MUST be in
+    /// caller's `sinceSeq` watermark, oldest first, capped from the newest
+    /// side at the ring capacity (1000). Danger + info always record;
+    /// `debug`-level entries exist only for persisted domains pushed via
+    /// `setDebugDomains` (manager boot push + HUD toggles). MUST be in
     /// `pluginMethods` above — Capacitor's getMethod gate silently drops
     /// unregistered names and the JS promise never resolves (§3.4 lesson).
     @objc func getDebugEvents(_ call: CAPPluginCall) {
@@ -439,10 +440,11 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    /// Opt-in verbose domains (HUD toggles): `debug`-level entries in these
-    /// domains start recording. Danger + info are unaffected. Not persisted
-    /// natively — the HUD re-pushes whenever it opens, so a fresh launch
-    /// boots at the danger+info baseline.
+    /// Opt-in verbose domains (manager boot push + HUD toggles):
+    /// `debug`-level entries in these domains start recording. Danger + info
+    /// are unaffected. The persisted selection is re-pushed from the manager's
+    /// init, so a fresh launch restores the user's domain selection (the
+    /// repro-session contract: recording must not require an open HUD).
     @objc func setDebugDomains(_ call: CAPPluginCall) {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
