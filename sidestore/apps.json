@@ -27,7 +27,8 @@
           "date": "2026-09-20T22:56:21.488Z",
           "localizedDescription": "Structured event log (native + web at parity) for full Copy-dump diagnosability; fixed the 1.2.28 crossfade wedge and same-track loop; observe-only web truncation gate; loop-one restart bound",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.29/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4928290
         },
         {
           "version": "1.2.28",
@@ -316,7 +317,7 @@
       "title": "mmdrome 1.2.29",
       "identifier": "ios-v1.2.29",
       "appID": "com.mmdrome.player",
-      "caption": "Structured event log (native + web at parity) for full Copy-dump diagnosability; fixed the 1.2.28 crossfade wedge and same-track loop; obser",
+      "caption": "Structured event log (native + web at parity) for full Copy-dump diagnosability; fixed the 1.2.28 crossfade wedge and same-track loop; observe-only web truncation gate; loop-one restart bound",
       "date": "2026-09-20T22:56:21.488Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
