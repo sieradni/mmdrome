@@ -8,6 +8,7 @@ import type { EqFilterConfig } from './eq/eqTypes'
 import type { EqPoint } from './eq/eqTypes'
 import { get } from 'svelte/store'
 import { currentTrack } from '../stores/appState'
+import { dbg, dbgAlways, dbgDanger } from './debugLog'
 import { snapPitchToSemitone } from './playbackCore/pitchSnap'
 import {
   evaluateCrossfadeGate,
@@ -249,11 +250,14 @@ class AudioManager {
   async reviveContext(): Promise<void> {
     if (!this._ctx) return
     if (this._ctx.state !== 'running') {
+      dbgAlways('engine', `bg-exit ctx revive (state=${this._ctx.state})`)
       try {
         await this._ctx.suspend()
         await this._ctx.resume()
+        dbgAlways('engine', `bg-exit ctx revived → ${this._ctx.state}`)
       } catch {
         /* Context irrecoverable — play() on element will use system audio */
+        dbgDanger('engine', `bg-exit ctx revive FAILED (state=${this._ctx.state}) — plain element audio`)
       }
     }
     this.reapplyEffects()
@@ -289,16 +293,68 @@ class AudioManager {
     })
   }
 
+  /** Web getDebugState (2026-09-20 parity with the native bridge method):
+   *  every decision input the web engine's crossfade/EQ/degrade paths key
+   *  on, as a plain object for the HUD dump. No file I/O, no allocation —
+   *  read-only field snapshot, safe at poll cadence. */
+  getEngineDebugState(): Record<string, unknown> {
+    const el = this._activeElement === 'a' ? this._elA : this._elB
+    const standby = this._activeElement === 'a' ? this._elB : this._elA
+    return {
+      webAudioReady: this._webAudioReady,
+      webAudioFailed: this._webAudioFailed,
+      ctxState: this._ctx?.state ?? null,
+      sampleRate: this._ctx?.sampleRate ?? null,
+      pipelineLatency: Number(this._pipelineLatency.toFixed(4)),
+      activeElement: this._activeElement,
+      activeSrc: Boolean(el?.src),
+      activePaused: el?.paused ?? null,
+      activeEnded: el?.ended ?? null,
+      activeTime: Number((el?.currentTime ?? 0).toFixed(3)),
+      activeDuration: Number((el?.duration ?? 0).toFixed(3)),
+      activeReadyState: el?.readyState ?? null,
+      // The MediaError dict — null when healthy. The web element error's
+      // one diagnosis, surfaced without waiting for the transport's danger log.
+      mediaError: el?.error ? `${el.error.code}: ${el.error.message}` : null,
+      standbySrc: Boolean(standby?.src),
+      crossfadeDuration: this._crossfadeDuration,
+      crossfadeCurve: this._crossfadeCurve,
+      transitionArmed: this._transitionArmed,
+      fadeInFlight: this._fadeInFlight,
+      nextTrackArmed: Boolean(this._nextTrackUrl),
+      nextTrackDuration: this._nextTrackDuration,
+      seekSuppressed: this._seekSuppressed,
+      // EQ surface: which path is live (worklet/biquad/convolver), so a
+      // "EQ sounds wrong" report shows the branch without reading code.
+      eqProcessorReady: this._eqProcessorReady,
+      eqBypassed: this._eqBypassed,
+      eqBandCount: this._eqFilterConfigs.length,
+      graphicEqMode: this._graphicEqMode,
+      convolverActive: this._shouldUseConvolverPath(),
+      soundTouchLive: this._stNodeLive,
+      soundTouchFallback: this._soundTouch !== null && !(this._soundTouch instanceof SoundTouchNode),
+      speed: this._speed,
+      pitchOctaves: this._pitchOctaves,
+      tapeMode: this._tapeMode,
+      replayGainMode: this._replayGainMode,
+    }
+  }
+
   async ensureWebAudioReady(): Promise<boolean> {
     if (this._webAudioFailed) return false
     if (this._webAudioReady) {
       if (this._ctx && this._ctx.state !== 'running') {
+        // Safari fires 'interrupted' and iOS suspends the ctx in background —
+        // a stuck suspended ctx is THE "audio died after lock screen" class.
+        dbgAlways('engine', `ctx revive attempt (state=${this._ctx.state})`)
         try {
           /* Work around iOS zombie AudioContext: suspend then resume resets state */
           await this._ctx.suspend()
           await this._ctx.resume()
+          dbgAlways('engine', `ctx revived → ${this._ctx.state}`)
         } catch {
           /* Context irrecoverable — new context can't reuse these audio elements */
+          dbgDanger('engine', `ctx revive FAILED (state=${this._ctx.state})`)
         }
       }
       return true
@@ -316,6 +372,9 @@ class AudioManager {
         const stNode = new SoundTouchNode({ context: this._ctx })
         this._soundTouch = stNode
       } catch {
+        // Silent degrade — pitch/tempo are dead but playback works. Previously
+        // invisible; a "speed/pitch stopped working" report needs this line.
+        dbgDanger('engine', 'SoundTouch worklet unavailable — pitch/tempo disabled (gain fallback)')
         this._soundTouch = this._ctx.createGain()
       }
 
@@ -361,7 +420,7 @@ class AudioManager {
         this._eqWorkletNode = new AudioWorkletNode(this._ctx, 'eq-processor')
         this._eqProcessorReady = true
       } catch {
-        console.warn('EQ worklet not supported, using BiquadFilterNode fallback')
+        dbgAlways('engine', 'EQ worklet unavailable — BiquadFilterNode fallback (stored configs preserved)')
         this._eqProcessorReady = false
       }
 
@@ -396,8 +455,12 @@ class AudioManager {
 
       this._webAudioReady = true
       this._measurePipelineLatency()
+      dbgAlways('engine', `web audio ready (ctx=${this._ctx.state} sr=${this._ctx.sampleRate} latency=${this._pipelineLatency.toFixed(3)}s eq=${this._eqProcessorReady ? 'worklet' : 'biquad'}${this._shouldUseConvolverPath() ? '+convolver' : ''})`)
     } catch (err) {
-      console.warn('WebAudio init failed, using direct playback', err)
+      // The whole-graph fallback: playback continues via raw element audio
+      // (no EQ/pitch/crossfade gains). This is the degrade the dump must show
+      // when "EQ stopped doing anything" is reported.
+      dbgDanger('engine', `WebAudio init FAILED — raw element playback fallback: ${err instanceof Error ? err.message : String(err)}`)
       this._cleanupWebAudio()
     }
 
@@ -555,6 +618,7 @@ class AudioManager {
     try {
       fresh = new SoundTouchNode({ context: this._ctx })
     } catch {
+      dbgDanger('engine', 'SoundTouch node REBUILD failed — gain fallback (pitch/tempo dead)')
       fresh = this._ctx.createGain()
     }
     if (fresh instanceof SoundTouchNode) {
@@ -755,6 +819,10 @@ class AudioManager {
     this._eqFilterConfigs = configs.map(c => ({ ...c }))
     this._graphicEqCurves = curves ? curves.map(c => c.map(p => ({ ...p }))) : []
 
+    // EQ branch switch (convolver path owns the signal when graphic/import
+    // is in play) — a branch flip is a whole-chain rewiring, not a param
+    // tweak: rare enough to always record.
+    dbgAlways('engine', `EQ import/graphic mode — convolver path (${configs.filter(c => c.enabled).length} bands)`)
     if (this._ctx) {
       this._updateConvolverBuffer()
       this._reconnectChain()
@@ -777,12 +845,14 @@ class AudioManager {
     // running as biquads. All-parametric configs keep the biquad/worklet
     // path (cheaper, per-band live gain updates).
     if (this._shouldUseConvolverPath()) {
+      dbgAlways('engine', `EQ convolver path (hybrid/graphic bands, ${configs.filter(c => c.enabled).length} enabled)`)
       this._updateConvolverBuffer()
       this._reconnectChain()
       return
     }
 
     if (this._eqProcessorReady && this._eqWorkletNode) {
+      dbg('engine', `EQ worklet path (${configs.filter(c => c.enabled).length} enabled)`)
       this._sendEqConfigToWorklet()
       this._reconnectChain()
       return
@@ -1000,6 +1070,9 @@ class AudioManager {
     const fadeDuration = this._crossfadeDuration
     const ctx = this._ctx
     const now = ctx.currentTime
+    // Fade lifecycle edges (parity with native's crossfade domain):
+    // start/complete here, abort-ish edges at the retire validity check.
+    dbgAlways('crossfade', `fade start ${this._activeElement}→${this._activeElement === 'a' ? 'b' : 'a'} dur=${fadeDuration}`)
 
     if (ctx.state === 'suspended') {
       ctx.resume()
@@ -1068,6 +1141,12 @@ class AudioManager {
       this._fadeInFlight = false
       if (shouldPauseOldElement(oldEl.ended, oldEl === this.activeElement)) {
         oldEl.pause()
+        dbg('crossfade', `retire old element (ended=${oldEl.ended})`)
+      } else {
+        // The validity check REFUSED the retire — the old element became
+        // active again (or ended) mid-fade. This is the "next song pauses"
+        // bug's guard firing: rare enough to always record.
+        dbgAlways('crossfade', 'retire SKIPPED — old element re-became active or ended mid-fade')
       }
     }, fadeDuration * 1000)
 

@@ -32,7 +32,10 @@ export interface JsDebugEvent {
   msg: string
 }
 
-const RING_LIMIT = 400
+const RING_LIMIT = 1000
+// Native-ring parity (NativeEventLog capacity 1000): a several-hour listening
+// session at ~5 info events per track must not evict the danger verdict the
+// post-mortem needs. The Copy dump caps what it embeds; the ring holds more.
 
 const entries: JsDebugEvent[] = []
 
@@ -80,7 +83,7 @@ export function isDebugEnabled(domain: string): boolean {
  *  + JS domain taxonomy) — the HUD toggle row renders from this. */
 export function knownDomains(): string[] {
   const native = ['loader', 'crossfade', 'queue', 'preload', 'engine', 'session', 'artwork', 'network']
-  const js = ['tags', 'sync', 'playback']
+  const js = ['tags', 'sync', 'playback', 'bg', 'global']
   const extras = [...readPersisted()]
   const query = readQueryDomains()
   if (Array.isArray(query)) extras.push(...query)
@@ -134,4 +137,30 @@ export function jsDebugEventsSnapshot(): JsDebugEvent[] {
 
 export function clearJsDebugEvents(): void {
   entries.length = 0
+}
+
+let globalCatchesInstalled = false
+
+/** Global catch-alls (2026-09-20): an UNCAUGHT exception or rejection was
+ *  invisible to diagnostics unless the HUD happened to be open when
+ *  console.error fired — a crash-shaped failure needs no console call to
+ *  exist. Installs `window.error` + `unhandledrejection` handlers that
+ *  record into the ring (danger) once per page load. Idempotent; safe to
+ *  call from any entry point. */
+export function installGlobalDebugCatches(): void {
+  if (globalCatchesInstalled) return
+  globalCatchesInstalled = true
+  try {
+    window.addEventListener('error', (e) => {
+      // Resource-load errors (img/script) also ride 'error' but carry no
+      // ErrorEvent info — record them only with a message.
+      const msg = e instanceof ErrorEvent ? e.message : String((e as any)?.target?.constructor?.name ?? 'resource error')
+      dbgDanger('global', `uncaught error: ${msg} @ ${e.filename ? `${e.filename.split('/').pop()}:${e.lineno}` : 'unknown'}`)
+    })
+    window.addEventListener('unhandledrejection', (e) => {
+      const r = e.reason
+      const name = r instanceof Error ? `${r.name}: ${r.message}` : String(r)
+      dbgDanger('global', `unhandled rejection: ${name}`)
+    })
+  } catch { /* non-browser import (tests) — nothing to catch */ }
 }

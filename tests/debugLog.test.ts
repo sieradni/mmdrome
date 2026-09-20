@@ -40,10 +40,13 @@ test('info and danger entries always record regardless of domains', () => {
 test('the ring is hard-capped from the oldest side', () => {
   clearJsDebugEvents()
   setEnabledDomains(['tags'])
-  for (let i = 0; i < 450; i++) dbg('tags', `e${i}`)
+  for (let i = 0; i < 1050; i++) dbg('tags', `e${i}`)
   const events = jsDebugEventsSnapshot()
-  assert.ok(events.length <= 400)
-  assert.equal(events[events.length - 1].msg, 'e449')
+  // 2026-09-20: raised 400 → 1000 for native-ring parity (a several-hour
+  // session must not evict the danger verdict the post-mortem needs).
+  assert.ok(events.length <= 1000)
+  assert.ok(events.length > 900)
+  assert.equal(events[events.length - 1].msg, 'e1049')
 })
 
 if (hasLocalStorage) {

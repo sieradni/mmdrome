@@ -140,6 +140,9 @@ export type BgEvent =
       loopMode: LoopMode
       hasNext: boolean
       hasUserQueue: boolean
+      /** The loop-one bound's counter (advanceDecider), snapshotted from
+       *  BgFacts by the adapter's `_endEvent` — read-only for the machine. */
+      errorRestartCycles?: number
     }
   | { type: 'loadRequest' }
   | { type: 'playCmd' }
@@ -222,6 +225,7 @@ function trackEnded(s: BgState, e: Extract<BgEvent, { type: 'trackEnded' }>): Bg
     loopMode: e.loopMode,
     hasNext: e.hasNext,
     hasUserQueue: e.hasUserQueue,
+    errorRestartCycles: e.errorRestartCycles,
   })
   switch (decision) {
     case 'park':
@@ -332,7 +336,9 @@ function exitFromBgPlaying(e: Extract<BgEvent, { type: 'exitBg' }>): BgTransitio
   }
   if (e.ended) {
     // The bg element ended while backgrounded — run the fg advance chain
-    // (correction 3: loop-one RESTARTS, via decideAdvance).
+    // (correction 3: loop-one RESTARTS, via decideAdvance). The loop-one
+    // bound needs the error-cycle count; a NATURAL end resets it upstream
+    // (the manager's load paths), so this site reads the live count.
     const decision = decideAdvance({
       fromError: false,
       parkArmed: false,

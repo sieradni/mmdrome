@@ -22,7 +22,7 @@ import { WebTransport } from './playbackCore/webTransport'
 import { WebBgTransport, type BgFacts, type LoadDecision } from './playbackCore/webBgTransport'
 import { NativeTransport } from './playbackCore/nativeTransport'
 import { trailBridge } from './playbackCore/nativeBridgeTrail'
-import { enabledDomainsList } from './debugLog'
+import { dbgDanger, enabledDomainsList } from './debugLog'
 import { reconcileReload } from './playbackCore/nativeReconcile'
 import { decideAdvance, type LoopMode } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
@@ -61,6 +61,34 @@ export class PlaybackManager {
    *  advance per chain. Without it a loop-one restart (or a wrap back onto
    *  the same track) would re-enter the rescue forever instead of stopping. */
   private _advancingPastUndecodable = false
+  /** Consecutive error-driven give-up cycles, KEYED to the track they
+   *  counted against (the loop-one bound, 2026-09-20 ledger item 1). The
+   *  key makes the count self-invalidating: a different current track starts
+   *  a fresh count at the next bump, so no explicit reset is needed on track
+   *  changes. A successful (re)start of the SAME track deliberately does NOT
+   *  reset — "started then died mid-play" is still the same pathological
+   *  cycle, and resetting on success would make the bound unreachable for
+   *  exactly the truncated-stream loop the bound exists for. Resets: a
+   *  natural end (the healthy signal) or a different-track bump. */
+  private _errorRestartCycles = 0
+  private _errorRestartTrackId: string | null = null
+
+  /** Counts one give-up against the CURRENT track (call BEFORE decideAdvance
+   *  reads the count in the same flow). */
+  private _bumpErrorCycle(): void {
+    const id = get(currentTrack)?.trackId ?? null
+    if (this._errorRestartTrackId !== id) {
+      this._errorRestartTrackId = id
+      this._errorRestartCycles = 0
+    }
+    this._errorRestartCycles++
+  }
+
+  /** The healthy signal: the track played to its natural end. */
+  private _resetErrorCycle(): void {
+    this._errorRestartCycles = 0
+    this._errorRestartTrackId = null
+  }
   /** Live-seek cadence (playbackCore/seekThrottle): engine seeks are heavy —
    *  native does cancel + AVAudioFile re-open + re-schedule per command, and
    *  web marks the user-seek latch + collapses any in-flight fade per command
@@ -227,6 +255,16 @@ export class PlaybackManager {
       },
     )
     this._bgTransport = bg
+    // The bg machine reports its end events through facts at decide-time; the
+    // manager records whether the LAST bg end was error-driven so the next
+    // bg 'restart' load counts as a give-up cycle (the loop-one bound).
+    bg.onEnded = (fromError) => {
+      if (fromError) {
+        this._bumpErrorCycle()
+      } else {
+        this._resetErrorCycle()
+      }
+    }
     bg.onLoad = (target, decision) => this._handleBgLoad(target, decision)
     bg.onStop = (target) => {
       if (target === 'fg') this._stopPlayback()
@@ -714,6 +752,13 @@ export class PlaybackManager {
   private _onNativeTrackChanged(trackId: string): void {
     if (this._handlingNativeEnd) return
     trailBridge('event', `jsTrackChanged ${trackId}`)
+    // The cycle counter is PER-TRACK: a genuine row CHANGE (different id than
+    // the one the counter was counting against) resets it; a same-id event
+    // (loop-one restart, replay) must NOT reset, or a pathological same-track
+    // restart loop would never reach the bound. The previous id is captured
+    // BEFORE the store update below overwrites it.
+    const prevTrackedId = get(currentTrack)?.trackId ?? null
+    const trackChanged = prevTrackedId !== null && prevTrackedId !== trackId
     // The previous track's preload tint is KEPT (2026-09-15, the "autoplayed
     // songs never show as preloaded, manual skips did" report). The engine
     // announces the OUTGOING row's terminal state (`done` when its bytes are
@@ -759,6 +804,10 @@ export class PlaybackManager {
     }
 
     setCurrentTrack(track)
+    // Engine-driven track CHANGE (a different row) = healthy signal: reset
+    // the loop-one error-cycle counter. Same-id events skip the reset (the
+    // comparison above used the PRE-update current track).
+    if (trackChanged) this._resetErrorCycle()
     this._qm.promoteActiveTrack()
     this._qm.replenishAutoQueue()
   }
@@ -776,13 +825,19 @@ export class PlaybackManager {
     // reactions to engine events — recording the DECISION (not just the raw
     // event) tells the HUD dump whether the A4 chain itself advanced.
     trailBridge('event', `jsEndHandler fromError=${fromError}`)
+    if (fromError) this._bumpErrorCycle()
     const decision = decideAdvance({
       fromError,
       parkArmed: false,
       loopMode: get(loopMode),
       hasNext: this._hasNextQueued(),
       hasUserQueue: get(queue).userQueue.length > 0,
+      errorRestartCycles: this._errorRestartCycles,
     })
+    // A natural end is the healthy signal: the cycle counter resets — but
+    // ONLY here (not on a same-track success reload, which is the loop-one
+    // retry cycle itself and must keep accumulating to reach the bound).
+    if (!fromError) this._resetErrorCycle()
 
     this._handlingNativeEnd = true
     try {
@@ -898,6 +953,10 @@ export class PlaybackManager {
     }
 
     const result = await this._webTransport!.playLoaded(track)
+    // NO success reset here: "started then died mid-play" is the same
+    // pathological cycle (a truncated stream starts fine and ends early),
+    // so a same-track successful start must not clear the count. The reset
+    // is the NATURAL END's job (the fromError handlers call _resetErrorCycle).
     if (!result.started) {
       // AbortError = a newer load superseded this one (rapid skip): it owns
       // the outcome — writing stopped here would clobber the new track's
@@ -913,6 +972,7 @@ export class PlaybackManager {
       // Loop-one needs no flag case: its restart rewinds in place and never
       // re-enters _loadAndPlay, so it terminates by construction.
       if (result.errorName === 'NotSupportedError' && !this._advancingPastUndecodable && !this._handlingEnd) {
+        dbgDanger('playback', `undecodable bytes — advancing fromError track=${track.trackId}`)
         this._advancingPastUndecodable = true
         try {
           await this._onTrackEnded(true)
@@ -931,6 +991,7 @@ export class PlaybackManager {
       // alive, and a device that cannot start audio stops one track later
       // rather than sitting silent forever with zero feedback.
       if (result.errorName === 'PlaySettleTimeout' && !this._advancingPastUndecodable && !this._handlingEnd) {
+        dbgDanger('playback', `play never settled (stalled watch) — advancing fromError track=${track.trackId}`)
         this._advancingPastUndecodable = true
         try {
           await this._onTrackEnded(true)
@@ -1107,13 +1168,16 @@ export class PlaybackManager {
 
     // ONE decideAdvance for the whole chain (A4) — the queue facts are computed
     // BEFORE any mutation. park is unreachable here (handled above).
+    if (fromError) this._bumpErrorCycle()
     const decision = decideAdvance({
       fromError,
       parkArmed: false,
       loopMode: opts.loopMode ?? get(loopMode),
       hasNext: this._hasNextQueued(),
       hasUserQueue: get(queue).userQueue.length > 0,
+      errorRestartCycles: this._errorRestartCycles,
     })
+    if (!fromError) this._resetErrorCycle()
 
     this._handlingEnd = true
     try {
@@ -1176,6 +1240,10 @@ export class PlaybackManager {
       hasNext: q.activeIndex >= 0 && this._hasNextQueued(),
       hasUserQueue: q.userQueue.length > 0,
       duration: get(currentTrack)?.duration ?? 0,
+      // The loop-one error-cycle bound rides the same facts snapshot the
+      // machine's decideAdvance consults (bg advance decisions are decided
+      // inside the machine, not in this manager's handlers).
+      errorRestartCycles: this._errorRestartCycles,
     }
   }
 
@@ -1263,6 +1331,9 @@ export class PlaybackManager {
       // the resolution to the fg path) — the machine already decided.
       return
     }
+
+    // NO success reset (see _loadAndPlay): a bg load that starts and then
+    // dies is the same cycle the bound counts. Natural ends reset.
 
     this._qm.promoteActiveTrack()
     this._qm.replenishAutoQueue()

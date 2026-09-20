@@ -46,6 +46,7 @@
 
 import { transitionBg, type BgCommand, type BgEvent, type BgState } from './bgStateMachine'
 import { RetryPolicy } from './retryPolicy'
+import { dbg, dbgAlways, dbgDanger } from '../debugLog'
 import type { LoopMode } from './advanceDecider'
 
 export type LoadDecision = 'restart' | 'advance' | 'wrap' | 'reload'
@@ -70,6 +71,11 @@ export interface BgFacts {
   hasUserQueue: boolean
   /** Metadata duration of the current track (0 = unknown). */
   duration: number
+  /** Consecutive error-driven give-ups for the current track — the loop-one
+   *  bound's counter (advanceDecider). The bg retry cap is 0, so a bg fromError
+   *  event IS the give-up; the manager's `_resolveBgLoad` reload bumps the
+   *  count when the reload also fails. Read-only for the machine. */
+  errorRestartCycles?: number
 }
 
 export interface WebBgDeps {
@@ -109,6 +115,9 @@ export class WebBgTransport {
   onStop: ((target: 'fg' | 'bg') => void) | null = null
   onParked: ((trackId: string) => void) | null = null
   onTick: ((position: number) => void) | null = null
+  /** Every trackEnded event the machine processes, with its fromError flag —
+   *  the manager's loop-one bound counts give-up cycles from this (2026-09-20). */
+  onEnded: ((fromError: boolean) => void) | null = null
 
   constructor(engine: WebBgEngine, deps: WebBgDeps, timers: WebBgTimers) {
     this._engine = engine
@@ -245,10 +254,16 @@ export class WebBgTransport {
     // The enterBg gate: only a genuinely playing fg element hands off (parity
     // with the old `_enterBackground` guard). A re-hide in any bg state is
     // dropped by the machine — never re-runs the swap.
-    if (fg.paused || fg.ended || !fg.src) return
+    if (fg.paused || fg.ended || !fg.src) {
+      dbg('bg', `hide dropped (paused=${fg.paused} ended=${fg.ended} src=${Boolean(fg.src)}) state=${this._state.name}`)
+      return
+    }
     const t = transitionBg(this._state, { type: 'enterBg' })
     if (t.state.name !== 'handoff') return
     this._state = t.state
+    // The handoff is the PWA's most fragile machinery — its engage edge is
+    // always-recorded (parity with native's interruption/session events).
+    dbgAlways('bg', `enter bg: swap started at fg pos=${fg.currentTime.toFixed(1)}`)
     this._startSwap()
   }
 
@@ -280,9 +295,11 @@ export class WebBgTransport {
     if (!this.engaged) {
       // Old parity: visible with a non-running context revives it even when
       // the bg swap never engaged (a failed bg play).
+      dbg('bg', `visible while not engaged (state=${this._state.name}) — revive only`)
       await this._engine.reviveContext().catch(() => {})
       return
     }
+    dbgAlways('bg', `exit bg from ${this._state.name}`)
     // A dead AudioContext must never kill the exit — the fg element plays via
     // plain element audio if the context is irrecoverable.
     await this._engine.reviveContext().catch(() => {})
@@ -328,6 +345,7 @@ export class WebBgTransport {
 
   private readonly _onError = (): void => {
     if (!this.engaged || !this._el) return
+    dbgDanger('bg', `bg element error while ${this._state.name}`)
     // bg retry cap is 0 (1.2): the FIRST error is a give-up — no backoff.
     if (this._retry.onError().kind !== 'give-up') return
     this._retry.reset()
@@ -336,6 +354,9 @@ export class WebBgTransport {
 
   private _endEvent(fromError: boolean): BgEndEvent {
     const f = this._deps.facts()
+    if (fromError) {
+      dbgDanger('bg', `bg track ended fromError track=${f.currentTrackId ?? 'null'}`)
+    }
     return {
       type: 'trackEnded',
       trackId: f.currentTrackId,
@@ -344,6 +365,7 @@ export class WebBgTransport {
       loopMode: f.loopMode,
       hasNext: f.hasNext,
       hasUserQueue: f.hasUserQueue,
+      errorRestartCycles: f.errorRestartCycles,
     }
   }
 
@@ -351,6 +373,9 @@ export class WebBgTransport {
     const prev = this._state
     const t = transitionBg(prev, event)
     this._state = t.state
+    // The raw end event reaches the manager BEFORE the command executes —
+    // the load it triggers must read the post-bump cycle count.
+    if (event.type === 'trackEnded') this.onEnded?.(event.fromError)
     if (t.command) await this._executeCommand(t.command, event, prev)
     // Park extras fire only on the transition INTO park-pending — a re-trip
     // that stays parked must not re-report the park.
@@ -408,6 +433,9 @@ export class WebBgTransport {
         this._el.currentTime = Math.min(pos, f.duration - PARK_TAIL)
       }
     }
+    // The park verdict is a sleep-timer decision — always recorded so a
+    // "sleep timer paused at the wrong moment" report is answerable.
+    dbgAlways('bg', `park at track end track=${f.currentTrackId ?? 'null'}`)
     this.onParked?.(f.currentTrackId ?? '')
   }
 
@@ -415,12 +443,22 @@ export class WebBgTransport {
     if (!this._el) return false
     try {
       await this._el.play()
-      if (token !== this._settleToken) return false
+      // A token mismatch is a DROPPED settle — the machine never saw this
+      // play(). This was fully silent before 2026-09-20; a handoff race that
+      // strands the machine now shows its exact token pair.
+      if (token !== this._settleToken) {
+        dbg('bg', `play settle DROPPED (stale token ${token} vs ${this._settleToken})`)
+        return false
+      }
       await this._dispatch({ type: 'bgStarted' })
       if (this._state.name === 'bg-playing') this._startTick()
       return true
-    } catch {
-      if (token !== this._settleToken) return false
+    } catch (err) {
+      if (token !== this._settleToken) {
+        dbg('bg', `play rejection dropped (stale token ${token} vs ${this._settleToken}): ${err instanceof Error ? err.name : String(err)}`)
+        return false
+      }
+      dbgDanger('bg', `bg play failed: ${err instanceof Error ? err.name : String(err)}`)
       // A genuine failure: the mirrored (dead) src must not outlive the failed
       // load on the fg element. A dropped settle (token bumped) keeps the
       // mirror — the fg element holds the CURRENT track's src by design.

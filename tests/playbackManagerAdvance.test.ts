@@ -641,3 +641,65 @@ test('control: promote with NO skipped prefix still promotes and refills cleanly
   assert.ok(qAfter.autoQueue.includes('navidrome-t1') || qAfter.autoQueue.includes('navidrome-t2'))
   assert.deepEqual(qAfter.recentTrackIds, [])
 })
+
+// The loop-one bound (2026-09-20 ledger item 1): a track that starts
+// successfully then dies (the truncated-stream cycle) must STOP after
+// LOOP_ONE_ERROR_CYCLE_LIMIT give-ups instead of restarting forever.
+// Note a successful same-track start does NOT reset the counter — resetting
+// on success would make the bound unreachable for exactly this cycle.
+test('loop-one bounds the restart cycle of a track that starts then errors', async () => {
+  const h = makeHarness()
+  resetStores()
+  loopMode.set('one')
+  library.set([t1])
+  queue.set({ userQueue: ['navidrome-t1'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(t1)
+  setPlaybackState('playing')
+
+  // The fake transport models the truncated stream: every playLoaded "starts"
+  // (the element plays), so the manager's success path runs, but the track
+  // then errors out — the fromError end fires again and again.
+  await h.m._onTrackEnded(true) // cycle 1: restart
+  assert.equal(get(playbackState), 'playing')
+  await h.m._onTrackEnded(true) // cycle 2: restart
+  assert.equal(get(playbackState), 'playing')
+  await h.m._onTrackEnded(true) // cycle 3: AT the limit → stop
+  assert.equal(get(playbackState), 'stopped')
+  assert.equal(get(currentTrack), null)
+})
+
+test('loop-one healthy loop is never affected by the bound (natural ends reset)', async () => {
+  const h = makeHarness()
+  resetStores()
+  loopMode.set('one')
+  library.set([t1])
+  queue.set({ userQueue: ['navidrome-t1'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(t1)
+  setPlaybackState('playing')
+
+  // Alternate: an error cycle (restart), then a natural end (reset), repeat —
+  // the bound must never trip because each natural end clears the count.
+  await h.m._onTrackEnded(true)
+  assert.equal(get(playbackState), 'playing')
+  await h.m._onTrackEnded(false)
+  assert.equal(get(playbackState), 'playing')
+  await h.m._onTrackEnded(true)
+  assert.equal(get(playbackState), 'playing')
+  await h.m._onTrackEnded(false)
+  assert.equal(get(playbackState), 'playing')
+  await h.m._onTrackEnded(true)
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('an error advance outside loop-one is not blocked by a stale cycle count', async () => {
+  const h = makeHarness()
+  resetStores()
+  library.set([t1, t2])
+  queue.set({ userQueue: ['navidrome-t1', 'navidrome-t2'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+
+  // First track dies with error (cycle counts), the advance moves to t2 —
+  // a different track, so the next error cycle starts fresh and advances.
+  await h.m._onTrackEnded(true)
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t2')
+  assert.equal(get(playbackState), 'playing')
+})

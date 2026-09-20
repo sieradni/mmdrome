@@ -12,6 +12,10 @@ class FakeEl {
   src = ''
   currentTime = 0
   readyState = 0
+  /** Metadata duration (the truncation-observe gate's input; NaN = unknown). */
+  duration = NaN
+  /** MediaError dict stand-in (null = healthy). */
+  error: { code: number; message: string } | null = null
   private _bufferedEnd = 0
   /** Simulated buffered extent; elProgress reads it via the buffered shim. */
   set bufferedEnd(v: number) { this._bufferedEnd = v }
@@ -387,4 +391,72 @@ test('destroy unwires the engine, removes listeners, cancels the retry timer and
   assert.equal(engine.nextTrackUrl, null)
   timers.fireAll()
   assert.deepEqual(retried, [])
+})
+// ── observability pins (2026-09-20): the transport's decisions land in the
+// debugLog ring so a WEB dump verifies the same assumptions a native one
+// does. The ring is module state — snapshot/drain around each test.
+
+test('element error records the MediaError dict + retry verdict in the ring', async () => {
+  const { jsDebugEventsSnapshot, clearJsDebugEvents } = await import('../src/lib/debugLog')
+  clearJsDebugEvents()
+  const { t, engine, timers, retried } = makeTransport()
+  await t.init()
+  await t.playLoaded({ trackId: 't1' })
+  engine.a.error = { code: 2, message: 'network stall' }
+  engine.a.dispatch('error')
+  const events = jsDebugEventsSnapshot()
+  const danger = events.filter((e) => e.level === 'danger')
+  assert.ok(danger.some((e) => e.msg.includes('MEDIA_ERR_NETWORK') && e.msg.includes('network stall')), JSON.stringify(danger))
+  const infos = events.filter((e) => e.level === 'info')
+  assert.ok(infos.some((e) => e.msg.includes('retry 1/3')), JSON.stringify(infos))
+  timers.fireAll()
+  assert.deepEqual(retried, ['t1'])
+  clearJsDebugEvents()
+})
+
+test('natural ended with a large shortfall logs the observe-only truncation verdict (no behavior change)', async () => {
+  const { jsDebugEventsSnapshot, clearJsDebugEvents } = await import('../src/lib/debugLog')
+  clearJsDebugEvents()
+  const { t, engine, ended } = makeTransport()
+  await t.init()
+  await t.playLoaded({ trackId: 't1' })
+  // The truncated-stream shape: ended fires at 55 s while the metadata
+  // duration still claims 138 s (the LDM cut-mid-body case).
+  engine.a.currentTime = 55.2
+  engine.a.duration = 138
+  engine.a.dispatch('ended')
+  assert.deepEqual(ended, [{ kind: 'natural', fromError: false }], 'observe-only: the advance is NOT suppressed')
+  const events = jsDebugEventsSnapshot()
+  assert.ok(events.some((e) => e.level === 'danger' && e.msg.includes('ended EARLY by 82.8')), JSON.stringify(events))
+  clearJsDebugEvents()
+})
+
+test('natural ended at the metadata duration logs nothing (healthy path stays quiet)', async () => {
+  const { jsDebugEventsSnapshot, clearJsDebugEvents } = await import('../src/lib/debugLog')
+  clearJsDebugEvents()
+  const { t, engine, ended } = makeTransport()
+  await t.init()
+  await t.playLoaded({ trackId: 't1' })
+  engine.a.currentTime = 179.95
+  engine.a.duration = 180
+  engine.a.dispatch('ended')
+  assert.deepEqual(ended, [{ kind: 'natural', fromError: false }])
+  const events = jsDebugEventsSnapshot()
+  assert.ok(!events.some((e) => e.msg.includes('ended EARLY')), JSON.stringify(events))
+  clearJsDebugEvents()
+})
+
+test('natural ended with unknown duration logs nothing (no false positive)', async () => {
+  const { jsDebugEventsSnapshot, clearJsDebugEvents } = await import('../src/lib/debugLog')
+  clearJsDebugEvents()
+  const { t, engine, ended } = makeTransport()
+  await t.init()
+  await t.playLoaded({ trackId: 't1' })
+  engine.a.currentTime = 10
+  engine.a.duration = NaN
+  engine.a.dispatch('ended')
+  assert.deepEqual(ended, [{ kind: 'natural', fromError: false }])
+  const events = jsDebugEventsSnapshot()
+  assert.ok(!events.some((e) => e.msg.includes('ended EARLY')), JSON.stringify(events))
+  clearJsDebugEvents()
 })

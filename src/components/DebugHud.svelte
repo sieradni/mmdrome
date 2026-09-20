@@ -34,7 +34,7 @@
   // 2026-09-17: section collapse state — the state dumps are bulky; the trail
   // and log are the diagnosis surfaces and stay open. Sections persist only
   // for the session (no Dexie: debug-only preference).
-  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false, events: false })
+  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false, events: false, jsEvents: true })
   // Structured native events (2026-09-19): the engine's danger verdicts
   // (premature drops, evictions, aborts, stale drops) land here via the
   // incremental `getDebugEvents` poll — a bug that fired BEFORE the HUD was
@@ -219,6 +219,10 @@
       nativeEvents: nativeEvents.slice(-250),
       jsEvents: jsDebugEventsSnapshot().slice(-120),
       debugDomains: domains,
+      // Web-only (null on native): the engine's decision inputs — ctx state,
+      // element error, crossfade/fade state, EQ branch — the getDebugState
+      // parity so a web dump verifies the same assumptions a native one does.
+      engineDebug,
       thumbnails: getThumbDebug(),
       settings: scrubSettings(st8 as unknown as Record<string, unknown>),
     }
@@ -306,6 +310,34 @@
   let nativeEventsLabel = $derived.by(() => {
     void jsTick
     return nativeEventsDropped > 0 ? ` · ring dropped ${nativeEventsDropped}` : ''
+  })
+  // JS-side structured events (debugLog ring — the web engine's danger/info
+  // verdicts + opt-in verbose entries), rendered with the SAME row shape as
+  // the native events panel so a cross-platform dump reads identically.
+  let jsEventRows = $derived.by(() => {
+    void jsTick
+    const events = jsDebugEventsSnapshot()
+    const first = events[0]?.t ?? 0
+    return events.slice(-120).map((e) => ({
+      cls: e.level === 'danger' ? 'text-red-300' : e.level === 'debug' ? 'text-white/40' : '',
+      line: `+${((e.t - first) / 1000).toFixed(1)}s ${e.level === 'danger' ? '⚠' : e.level === 'info' ? '·' : ' '} [${e.domain}] ${e.msg}`,
+    }))
+  })
+  let jsEventsLabel = $derived.by(() => {
+    void jsTick
+    const events = jsDebugEventsSnapshot()
+    const dangers = events.filter((e) => e.level === 'danger').length
+    return dangers > 0 ? ` · ${dangers} danger` : ''
+  })
+  // Web engine snapshot (getEngineDebugState — the getDebugState parity):
+  // polled per tick so the WEB panel shows the engine's decision inputs.
+  let engineDebug = $derived.by(() => {
+    void jsTick
+    try {
+      return audioManager.getEngineDebugState()
+    } catch {
+      return null
+    }
   })
   // Thumb loader counters sampled per tick (the snapshot is a plain read of
   // module state; identity changes each poll so the section re-renders).
@@ -399,6 +431,27 @@
         {/if}
       </div>
 
+      <!-- Structured JS events (2026-09-20): the web engine's verdicts in
+           the SAME shape as NATIVE EVENTS — element errors, retry verdicts,
+           ended-early evidence, bg handoff decisions, global catch-alls.
+           On native this panel mirrors the few JS-side domain entries. -->
+      <div class="mb-1 rounded bg-white/5 p-2">
+        <button onclick={() => toggleSection('jsEvents')} class="mb-1 flex w-full items-center justify-between font-bold text-yellow-300">
+          <span>{openSections.jsEvents ? '▾' : '▸'} JS EVENTS ({jsDebugEventsSnapshot().length}{jsEventsLabel})</span>
+        </button>
+        {#if openSections.jsEvents}
+          <div class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-[10px]">
+            {#each jsEventRows as r}
+              <div class="border-t border-white/5 py-0.5 {r.cls}">
+                {r.line}
+              </div>
+            {:else}
+              <div class="text-white/30">no events yet — web danger/info record always; verbose needs a domain toggle</div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
       <!-- Opt-in verbose domains: toggling persists to localStorage and
            pushes to the native engine's write-time gate. Danger + info are
            ALWAYS recorded — these chips only add the verbose `debug` flow
@@ -464,10 +517,23 @@
       {:else}
         <div class="mb-1 rounded bg-white/5 p-2">
           <button onclick={() => toggleSection('native')} class="mb-1 flex w-full items-center justify-between font-bold text-yellow-300">
-            <span>{openSections.native ? '▾' : '▸'} WEB audioManager</span>
+            <span>{openSections.native ? '▾' : '▸'} WEB engine</span>
           </button>
           {#if openSections.native}
-            <div>ctx: {audioManager.ctx?.state ?? 'no ctx'} ready:{String(audioManager.webAudioReady)} speed:{audioManager.speed} pitch:{audioManager.pitchOctaves}</div>
+            {#if engineDebug}
+              <div class="text-[10px]">
+                <div>ctx: {engineDebug.ctxState ?? 'no ctx'} ready:{String(engineDebug.webAudioReady)} failed:{String(engineDebug.webAudioFailed)} sr:{engineDebug.sampleRate ?? '—'}</div>
+                <div>active: {engineDebug.activeElement} src:{String(engineDebug.activeSrc)} paused:{String(engineDebug.activePaused)} ended:{String(engineDebug.activeEnded)}</div>
+                <div>time: {engineDebug.activeTime} / {engineDebug.activeDuration} rs:{engineDebug.activeReadyState}{engineDebug.mediaError ? ` ⚠ ${engineDebug.mediaError}` : ''}</div>
+                <div>fade: dur:{engineDebug.crossfadeDuration} armed:{String(engineDebug.transitionArmed)} inFlight:{String(engineDebug.fadeInFlight)} target:{String(engineDebug.nextTrackArmed)} seekSup:{String(engineDebug.seekSuppressed)}</div>
+                <div>eq: {engineDebug.convolverActive ? 'convolver' : engineDebug.eqProcessorReady ? 'worklet' : 'biquad'} bands:{engineDebug.eqBandCount} bypass:{String(engineDebug.eqBypassed)} graphic:{String(engineDebug.graphicEqMode)}</div>
+                <div>st: live:{String(engineDebug.soundTouchLive)} fallback:{String(engineDebug.soundTouchFallback)} speed:{engineDebug.speed} pitch:{engineDebug.pitchOctaves} tape:{String(engineDebug.tapeMode)}</div>
+                <div>rg: {engineDebug.replayGainMode} latency: {engineDebug.pipelineLatency}s</div>
+              </div>
+            {:else}
+              <div class="text-[10px] text-white/30">engine snapshot unavailable</div>
+            {/if}
+            <div class="mt-1 border-t border-white/10 pt-1"></div>
             <div>active: {audioManager.activeElement?.src ? 'src yes' : 'no src'} paused:{String(audioManager.activeElement?.paused)} ended:{String(audioManager.activeElement?.ended)} time:{audioManager.activeElement?.currentTime?.toFixed(2) ?? '—'}</div>
             <div>gainA:{audioManager.gainA?.gain.value.toFixed(2) ?? '—'} gainB:{audioManager.gainB?.gain.value.toFixed(2) ?? '—'} preamp:{audioManager.preamp?.gain.value.toFixed(2) ?? '—'}</div>
           {/if}

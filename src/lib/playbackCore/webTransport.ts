@@ -24,7 +24,35 @@
  */
 
 import { RetryPolicy, type RetryPolicyConfig } from './retryPolicy'
+import { dbgAlways, dbgDanger } from '../debugLog'
+import { assessEnded } from './truncationEvidence'
 import type { PlaybackTransport, PlayLoadedResult, ReplayGainFields, TransportEndedEvent, TransportTrack } from './types'
+
+/** The HTMLMediaElement error dictionary (mediaError.code) — the ONE
+ *  diagnostic an element error carries. Names map to the user-meaningful
+ *  failure classes: 1 aborted, 2 network, 3 decode, 4 src-not-supported. */
+const MEDIA_ERROR_NAMES: Record<number, string> = {
+  1: 'MEDIA_ERR_ABORTED',
+  2: 'MEDIA_ERR_NETWORK',
+  3: 'MEDIA_ERR_DECODE',
+  4: 'MEDIA_ERR_SRC_NOT_SUPPORTED',
+}
+
+function mediaErrorLabel(el: HTMLMediaElement): string {
+  const err = el.error
+  if (!err) return 'error event without MediaError'
+  const name = MEDIA_ERROR_NAMES[err.code] ?? `MEDIA_ERR_${err.code}`
+  return `${name} (${err.message || 'no message'})`
+}
+
+/** Truncation evidence at the `ended` boundary (OBSERVE-ONLY, 2026-09-20):
+ *  the web mirror of the native premature-completion gate, logging without
+ *  acting. A stream cut mid-body fires `ended` when the DATA runs out while
+ *  the container's metadata duration still claims full length — the same
+ *  "where is the rest of the audio" question the native elapsed gate asks.
+ *  Margin 1.5 s absorbs codec delay-presentation padding and the metadata
+ *  duration's rounding; a legit end lands within milliseconds of duration. */
+const TRUNCATION_MARGIN_S = 1.5
 
 /** The audioManager surface the transport drives. */
 export interface WebTransportEngine {
@@ -155,7 +183,18 @@ export class WebTransport implements PlaybackTransport {
         // and a slow network is excluded by the watch's progress check.
         errorName = err instanceof Error ? err.name : null
         playAttempt++
-        if (playAttempt >= 3) return { started: false, errorName }
+        // Parity with the native transport's error events (2026-09-20): the
+        // rejection name + attempt are the decision input the manager routes
+        // on — a web skip report must show them where native shows its
+        // engine error + retry verdict.
+        dbgDanger(
+          'playback',
+          `play() rejected attempt ${playAttempt}/3 name=${errorName ?? 'unknown'} track=${track.trackId}`,
+        )
+        if (playAttempt >= 3) {
+          dbgAlways('playback', `play() abandoned after 3 attempts track=${track.trackId} lastError=${errorName ?? 'unknown'}`)
+          return { started: false, errorName }
+        }
         await this._timers.sleep(Math.pow(2, playAttempt) * 500)
       }
     }
@@ -193,6 +232,10 @@ export class WebTransport implements PlaybackTransport {
           }
           stalledWindows++
           if (stalledWindows >= PLAY_WATCH_STALLED_WINDOWS) {
+            // The watch's verdict must be verifiable: which fingerprint
+            // stalled twice decides whether this was a genuine hang or a
+            // progress fingerprint that moved too subtly to count.
+            dbgDanger('playback', `play() stalled: no element progress across ${PLAY_WATCH_STALLED_WINDOWS} windows (state=${state})`)
             finish(() => reject(Object.assign(new Error('play() pending with no element progress'), { name: 'PlaySettleTimeout' })))
             return
           }
@@ -220,6 +263,14 @@ export class WebTransport implements PlaybackTransport {
     rg?: ReplayGainFields,
     nextDuration?: number,
   ): void {
+    // Parity with the native 'crossfade' domain (fade start/abort): the arm
+    // + cancel decisions are the web fade lifecycle's two visible edges.
+    if (targetId !== this._crossfadeTargetId) {
+      dbgAlways(
+        'crossfade',
+        targetId !== null ? `fade armed target=${targetId} dur=${nextDuration ?? '?'}` : `fade disarmed (was ${this._crossfadeTargetId ?? 'none'})`,
+      )
+    }
     this._crossfadeTargetId = targetId
     this._armedRg = rg ?? null
     this._engine.setNextTrack(url, rg?.linearGain ?? undefined, nextDuration)
@@ -236,6 +287,10 @@ export class WebTransport implements PlaybackTransport {
     const rg = this._armedRg
     this._crossfadeTargetId = null
     this._armedRg = null
+
+    // Parity with the native 'crossfade' info ("fade complete track=..."):
+    // the switch IS the web fade's completion event.
+    dbgAlways('crossfade', `fade complete target=${targetId ?? 'null (cancelled arm)'}`)
 
     // RG refresh on switch (1.10-3): the standby node already holds the armed
     // linear gain (A7), but the engine's current track/album fields still
@@ -267,6 +322,19 @@ export class WebTransport implements PlaybackTransport {
   private readonly _onEnded = (e: Event): void => {
     const target = e.target as HTMLAudioElement
     if (target !== this._engine.activeElement) return
+    // OBSERVE-ONLY truncation gate (2026-09-20, ledger item #2's first step):
+    // ended + currentTime well short of the metadata duration is the web's
+    // cut-position-independent truncation evidence — the same question the
+    // native elapsed gate asks at completion time. Logged, never acted on:
+    // acting (drop + bounded retry like native) waits for field evidence.
+    const verdict = assessEnded({
+      currentTime: target.currentTime,
+      duration: target.duration,
+      marginSeconds: TRUNCATION_MARGIN_S,
+    })
+    if (verdict.kind === 'ended-early') {
+      dbgDanger('playback', `ended EARLY by ${verdict.shortfallSeconds}s (pos=${target.currentTime.toFixed(1)} dur=${target.duration.toFixed(1)}) — observe-only, advancing`)
+    }
     this._resetRetry()
     this.onTrackEnded?.({ kind: 'natural', fromError: false })
   }
@@ -287,13 +355,19 @@ export class WebTransport implements PlaybackTransport {
 
   private _handleElementError(): void {
     if (this._lastTrackId === null) return
+    // The MediaError dict is the ONE diagnosis an element error carries —
+    // record it verbatim (parity with native's engine-error events).
+    dbgDanger('playback', `element error: ${mediaErrorLabel(this._engine.activeElement)} track=${this._lastTrackId}`)
     if (this._retryTrackId !== this._lastTrackId) this._resetRetry()
     const decision = this._retry.onError()
     if (decision.kind === 'give-up') {
+      // Parity with the native trail's retryGiveUp marker.
+      dbgAlways('playback', `retry give-up track=${this._lastTrackId} — advancing fromError`)
       this._resetRetry()
       this.onTrackEnded?.({ kind: 'natural', fromError: true })
       return
     }
+    dbgAlways('playback', `retry ${decision.attempt}/${WEB_RETRY.maxAttempts} in ${decision.delayMs}ms track=${this._lastTrackId}`)
     this._retryTrackId = this._lastTrackId
     this._retryCancel = this._timers.schedule(decision.delayMs, () => {
       this._retryCancel = null

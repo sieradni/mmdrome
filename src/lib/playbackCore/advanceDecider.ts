@@ -30,6 +30,15 @@ export type LoopMode = 'none' | 'one' | 'all'
 
 export type AdvanceDecision = 'park' | 'restart' | 'advance' | 'wrap' | 'stop'
 
+/** Error-driven give-up cycles allowed under loop-one before the restart
+ *  loop is declared pathological and playback stops (2026-09-20, the
+ *  ledger's loop-one edge): a permanently broken track under loop-one
+ *  otherwise restarts forever (give-up → restart → error → give-up …).
+ *  3 ≈ three full retry rounds (native 2 retries/cycle, web 3) — generous
+ *  for transient failures, bounded for a dead file. The count resets on
+ *  any natural end or track change (healthy loop-one never accumulates). */
+export const LOOP_ONE_ERROR_CYCLE_LIMIT = 3
+
 export interface AdvanceDecisionInput {
   /** True when the advance is driven by a retry-exhausted stream error — skips the park. */
   fromError: boolean
@@ -42,11 +51,22 @@ export interface AdvanceDecisionInput {
   hasNext: boolean
   /** True when the user queue is non-empty (loop-all wrap target). */
   hasUserQueue: boolean
+  /** Consecutive error-driven give-ups for the CURRENT track (0 = fresh;
+   *  the caller resets on any natural end or track change). Only consulted
+   *  under loop-one — outside it an error advance moves to a different
+   *  row, so the failure cycle cannot repeat. */
+  errorRestartCycles?: number
 }
 
 export function decideAdvance(input: AdvanceDecisionInput): AdvanceDecision {
   if (!input.fromError && input.parkArmed) return 'park'
-  if (input.loopMode === 'one') return 'restart'
+  if (input.loopMode === 'one') {
+    // The loop-one bound (LOOP_ONE_ERROR_CYCLE_LIMIT doc): the count only
+    // grows on fromError events — the caller bumps it BEFORE this call in
+    // the same flow — so reaching the limit here means THIS event is the
+    // Nth consecutive failure, and the loop is pathological. Stop.
+    return (input.errorRestartCycles ?? 0) >= LOOP_ONE_ERROR_CYCLE_LIMIT ? 'stop' : 'restart'
+  }
   if (input.hasNext) return 'advance'
   if (input.loopMode === 'all' && input.hasUserQueue) return 'wrap'
   return 'stop'

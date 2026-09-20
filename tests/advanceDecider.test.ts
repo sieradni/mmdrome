@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { decideAdvance, type AdvanceDecision, type AdvanceDecisionInput } from '../src/lib/playbackCore/advanceDecider'
+import { decideAdvance, LOOP_ONE_ERROR_CYCLE_LIMIT, type AdvanceDecision, type AdvanceDecisionInput } from '../src/lib/playbackCore/advanceDecider'
 
 function input(over: Partial<AdvanceDecisionInput> = {}): AdvanceDecisionInput {
   return { fromError: false, parkArmed: false, loopMode: 'none', hasNext: false, hasUserQueue: false, ...over }
@@ -53,6 +53,52 @@ test('advanceDecider: input object is never mutated', () => {
   const snapshot = { ...before }
   decideAdvance(before)
   assert.deepEqual(before, snapshot)
+})
+
+// The loop-one error-cycle bound (2026-09-20, ledger item 1): a permanently
+// broken track under loop-one must STOP after N consecutive give-up cycles
+// instead of restarting forever. Healthy loop-one never counts — a natural
+// end resets the counter upstream.
+test('advanceDecider: loop-one with no error history restarts (healthy loop)', () => {
+  assert.equal(decideAdvance(input({ loopMode: 'one', errorRestartCycles: 0 })), 'restart')
+  assert.equal(decideAdvance(input({ loopMode: 'one', errorRestartCycles: undefined })), 'restart')
+})
+
+test('advanceDecider: loop-one below the cycle limit still restarts', () => {
+  assert.equal(decideAdvance(input({ loopMode: 'one', fromError: true, errorRestartCycles: 1 })), 'restart')
+  assert.equal(decideAdvance(input({ loopMode: 'one', fromError: true, errorRestartCycles: 2 })), 'restart')
+})
+
+test('advanceDecider: loop-one AT the cycle limit stops (the bound)', () => {
+  assert.equal(
+    decideAdvance(input({ loopMode: 'one', fromError: true, errorRestartCycles: LOOP_ONE_ERROR_CYCLE_LIMIT })),
+    'stop',
+  )
+  // Beyond the limit stays stopped (a defensive monotonicity pin).
+  assert.equal(
+    decideAdvance(input({ loopMode: 'one', fromError: true, errorRestartCycles: LOOP_ONE_ERROR_CYCLE_LIMIT + 5 })),
+    'stop',
+  )
+})
+
+test('advanceDecider: the bound is loop-one-scoped — other modes advance regardless of cycles', () => {
+  // Outside loop-one an error advance moves to a DIFFERENT row, so the cycle
+  // cannot repeat — the count must not stop a loop-none advance.
+  assert.equal(
+    decideAdvance(input({ loopMode: 'none', fromError: true, hasNext: true, errorRestartCycles: 99 })),
+    'advance',
+  )
+  assert.equal(
+    decideAdvance(input({ loopMode: 'all', fromError: true, hasNext: false, hasUserQueue: true, errorRestartCycles: 99 })),
+    'wrap',
+  )
+})
+
+test('advanceDecider: park still beats the loop-one bound (guard order unchanged)', () => {
+  assert.equal(
+    decideAdvance(input({ loopMode: 'one', parkArmed: true, errorRestartCycles: 99 })),
+    'park',
+  )
 })
 
 test('advanceDecider: full cross-product never throws and stays in the ADT', () => {

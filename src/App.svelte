@@ -15,6 +15,7 @@
   import { getTagLib } from './lib/taglibSingleton'
   import { initNetworkMode, effectiveLowData } from './lib/networkMode'
   import { ensureFormatProbe } from './lib/formatProbe'
+  import { installGlobalDebugCatches } from './lib/debugLog'
   import { get } from 'svelte/store'
   import SongsView from './views/SongsView.svelte'
   import AlbumsView from './views/AlbumsView.svelte'
@@ -126,6 +127,11 @@
     // gated on the effective low-data mode before it can fire. Everything
     // above this line is local-only (Dexie + session restores).
     await initNetworkMode()
+
+    // Global catch-alls (2026-09-20): uncaught exceptions/rejections record
+    // into the debug ring from now on — a crash-shaped failure is visible in
+    // a Copy dump taken after the fact, without the HUD ever having been open.
+    installGlobalDebugCatches()
 
     // Direct-scrobbler wiring: restore the Last.fm session before the playback
     // manager enables the tracker, and start the durable flush engine.

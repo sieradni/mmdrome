@@ -252,6 +252,7 @@ test('_bgFacts maps stores + sleep-timer state', () => {
     hasNext: true,
     hasUserQueue: true,
     duration: 300,
+    errorRestartCycles: 0,
   })
   h.stm.armed = false
   loopMode.set('all')
