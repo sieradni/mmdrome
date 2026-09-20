@@ -1,5 +1,6 @@
 import Foundation
 import Capacitor
+import BackgroundAudioCore
 
 @objc(BackgroundAudioPlugin)
 public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -34,6 +35,8 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setEq", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getDebugState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getDebugEvents", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setDebugDomains", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getNetworkState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getSpectrum", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "secureGet", returnType: CAPPluginReturnPromise),
@@ -63,6 +66,15 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         return DispatchQueue.main.sync(execute: work)
     }
 
+    /// Any controller's diagnostic rides the engine's structured event log
+    /// (2026-09-19) — one ring, one bridge read (`getDebugEvents`). Hops to
+    /// main: the network monitor fires on its own queue.
+    private func engineEvent(_ level: NativeEvent.Level, _ domain: String, _ message: String) {
+        performOnMain { [weak self] in
+            self?.engine.eventAdd(level, domain, message)
+        }
+    }
+
     @objc override public func load() {
         super.load()
 
@@ -71,12 +83,23 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         // fires the first event, so JS also gets the boot snapshot via the
         // event channel (plus the on-demand getNetworkState below).
         NetworkMonitor.shared.onNetworkChanged = { [weak self] isExpensive, isConstrained in
+            self?.engineEvent(.info, "network", "changed isExpensive=\(isExpensive) isConstrained=\(isConstrained)")
             self?.notifyListeners("networkStateChanged", data: [
                 "isExpensive": isExpensive,
                 "isConstrained": isConstrained
             ])
         }
         NetworkMonitor.shared.startIfNeeded()
+
+        // Controller diagnostics route into the engine's structured event log
+        // (2026-09-19): interruptions, route changes, artwork-guard drops —
+        // previously silent, all danger-verifiable now.
+        session.eventSink = { [weak self] level, message in
+            self?.engineEvent(level, "session", message)
+        }
+        nowPlaying.eventSink = { [weak self] level, message in
+            self?.engineEvent(level, "artwork", message)
+        }
 
         session.configure(
             onPause: { [weak self] in self?.performOnMain { self?.engine.pause() } },
@@ -399,6 +422,33 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
             call.resolve(self.engine.debugState())
+        }
+    }
+
+    /// Structured engine events (2026-09-19): everything newer than the
+    /// caller's `sinceSeq` watermark, oldest first, capped at 400 from the
+    /// newest side. Danger + info always record; `debug`-level entries exist
+    /// only for domains the HUD enabled via `setDebugDomains`. MUST be in
+    /// `pluginMethods` above — Capacitor's getMethod gate silently drops
+    /// unregistered names and the JS promise never resolves (§3.4 lesson).
+    @objc func getDebugEvents(_ call: CAPPluginCall) {
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            let since = Int(call.getDouble("sinceSeq", 0))
+            call.resolve(self.engine.debugEvents(sinceSeq: since))
+        }
+    }
+
+    /// Opt-in verbose domains (HUD toggles): `debug`-level entries in these
+    /// domains start recording. Danger + info are unaffected. Not persisted
+    /// natively — the HUD re-pushes whenever it opens, so a fresh launch
+    /// boots at the danger+info baseline.
+    @objc func setDebugDomains(_ call: CAPPluginCall) {
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            let list = (call.getArray("domains", []) as? [String]) ?? []
+            self.engine.setDebugDomains(Set(list))
+            call.resolve()
         }
     }
 

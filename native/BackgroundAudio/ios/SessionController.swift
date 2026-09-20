@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import BackgroundAudioCore
 
 /// Manages the AVAudioSession for background playback (category `.playback`) and
 /// reacts to interruptions (phone calls, Siri) and audio route changes
@@ -23,6 +24,14 @@ final class SessionController {
     /// Block-observer tokens (TODO 4.5c) — block-based `addObserver` returns a
     /// token that must be retained or the registration can never be removed.
     private var observerTokens: [NSObjectProtocol] = []
+    /// Diagnostic sink (2026-09-19): interruption/route/mixing decisions ride
+    /// the engine's structured event log (domain "session", wired by the
+    /// plugin) — these were previously fully silent, and a missed resume or a
+    /// clobbered category is exactly the danger class the dump must verify.
+    var eventSink: ((NativeEvent.Level, String) -> Void)?
+    private func event(_ level: NativeEvent.Level, _ message: String) {
+        eventSink?(level, message)
+    }
 
     /// The single owner of the mode → category-options mapping.
     static func categoryOptions(for mixingMode: String) -> AVAudioSession.CategoryOptions {
@@ -38,8 +47,10 @@ final class SessionController {
         do {
             try session.setCategory(.playback, mode: .default, options: Self.categoryOptions(for: mode))
             try session.setActive(true)
+            event(.info, "setMixingMode → \(mode)")
         } catch {
             // Non-fatal: keep playing under the previous category.
+            event(.danger, "setMixingMode \(mode) category/activate FAILED: \(error.localizedDescription)")
         }
     }
 
@@ -54,6 +65,7 @@ final class SessionController {
             try session.setActive(true)
         } catch {
             // Non-fatal: playback will work in foreground, background may be suspended.
+            event(.danger, "configure category/activate FAILED (mode \(mixingMode)): \(error.localizedDescription) — background may suspend")
         }
 
         observerTokens.append(NotificationCenter.default.addObserver(
@@ -84,11 +96,16 @@ final class SessionController {
         switch type {
         case .began:
             wasPlayingBeforeInterruption = isPlaying()
+            event(.info, "interruption BEGAN wasPlaying=\(wasPlayingBeforeInterruption) → pause")
             onPause?()
         case .ended:
-            guard wasPlayingBeforeInterruption else { break }
+            guard wasPlayingBeforeInterruption else {
+                event(.info, "interruption ended wasPlaying=false → stay paused")
+                break
+            }
             let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
                 .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? false
+            event(.info, "interruption ended shouldResume=\(shouldResume) → \(shouldResume ? "resume" : "stay paused")")
             if shouldResume {
                 onResume?()
             }
@@ -102,7 +119,10 @@ final class SessionController {
               let rawReason = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
         if reason == .oldDeviceUnavailable {
+            event(.info, "route change oldDeviceUnavailable → pause")
             onPause?()
+        } else {
+            event(.debug, "route change reason=\(reason.rawValue) (no action)")
         }
     }
 }

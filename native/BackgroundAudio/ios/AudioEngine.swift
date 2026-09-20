@@ -104,6 +104,17 @@ final class TrackFileLoader {
     /// All loader bookkeeping lives here; this class only binds a real
     /// URLSessionDownloadTask to it. Main-thread-only — see `prefetch`.
     private var state = LoaderState<URLSessionDownloadTask>()
+    /// Diagnostic sink (2026-09-19): the loader's gate verdicts ride the
+    /// engine's structured event log instead of bare prints. Level only —
+    /// the domain is fixed ("loader"); set by the engine at init.
+    var eventSink: ((NativeEvent.Level, String) -> Void)?
+    private func event(_ level: NativeEvent.Level, _ message: String) {
+        eventSink?(level, message)
+    }
+    /// Live counts for the debug snapshot (no file I/O — pure state reads).
+    func stats() -> (cached: Int, inFlight: Int) {
+        (state.cache.count, state.inFlight.count)
+    }
     /// Fired on the MAIN thread the moment a download's bookkeeping settles:
     /// (trackId, succeeded). The engine's 1 s sampler only sees downloads
     /// in flight AT tick time — a download that starts and finishes between
@@ -207,7 +218,7 @@ final class TrackFileLoader {
                 deliver(url, nil)
                 return
             }
-            print("[native] cache file rejected at serve (size \(size), recorded \(recorded)) for \(track.trackId) — evicting partial")
+            event(.danger, "cache file rejected at serve (size \(size), recorded \(recorded)) for \(track.trackId) — evicting partial")
             evict(track.trackId, variant: requested)
         }
         let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
@@ -256,7 +267,7 @@ final class TrackFileLoader {
                     let attrs = try FileManager.default.attributesOfItem(atPath: temp.path)
                     let tempSize = (attrs[.size] as? Int) ?? 0
                     if tempSize < TrackFileLoader.minimumAudioBytes {
-                        print("[native] download under \(TrackFileLoader.minimumAudioBytes) bytes for \(track.trackId) (got \(tempSize)) — treating as error")
+                        event(.danger, "download under \(TrackFileLoader.minimumAudioBytes) bytes for \(track.trackId) (got \(tempSize)) — treating as error")
                         try? FileManager.default.removeItem(at: temp)
                         moveError = NSError(domain: "mmdrome.loader", code: -7001, userInfo: [NSLocalizedDescriptionKey: "Download truncated (\(tempSize) bytes) for \(track.title)"])
                     } else {
@@ -268,7 +279,7 @@ final class TrackFileLoader {
                     do {
                         try FileManager.default.moveItem(at: temp, to: destination)
                     } catch {
-                        print("[native] moveItem failed for \(track.trackId) \(error.localizedDescription) — trying copy")
+                        event(.info, "moveItem failed for \(track.trackId) \(error.localizedDescription) — trying copy (volume mismatch workaround)")
                         try FileManager.default.copyItem(at: temp, to: destination)
                         try? FileManager.default.removeItem(at: temp)
                     }
@@ -283,7 +294,7 @@ final class TrackFileLoader {
                     // exactly like an undersized body.
                     let probeFrames = (try? AVAudioFile(forReading: destination).length) ?? 0
                     if probeFrames <= 0 {
-                        print("[native] downloaded file decodes to 0 frames for \(track.trackId) — rejecting")
+                        event(.danger, "downloaded file decodes to 0 frames for \(track.trackId) — rejecting")
                         try? FileManager.default.removeItem(at: destination)
                         movedURL = nil
                         moveError = NSError(domain: "mmdrome.loader", code: -7002, userInfo: [NSLocalizedDescriptionKey: "Downloaded file is not decodable audio: \(track.title)"])
@@ -301,7 +312,7 @@ final class TrackFileLoader {
                        DownloadSanity.isTruncatedAgainstServer(
                            storedBytes: tempSize,
                            serverLength: expectedBytes) {
-                        print("[native] download truncated vs server size for \(track.trackId) (got \(tempSize) of \(expectedBytes)) — rejecting")
+                        event(.danger, "download truncated vs server size for \(track.trackId) (got \(tempSize) of \(expectedBytes)) — rejecting")
                         try? FileManager.default.removeItem(at: destination)
                         movedURL = nil
                         moveError = NSError(domain: "mmdrome.loader", code: -7003, userInfo: [NSLocalizedDescriptionKey: "Download truncated vs server size: \(track.title)"])
@@ -309,7 +320,7 @@ final class TrackFileLoader {
                     }
                 } catch {
                     moveError = error
-                    print("[native] final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(error.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: temp.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
+                    event(.danger, "final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(error.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: temp.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
                 }
             }
             DispatchQueue.main.async { [weak self] in
@@ -481,6 +492,31 @@ public final class NativeAudioEngine: NSObject {
     // MARK: - State
 
     private let loader = TrackFileLoader()
+    /// Structured diagnostics (2026-09-19): every print()/diagnostic the
+    /// engine emits rides THIS instead of stdout, so the Debug HUD Copy dump
+    /// carries the danger verdicts (premature drops, evictions, aborts,
+    /// stale drops) a phone user could previously never see. danger/info
+    /// always record; debug-level entries are write-time gated by
+    /// `setDebugDomains`. Delivered to the HUD via `getDebugEvents`.
+    internal var eventLog = NativeEventLog()
+    internal func eventAdd(_ level: NativeEvent.Level, _ domain: String, _ message: String) {
+        eventLog.add(now: ProcessInfo.processInfo.systemUptime, domain: domain, level: level, message)
+    }
+    /// Opt-in verbose domains (HUD toggles → bridge → here). NOT persisted
+    /// natively — the HUD re-pushes them whenever it opens, so a fresh
+    /// launch defaults to the danger+info baseline.
+    internal func setDebugDomains(_ domains: Set<String>) {
+        eventLog.setActiveDomains(domains)
+        eventAdd(.info, "engine", "debug domains set: \(domains.sorted().joined(separator: ","))")
+    }
+    internal func debugEvents(sinceSeq: Int, limit: Int = 1000) -> [String: Any] {
+        let events = eventLog.events(sinceSeq: sinceSeq, limit: limit)
+        return [
+            "events": events.map { ["seq": $0.seq, "t": $0.t, "domain": $0.domain, "level": $0.level.rawValue, "msg": $0.message] },
+            "nextSeq": eventLog.nextSeq,
+            "dropped": eventLog.droppedCount,
+        ]
+    }
     /// Instant completion announcements (no tick wait): the loader fires this
     /// the moment a download settles and the engine emits `done`/`gone`
     /// immediately. Routes through `emitPreload` so the sampler's
@@ -614,11 +650,22 @@ public final class NativeAudioEngine: NSObject {
     /// DIFFERENT track loads (`playTrack`), so the suppression never leaks
     /// into the next track. Web parity: audioManager `_seekSuppressed`.
     private var seekSuppressedTrackId: String?
+    /// Set by abortCrossfadeKeepActive: a fade aborted mid-flight means the
+    /// CURRENT track must finish WITHOUT further fade automation — its
+    /// position is already past the transition point, so a re-armed monitor
+    /// would instantly re-fade into the (evicted) target and churn. Cleared
+    /// in playTrack (a new track instance gets fresh fades).
+    private var fadeAbortedTrackId: String?
     /// Previous run's NSException breadcrumb, when present (debugState only).
     private var lastLaunchCrash: String?
 
     public override init() {
         super.init()
+        // The loader is main-thread-owned like the engine; route its gate
+        // verdicts into the structured event log (domain "loader").
+        loader.eventSink = { [weak self] level, message in
+            self?.eventAdd(level, "loader", message)
+        }
         // The real fix for the 1.2.13 launch crash is in setupGraph(): every
         // node is attached before it is connected (the crash was an
         // unattached spectrumTap). Kept simple on purpose — AVFoundation
@@ -633,7 +680,7 @@ public final class NativeAudioEngine: NSObject {
         // a crash report reaches the Debug HUD without a user-exported .ips.
         CrashBreadcrumb.installHook()
         if let breadcrumb = CrashBreadcrumb.readAndClear() {
-            print("[native] LAST-LAUNCH CRASH: \(breadcrumb)")
+            eventAdd(.danger, "engine", "LAST-LAUNCH CRASH: \(breadcrumb)")
             lastLaunchCrash = breadcrumb
         }
         loader.onDownloadFinished = { [weak self] trackId, succeeded in
@@ -701,7 +748,7 @@ public final class NativeAudioEngine: NSObject {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
             // Non-fatal: engine.start may still succeed if session already active.
-            print("[native] ensureEngineRunning session activate failed: \(error.localizedDescription)")
+            eventAdd(.danger, "engine", "ensureEngineRunning session activate failed: \(error.localizedDescription)")
         }
         installSpectrumTapIfNeeded()
         engine.prepare()
@@ -709,7 +756,7 @@ public final class NativeAudioEngine: NSObject {
             try engine.start()
             return true
         } catch {
-            print("[native] engine start failed: \(error.localizedDescription)")
+            eventAdd(.danger, "engine", "engine start failed: \(error.localizedDescription)")
             return false
         }
     }
@@ -833,12 +880,14 @@ public final class NativeAudioEngine: NSObject {
 
     public func playTrack(at index: Int, autoPlay: Bool) {
         guard !tracks.isEmpty else { return }
+        eventAdd(.info, "engine", "playTrack \(activeIndex)→\(index) autoPlay=\(autoPlay) id=\(tracks.indices.contains(index) ? tracks[index].trackId : "-")")
         let clamped = max(0, min(index, tracks.count - 1))
         let oldTrackId = currentTrackId
         // A new track instance starts with clean crossfade automation — a
         // suppression latched by seeking inside the PREVIOUS track's window
         // must not leak (loop-one restarts clear it too; same id, new play).
         seekSuppressedTrackId = nil
+        fadeAbortedTrackId = nil
         // The outgoing row's terminal preload state (2026-09-15, the "played
         // songs don't show as preloaded unless you skip around" report): a row
         // that was mid-download when it became current must report its FINAL
@@ -877,6 +926,9 @@ public final class NativeAudioEngine: NSObject {
             // mirroring handleTrackEnd): the honest signal that JS navigates the
             // stale index. On `ended` JS re-snapshots from its own authoritative
             // queue, so the engine can't sit on a snapshot JS can't navigate.
+            // DANGER-level: this stops playback — the dumps' "paused + ended"
+            // signature comes from exactly this branch.
+            eventAdd(.danger, "queue", "refreshQueue DIVERGENT: snapshot activeId=\(snapshotActiveId)@\(activeIndex) not reconcilable with engine currentId=\(currentTrackId) — stopping and reporting ended")
             stopPlayback()
             self.tracks = tracks
             self.activeIndex = max(0, min(activeIndex, tracks.count - 1))
@@ -889,13 +941,16 @@ public final class NativeAudioEngine: NSObject {
         let oldTargetId: String? = {
             guard crossfade.isActive,
                   self.tracks.indices.contains(crossfade.targetIndex) else { return nil }
-            print("[native-crossfade] queue-refresh phase=\(crossfade.phase) target=\(self.tracks[crossfade.targetIndex].trackId)")
+            eventAdd(.info, "crossfade", "queue-refresh preserves fade phase=\(crossfade.phase) target=\(self.tracks[crossfade.targetIndex].trackId)")
             return self.tracks[crossfade.targetIndex].trackId
         }()
         self.tracks = tracks
         // The active track ID stayed the same, but its position may have moved
         // after a queue mutation. Keep the native clock attached to that ID by
         // re-anchoring the index before rebuilding any crossfade tail.
+        if synchronizedIndex != activeIndex {
+            eventAdd(.info, "queue", "refreshQueue re-anchor \(activeIndex)→\(synchronizedIndex) (\(currentTrackId))")
+        }
         self.activeIndex = synchronizedIndex
         lastPreloadEmitted = [:]
         syncPreloadWindow()
@@ -940,6 +995,7 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func setLoopMode(_ mode: NativeLoopMode) {
+        eventAdd(.info, "engine", "setLoopMode \(loopMode.rawValue)→\(mode.rawValue)")
         loopMode = mode
         syncPreloadWindow() // wrap behavior feeds the window walk
         // Switching TO loop-all unwraps the chain's tail (the walk now wraps);
@@ -966,6 +1022,7 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func play() {
+        eventAdd(.info, "engine", "play() waitingAtTrackEnd=\(waitingAtTrackEnd) hasLiveSchedule=\(hasLiveSchedule) paramsDirty=\(paramsDirty) isPlaying=\(isPlaying)")
         // The start MUST be guarded here: the plain-resume tail below executes
         // activeNode.play() DIRECTLY (no schedule hop), and a player.play()
         // into a stopped engine raises in AVAudioPlayerNodeImpl::StartImpl —
@@ -1016,6 +1073,7 @@ public final class NativeAudioEngine: NSObject {
 
     public func pause() {
         guard isPlaying else { return }
+        eventAdd(.info, "engine", "pause() position=\(String(format: "%.1f", currentPosition)) crossfade=\(crossfade.phase)")
         cachedPosition = currentPosition
         // Pause both players: during a crossfade the standby node is rendering too.
         activeNode.pause()
@@ -1045,6 +1103,7 @@ public final class NativeAudioEngine: NSObject {
 
     public func seek(to seconds: Double) {
         guard !tracks.isEmpty, tracks.indices.contains(activeIndex) else { return }
+        eventAdd(.info, "engine", "seek \(String(format: "%.1f", currentPosition)) → \(String(format: "%.1f", seconds)) crossfade=\(crossfade.phase)")
         let track = tracks[activeIndex]
         let dur = effectiveDuration(of: track)
         let target = max(0, min(seconds, max(0, dur - 0.05)))
@@ -1065,6 +1124,7 @@ public final class NativeAudioEngine: NSObject {
 
     public func next() {
         guard !tracks.isEmpty else { return }
+        eventAdd(.info, "engine", "next() from row \(activeIndex) (\(currentTrackId))")
         if let idx = nextIndex(after: activeIndex) {
             playTrack(at: idx, autoPlay: true)
         } else {
@@ -1076,6 +1136,7 @@ public final class NativeAudioEngine: NSObject {
 
     public func previous() {
         guard !tracks.isEmpty else { return }
+        eventAdd(.info, "engine", "previous() from row \(activeIndex) (\(currentTrackId))")
         // Restart the current track if we're more than 3 seconds in.
         if currentPosition > 3 {
             seek(to: 0)
@@ -1186,6 +1247,7 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func setCrossfade(duration: Double, curve: String, sigmoidSteepness: Double) {
+        eventAdd(.info, "crossfade", "setCrossfade duration=\(max(0, min(15, duration))) curve=\(curve) steepness=\(sigmoidSteepness) (was \(crossfadeDuration))")
         crossfadeDuration = max(0, min(15, duration))
         crossfadeCurve = curve
         self.sigmoidSteepness = sigmoidSteepness
@@ -1233,6 +1295,7 @@ public final class NativeAudioEngine: NSObject {
     /// change. The window is engine-derived, so no JS round-trip is needed —
     /// the count's only cross-boundary effect is how many rows report.
     public func setPreloadCount(_ count: Int) {
+        eventAdd(.info, "preload", "setPreloadCount \(preloadCount)→\(count) (crossfade reservation \(crossfadeDuration > 0 ? "on" : "off"))")
         let clamped = max(0, min(5, count))
         guard clamped != preloadCount else { return }
         let grew = clamped > preloadCount
@@ -1419,6 +1482,7 @@ public final class NativeAudioEngine: NSObject {
     public func debugState() -> [String: Any] {
         let track = tracks.indices.contains(activeIndex) ? tracks[activeIndex] : nil
         let hasLocal = track.flatMap { loader.localURL(for: $0) != nil } ?? false
+        let loaderStats = loader.stats()
         return [
             "isRunning": engine.isRunning,
             "isPlaying": isPlaying,
@@ -1448,6 +1512,26 @@ public final class NativeAudioEngine: NSObject {
             "speed": speed,
             "pitchOctaves": pitchOctaves,
             "tapeMode": tapeMode,
+            // 2026-09-19 expansion: every state an assumption in the
+            // completion/crossfade/advance logic keys on must be dump-visible.
+            "duration": track.map(effectiveDuration) ?? 0,
+            "scheduledSegmentSeconds": scheduledSegmentSeconds,
+            "nodeTimeMeasured": isNodeTimeMeasured,
+            "loopMode": loopMode.rawValue,
+            "crossfadeDuration": crossfadeDuration,
+            "crossfadeCurve": crossfadeCurve,
+            "preloadCount": preloadCount,
+            "replayGainMode": replayGainMode,
+            "prefetchGeneration": prefetchGeneration,
+            "standbyScheduleGeneration": standbyScheduleGeneration,
+            "standbyGenerationCaptured": standbyGeneration,
+            "seekSuppressed": track.map { $0.trackId == seekSuppressedTrackId } ?? false,
+            "fadeSuppressed": track.map { $0.trackId == fadeAbortedTrackId } ?? false,
+            "loaderCached": loaderStats.cached,
+            "loaderInFlight": loaderStats.inFlight,
+            "eventLogNextSeq": eventLog.nextSeq,
+            "eventLogDropped": eventLog.droppedCount,
+            "debugDomains": eventLog.activeDomains.sorted().joined(separator: ","),
         ]
     }
 
@@ -1516,7 +1600,7 @@ public final class NativeAudioEngine: NSObject {
             // The user moved on (next-skip, another load) while this file was
             // downloading — leave the newer schedule alone.
             guard generation == self.scheduleGeneration else {
-                print("[native] loadAndStart dropped stale generation \(generation) vs \(self.scheduleGeneration) for \(track.trackId)")
+                eventAdd(.info, "engine", "loadAndStart dropped stale generation \(generation) vs \(self.scheduleGeneration) for \(track.trackId)")
                 return
             }
             guard let url = url else {
@@ -1526,8 +1610,15 @@ public final class NativeAudioEngine: NSObject {
             guard self.tracks.indices.contains(self.activeIndex),
                   self.tracks[self.activeIndex].trackId == track.trackId else {
                 let current = self.tracks.indices.contains(self.activeIndex) ? self.tracks[self.activeIndex].trackId : "OOR"
-                print("[native] loadAndStart dropped divergent track \(track.trackId) vs \(current) gen=\(generation) active=\(self.activeIndex)")
-                self.onError?("Track diverged: \(track.title)")
+                // 2026-09-19: SILENT drop, not an error. The engine's
+                // activeIndex only moves to another track via a NEWER load
+                // (playTrack/engage) — which owns the engine and schedules
+                // its own audio. Reporting "Track diverged" as an error fed
+                // the JS retry machine a systematic failure for a track that
+                // was never supposed to load — the amplifier behind the
+                // 1.2.28 same-track loop. Same semantics as the stale
+                // generation guard above: a newer schedule owns the engine.
+                eventAdd(.info, "engine", "loadAndStart dropped divergent track \(track.trackId) vs \(current) gen=\(generation) active=\(self.activeIndex)")
                 return
             }
             let currentIndex = self.activeIndex
@@ -1565,12 +1656,14 @@ public final class NativeAudioEngine: NSObject {
               tracks.indices.contains(next),
               seen.insert(next).inserted else { return }
         let track = tracks[next]
+        eventAdd(.debug, "preload", "chain: prefetch row \(next) (\(track.trackId))")
         loader.prefetch(track) { [weak self] _, error in
             guard let self = self else { return }
             guard gen == self.prefetchGeneration else { return }
             if error != nil {
                 // A failed prefetch must not sit "fetching" forever (frozen-
                 // tint report): gone clears the row's tint now.
+                self.eventAdd(.danger, "preload", "prefetch FAILED row \(next) (\(track.trackId)): \(error?.localizedDescription ?? "?")")
                 self.emitPreload(track.trackId, "gone", nil)
             }
             self.crossfadeMonitorTick()
@@ -1611,13 +1704,14 @@ public final class NativeAudioEngine: NSObject {
             // re-fetches fresh bytes; A5 bounds the retries and the fromError
             // advance moves on if the server keeps poisoning the row.
             if totalFrames <= 0 {
-                print("[native] zero-frame file for \(track.trackId) — evicting for re-fetch")
+                eventAdd(.danger, "engine", "zero-frame file for \(track.trackId) — evicting for re-fetch")
                 loader.evict(track.trackId, variant: TrackVariant(url: track.url))
                 onError?("Track file unreadable: \(track.title)")
             } else {
                 // Seek/metadata landed past the real end of a DECODABLE file
                 // (duration metadata longer than the audio). End THIS track
                 // like a natural completion — not the queue.
+                eventAdd(.info, "engine", "past-end schedule for \(track.trackId) (frames=\(totalFrames), seek=\(seconds)) — ending just this track")
                 handleSegmentCompletion(index: activeIndex, generation: scheduleGeneration, trackId: track.trackId)
             }
             return
@@ -1626,26 +1720,16 @@ public final class NativeAudioEngine: NSObject {
         scheduleGeneration += 1
         let generation = scheduleGeneration
 
-        // 2026-09-18 LDM multi-skip, schedule-side defense: the container of a
-        // truncated download still reports more audio than the delivered bytes
-        // contain (FLAC STREAMINFO / MP4 moov headers; Ogg cut inside a final
-        // page whose header arrived), so `frames` below can promise audio that
-        // was never downloaded. Clamp the planned
-        // segment to what the stored bytes could physically contain — the
-        // clamp turns an early EOF into a bounded segment instead of a
-        // poisoned promise. Identity falls back to headerFrames when the
-        // byte evidence doesn't constrain it.
-        let storedBytesForClamp = loader.storedBytes(forFileAt: localURL)
-        let clampBps = DownloadSanity.minimumBytesPerSecond(
-            sampleRateHz: file.processingFormat.sampleRate,
-            fileExtension: localURL.pathExtension)
-        let plannedFrames = DownloadSanity.clampedScheduledFrames(
-            headerFrames: frames,
-            storedBytes: storedBytesForClamp,
-            minimumBytesPerSecond: clampBps,
-            sampleRateHz: file.processingFormat.sampleRate)
+        // 2026-09-18 LDM multi-skip: a truncated download's container still
+        // reports more audio than the delivered bytes contain (FLAC STREAMINFO
+        // / MP4 moov headers; Ogg last-page granule positions), so `frames`
+        // can promise audio that was never downloaded. The completion fires
+        // when the DATA runs out — the premature-completion gate (plus
+        // evict-on-drop) is the defense that catches it. The old byte CLAMP
+        // here was removed (2026-09-19): a no-op for real truncations and a
+        // false-bound risk for at-floor encodings.
         // The gate reference: what THIS schedule actually promises (file truth).
-        scheduledSegmentSeconds = Double(startFrame + plannedFrames) / sr
+        scheduledSegmentSeconds = Double(startFrame + frames) / sr
 
         activeGain.outputVolume = Float(track.replayGainLinear(mode: replayGainMode))
         standbyGain.outputVolume = 0
@@ -1659,12 +1743,20 @@ public final class NativeAudioEngine: NSObject {
         // reordered tail can never smuggle a stale completion through an
         // accidental index coincidence.
         let scheduledTrackId = track.trackId
+        // Node identity rides the completion (2026-09-19): the in-flight
+        // crossfade discrimination compares the COMPLETING node with the live
+        // standby node. The old schedule-time isStandby flag survived
+        // finalizeCrossfadeSwitch, so this node — now the ACTIVE track — had
+        // its natural end mislabeled a standby EOF during the NEXT fade: the
+        // abort kept an exhausted node "playing" (silence, clock climbing
+        // past the track end — the 1.2.28 wedge).
+        let scheduledNode = player
         player.stop()
         // Both nodes are stopped now: apply speed/pitch/tape fields to the
         // units, which are only ever touched while nothing is rendering.
         refreshPlaybackParams()
-        player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(plannedFrames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
-            self?.handleSegmentCompletion(index: scheduledIndex, generation: generation, trackId: scheduledTrackId)
+        player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(frames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
+            self?.handleSegmentCompletion(index: scheduledIndex, generation: generation, trackId: scheduledTrackId, node: scheduledNode)
         }
 
         hasLiveSchedule = true
@@ -1697,6 +1789,7 @@ public final class NativeAudioEngine: NSObject {
     }
 
     private func handleTrackEnd() {
+        eventAdd(.info, "engine", "queue ended at row \(activeIndex) (\(currentTrackId)) loopMode=\(loopMode.rawValue)")
         stopPlayback()
         onQueueEnded?()
     }
@@ -1715,31 +1808,53 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
-    private func handleSegmentCompletion(index completedIndex: Int, generation: Int, trackId: String? = nil, isStandby: Bool = false) {
+    private func handleSegmentCompletion(index completedIndex: Int, generation: Int, trackId: String? = nil, node: AVAudioPlayerNode? = nil, standbyGenerationAtStart: Int? = nil) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            guard generation == self.scheduleGeneration else { return }
-            if isStandby {
-                guard self.standbyGeneration == self.standbyScheduleGeneration else { return }
+            guard generation == self.scheduleGeneration else {
+                // Routine: every stop() fires its completions (2 per track
+                // change) — verbose domain only, this is expected churn.
+                eventAdd(.debug, "engine", "completion dropped: stale scheduleGeneration gen=\(generation) vs \(self.scheduleGeneration) row \(completedIndex) id=\(trackId ?? "-")")
+                return
+            }
+            // Standby-schedule completions are validated against the standby
+            // timeline CAPTURED at fade start (2026-09-19). The old live-pair
+            // compare let a stale completion from a torn-down fade — re-armed
+            // into a NEW fade on the same node before the async hop processed
+            // it — pass as the new fade's own and abort it. Every teardown
+            // bumps a generation (cancelScheduled → scheduleGeneration;
+            // pause/refreshQueue/setLoopMode → standbyScheduleGeneration), so
+            // the captured-value compare drops every stale shape.
+            let completingStandby = node != nil && node === self.standbyNode
+            if completingStandby {
+                guard let captured = standbyGenerationAtStart,
+                      captured == self.standbyScheduleGeneration else {
+                    eventAdd(.debug, "engine", "standby completion dropped: captured standby gen \(standbyGenerationAtStart.map(String.init) ?? "nil") vs live \(self.standbyScheduleGeneration) row \(completedIndex)")
+                    return
+                }
             }
 
-            // The active player finishing while a crossfade is in progress is the switch point.
+            // The active player finishing while a crossfade is in progress is
+            // the switch point. Discriminate by NODE IDENTITY at handler time
+            // (2026-09-19, replacing the schedule-time isStandby flag): the
+            // flag survived finalizeCrossfadeSwitch, so the former standby —
+            // now the ACTIVE track — had its natural end during the NEXT fade
+            // mislabeled a standby EOF; the abort kept an EXHAUSTED node
+            // "playing" (silence, clock climbing past the track end — the
+            // 1.2.28 wedge: fade starts, never switches, position climbs).
+            // Mid-fade, the completing node is the CURRENT standby node only
+            // when the fade TARGET itself died before the ramp finished.
             if self.crossfade.isInFlight {
-                if isStandby {
-                    // 2026-09-18: the branch above could not tell WHICH node
-                    // completed — but the completion registration does
-                    // (isStandby). A STANDBY completion mid-fade means the
-                    // fade target's bytes ran out before the ramp finished
-                    // (a truncated target reaching its early EOF — the LDM
-                    // signature — or a pathological length tie). Finalizing
-                    // here would switch to an EXHAUSTED node whose only
-                    // pending completion just fired: the new "active" has no
-                    // completion pending and the queue stalls silently (and
-                    // a standby completion landing just AFTER finalize passes
-                    // the identity guard as the new track's "natural-end
-                    // trigger" — the double-advance shape). Cancel the fade
-                    // instead: the outgoing track keeps playing at restored
-                    // gain, and its real natural end drives the advance.
+                if completingStandby {
+                    // The fade target's bytes ran out mid-ramp (a truncated
+                    // target's early EOF — the LDM signature — or a
+                    // pathological length tie). Finalizing here would switch
+                    // to an EXHAUSTED node whose only pending completion just
+                    // fired: the queue would stall silently. Abort instead:
+                    // stop the dead standby, evict its poison (evidence-based
+                    // — the data ran out before the ramp finished), suppress
+                    // further fades for this track instance, and let the
+                    // outgoing track's real end drive the advance.
                     self.abortCrossfadeKeepActive()
                     return
                 }
@@ -1754,15 +1869,20 @@ public final class NativeAudioEngine: NSObject {
             // while the NEXT row was already active, and every stale arrival
             // chained another advance). The generation guard cannot see
             // these: the cascade never cancelled anything, so the generation
-            // never bumped. Identity is ROW + TRACKID: the id closes the
-            // reindex hole (refreshQueue re-anchors activeIndex by id — an
-            // index-only compare could false-positive a reordered tail onto
-            // the wrong completion). A legit natural-end completion always
-            // matches; an early standby completion mid-fade is handled by
-            // the in-flight branch above; the standby carries no trackId —
-            // its schedule-generation guard already covers it.
-            if completedIndex != self.activeIndex || (trackId != nil && trackId != self.currentTrackId) {
-                print("[native] dropped stale completion for row \(completedIndex) id=\(trackId ?? "-") (active row \(self.activeIndex) id \(self.currentTrackId))")
+            // never bumped.
+            // 2026-09-19: the TRACKID is the identity. A mid-track
+            // refreshQueue re-anchor can move the playing row's INDEX (same
+            // id) — the old index-mismatch drop orphaned the track's natural
+            // end: the node kept rendering silence with its clock climbing
+            // past the track end and nothing advanced (the 1.2.28 stall).
+            // The id still closes the 2026-09-17 reindex hole — the cascade's
+            // completions came from DIFFERENT tracks, whose ids mismatch the
+            // live row. A nil trackId (never registered with an id) falls
+            // back to the index compare.
+            let idMismatch = trackId != nil && trackId != self.currentTrackId
+            let indexMismatch = trackId == nil && completedIndex != self.activeIndex
+            if idMismatch || indexMismatch {
+                eventAdd(.danger, "engine", "dropped stale completion for row \(completedIndex) id=\(trackId ?? "-") (active row \(self.activeIndex) id \(self.currentTrackId))")
                 return
             }
 
@@ -1791,11 +1911,19 @@ public final class NativeAudioEngine: NSObject {
                     remainingSeconds: remaining) {
                 let elapsedOneDp = String(format: "%.1f", elapsed)
                 let segmentOneDp = String(format: "%.1f", scheduledSegmentSeconds)
-                print("[native] dropped premature completion for row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp)")
-                if isNodeTimeMeasured {
-                    activeNode.pause()
-                }
-                onError?("Track ended early: \(tracks[activeIndex].title)")
+                eventAdd(.danger, "engine", "dropped premature completion for row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — evicted for re-fetch")
+                // The gate required a measurable clock, so the pause is safe.
+                activeNode.pause()
+                setPlaying(false)
+                // 2026-09-19, the fix for the 1.2.28 same-track loop: the old
+                // drop left the poisoned file CACHED, so the JS retry's
+                // re-engage hit the loader cache and replayed the same
+                // truncation forever. Evict — the retry re-DOWNLOADS fresh
+                // bytes, and a healthy re-download heals the row instead of
+                // looping it. Persistently-truncating rows are bounded by the
+                // retry give-up (nativeTransport) and advance fromError.
+                loader.evict(tracks[activeIndex].trackId, variant: TrackVariant(url: tracks[activeIndex].url))
+                onError?("Track ended early (partial download evicted): \(tracks[activeIndex].title)")
                 return
             }
 
@@ -1803,6 +1931,7 @@ public final class NativeAudioEngine: NSObject {
             // than advancing (loop-one also defers — "end of track" wins).
             if self.sleepAtTrackEnd {
                 self.sleepAtTrackEnd = false
+                eventAdd(.info, "engine", "sleep park at track end row \(activeIndex) (\(currentTrackId))")
                 self.pause()
                 self.waitingAtTrackEnd = true
                 self.onSleepTimerFired?()
@@ -1810,6 +1939,7 @@ public final class NativeAudioEngine: NSObject {
             }
 
             if self.loopMode == .one {
+                eventAdd(.info, "engine", "loop-one restart row \(activeIndex) (\(currentTrackId))")
                 self.playTrack(at: self.activeIndex, autoPlay: true)
                 return
             }
@@ -1823,6 +1953,7 @@ public final class NativeAudioEngine: NSObject {
             // the user moved the playing row. The live index is the same
             // value in the undisturbed case, so nothing else changes.
             if let next = self.nextIndex(after: self.activeIndex) {
+                eventAdd(.info, "engine", "natural advance \(self.activeIndex)→\(next) (\(tracks.indices.contains(next) ? tracks[next].trackId : "-"))")
                 self.playTrack(at: next, autoPlay: true)
             } else {
                 self.handleTrackEnd()
@@ -1854,6 +1985,7 @@ public final class NativeAudioEngine: NSObject {
     }
 
     private func stopPlayback() {
+        eventAdd(.info, "engine", "stopPlayback position=\(String(format: "%.1f", currentPosition)) row \(activeIndex) (\(currentTrackId))")
         paramRestartTimer?.invalidate()
         paramRestartTimer = nil
         sleepTimer?.invalidate()
@@ -1874,6 +2006,7 @@ public final class NativeAudioEngine: NSObject {
 
     /// Stops both players and invalidates all pending schedules/completions.
     private func cancelScheduled() {
+        eventAdd(.debug, "engine", "cancelScheduled → scheduleGeneration \(scheduleGeneration + 1) (all pending completions void)")
         scheduleGeneration += 1
         waitingAtTrackEnd = false
         crossfade = .idle
@@ -1890,7 +2023,8 @@ public final class NativeAudioEngine: NSObject {
         guard crossfadeDuration > 0, isPlaying, loopMode != .one, !sleepAtTrackEnd, tracks.indices.contains(activeIndex) else { return }
         // A seek-suppressed track gets no monitor at all — automation is off
         // for the remainder of this track instance.
-        guard tracks[activeIndex].trackId != seekSuppressedTrackId else { return }
+        guard tracks[activeIndex].trackId != seekSuppressedTrackId,
+              tracks[activeIndex].trackId != fadeAbortedTrackId else { return }
 
         let current = tracks[activeIndex]
         let nextIdx = nextIndex(after: activeIndex)
@@ -1929,7 +2063,8 @@ public final class NativeAudioEngine: NSObject {
         guard crossfadeDuration > 0, tracks.indices.contains(activeIndex) else { return }
         // Defense in depth: the setup guard normally keeps this monitor from
         // existing at all while suppressed.
-        guard tracks[activeIndex].trackId != seekSuppressedTrackId else { return }
+        guard tracks[activeIndex].trackId != seekSuppressedTrackId,
+              tracks[activeIndex].trackId != fadeAbortedTrackId else { return }
 
         let current = tracks[activeIndex]
         let transitionPoint = current.duration - crossfadeDuration
@@ -1971,7 +2106,7 @@ public final class NativeAudioEngine: NSObject {
         guard let file = try? AVAudioFile(forReading: localURL) else {
             // A cached path can still be corrupt. Evict and restart its fetch;
             // the completion will re-check the active window on the main thread.
-            print("[native-crossfade] target file could not be opened: \(nextTrack.trackId)")
+            eventAdd(.danger, "crossfade", "target file could not be opened: \(nextTrack.trackId) — evicting and re-fetching")
             loader.evict(nextTrack.trackId, variant: TrackVariant(url: nextTrack.url))
             loader.prefetch(nextTrack) { [weak self] _, _ in
                 self?.crossfadeMonitorTick()
@@ -1982,7 +2117,7 @@ public final class NativeAudioEngine: NSObject {
 
         crossfade = crossfade.starting(targetIndex: nextIdx)
         let formattedPosition = String(format: "%.2f", currentPosition)
-        print("[native-crossfade] start current=\(currentTrackId) target=\(nextTrack.trackId) position=\(formattedPosition)")
+        eventAdd(.info, "crossfade", "fade start current=\(currentTrackId) target=\(nextTrack.trackId) position=\(formattedPosition)")
         let targetGain = Float(nextTrack.replayGainLinear(mode: replayGainMode))
         let startGain = activeGain.outputVolume
         let duration = Float(crossfadeDuration)
@@ -1994,19 +2129,15 @@ public final class NativeAudioEngine: NSObject {
         standbyNode.stop()
         standbyGain.outputVolume = 0
         standbyGeneration = standbyScheduleGeneration
-        // Same header-vs-bytes clamp as scheduleCurrentTrack (2026-09-18): a
-        // truncated cached target still opens as a full-length file; the
-        // standby's planned segment gets the byte-plausible bound too.
-        let standbyBps = DownloadSanity.minimumBytesPerSecond(
-            sampleRateHz: file.processingFormat.sampleRate,
-            fileExtension: localURL.pathExtension)
-        let standbyPlannedFrames = DownloadSanity.clampedScheduledFrames(
-            headerFrames: file.length,
-            storedBytes: loader.storedBytes(forFileAt: localURL),
-            minimumBytesPerSecond: standbyBps,
-            sampleRateHz: file.processingFormat.sampleRate)
-        standbyNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(standbyPlannedFrames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
-            self?.handleSegmentCompletion(index: nextIdx, generation: generation, isStandby: true)
+        // Captured identities ride the completion (2026-09-19): the NODE (for
+        // the in-flight discrimination) and the standby generation at fade
+        // start (a torn-down-and-re-armed fade's stale completion must not
+        // abort the NEW fade). The target's trackId rides too so its
+        // post-finalize natural end survives a mid-track index re-anchor.
+        let standbyPlayer = standbyNode
+        let standbyGenAtStart = standbyScheduleGeneration
+        standbyNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(file.length), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
+            self?.handleSegmentCompletion(index: nextIdx, generation: generation, trackId: nextTrack.trackId, node: standbyPlayer, standbyGenerationAtStart: standbyGenAtStart)
         }
         standbyNode.play()
 
@@ -2046,7 +2177,7 @@ public final class NativeAudioEngine: NSObject {
             }
         }
         volumeRampTimer = timer
-        print("[native-crossfade] ramp-start duration=\(plan.duration) steps=\(RampPlan.stepCount)")
+        eventAdd(.debug, "crossfade", "ramp-start duration=\(plan.duration) steps=\(RampPlan.stepCount)")
         RunLoop.main.add(timer, forMode: .common)
     }
 
@@ -2060,30 +2191,42 @@ public final class NativeAudioEngine: NSObject {
         guard readiness != lastCrossfadeReadiness else { return }
         lastCrossfadeReadiness = readiness
         let formattedPosition = String(format: "%.2f", currentPosition)
-        print("[native-crossfade] readiness=\(readiness) track=\(currentTrackId) position=\(formattedPosition) fade=\(crossfadeDuration)")
+        eventAdd(.info, "crossfade", "readiness=\(readiness) track=\(currentTrackId) position=\(formattedPosition) fade=\(crossfadeDuration)")
     }
 
     /// Cancels an in-flight crossfade whose TARGET side died mid-render,
-    /// keeping the outgoing track in control: tear down the ramp, restore the
-    /// active side's gain, re-arm the monitor for its real end. The standby's
-    /// completion is the one being handled (already consumed), so no
-    /// bookkeeping invalidation is needed beyond dropping the fade state —
-    /// and no evict: a target that cleared the loader's byte gates but still
-    /// EOF'd early is either the small 90–100 % truncation band or a length
-    /// tie, and the natural advance re-routes it through the clamped schedule
-    /// either way. Poison that missed every byte gate and then skips audibly
-    /// is preferable to a false eviction of healthy bytes.
+    /// keeping the outgoing track in control. 2026-09-19 hardening after the
+    /// 1.2.28 field reports:
+    ///  - STOP the standby: its segment is consumed; leaving it rendering
+    ///    silence lets its clock run away invisibly.
+    ///  - EVICT the target: the standby consumed its segment before the ramp
+    ///    finished — evidence-based poison (bytes ran out mid-fade). The old
+    ///    "no evict" stance let the cached truncation come straight back: the
+    ///    monitor re-armed the SAME fade within 100 ms (position is already
+    ///    past the transition point), the target EOF'd again, abort again —
+    ///    the audible fade-in/fade-out churn ("crossfades the next song but
+    ///    doesn't switch"), and after the track advanced, the retry loop
+    ///    replayed the same poison from cache forever.
+    ///  - SUPPRESS further fades for this track instance (fadeAbortedTrackId,
+    ///    cleared in playTrack): the outgoing track plays out its tail
+    ///    without automation and its real completion advances normally.
     private func abortCrossfadeKeepActive() {
+        let targetTrack = tracks.indices.contains(crossfade.targetIndex) ? tracks[crossfade.targetIndex] : nil
+        standbyNode.stop()
         stopVolumeRamp()
         stopCrossfadeMonitor()
         crossfade = .idle
         standbyGain.outputVolume = 0
         // The ramp may have already faded the active side partway down.
         refreshActiveGain()
+        fadeAbortedTrackId = currentTrackId
+        if let targetTrack {
+            loader.evict(targetTrack.trackId, variant: TrackVariant(url: targetTrack.url))
+        }
         if isPlaying {
             setupCrossfadeMonitor()
         }
-        print("[native-crossfade] abort-keep-active current=\(currentTrackId) (target ended mid-fade)")
+        eventAdd(.danger, "crossfade", "abort-keep-active current=\(currentTrackId) (target ended mid-fade) — target evicted, fades suppressed for this instance")
     }
 
     private func finalizeCrossfadeSwitch() {
@@ -2099,14 +2242,8 @@ public final class NativeAudioEngine: NSObject {
         // for it; the outgoing track's value would misjudge the end).
         if let url = loader.localURL(for: tracks[activeIndex]),
            let file = try? AVAudioFile(forReading: url) {
-            let sr = file.processingFormat.sampleRate
-            let bps = DownloadSanity.minimumBytesPerSecond(sampleRateHz: sr, fileExtension: url.pathExtension)
-            let planned = DownloadSanity.clampedScheduledFrames(
-                headerFrames: file.length,
-                storedBytes: loader.storedBytes(forFileAt: url),
-                minimumBytesPerSecond: bps,
-                sampleRateHz: sr)
-            scheduledSegmentSeconds = Double(planned) / sr
+            // File truth for the new track (the byte clamp is gone — 2026-09-19).
+            scheduledSegmentSeconds = Double(file.length) / file.processingFormat.sampleRate
         } else {
             scheduledSegmentSeconds = 0
         }
@@ -2123,7 +2260,7 @@ public final class NativeAudioEngine: NSObject {
         cachedPosition = 0
         activeGain.outputVolume = Float(tracks[activeIndex].replayGainLinear(mode: replayGainMode))
         let formattedPosition = String(format: "%.2f", currentPosition)
-        print("[native-crossfade] complete track=\(tracks[activeIndex].trackId) position=\(formattedPosition)")
+        eventAdd(.info, "crossfade", "fade complete track=\(tracks[activeIndex].trackId) position=\(formattedPosition)")
 
         onTrackChanged?(tracks[activeIndex].trackId)
         setupCrossfadeMonitor()

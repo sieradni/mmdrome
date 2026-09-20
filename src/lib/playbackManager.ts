@@ -22,6 +22,7 @@ import { WebTransport } from './playbackCore/webTransport'
 import { WebBgTransport, type BgFacts, type LoadDecision } from './playbackCore/webBgTransport'
 import { NativeTransport } from './playbackCore/nativeTransport'
 import { trailBridge } from './playbackCore/nativeBridgeTrail'
+import { enabledDomainsList } from './debugLog'
 import { reconcileReload } from './playbackCore/nativeReconcile'
 import { decideAdvance, type LoopMode } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
@@ -305,8 +306,21 @@ export class PlaybackManager {
     BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode ?? 'off' }).catch(() => {})
     transport.setLoopMode(get(loopMode)).catch(() => {})
 
+    // Bridge-trail boot parameters (2026-09-19): the engine's crossfade,
+    // preload and loop configuration at engagement time — the dump must be
+    // able to verify the settings a skip report claims were in effect.
+    trailBridge('event', `params crossfade=${s.crossfadeDuration ?? 0} preload=${this._effectivePreloadCount()} loop=${get(loopMode)} ldm=${s.lowDataMode ? 'on' : s.lowDataOnCellular ? 'cellular' : 'off'}`)
+
+    // Persisted verbose domains push from HERE, not the Debug HUD's mount:
+    // a repro session keeps the panel closed (it must — the user shouldn't
+    // have it open all the time), so the boot push is what makes native
+    // verbose recording survive an app restart (the JS debugLog reads the
+    // same localStorage at module init).
+    void nativeEngine.setDebugDomains(enabledDomainsList())
+
     this._unsubscribers.push(loopMode.subscribe((m) => {
       transport.setLoopMode(m).catch(() => {})
+      trailBridge('event', `loopMode → ${m}`)
     }))
   }
 
@@ -352,7 +366,14 @@ export class PlaybackManager {
     // here. The `_initialized` guard skips the immediate fire for the
     // track-scoped replay-gain apply (no track is loaded yet at subscribe time).
     let prevTranscodeKey = ''
+    let prevCrossfade = -1
     unsubs.push(settings.subscribe((s) => {
+      // Bridge-trail: every crossfade change with its before/after (the
+      // boot push rides the `params` event in _initNative instead).
+      if ((s.crossfadeDuration ?? 0) !== prevCrossfade && prevCrossfade !== -1) {
+        trailBridge('event', `crossfade → ${s.crossfadeDuration ?? 0}s (was ${prevCrossfade}s)`)
+      }
+      prevCrossfade = s.crossfadeDuration ?? 0
       this._engine.setCrossfade(s.crossfadeDuration ?? 0)
       // Audio-session sharing applies live (re-setting the category +
       // re-activating needs no restart or re-engage).

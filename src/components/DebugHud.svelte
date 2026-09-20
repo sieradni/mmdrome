@@ -7,11 +7,18 @@
   import { transcodeParams } from '../lib/transcodePolicy'
   import { getCachedConfig } from '../lib/navidromeApi'
   import { getCachedLfmSession } from '../lib/lastfmAuth'
-  import { BackgroundAudio } from '../lib/nativePlugin'
+  import { BackgroundAudio, nativeEngine } from '../lib/nativePlugin'
   import {
     nativeBridgeTrailSnapshot,
     clearNativeBridgeTrail,
   } from '../lib/playbackCore/nativeBridgeTrail'
+  import {
+    jsDebugEventsSnapshot,
+    clearJsDebugEvents,
+    knownDomains,
+    enabledDomainsList,
+    setEnabledDomains,
+  } from '../lib/debugLog'
   import { thumbLoaderDebugSnapshot } from '../lib/thumbLoader'
   import { audioManager } from '../lib/audioManager'
 
@@ -27,7 +34,17 @@
   // 2026-09-17: section collapse state — the state dumps are bulky; the trail
   // and log are the diagnosis surfaces and stay open. Sections persist only
   // for the session (no Dexie: debug-only preference).
-  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false })
+  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false, events: false })
+  // Structured native events (2026-09-19): the engine's danger verdicts
+  // (premature drops, evictions, aborts, stale drops) land here via the
+  // incremental `getDebugEvents` poll — a bug that fired BEFORE the HUD was
+  // opened is still in the native ring and arrives on the first pull.
+  let nativeEvents: any[] = $state([])
+  let nativeEventsDropped = $state(0)
+  let nativeEventsSeq = 0 // watermark — non-reactive by design
+  // Opt-in verbose domains (persisted in localStorage, pushed to the native
+  // engine; the JS-side debugLog reads the same store).
+  let domains = $state(enabledDomainsList())
   let poll: ReturnType<typeof setInterval> | null = null
   let jsPoll: ReturnType<typeof setInterval> | null = null
   let listeners: any[] = []
@@ -94,11 +111,31 @@
         const d = await (BackgroundAudio as any).getDebugState()
         nativeDebug = d
       } catch {}
-    }
+    }      // Incremental native-event pull (danger/info always recorded natively;
+      // `debug`-level only for the domains toggled below). The native ring is
+      // 1000 — the first pull after a bug carries the whole history even from
+      // a long session with the panel closed (the post-mortem contract).
+    try {
+      const page = await nativeEngine.getDebugEvents(nativeEventsSeq)
+      if (page.events.length) nativeEvents = [...nativeEvents, ...page.events].slice(-1000)
+      nativeEventsSeq = page.nextSeq
+      nativeEventsDropped = page.dropped
+    } catch {}
+  }
+
+  /** Toggles an opt-in verbose domain: persists locally (both the JS debugLog
+   *  and the native engine read the same selection) and pushes to native. */
+  function toggleDomain(d: string) {
+    const next = domains.includes(d) ? domains.filter((x) => x !== d) : [...domains, d]
+    domains = setEnabledDomains(next)
+    void nativeEngine.setDebugDomains(domains)
   }
 
   onMount(() => {
     void (async () => {
+      // Push the persisted domain selection so debug-level entries start
+      // recording from boot rather than from the next toggle.
+      void nativeEngine.setDebugDomains(domains)
       if (Capacitor.isNativePlatform()) {
         try {
           listeners.push(await BackgroundAudio.addListener('error', (d: any) => pushError(`error: ${d.message}`)))
@@ -175,6 +212,13 @@
       lastTrackChanged,
       errorLog: errorLog.slice(0, 20),
       nativeBridgeTrail: nativeBridgeTrailSnapshot(),
+      // The structured event logs: native danger/info history + JS-side
+      // verbose entries. nativeEvents is capped at the newest 250 rows here
+      // so the dump stays pasteable (the native ring holds 400; `nextSeq` in
+      // nativeDebug lets a follow-up pull prove nothing was skipped).
+      nativeEvents: nativeEvents.slice(-250),
+      jsEvents: jsDebugEventsSnapshot().slice(-120),
+      debugDomains: domains,
       thumbnails: getThumbDebug(),
       settings: scrubSettings(st8 as unknown as Record<string, unknown>),
     }
@@ -204,6 +248,7 @@
   function clearAll() {
     clearLog()
     clearNativeBridgeTrail()
+    clearJsDebugEvents()
   }
 
   let q = $derived(get(queue))
@@ -244,6 +289,23 @@
   let bridgeTrail = $derived.by(() => {
     void jsTick
     return nativeBridgeTrailSnapshot()
+  })
+  // Native-events panel rows (precomputed — keeps the template parseable:
+  // nested ternaries with comparison operators confused the Svelte parser).
+  let nativeEventRows = $derived.by(() => {
+    void jsTick
+    const first = nativeEvents[0]?.t ?? 0
+    return nativeEvents.slice(-120).map((e: any) => ({
+      // The class string is precomputed: a `class:` directive name may not
+      // contain a slash (`text-white/40` broke the Svelte parser).
+      cls: e.level === 'danger' ? 'text-red-300' : e.level === 'debug' ? 'text-white/40' : '',
+      line: `+${(e.t - first).toFixed(1)}s ${e.level === 'danger' ? '⚠' : e.level === 'info' ? '·' : ' '} [${e.domain}] ${e.msg}`,
+    }))
+  })
+  // Header label for the events section (dropped-count marker).
+  let nativeEventsLabel = $derived.by(() => {
+    void jsTick
+    return nativeEventsDropped > 0 ? ` · ring dropped ${nativeEventsDropped}` : ''
   })
   // Thumb loader counters sampled per tick (the snapshot is a plain read of
   // module state; identity changes each poll so the section re-renders).
@@ -313,6 +375,44 @@
             {/each}
           </div>
         {/if}
+      </div>
+
+      <!-- Structured native events (2026-09-19): the engine's danger verdicts
+           in one timeline — premature drops, evictions, aborts, stale drops,
+           interruption decisions, artwork-guard drops. Level coloring:
+           danger = red (a gate fired — read this first), info = default
+           (state transition), debug = dim (verbose domain). -->
+      <div class="mb-1 rounded bg-white/5 p-2">
+        <button onclick={() => toggleSection('events')} class="mb-1 flex w-full items-center justify-between font-bold text-yellow-300">
+          <span>{openSections.events ? '▾' : '▸'} NATIVE EVENTS ({nativeEvents.length}{nativeEventsLabel})</span>
+        </button>
+        {#if openSections.events}
+          <div class="max-h-48 overflow-auto whitespace-pre-wrap break-words text-[10px]">
+            {#each nativeEventRows as r}
+              <div class="border-t border-white/5 py-0.5 {r.cls}">
+                {r.line}
+              </div>
+            {:else}
+              <div class="text-white/30">no events yet — pulls incrementally while open, full ring on first open</div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      <!-- Opt-in verbose domains: toggling persists to localStorage and
+           pushes to the native engine's write-time gate. Danger + info are
+           ALWAYS recorded — these chips only add the verbose `debug` flow
+           (per-download detail, ramp internals, tag probes). -->
+      <div class="mb-1 rounded bg-white/5 p-2">
+        <div class="mb-1 font-bold text-yellow-300">VERBOSE DOMAINS (opt-in)</div>
+        <div class="flex flex-wrap gap-1">
+          {#each knownDomains() as d}
+            <button
+              onclick={() => toggleDomain(d)}
+              class="rounded px-1.5 py-0.5 {domains.includes(d) ? 'bg-cyan-500/40 text-white' : 'bg-white/10 text-white/60'}"
+            >{d}</button>
+          {/each}
+        </div>
       </div>
 
       <!-- Thumb loader (scroll-gating diagnosis): pending = queue depth,

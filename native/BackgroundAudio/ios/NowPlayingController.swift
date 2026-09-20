@@ -20,6 +20,13 @@ final class NowPlayingController {
     private var cachedArtwork: UIImage?
     private var artworkTrackId: String?
     private var lastInfo: [String: Any] = [:]
+    /// Diagnostic sink (2026-09-19): the ArtworkRequestGuard's stale-drop
+    /// verdict (the "lock screen shows the default app cover" class) rides
+    /// the engine's event log (domain "artwork", wired by the plugin).
+    var eventSink: ((NativeEvent.Level, String) -> Void)?
+    private func event(_ level: NativeEvent.Level, _ message: String) {
+        eventSink?(level, message)
+    }
 
     /// Tracks the latest artwork request so an out-of-order completion (an
     /// older fetch landing last, or a track change without a new request) can
@@ -100,15 +107,22 @@ final class NowPlayingController {
     }
 
     private func fetchArtwork(trackId: String, url: URL) {
+        event(.debug, "artwork fetch start \(trackId)")
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let self = self,
-                  let data = data,
-                  let image = UIImage(data: data) else { return }
+            guard let self = self else { return }
+            guard let data = data, let image = UIImage(data: data) else {
+                self.event(.info, "artwork fetch failed (no decodable image) \(trackId)")
+                return
+            }
             DispatchQueue.main.async {
                 // Drop out-of-order completions (older fetch finishing last) and
                 // completions for a track that is no longer current (TODO 4.4).
                 guard let currentTrackId = self.currentTrackId,
-                      self.artworkGuard.shouldApply(completedTrackId: trackId, currentTrackId: currentTrackId) else { return }
+                      self.artworkGuard.shouldApply(completedTrackId: trackId, currentTrackId: currentTrackId) else {
+                    self.event(.danger, "artwork completion DROPPED by guard (completed=\(trackId) current=\(self.currentTrackId ?? "nil"))")
+                    return
+                }
+                self.event(.debug, "artwork applied \(trackId)")
                 self.cachedArtwork = image
                 self.artworkTrackId = trackId
                 // Re-apply now playing info so the artwork appears on the lock screen.

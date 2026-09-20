@@ -34,7 +34,7 @@ export interface NativeBridgeTrailEntry {
   name: string
 }
 
-const LIMIT = 80
+const LIMIT = 200
 
 const entries: NativeBridgeTrailEntry[] = []
 

@@ -2,6 +2,7 @@ import { derived, writable } from 'svelte/store'
 import { settings } from '../stores/appState'
 import { BackgroundAudio } from './nativePlugin'
 import { Capacitor } from '@capacitor/core'
+import { trailBridge } from './playbackCore/nativeBridgeTrail'
 
 /**
  * Network mode (low-data mode): cellular/expensive detection + the effective
@@ -89,6 +90,9 @@ function wireNative(): void {
   if (!Capacitor.isNativePlatform()) return
   // Live updates while the app runs (Wi-Fi ↔ cellular transitions).
   void BackgroundAudio.addListener('networkStateChanged', (data: { isExpensive: boolean; isConstrained: boolean }) => {
+    // The dump must show LDM flapping — a low-data transition silently
+    // changes the transcode/preload economy mid-session.
+    trailBridge('event', `network exp=${!!data.isExpensive} ldm=${!!data.isConstrained}`)
     networkStatus.set({
       known: true,
       isCellular: !!data.isExpensive,

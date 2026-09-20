@@ -20,9 +20,10 @@
  *    used to emit setQueue(A)→setQueue(B)→playTrackAt(B)→playTrackAt(A),
  *    leaving the engine on queue B at index A; engages now run one cycle at
  *    a time with a pending-latest slot — queued requests supersede each
- *    other, the cycle drains at most one survivor per completed engage);
- *  - the retry machine: `RetryPolicy` native `{maxAttempts: 2,
- *    baseDelayMs: 1000}` (1s/2s; bounded — a failed reload keeps the backoff, unlike the old 1s-forever),
+ *    other, the cycle drains at most one survivor per completed engage);   *  - the retry machine: `RetryPolicy` native `{maxAttempts: 2,
+   *    baseDelayMs: 1000}` (1s/2s; bounded — a failed reload keeps the
+   *    backoff, unlike the old 1s-forever; the reload engage no longer
+   *    resets the counter — 2026-09-19),
  *    track-keyed validity, superseded timers cancelled, give-up →
  *    `onTrackEnded({kind:'natural', fromError:true})` (the manager's A4 chain
  *    advances); the timer + validity live HERE, the reload action resolves
@@ -313,7 +314,18 @@ export class NativeTransport {
     this._lastTrackId = active.trackId
     const retryTarget = this._retryTrackId
     const mem = this._seekMemory
-    this._resetRetry()
+    // 2026-09-19, the unbounded-retry fix: a retry's own reload engage must
+    // NOT reset the attempt counter. Resetting on every engage made the
+    // give-up unreachable — the doc's "bounded — a failed reload keeps the
+    // backoff" claim was false — so any systematic per-track error (a
+    // truncated file the loader kept re-serving, a persistently failing row)
+    // looped the SAME track forever: play → error → 1 s → reload → play → …
+    // Reset only when this engage is NOT the retry's reload; a track change
+    // or give-up still resets (and a user re-engage of another row hits the
+    // `retryTarget !== active.trackId` branch).
+    if (retryTarget === null || retryTarget !== active.trackId) {
+      this._resetRetry()
+    }
     if (mem && retryTarget !== null && retryTarget === mem.trackId && retryTarget === this._lastTrackId) {
       // 1.7: this engage IS the retry's reload — re-issue the clamped seek
       // (Swift's loadAndStart wiped positionBias).

@@ -532,7 +532,28 @@ test('a track change during the retry window suppresses the fire (track-keyed va
   assert.deepEqual(retried, [])
 })
 
-test('a reload engage resets the retry policy (fresh backoff after reload)', async () => {
+test('a retry reload engage does NOT reset the policy — the third error gives up (bounded, 2026-09-19)', async () => {
+  const { transport, client, timers } = setupTimed()
+  const ended: TransportEndedEvent[] = []
+  const retried: string[] = []
+  transport.onTrackEnded = (e) => ended.push(e)
+  transport.onRetry = (id) => retried.push(id)
+  await transport.init()
+  await transport.engage(tracks, 0, 'none')
+  client.callbacks!.onError('e1')
+  client.callbacks!.onError('e2')
+  timers.fireAll()
+  assert.deepEqual(retried, ['t1'])
+  // The reload IS the retry's own engage: resetting here made the give-up
+  // unreachable and looped a systematically failing row forever (the 1.2.28
+  // same-track loop). The attempt count must survive it.
+  assert.equal(await transport.engage(tracks, 0, 'none'), true)
+  client.callbacks!.onError('e3')
+  assert.deepEqual(ended, [{ kind: 'natural', fromError: true }])
+  assert.equal(timers.entries.filter((e) => !e.cancelled).length, 0)
+})
+
+test('an engage of a DIFFERENT track resets the retry policy (fresh backoff)', async () => {
   const { transport, client, timers } = setupTimed()
   const retried: string[] = []
   transport.onRetry = (id) => retried.push(id)
@@ -542,7 +563,8 @@ test('a reload engage resets the retry policy (fresh backoff after reload)', asy
   client.callbacks!.onError('e2')
   timers.fireAll()
   assert.deepEqual(retried, ['t1'])
-  assert.equal(await transport.engage(tracks, 0, 'none'), true)
+  // User navigation to another row: fresh authorization, fresh backoff.
+  assert.equal(await transport.engage(tracks, 1, 'none'), true)
   client.callbacks!.onError('e3')
   const armed = timers.entries.filter((e) => !e.cancelled)
   assert.equal(armed.length, 1)

@@ -9,6 +9,7 @@ import { shouldKeepPushPending, shouldSkipBeforePut, classifyRowForPush } from "
 import { cachedLibraryUsable } from "./syncCachePolicy"
 import { planNavidromeLoad } from "./navidromeLoadPlan"
 import { effectiveLowData } from "./networkMode"
+import { dbgAlways } from "./debugLog"
 import {
   testNavidromeConnection as navidromeTestConnection,
   loadNavidromeSongs as navidromeLoadSongs,
@@ -184,6 +185,7 @@ export async function connectNavidrome(
     // browsable (the library + metadata seeding are local-only). The error
     // stays on both the connection and loadResult so the UI reports the
     // stale-but-present source instead of silently passing off cache as live.
+    dbgAlways('sync', `connect FAILED (${connection.error ?? 'unknown'}) — trying cached-library fallback`)
     const cached = await getSongLibraryCache()
     if (cached && cachedLibraryUsable(cached, baseKey)) {
       navidromeSetCachedConfig(config)
@@ -287,9 +289,14 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   // library and its metadata stay untouched; the UI learns why via
   // loadResult.error.
   if (isCancelled()) {
+    dbgAlways('sync', 'load CANCELLED mid-pagination — library untouched')
     return { ...result, loadResult: { ...result.loadResult, error: 'Load cancelled', cancelled: true } }
   }
   if (!plan.applyLibrary) return result
+
+  // The plan's decisions are the load pipeline's WHY — dump-visible so a
+  // "library didn't update" report can be answered from the Copy dump.
+  dbgAlways('sync', `plan: apply=${plan.tracks.length} tracks scanWebdav=${plan.scanWebdav ? 'yes' : 'no'} seedFeedback=${plan.seedFeedback ? 'yes' : 'no'}${result.loadResult.cached ? ' (CACHED fallback)' : ''}${result.loadResult.error ? ` error=${result.loadResult.error}` : ''}`)
 
   setLibrary(plan.tracks)
   initMetadataForTracks(plan.tracks)

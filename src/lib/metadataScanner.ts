@@ -1,6 +1,7 @@
 import { get } from "svelte/store"
 import { writable } from "svelte/store"
 import { Capacitor } from "@capacitor/core"
+import { dbg, dbgAlways } from "./debugLog"
 import { library, metadataCache, metadataScanState, settings, updateMetadata, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
 import type { Track } from "../stores/appState"
 import { saveWebdavFileIndex, clearWebdavFileIndex, clearAllMetadata, clearAllWebdavFileTags, getWebdavFileIndex, getFileTagsForBase, putFileTag, deleteFileTagsForBase, deleteFileTagsByIds, updateWebdavFileTagFingerprint } from "./db"
@@ -645,6 +646,9 @@ function releaseHealEvictions(): number {
   }
   const releaseIds = selectHealEvictions(candidates, tracks)
   if (releaseIds.length === 0) return 0
+  // DANGER-adjacent (auto-unbind): fresh tag evidence contradicted the
+  // stored binding. Always logged — the dump must verify every auto-unbind.
+  dbgAlways('tags', `heal: evicting ${releaseIds.length} stale binding(s): ${releaseIds.join(', ')}`)
   for (const trackId of releaseIds) {
     const row = rows.get(trackId)
     if (!row) continue
@@ -1367,7 +1371,9 @@ export function cancelScan(): void {
  *  never surface as a successful reset. */
 export function scanAll(shape_: ScanShape = "modified"): Promise<{ cancelled: boolean }> {
   const operation = (async () => {
+    dbg('tags', `scanAll shape=${shape_} start`)
     const completed = await runScan(shape_)
+    dbg('tags', `scanAll shape=${shape_} ${completed ? 'completed' : 'CANCELLED'}`)
     return { cancelled: !completed }
   })()
   activeScanPromise = operation
@@ -2223,6 +2229,7 @@ export async function bindTrackToFile(
 
   force = false,
 ): Promise<BindResult> {
+  dbg('tags', `bind track=${trackId} path=${path} force=${force}`)
   if (!webdavUrl || !webdavUser || !webdavToken) return { ok: false, reason: 'no-creds' }
   await waitForCurrentScan()
   await waitForCurrentTagProbe()
@@ -2465,6 +2472,7 @@ export async function reverifyTrack(trackId: string): Promise<ReverifyTrackResul
 
 /** Reverts a manual binding (or any path) to an unmatched row. */
 export async function unbindTrack(trackId: string): Promise<void> {
+  dbg('tags', `unbind track=${trackId}`)
   const existing = get(metadataCache).get(trackId)
   if (!existing) return
   updateMetadata({

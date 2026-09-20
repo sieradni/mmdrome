@@ -2,6 +2,7 @@ import { get } from 'svelte/store'
 import { sleepTimer, type SleepTimerState } from '../stores/appState'
 import { Capacitor } from '@capacitor/core'
 import { BackgroundAudio } from './nativePlugin'
+import { trailBridge } from './playbackCore/nativeBridgeTrail'
 import { rearmDecision } from './sleepTimerMirror'
 import { audioManager } from './audioManager'
 
@@ -116,6 +117,7 @@ class SleepTimerController {
   async init(): Promise<void> {
     if (!this.isNative()) return
     this.listener = await BackgroundAudio.addListener('sleepTimerFired', () => {
+      trailBridge('event', 'sleepTimerFired (parked at track end)')
       // The native engine already paused; just reset local UI state.
       this.clearLocal()
     })

@@ -85,6 +85,13 @@ interface BackgroundAudioPlugin {
   setEq(options: { filters: NativeFilterSnapshot[]; bypassed: boolean }): Promise<void>
   getState(): Promise<NativeEngineState>
   getDebugState(): Promise<Record<string, unknown>>
+  /** Structured engine events newer than `sinceSeq` (the caller's
+   *  watermark), oldest first, capped at 400 from the newest side. Danger +
+   *  info always record; `debug`-level entries only for domains enabled via
+   *  setDebugDomains. */
+  getDebugEvents(options: { sinceSeq: number }): Promise<NativeEventsPage>
+  /** Opt-in verbose domains (HUD toggles → native write-time gate). */
+  setDebugDomains(options: { domains: string[] }): Promise<void>
   /** Live spectrum bands for the EQ overlay: `bands` holds SPECTRUM_BAND_COUNT
    *  normalized 0..1 levels on the shared 20 Hz–20 kHz log ladder (zeros when
    *  paused — the native tap freezes its snapshot at pause); `playing`
@@ -119,6 +126,20 @@ interface BackgroundAudioPlugin {
   addListener(eventName: string, listenerFunc: (data: unknown) => void): Promise<PluginListenerHandle>
 }
 
+export interface NativeEventEntry {
+  seq: number
+  t: number
+  domain: string
+  level: 'danger' | 'info' | 'debug'
+  msg: string
+}
+
+export interface NativeEventsPage {
+  events: NativeEventEntry[]
+  nextSeq: number
+  dropped: number
+}
+
 export interface NativeEngineCallbacks {
   onTrackChanged: (trackId: string) => void
   onPlaybackStateChanged: (playing: boolean) => void
@@ -144,6 +165,24 @@ export class NativeAudioEngineApp {
 
   isNative(): boolean {
     return Capacitor.isNativePlatform()
+  }
+
+  /** Pulls the engine's structured event log since the given watermark.
+   *  Used by the Debug HUD (incremental poll while open; full pull at Copy
+   *  time). No-ops to an empty page off-native or on failure. */
+  async getDebugEvents(sinceSeq: number): Promise<NativeEventsPage> {
+    if (!this.isNative()) return { events: [], nextSeq: sinceSeq, dropped: 0 }
+    try {
+      return await BackgroundAudio.getDebugEvents({ sinceSeq })
+    } catch {
+      return { events: [], nextSeq: sinceSeq, dropped: 0 }
+    }
+  }
+
+  /** Pushes the HUD's opt-in verbose domains to the native engine. */
+  async setDebugDomains(domains: string[]): Promise<void> {
+    if (!this.isNative()) return
+    await BackgroundAudio.setDebugDomains({ domains }).catch(() => {})
   }
 
   plugin(): BackgroundAudioPlugin {
