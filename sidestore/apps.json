@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.30",
-      "versionDate": "2026-09-21T08:44:23.601Z",
-      "versionDescription": "P0 fixes from the first field dump: the crossfade finalize path is now gated by the truncation check (a truncated active file can no longer switch tracks with its tail missing), and refreshQueue reconciles lagging snapshots instead of stopping live playback (the divergence stop-storm). Adds the backward-advance field detector, ring hygiene (network transitions only, artwork-guard drops to info), live debug-HUD toggle without page reload, full event rings in Copy dumps, and a native format-probe bypass fixing the false aac unsupported verdict.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.30/mmdrome.ipa",
+      "version": "1.2.31",
+      "versionDate": "2026-09-21T10:45:31.720Z",
+      "versionDescription": "Truncation defense completed: byte-exact Content-Length gate for clean early closes (Connectivity Assist churn), finalize re-entrancy fix (crossfaded track restarts), bounded prefetch retry with backoff, version-gated iOS opus verdict (LDM transcodes to opus again), stale-clock crossfade guard, and a finalize re-entry completion drop. Web: live debug-HUD toggle, full event rings in the dump, honest retire discrimination, native format-probe bypass.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.31/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.31",
+          "buildVersion": "35",
+          "date": "2026-09-21T10:45:31.720Z",
+          "localizedDescription": "Truncation defense completed: byte-exact Content-Length gate for clean early closes (Connectivity Assist churn), finalize re-entrancy fix (crossfaded track restarts), bounded prefetch retry with backoff, version-gated iOS opus verdict (LDM transcodes to opus again), stale-clock crossfade guard, and a finalize re-entry completion drop. Web: live debug-HUD toggle, full event rings in the dump, honest retire discrimination, native format-probe bypass.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.31/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 4938281
+        },
         {
           "version": "1.2.30",
           "buildVersion": "34",
@@ -323,6 +332,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.31",
+      "identifier": "ios-v1.2.31",
+      "appID": "com.mmdrome.player",
+      "caption": "Truncation defense completed: byte-exact Content-Length gate for clean early closes (Connectivity Assist churn), finalize re-entrancy fix (c",
+      "date": "2026-09-21T10:45:31.720Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.30",
       "identifier": "ios-v1.2.30",
       "appID": "com.mmdrome.player",
@@ -355,15 +373,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Two-lane thumbnail landing: the far-scroll 5s was a self-caused server flood (tier lane empties the screen before the band trickle starts); ",
       "date": "2026-09-18T04:37:23.252Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.26",
-      "identifier": "ios-v1.2.26",
-      "appID": "com.mmdrome.player",
-      "caption": "Thumbnail lead time doubled and widened to cover the whole screen during scrolls - fresh territory starts loading sooner, placeholders at th",
-      "date": "2026-09-18T03:05:21.879Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
