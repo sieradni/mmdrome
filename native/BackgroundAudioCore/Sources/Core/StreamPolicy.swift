@@ -87,4 +87,57 @@ public enum StreamPolicy {
         // overhead at the head).
         return Int64((bytesPerSecond * leadSeconds) * 1.10)
     }
+
+    // MARK: - Phase 2: the streaming writer's delivery policy
+
+    /// DECISION on each delegate byte arrival: has the writer's accumulated
+    /// buffer reached the point where the loader should deliver the `.part`
+    /// to the engine as a PLAYABLE schedule source? Two triggers — the lead
+    /// crossing (the stage contract's own boundary) and an arrival pushing
+    /// the accumulated bytes past the next 512 KB flush rung (keeps the
+    /// engine's chained-segment extension fed without per-arrival
+    /// scheduling churn). The engine only ever SCHEDULES what the estimate
+    /// proves schedulable, so delivering early is safe by construction.
+    public static let writerFlushRungBytes: Int64 = 524_288 // 512 KB
+
+    public static func writerShouldDeliver(
+        accumulatedBytes: Int64,
+        leadRequiredBytes: Int64?,
+        lastDeliveredAt: Int64
+    ) -> Bool {
+        if let lead = leadRequiredBytes {
+            // The lead crossing is the primary trigger: deliver the moment
+            // the stage contract is satisfiable.
+            if lastDeliveredAt < lead, accumulatedBytes >= lead { return true }
+            // Subsequent rungs keep the extension fed at 512 KB granularity.
+            if accumulatedBytes - lastDeliveredAt >= writerFlushRungBytes { return true }
+        }
+        return false
+    }
+
+    /// The writer's final-promotion contract: the accumulated `.part` bytes
+    /// pass the SAME gates a download does. `isComplete` requires the exact
+    /// announced body (raw streams only — a transcode's announced length is
+    /// an estimate and cannot anchor the byte-exact gate; the design keeps
+    /// transcodes on the full-download `downloadTask` path in Phase 2 for
+    /// exactly this reason). Returns nil when completeness cannot be judged
+    /// (no announced length) — the writer then ends the stream with a
+    /// completion-event judgment instead of a byte verdict.
+    public static func writerCompleteVerdict(
+        accumulatedBytes: Int64,
+        announcedBytes: Int64
+    ) -> WriterVerdict? {
+        guard announcedBytes > 0 else { return nil }
+        if accumulatedBytes >= announcedBytes { return .promote }
+        return .earlyClose
+    }
+
+    public enum WriterVerdict: Equatable {
+        /// The full announced body is on disk: run the gate chain + promote
+        /// to cache (identical to a downloadTask success).
+        case promote
+        /// The transfer ended before the announced body: retain the `.part`
+        /// + record `pendingParts` so the next prefetch Range-continues it.
+        case earlyClose
+    }
 }

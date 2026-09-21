@@ -99,4 +99,46 @@ final class StreamScheduleTests: XCTestCase {
         // COMPLETE files keep the existing poison path untouched.
         XCTAssertEqual(StreamSchedule.prematureCompletionVerdict(stage: .complete), .truncation)
     }
+
+    // MARK: - the delivered-end estimate (Phase 2)
+
+    func testEstimateIsProportionalAndBiasedLow() {
+        // Header claims 10M frames for an announced 10 MB; 5 MB delivered →
+        // 50 % × 0.98 slack ≈ 4.9M frames.
+        let e = StreamSchedule.estimatedFramesEndable(
+            headerClaimedFrames: 10_000_000, deliveredBytes: 5_000_000, announcedBytes: 10_000_000)
+        XCTAssertEqual(e, 4_900_000)
+        // Delivered everything → header claim × slack (never over-claims).
+        let f = StreamSchedule.estimatedFramesEndable(
+            headerClaimedFrames: 10_000_000, deliveredBytes: 10_000_000, announcedBytes: 10_000_000)
+        XCTAssertEqual(f, 9_800_000)
+    }
+
+    func testEstimateConservativeOnUnknownInputs() {
+        // No announced length, no delivered bytes, no header → 0: the caller
+        // must not stage without evidence.
+        XCTAssertEqual(StreamSchedule.estimatedFramesEndable(headerClaimedFrames: 0, deliveredBytes: 5_000_000, announcedBytes: 10_000_000), 0)
+        XCTAssertEqual(StreamSchedule.estimatedFramesEndable(headerClaimedFrames: 10_000_000, deliveredBytes: 0, announcedBytes: 10_000_000), 0)
+        XCTAssertEqual(StreamSchedule.estimatedFramesEndable(headerClaimedFrames: 10_000_000, deliveredBytes: 5_000_000, announcedBytes: 0), 0)
+    }
+
+    // MARK: - the buffering-pause resume decision
+
+    func testResumeRequiresTwoSecondMargin() {
+        let sr = 48000.0
+        // 1 s of new audio beyond the stall → hold.
+        XCTAssertFalse(StreamSchedule.shouldResumeAfterStall(stalledFrames: 1_000_000, schedulableEndFrames: 1_048_000, sampleRate: sr))
+        // 2 s → resume.
+        XCTAssertTrue(StreamSchedule.shouldResumeAfterStall(stalledFrames: 1_000_000, schedulableEndFrames: 1_096_000, sampleRate: sr))
+    }
+
+    func testResumeMarginIsBelowExtensionChurnBar() {
+        // Resuming from a stall must be easier than timer-driven extension
+        // (a stall re-schedules everything schedulable; extension avoids churn).
+        XCTAssertLessThan(StreamSchedule.resumeMarginSeconds, StreamSchedule.minExtensionSeconds)
+    }
+
+    func testStallGiveUpIsBounded() {
+        XCTAssertEqual(StreamSchedule.stallGiveUpSeconds, 10.0)
+    }
 }

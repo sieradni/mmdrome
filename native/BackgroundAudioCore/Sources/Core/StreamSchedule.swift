@@ -107,6 +107,51 @@ public enum StreamSchedule {
         case trackEnd
     }
 
+    // MARK: - Phase 2: the delivered-end estimate + the buffering contract
+
+    /// Frames honestly schedulable from a PARTIAL file, estimated from the
+    /// byte ratio. The container header claims `headerClaimedFrames` total;
+    /// `deliveredBytes` of `announcedBytes` have landed. Biased DOWN by
+    /// `slack` (default 0.98) — an undershoot pauses slightly early at the
+    /// delivered boundary (the buffering pause, safe); an overshoot runs the
+    /// data dry mid-segment (a stall the completion backstop catches, but
+    /// the audible gap is worse). CBR error is container overhead ±2 %.
+    /// Returns 0 when the inputs carry no evidence (announced unknown → no
+    /// estimate → the caller must not stage; conservative).
+    public static func estimatedFramesEndable(
+        headerClaimedFrames: Int64,
+        deliveredBytes: Int64,
+        announcedBytes: Int64,
+        slack: Double = 0.98
+    ) -> Int64 {
+        guard headerClaimedFrames > 0, deliveredBytes > 0, announcedBytes > 0 else { return 0 }
+        let ratio = min(1.0, Double(deliveredBytes) / Double(announcedBytes))
+        return Int64((Double(headerClaimedFrames) * ratio * slack).rounded(.down))
+    }
+
+    /// DECISION after a buffering pause: has enough new audio landed beyond
+    /// the stalled position to resume without immediately re-stalling?
+    /// `resumeMarginSeconds` (2 s) is deliberately BELOW `minExtensionSeconds`
+    /// (5 s): resuming from a stall re-schedules everything schedulable, so
+    /// even a small chunk unblocks the user — while timer-driven EXTENSION of
+    /// a running schedule stays at the higher churn bar.
+    public static let resumeMarginSeconds = 2.0
+
+    public static func shouldResumeAfterStall(
+        stalledFrames: Int64,
+        schedulableEndFrames: Int64,
+        sampleRate: Double
+    ) -> Bool {
+        guard sampleRate > 0 else { return false }
+        let margin = Int64(resumeMarginSeconds * sampleRate)
+        return schedulableEndFrames - stalledFrames >= margin
+    }
+
+    /// Seconds of zero progress during a buffering pause before the engine
+    /// gives up on the stream and surfaces an error (the JS bounded retry
+    /// takes over — its re-engage Range-continues the same .part bytes).
+    public static let stallGiveUpSeconds = 10.0
+
     // MARK: - Stall handling
 
     /// Is the playhead about to run off the delivered end? The stall margin

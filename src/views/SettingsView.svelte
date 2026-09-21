@@ -170,6 +170,10 @@
     updateSetting('crossfadeDuration', val)
   }
 
+  function setStreamingMode(val: 'off' | 'slowLink' | 'on') {
+    updateSetting('nativeStreaming', val)
+  }
+
   function setReplayGainMode(val: 'off' | 'track' | 'album') {
     updateSetting('replayGainMode', val)
   }
@@ -1635,6 +1639,22 @@
               class="flex-1"
             />
             <span class="w-10 text-right text-sm text-muted">{($settings.crossfadeDuration ?? 0)}s</span>
+          </div>
+        </section>
+
+        <!-- Streaming (native only — the web engine always streams) -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Native Streaming</h3>
+          <p class="mb-2 text-sm text-muted">Start playing before the file finishes downloading (iOS app only). Off waits for the full download, as before.</p>
+          <div class="flex gap-2">
+            {#each [['off', 'Off'], ['slowLink', 'Slow link'], ['on', 'Always']] as [val, label]}
+              <button
+                onclick={() => setStreamingMode(val as 'off' | 'slowLink' | 'on')}
+                class="btn-sm border border-white/15 hover:bg-white/5"
+                class:chip-on={($settings.nativeStreaming ?? 'off') === val}
+                class:text-muted={($settings.nativeStreaming ?? 'off') !== val}
+              >{label}</button>
+            {/each}
           </div>
         </section>
 

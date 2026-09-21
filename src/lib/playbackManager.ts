@@ -339,6 +339,9 @@ export class PlaybackManager {
     this._engine.setCrossfade(s.crossfadeDuration ?? 0)
     this._engine.setAudioMixing(s.iosAudioMixing ?? 'exclusive')
     this._syncNativePreload()
+    // A15 Phase 2: the streaming policy mode (default 'off' — nothing
+    // streams until the setting exists or is enabled).
+    BackgroundAudio.setStreamingMode({ mode: s.nativeStreaming ?? 'off' }).catch(() => {})
     this._engine.pushNativeEqFromStore()
 
     BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode ?? 'off' }).catch(() => {})
@@ -375,6 +378,12 @@ export class PlaybackManager {
 
   private _syncNativePreload(): void {
     BackgroundAudio.setPreloadCount({ count: this._effectivePreloadCount() }).catch(() => {})
+  }
+
+  /** A15 Phase 2: push the streaming policy mode to the native engine
+   *  (no-op facade call on web). Called from the settings subscriber. */
+  private _syncNativeStreaming(): void {
+    BackgroundAudio.setStreamingMode({ mode: get(settings).nativeStreaming ?? 'off' }).catch(() => {})
   }
 
   /**
@@ -439,6 +448,7 @@ export class PlaybackManager {
       }
       if (this.isNative()) {
         this._syncNativePreload()
+        this._syncNativeStreaming()
         if (s.replayGainMode) {
           BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode }).catch(() => {})
         }

@@ -194,6 +194,380 @@ final class TrackFileLoader {
     private var maturationStages: [String: Maturation.Stage] = [:]
     private var maturationLastProbeAt: [String: Int64] = [:]
 
+    // MARK: Streaming writer (A15 Phase 2) — direct-tap staged loads
+
+    /// One in-flight staged load. The writer appends server bytes into the
+    /// SAME `.part` scratch the downloadTask retention uses, so a stalled
+    /// stream and a failed download share ONE continuation substrate
+    /// (`pendingParts` → Range-append). Main-thread-owned state; file I/O
+    /// happens on the stream session's serial delegate queue.
+    struct StreamWriter {
+        let cacheKey: String
+        let track: NativeTrack
+        let destination: URL
+        let part: URL
+        let requestID: UUID
+        let claimedAt: Date
+        var announcedBytes: Int64      // captured from the response headers
+        var accumulatedBytes: Int64 = 0
+        var lastDeliveredAt: Int64 = 0
+        var deliveredPlayable = false
+    }
+
+    private var streamWriter: StreamWriter? = nil
+    private var streamWriterTask: URLSessionDataTask? = nil
+    private var streamWriterHandle: FileHandle? = nil
+    /// Prefetch requests that arrived while the writer owned the key: they
+    /// chain onto the writer's final verdict (deliver(nil, err) or the
+    /// promoted destination) instead of starting a parallel download.
+    private var streamWriterChains: [String: [(URL?, Error?) -> Void]] = [:]
+
+    /// The stream session — the writer NEEDS progressive byte callbacks,
+    /// which the block-based downloadTask API doesn't offer. The delegate
+    /// instance is held so `streamLoad` can hand it the opened file handle.
+    /// Its queue is serial by default, so `didReceive data` appends are
+    /// ordered.
+    private lazy var streamSession: URLSession = {
+        let config = URLSessionConfiguration.default
+        config.requestCachePolicy = .returnCacheDataElseLoad
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 600
+        let delegate = StreamWriterDelegate()
+        delegate.owner = self
+        streamWriterDelegate = delegate
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+    }()
+    private var streamWriterDelegate: StreamWriterDelegate? = nil
+
+    /// Recent-transfer bandwidth estimate (bytes/second) from the last
+    /// successful download — evidence for the slow-link decision. Nil until
+    /// the first download of the session lands (no evidence → the slow-link
+    /// mode stays on the full-download path; conservative default).
+    private(set) var recentTransferRate: Double? = nil
+    private var claimAt: [String: Date] = [:]
+
+    /// A multi-delivery progress report for a staged load.
+    struct StreamProgress {
+        let trackId: String
+        let url: URL
+        let stage: StreamSchedule.Stage
+        let deliveredBytes: Int64
+        let announcedBytes: Int64
+    }
+
+    /// The full Phase 2 policy gate: should THIS direct tap stream instead of
+    /// full-download? Reads every piece of loader state the answer keys on
+    /// (variant, in-flight, scratch, range support) and hands the bandwidth
+    /// math to the pure `StreamPolicy` core. The engine asks; the loader owns
+    /// the evidence; the core owns the decision.
+    func streamDecision(for track: NativeTrack, mode: StreamPolicy.Mode) -> Bool {
+        guard mode != .off else { return false }
+        let requested = TrackVariant(url: track.url)
+        // Transcodes keep the full-download path in Phase 2: their announced
+        // length is a server-side estimate, which the honesty contract (the
+        // schedule ends inside delivered bytes, judged against an exact
+        // announced total) cannot use.
+        guard requested == .raw else { return false }
+        let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
+        // A downloadTask already owns this key (preload chain, Range
+        // continuation): never race it with a second byte stream.
+        guard !state.isActive(cacheKey) else { return false }
+        // Scratch state means the NEXT attempt is a Range continuation — the
+        // resumable download path owns this round.
+        guard pendingParts[cacheKey] == nil, resumeDataByCacheKey[cacheKey] == nil else { return false }
+        // A server that ignored Range once cannot guarantee stream forward
+        // progress (the give-up recovery would re-download whole).
+        guard !rangeUnsupportedKeys.contains(cacheKey) else { return false }
+        // An active writer for another track: one writer at a time (direct
+        // taps are serial — the user taps one row).
+        guard streamWriter == nil else { return false }
+        // Unknown byte size or duration: no lead estimate → no streaming
+        // (no evidence, no action — the standing principle).
+        guard track.size > 0, track.duration > 0 else { return false }
+        if mode == .slowLink {
+            // Slow-link needs a bandwidth estimate from a completed download;
+            // without one, treat the link as fast (full download wins).
+            guard let rate = recentTransferRate, rate > 0 else { return false }
+            let lead = StreamPolicy.effectiveLeadSeconds(trackDuration: track.duration)
+            guard let leadBytes = StreamPolicy.bytesForLead(
+                fileBytes: Int64(track.size), trackDuration: track.duration, leadSeconds: lead) else { return false }
+            return StreamPolicy.shouldStreamDirectTap(
+                mode: .slowLink,
+                rangeSupported: true,
+                estimatedFullDownloadSeconds: Double(track.size) / rate,
+                estimatedSecondsToPlayable: Double(leadBytes) / rate)
+        }
+        return true
+    }
+
+    /// Starts a staged load for `track`: a dataTask whose delegate appends
+    /// bytes into the `.part` scratch as they arrive. `onProgress` fires on
+    /// MAIN at the PLAYABLE crossing and each 512 KB rung after it; the
+    /// engine schedules/extends from the growing file. `onFinished` fires
+    /// once on MAIN: the promoted destination (gate chain passed — identical
+    /// to a downloadTask success) or an error (scratch retained for the
+    /// Range-continue path).
+    func streamLoad(
+        _ track: NativeTrack,
+        onProgress: @escaping (StreamProgress) -> Void,
+        onFinished: @escaping (StreamProgress?, Error?) -> Void
+    ) {
+        let requested = TrackVariant(url: track.url)
+        let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
+        let destination = Self.destinationURL(for: track, variant: requested)
+        let part = partURL(for: destination)
+        let requestID = UUID()
+        // A pre-existing .part from a previous retention must not be appended
+        // onto (the writer writes from scratch — a pendingPart here would
+        // have made streamDecision false, but a race guard costs nothing).
+        try? FileManager.default.removeItem(at: part)
+        var writer = StreamWriter(
+            cacheKey: cacheKey,
+            track: track,
+            destination: destination,
+            part: part,
+            requestID: requestID,
+            claimedAt: Date(),
+            announcedBytes: requested == .raw ? Int64(track.size) : 0)
+        let handle: FileHandle
+        do {
+            let parent = destination.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+            if !FileManager.default.fileExists(atPath: part.path) {
+                FileManager.default.createFile(atPath: part.path, contents: nil)
+            }
+            handle = try FileHandle(forWritingTo: part)
+        } catch {
+            event(.danger, "stream: writer open failed for \(track.trackId): \(error.localizedDescription) — full-download fallback")
+            onFinished(nil, error)
+            return
+        }
+        streamWriterHandle = handle
+        streamWriter = writer
+        claimAt[cacheKey] = writer.claimedAt
+        destinationByKey[cacheKey] = destination
+        // The delegate appends bytes on its serial queue; hand it the handle
+        // (materializing streamSession here also creates the delegate).
+        streamWriterDelegate?.attach(handle)
+        event(.info, "stream: writer started for \(track.trackId) (\(requested)) announced=\(writer.announcedBytes)")
+        var request = URLRequest(url: track.url)
+        request.timeoutInterval = 120
+        let task = streamSession.dataTask(with: request)
+        streamWriterTask = task
+        // The multi-delivery closures ride the writer struct: main-thread
+        // updates happen in the delegate hop (didReceive data → main), which
+        // calls writerDidReceiveBytes/writerDidComplete below.
+        streamProgressHandler = onProgress
+        streamFinishedHandler = onFinished
+        task.resume()
+    }
+
+    private var streamProgressHandler: ((StreamProgress) -> Void)? = nil
+    private var streamFinishedHandler: ((StreamProgress?, Error?) -> Void)? = nil
+
+    /// MAIN: the response header landed — the server's own Content-Length
+    /// refines the snapshot's size estimate for the schedule math.
+    func writerDidAnnounce(_ announced: Int64) {
+        guard var writer = streamWriter, announced > 0 else { return }
+        writer.announcedBytes = announced
+        streamWriter = writer
+    }
+
+    /// MAIN: recompute the stage after a byte arrival and deliver when the
+    /// writer policy says so. Called from the delegate hop.
+    private func writerDidReceiveBytes(_ received: Int64) {
+        guard var writer = streamWriter else { return }
+        writer.accumulatedBytes = received
+        let track = writer.track
+        let lead = StreamPolicy.effectiveLeadSeconds(trackDuration: track.duration)
+        let leadBytes = MaturationStageSupport.bytesForLeadWithFallback(
+            fileBytes: Int64(track.size), duration: track.duration, leadSeconds: lead)
+        let shouldDeliver = StreamPolicy.writerShouldDeliver(
+            accumulatedBytes: received,
+            leadRequiredBytes: leadBytes,
+            lastDeliveredAt: writer.lastDeliveredAt)
+        guard shouldDeliver else { return }
+        writer.deliveredPlayable = true
+        writer.lastDeliveredAt = received
+        streamWriter = writer
+        streamProgressHandler?(StreamProgress(
+            trackId: writer.track.trackId,
+            url: writer.part,
+            stage: .playable,
+            deliveredBytes: received,
+            announcedBytes: writer.announcedBytes))
+    }
+
+    /// MAIN: the transfer ended (cleanly or with an error). Run the writer's
+    /// completion verdict: promote through the SAME gate chain as a download,
+    /// or retain the scratch for Range-continue.
+    private func writerDidComplete(_ error: Error?) {
+        guard let writer = streamWriter else { return }
+        let handle = streamWriterHandle
+        streamWriterHandle = nil
+        try? handle?.close()
+        // The writer state stays live through the whole verdict below (the
+        // promotion path reads writer.announcedBytes etc.), so the maps are
+        // cleared HERE, explicitly, not in a defer that would run before the
+        // body finished reading them.
+        func clearWriterState() {
+            streamWriter = nil
+            streamWriterTask = nil
+            streamProgressHandler = nil
+            streamFinishedHandler = nil
+            claimAt.removeValue(forKey: writer.cacheKey)
+        }
+        if let error {
+            clearWriterState()
+            event(.danger, "stream: writer failed for \(writer.track.trackId): \(error.localizedDescription) — scratch retained (\(writer.accumulatedBytes)B)")
+            // Range-continue substrate: identical to a downloadTask loud-fail
+            // minus the opaque resumeData (a dataTask has none — the .part
+            // prefix IS the resume state).
+            if writer.accumulatedBytes > 0 {
+                pendingParts[writer.cacheKey] = DownloadResume.Pending(
+                    parts: [writer.accumulatedBytes],
+                    announcedTotal: writer.announcedBytes)
+            }
+            flushWriterChains(key: writer.cacheKey, url: nil, error: error)
+            streamFinishedHandler?(nil, error)
+            onDownloadFinished?(writer.track.trackId, false)
+            return
+        }
+        // Clean end: judge completeness against the announced body.
+        let verdict = StreamPolicy.writerCompleteVerdict(
+            accumulatedBytes: writer.accumulatedBytes,
+            announcedBytes: writer.announcedBytes)
+        switch verdict {
+        case .promote:
+            clearWriterState()
+            // Promote the .part to the destination and run the SAME gate
+            // chain a download passes (min-bytes → decodability → byte-exact
+            // announced). Resume changes how a download recovers; the gates
+            // decide what counts as complete — unchanged here.
+            do {
+                let size = writer.accumulatedBytes
+                if size < TrackFileLoader.minimumAudioBytes {
+                    event(.danger, "stream: promoted body under \(TrackFileLoader.minimumAudioBytes)B for \(writer.track.trackId) — rejecting")
+                    try? FileManager.default.removeItem(at: writer.part)
+                    let err = NSError(domain: "mmdrome.loader", code: -7001, userInfo: [NSLocalizedDescriptionKey: "Streamed file truncated (\(size) bytes): \(writer.track.title)"])
+                    flushWriterChains(key: writer.cacheKey, url: nil, error: err)
+                    streamFinishedHandler?(nil, err)
+                    onDownloadFinished?(writer.track.trackId, false)
+                    return
+                }
+                if FileManager.default.fileExists(atPath: writer.destination.path) {
+                    try FileManager.default.removeItem(at: writer.destination)
+                }
+                try FileManager.default.moveItem(at: writer.part, to: writer.destination)
+                let probeFrames = (try? AVAudioFile(forReading: writer.destination).length) ?? 0
+                guard probeFrames > 0 else {
+                    event(.danger, "stream: promoted file decodes to 0 frames for \(writer.track.trackId) — rejecting")
+                    try? FileManager.default.removeItem(at: writer.destination)
+                    let err = NSError(domain: "mmdrome.loader", code: -7002, userInfo: [NSLocalizedDescriptionKey: "Streamed file is not decodable audio: \(writer.track.title)"])
+                    flushWriterChains(key: writer.cacheKey, url: nil, error: err)
+                    streamFinishedHandler?(nil, err)
+                    onDownloadFinished?(writer.track.trackId, false)
+                    return
+                }
+                if DownloadSanity.isShortOfAnnouncedBytes(actualBytes: size, announcedBytes: writer.announcedBytes) {
+                    event(.danger, "stream: promoted body short of announced (\(size) of \(writer.announcedBytes)) for \(writer.track.trackId) — retaining for Range-continue")
+                    try? FileManager.default.moveItem(at: writer.destination, to: writer.part)
+                    pendingParts[writer.cacheKey] = DownloadResume.Pending(parts: [size], announcedTotal: writer.announcedBytes)
+                    let err = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(size) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
+                    flushWriterChains(key: writer.cacheKey, url: nil, error: err)
+                    streamFinishedHandler?(nil, err)
+                    onDownloadFinished?(writer.track.trackId, false)
+                    return
+                }
+                // All gates passed: promote. Identical bookkeeping to a
+                // downloadTask success.
+                let elapsed = max(0.05, Date().timeIntervalSince(writer.claimedAt))
+                recentTransferRate = Double(size) / elapsed
+                resumeDataByCacheKey[writer.cacheKey] = nil
+                rangeUnsupportedKeys.remove(writer.cacheKey)
+                dropPending(cacheKey: writer.cacheKey, destination: writer.destination)
+                state.store(writer.destination, for: writer.cacheKey, bytes: size)
+                variantOf[writer.cacheKey] = TrackVariant(url: writer.track.url)
+                event(.info, "stream: promoted \(writer.track.trackId) (\(size)B, \(probeFrames) frames) — cache entry complete")
+                flushWriterChains(key: writer.cacheKey, url: writer.destination, error: nil)
+                let final = StreamProgress(
+                    trackId: writer.track.trackId,
+                    url: writer.destination,
+                    stage: .complete,
+                    deliveredBytes: size,
+                    announcedBytes: writer.announcedBytes)
+                streamFinishedHandler?(final, nil)
+                onDownloadFinished?(writer.track.trackId, true)
+            } catch {
+                event(.danger, "stream: promotion failed for \(writer.track.trackId): \(error.localizedDescription)")
+                flushWriterChains(key: writer.cacheKey, url: nil, error: error)
+                streamFinishedHandler?(nil, error)
+                onDownloadFinished?(writer.track.trackId, false)
+            }
+        case .earlyClose:
+            clearWriterState()
+            if writer.accumulatedBytes >= TrackFileLoader.minimumAudioBytes {
+                event(.danger, "stream: clean early close for \(writer.track.trackId) (\(writer.accumulatedBytes) of \(writer.announcedBytes)) — scratch retained, next attempt Range-resumes")
+                pendingParts[writer.cacheKey] = DownloadResume.Pending(
+                    parts: [writer.accumulatedBytes],
+                    announcedTotal: writer.announcedBytes)
+            } else {
+                // Nothing usable delivered: no scratch to continue (a
+                // zero-byte Range resume would re-download from 0 anyway).
+                event(.danger, "stream: clean early close for \(writer.track.trackId) with only \(writer.accumulatedBytes)B — nothing retained, next attempt starts fresh")
+                try? FileManager.default.removeItem(at: writer.part)
+            }
+            let err = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(writer.accumulatedBytes) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
+            flushWriterChains(key: writer.cacheKey, url: nil, error: err)
+            streamFinishedHandler?(nil, err)
+            onDownloadFinished?(writer.track.trackId, false)
+        case nil:
+            clearWriterState()
+            // No announced length: the byte verdict cannot run. Treat the
+            // transfer's end as final and judge through the decodability
+            // gate only (an honest server without Content-Length is rare;
+            // the header-claim vs delivered estimate still bounded every
+            // schedule made from this file).
+            do {
+                let size = writer.accumulatedBytes
+                if FileManager.default.fileExists(atPath: writer.destination.path) {
+                    try FileManager.default.removeItem(at: writer.destination)
+                }
+                try FileManager.default.moveItem(at: writer.part, to: writer.destination)
+                let probeFrames = (try? AVAudioFile(forReading: writer.destination).length) ?? 0
+                guard probeFrames > 0, size >= TrackFileLoader.minimumAudioBytes else {
+                    try? FileManager.default.removeItem(at: writer.destination)
+                    let err = NSError(domain: "mmdrome.loader", code: -7002, userInfo: [NSLocalizedDescriptionKey: "Streamed file is not decodable audio: \(writer.track.title)"])
+                    flushWriterChains(key: writer.cacheKey, url: nil, error: err)
+                    streamFinishedHandler?(nil, err)
+                    onDownloadFinished?(writer.track.trackId, false)
+                    return
+                }
+                state.store(writer.destination, for: writer.cacheKey, bytes: size)
+                variantOf[writer.cacheKey] = TrackVariant(url: writer.track.url)
+                event(.info, "stream: promoted \(writer.track.trackId) (\(size)B, no announced length — decodability-gated)")
+                flushWriterChains(key: writer.cacheKey, url: writer.destination, error: nil)
+                let final = StreamProgress(
+                    trackId: writer.track.trackId,
+                    url: writer.destination,
+                    stage: .complete,
+                    deliveredBytes: size,
+                    announcedBytes: 0)
+                streamFinishedHandler?(final, nil)
+                onDownloadFinished?(writer.track.trackId, true)
+            } catch {
+                flushWriterChains(key: writer.cacheKey, url: nil, error: error)
+                streamFinishedHandler?(nil, error)
+                onDownloadFinished?(writer.track.trackId, false)
+            }
+        }
+    }
+
+    private func flushWriterChains(key: String, url: URL?, error: Error?) {
+        let chains = streamWriterChains.removeValue(forKey: key) ?? []
+        for chain in chains { chain(url, error) }
+    }
+
     /// Advances the maturation state for one in-flight key and reports
     /// TRANSITIONS as structured events (Phase 1's entire purpose: the ring
     /// carries the staged model's field evidence before the engine consumes
@@ -425,6 +799,15 @@ final class TrackFileLoader {
             evict(track.trackId, variant: requested)
         }
         let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
+        if let writer = streamWriter, writer.cacheKey == cacheKey {
+            // The STREAM WRITER owns this key (Phase 2 direct tap in flight):
+            // chain onto its final verdict instead of racing a second byte
+            // stream. Chained calls receive the promoted destination (gate
+            // chain passed) or the failure error — the same shape the
+            // downloadTask in-flight chain delivers.
+            streamWriterChains[cacheKey, default: []].append(deliver)
+            return
+        }
         if state.isActive(cacheKey) {
             // A download for this track+VARIANT is already in flight (started
             // by `prefetchUpcoming`). Chain onto it instead of dropping the
@@ -777,6 +1160,22 @@ final class TrackFileLoader {
             let (task, url) = state.evict(key)
             variantOf.removeValue(forKey: key)
             task?.cancel()
+            // PHASE 2: an evicted key that the stream writer owns tears the
+            // writer down too — no orphaned byte stream appending into a
+            // scratch file the cache has disowned.
+            if let writer = streamWriter, writer.cacheKey == key {
+                streamWriterTask?.cancel()
+                try? streamWriterHandle?.close()
+                streamWriterHandle = nil
+                streamWriter = nil
+                streamWriterTask = nil
+                streamProgressHandler = nil
+                streamFinishedHandler = nil
+                claimAt.removeValue(forKey: key)
+                flushWriterChains(key: key, url: nil, error: NSError(domain: "mmdrome.loader", code: -7005, userInfo: [NSLocalizedDescriptionKey: "Streamed load evicted: \(trackId)"]))
+                try? FileManager.default.removeItem(at: writer.part)
+            }
+            streamWriterChains.removeValue(forKey: key)
             // RESUMABLE: scratch state is keyed per cache key — drop it with
             // the cache entry or a stale prefix/offer survives into the next
             // fetch (and the .part file lingers on disk).
@@ -836,6 +1235,56 @@ final class TrackFileLoader {
         if ext == "view" || ext == "rest" || ext == "stream" { ext = "" }
         let name = ext.isEmpty ? "\(hash)" : "\(hash).\(ext)"
         return dir.appendingPathComponent(name)
+    }
+}
+
+// MARK: - Stream writer delegate (A15 Phase 2)
+
+/// `TrackFileLoader` stays a plain class (its downloadTask path needs no
+/// delegate), so the streaming writer gets a tiny forwarder: byte arrivals
+/// append to the `.part` file ON THE SERIAL DELEGATE QUEUE (ordered, no
+/// torn writes), then hop to main for state updates. The file handle is
+/// owned here — opened by the loader at start, closed at completion or
+/// cancellation.
+private final class StreamWriterDelegate: NSObject, URLSessionDataDelegate {
+    weak var owner: TrackFileLoader?
+    private var handle: FileHandle?
+    private var totalReceived: Int64 = 0
+
+    func attach(_ handle: FileHandle) {
+        self.handle = handle
+        totalReceived = 0
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+                    didReceive response: URLResponse,
+                    completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        completionHandler(.allow)
+        // The server's own announcement (when it sends Content-Length) is
+        // more precise than the snapshot's size — update the writer's
+        // announced total on main (the schedule estimate reads it).
+        let announced = Int64(response.expectedContentLength)
+        DispatchQueue.main.async { [weak self] in
+            self?.owner?.writerDidAnnounce(announced)
+        }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard let handle else { return }
+        handle.write(data)
+        totalReceived += Int64(data.count)
+        let total = totalReceived
+        DispatchQueue.main.async { [weak self] in
+            self?.owner?.writerDidReceiveBytes(total)
+        }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        try? handle?.close()
+        handle = nil
+        DispatchQueue.main.async { [weak self] in
+            self?.owner?.writerDidComplete(error)
+        }
     }
 }
 
@@ -1536,6 +1985,21 @@ public final class NativeAudioEngine: NSObject {
             restartForParams()
             return
         }
+        // A15 Phase 2: a STAGED schedule sitting in the buffering pause (its
+        // old chained schedule already consumed) resumes by re-scheduling
+        // from the stalled position — the delivered estimate has grown by
+        // now, and scheduleCurrentTrack re-clamps to the fresh end. This is
+        // ALSO the user's manual resume after pausing during a stall
+        // (userPaused latched) — the auto-resume path never touched audio.
+        if let staged = stagedSchedule, staged.isStalled, stagedSourceURL != nil {
+            staged.userPaused = false
+            stagedSchedule = staged
+            let resumeAt = cachedPosition
+            eventAdd(.info, "stream", "play() resumes stalled staged schedule at \(String(format: \"%.1f\", resumeAt))s")
+            cancelScheduled()
+            scheduleCurrentTrack(from: resumeAt, autoPlay: true)
+            return
+        }
         // Window-growth changes made while PAUSED deferred their chain arm
         // (guard isPlaying) — a plain resume never re-arms it, so the deferred
         // rows never fill until the next track load. The earlier returns above
@@ -1554,6 +2018,12 @@ public final class NativeAudioEngine: NSObject {
         guard isPlaying else { return }
         eventAdd(.info, "engine", "pause() position=\(String(format: "%.1f", currentPosition)) crossfade=\(crossfade.phase)")
         cachedPosition = currentPosition
+        // A user pause during a staged buffering stall must not be overridden
+        // by the auto-resume: latch it so the stall-resume path keeps the
+        // paused state the user asked for.
+        if let staged = stagedSchedule, staged.isStalled {
+            stagedSchedule?.userPaused = true
+        }
         // Pause both players: during a crossfade the standby node is rendering too.
         activeNode.pause()
         standbyNode.pause()
@@ -1788,6 +2258,21 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
+    /// A15 Phase 2: the streaming policy mode pushed from JS settings
+    /// ('off' | 'slowLink' | 'on' — default off). Affects only FUTURE loads:
+    /// the live schedule is untouched.
+    public func setStreamingMode(_ mode: String) {
+        let parsed: StreamPolicy.Mode
+        switch mode {
+        case "on": parsed = .on
+        case "slowLink": parsed = .slowLink
+        default: parsed = .off
+        }
+        guard parsed != streamingMode else { return }
+        eventAdd(.info, "stream", "setStreamingMode \(streamingMode == .off ? "off" : (streamingMode == .on ? "on" : "slowLink"))→\(mode)")
+        streamingMode = parsed
+    }
+
     // MARK: - Preload progress (queue-row tint parity with web)
 
     /// REMOVED — the JS-pushed window raced every snapshot (the push rode
@@ -1869,6 +2354,10 @@ public final class NativeAudioEngine: NSObject {
                 emitPreload(trackId, "gone", nil)
             }
         }
+        // A15 Phase 2: the staged monitor rides the same tick — the only job
+        // left here after the resume decision moved to the writer's progress
+        // events is the stall give-up (10 s of zero progress).
+        streamMonitorTick()
     }
 
     private func startPreloadProgressTimer() {
@@ -2011,12 +2500,32 @@ public final class NativeAudioEngine: NSObject {
             // A15 Phase 1: staged-model field evidence (stage per in-flight
             // key; empty until a slow-link session shows maturation).
             "maturationStages": loader.maturationSummary,
+            // A15 Phase 2: the live staged schedule's every decision input.
+            "streamMode": "\(streamingMode)",
+            "streamActive": stagedSchedule != nil,
+            "streamComplete": stagedSchedule?.isComplete ?? false,
+            "streamStalled": stagedSchedule?.isStalled ?? false,
+            "streamDeliveredBytes": stagedSchedule?.deliveredBytes ?? 0,
+            "streamAnnouncedBytes": stagedSchedule?.announcedBytes ?? 0,
+            "streamScheduledEndFrames": stagedSchedule?.scheduledEndFrames ?? 0,
+            "streamHeaderClaimedFrames": stagedSchedule?.headerClaimedFrames ?? 0,
+            "streamChainedPending": pendingChainedSegments.values.reduce(0, +),
+            "streamRecentRate": loader.recentTransferRate ?? 0,
             "standbyScheduleGeneration": standbyScheduleGeneration,
             "standbyGenerationCaptured": standbyGeneration,
             "seekSuppressed": track.map { $0.trackId == seekSuppressedTrackId } ?? false,
             "fadeSuppressed": track.map { $0.trackId == fadeAbortedTrackId } ?? false,
             "loaderCached": loaderStats.cached,
             "loaderInFlight": loaderStats.inFlight,
+            // A15 Phase 2: the staged schedule's live state — a dump must
+            // verify every assumption the streaming contract makes.
+            "stagedActive": stagedSchedule != nil,
+            "stagedComplete": stagedSchedule?.isComplete ?? false,
+            "stagedStalled": stagedSchedule?.isStalled ?? false,
+            "stagedEndSeconds": stagedSchedule.map { $0.scheduledEndSeconds } ?? 0,
+            "stagedDeliveredBytes": stagedSchedule?.deliveredBytes ?? 0,
+            "stagedAnnouncedBytes": stagedSchedule?.announcedBytes ?? 0,
+            "streamingMode": streamingMode == .off ? "off" : (streamingMode == .on ? "on" : "slowLink"),
             "eventLogNextSeq": eventLog.nextSeq,
             "eventLogDropped": eventLog.droppedCount,
             "debugDomains": eventLog.activeDomains.sorted().joined(separator: ","),
@@ -2081,6 +2590,24 @@ public final class NativeAudioEngine: NSObject {
         hasLiveSchedule = false
         positionBias = 0
         cachedPosition = 0
+        // A new load abandons any staged state (the staged path never spans
+        // tracks; the previous track's writer is torn down by evict/cleanup
+        // or finishes independently).
+        teardownStagedState()
+
+        // A15 PHASE 2: the streaming decision rides BEFORE the prefetch. A
+        // direct tap on a slow link (policy mode + loader evidence) starts
+        // the staged writer instead of waiting for the full download. Any
+        // no (mode off, transcode variant, in-flight downloadTask, scratch
+        // state, no Range support, no size/duration evidence, fast link)
+        // falls through to the unchanged full-download path below — today's
+        // behavior byte-for-byte. A staged load deliberately does NOT arm
+        // prefetchUpcoming here: the writer owns the bandwidth, and the
+        // chain arms when the writer completes (completeStagedSchedule).
+        if streamDecision(for: track, mode: streamingMode) {
+            startStagedLoad(track: track, index: index, autoPlay: autoPlay)
+            return
+        }
 
         let generation = scheduleGeneration
         loader.prefetch(track) { [weak self] url, error in
@@ -2117,6 +2644,10 @@ public final class NativeAudioEngine: NSObject {
             )
             self.prefetchUpcoming(from: currentIndex)
             self.scheduleCurrentTrack(from: 0, autoPlay: autoPlay)
+            // NOTE for A15 Phase 2: a staged load (streamDecision said yes in
+            // loadAndStart above) never reaches this prefetchUpcoming — its
+            // writer owns the bandwidth and the chain arms at the writer's
+            // completion instead (completeStagedSchedule).
         }
     }
 
@@ -2185,6 +2716,12 @@ public final class NativeAudioEngine: NSObject {
     }
 
     /// Schedules the current track on the active node, ready to play.
+    ///
+    /// STAGED-AWARE (A15 Phase 2): when `stagedSchedule` is live, the source
+    /// is the growing `.part` and the schedule ends at the DELIVERED-END
+    /// ESTIMATE (never the header claim) — the schedule contract. Growth is
+    /// chained-segment extension; running out of delivered bytes is the
+    /// buffering pause, never an advance.
     private func scheduleCurrentTrack(from seconds: Double, autoPlay: Bool) {
         // Never-judged until this schedule proves its own length: an early
         // return (not-ready, corrupt, zero-frame) must not leave the previous
@@ -2192,6 +2729,92 @@ public final class NativeAudioEngine: NSObject {
         scheduledSegmentSeconds = 0
         guard tracks.indices.contains(activeIndex) else { return }
         let track = tracks[activeIndex]
+
+        // ---- Staged path: the growing .part is the source ----------------
+        if stagedSchedule != nil, let stagedURL = stagedSourceURL {
+            guard var staged = stagedSchedule else { return }
+            guard let file = try? AVAudioFile(forReading: stagedURL) else {
+                // The .part vanished or became unreadable mid-stream: treat
+                // like a stream failure (the scratch may still exist for a
+                // Range-continue; the JS retry re-engages).
+                teardownStagedState()
+                onError?("Stream source unreadable: \(track.title)")
+                return
+            }
+            let sr = file.processingFormat.sampleRate
+            staged.headerClaimedFrames = file.length
+            staged.sampleRate = sr
+            let startFrame = Int64(seconds * sr)
+            // COMPLETE → the header claim is FILE TRUTH (gates passed):
+            // schedule to the real end. Staged → the delivered-end estimate.
+            let endable = staged.isComplete
+                ? file.length
+                : StreamSchedule.estimatedFramesEndable(
+                    headerClaimedFrames: file.length,
+                    deliveredBytes: staged.deliveredBytes,
+                    announcedBytes: staged.announcedBytes)
+            let endFrames = endable
+            guard StreamSchedule.canSchedule(startFrame: startFrame, endFrames: endFrames) else {
+                // Seek (or stall resume) at/past the delivered end: the
+                // buffering pause, not an error. autoPlay=false so the stall
+                // resume (or the user's own play tap) restarts audio.
+                eventAdd(.info, "stream", "schedule target past delivered end id=\(track.trackId) (seek \(String(format: \"%.1f\", seconds))s vs endable \(String(format: \"%.1f\", Double(endFrames) / sr))s) — buffering")
+                staged.userPaused = !autoPlay
+                staged.isStalled = true
+                staged.stalledAtFrames = min(startFrame, endFrames)
+                staged.lastProgressAt = Date()
+                stagedSchedule = staged
+                cachedPosition = seconds
+                positionBias = seconds
+                setPlaying(false)
+                stopCrossfadeMonitor()
+                return
+            }
+            scheduleGeneration += 1
+            let generation = scheduleGeneration
+            staged.scheduledEndFrames = endFrames
+            scheduledSegmentSeconds = Double(endFrames) / sr
+            stagedSchedule = staged
+            activeGain.outputVolume = Float(track.replayGainLinear(mode: replayGainMode))
+            standbyGain.outputVolume = 0
+            standbyNode.stop()
+            let player = activeNode
+            let scheduledIndex = activeIndex
+            let scheduledTrackId = track.trackId
+            let scheduledNode = player
+            player.stop()
+            refreshPlaybackParams()
+            // The staged completion must NOT be judged by the natural-end
+            // gates (a staged promise ending early is the BUFFERING pause by
+            // contract). It rides the isStagedSegment discrimination like a
+            // chained segment: if an extension was chained while this base
+            // segment renders, its data-consumed completion is a SEGMENT end
+            // (silently consumed); with no successor it becomes the staged
+            // end (buffering pause, or natural advance once COMPLETE).
+            player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(endFrames - startFrame), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
+                self?.handleSegmentCompletion(index: scheduledIndex, generation: generation, trackId: scheduledTrackId, node: scheduledNode, isStagedSegment: true)
+            }
+            hasLiveSchedule = true
+            positionBias = seconds
+            cachedPosition = seconds
+            crossfade = .idle
+            if autoPlay {
+                guard ensureEngineRunning() else {
+                    onError?("Audio engine failed to start for \(track.title)")
+                    return
+                }
+                player.play()
+                setPlaying(true)
+                // Crossfade automation stays OFF for staged tracks in Phase 2
+                // (hard cut at the natural end) — Phase 3 owns staged fades.
+                stopCrossfadeMonitor()
+            } else {
+                setPlaying(false)
+                stopCrossfadeMonitor()
+            }
+            return
+        }
+        // ---- Normal path: the completed cache file is the source ---------
         guard let localURL = loader.localURL(for: track) else {
             onError?("Track not ready: \(track.title)")
             return
@@ -2294,6 +2917,307 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
+    // MARK: - Staged streaming (A15 Phase 2)
+
+    /// The streaming policy mode (mirrored from JS settings; default OFF —
+    /// nothing streams until the user or the field data says otherwise).
+    var streamingMode: StreamPolicy.Mode = .off
+
+    /// Live state of the CURRENT staged schedule (nil = no staged track).
+    /// The schedule contract lives in `StreamSchedule`; this carries the
+    /// per-track instance data the monitor and completion guard read.
+    struct StagedSchedule {
+        let trackId: String
+        var headerClaimedFrames: Int64   // file.length of the PARTIAL file (lies high)
+        var sampleRate: Double
+        var scheduledEndFrames: Int64    // the current chained schedule's end (the promise)
+        var announcedBytes: Int64        // server's exact body length (raw only)
+        var deliveredBytes: Int64        // last known delivered byte count
+        var isComplete = false           // the writer promoted (gates passed)
+        var isStalled = false            // the buffering pause is active
+        var stalledAtFrames: Int64 = 0
+        var lastProgressAt: Date = Date()
+        var userPaused = false           // the user paused during the stall (auto-resume stays paused)
+        /// The current promise in seconds (for the buffering-pause event).
+        var scheduledEndSeconds: Double { Double(scheduledEndFrames) / max(1, sampleRate) }
+    }
+
+    private var stagedSchedule: StagedSchedule? = nil
+    /// The autoPlay flag for the pending first staged schedule (captured at
+    /// `startStagedLoad` — the tap that asked for the stream).
+    private var stagedAutoPlay = false
+    /// The file the staged schedule reads from: the growing `.part` while
+    /// the writer streams, the promoted destination once COMPLETE. `nil` =
+    /// normal cache-served playback (the overwhelmingly common path).
+    private var stagedSourceURL: URL? = nil
+    /// Chained-segment bookkeeping per NODE (the ONE new invariant): counts
+    /// segments scheduled after the currently rendering one, so a data-
+    /// consumed completion can be classified segmentEnd (consume silently)
+    /// vs trackEnd (natural end). Keyed by node identity, decremented as
+    /// completions consume. Cleared on every teardown/cancel.
+    private var pendingChainedSegments: [ObjectIdentifier: Int] = [:]
+
+    /// Starts a staged load for the CURRENT track (direct-tap path only —
+    /// `streamDecision` already said yes). The writer delivers at the
+    /// PLAYABLE crossing; the first delivery opens the partial file and
+    /// schedules the honest estimate. A writer failure before any schedule
+    /// falls back to the normal `loadAndStart` path via the JS retry.
+    private func startStagedLoad(track: NativeTrack, index: Int, autoPlay: Bool) {
+        stagedAutoPlay = autoPlay
+        eventAdd(.info, "stream", "staged load start row \(index) id=\(track.trackId) autoplay=\(autoPlay)")
+        // GUARD BY TRACK IDENTITY, not scheduleGeneration: the resume path
+        // (and any seek/param restart) calls cancelScheduled(), which bumps
+        // the generation by design — a generation guard here would permanently
+        // drop every writer delivery after the FIRST resume, freezing the
+        // staged schedule at its initial lead. The track id cannot change
+        // while the writer runs (loadAndStart tears down staged state on a
+        // new load; evict kills the writer outright).
+        let guardedTrackId = track.trackId
+        loader.streamLoad(track, onProgress: { [weak self] progress in
+            guard let self = self else { return }
+            guard self.tracks.indices.contains(self.activeIndex),
+                  self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+            self.extendStagedSchedule(progress: progress)
+        }, onFinished: { [weak self] progress, error in
+            guard let self = self else { return }
+            guard self.tracks.indices.contains(self.activeIndex),
+                  self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+            if let progress {
+                // The writer promoted a COMPLETE file through the gate chain:
+                // chain the full-file remainder so the natural end is exact.
+                self.completeStagedSchedule(progress: progress)
+            } else if let error = error {
+                // Hard stream failure. If a staged schedule is live, hand the
+                // bounded JS retry a real error (its re-engage Range-continues
+                // the retained prefix via the normal prefetch path). Before a
+                // schedule exists there is nothing to keep alive — the retry
+                // simply re-taps and `streamDecision` falls back (scratch
+                // state now present → the resumable download path).
+                if self.stagedSchedule != nil {
+                    self.teardownStagedState()
+                    self.onError?("Stream failed: \(error.localizedDescription)")
+                } else {
+                    self.onError?("Stream failed before start: \(error.localizedDescription)")
+                }
+            }
+        })
+    }
+
+    /// MAIN, on each writer delivery: the staged schedule's growth engine.
+    /// Not stalled → maybe chain an extension. Stalled → maybe resume.
+    /// First delivery → the first honest schedule.
+    private func extendStagedSchedule(progress: TrackFileLoader.StreamProgress) {
+        guard let staged = stagedSchedule, stagedSourceURL != nil else {
+            startFirstStagedSchedule(progress: progress)
+            return
+        }
+        var staged = staged
+        staged.announcedBytes = progress.announcedBytes > 0 ? progress.announcedBytes : staged.announcedBytes
+        staged.deliveredBytes = progress.deliveredBytes
+        staged.lastProgressAt = Date()
+        stagedSchedule = staged
+        // Completion arrives via onFinished (writerDidComplete), never as a
+        // delivery — deliveries are always staged (.playable).
+        if staged.isStalled {
+            // Resume decision: ≥ 2 s of NEW audio beyond the stalled position
+            // (below the 5 s extension-churn bar: a stall re-schedules
+            // everything schedulable, so even a small chunk unblocks).
+            let endable = StreamSchedule.estimatedFramesEndable(
+                headerClaimedFrames: staged.headerClaimedFrames,
+                deliveredBytes: progress.deliveredBytes,
+                announcedBytes: staged.announcedBytes)
+            if StreamSchedule.shouldResumeAfterStall(
+                stalledFrames: staged.stalledAtFrames,
+                schedulableEndFrames: endable,
+                sampleRate: staged.sampleRate) {
+                staged.isStalled = false
+                let userPaused = staged.userPaused
+                staged.userPaused = false
+                stagedSchedule = staged
+                let resumeAt = cachedPosition
+                eventAdd(.info, "stream", "stall resume at \(String(format: \"%.1f\", resumeAt))s — re-scheduling from the delivered end (autoPlay=\(!userPaused))")
+                // Voids the old chain + chained-segment bookkeeping; the
+                // staged state survives (scheduleCurrentTrack reads it) and
+                // re-clamps the schedule to the CURRENT delivered estimate.
+                cancelScheduled()
+                scheduleCurrentTrack(from: resumeAt, autoPlay: !userPaused)
+                return
+            }
+            return
+        }
+        // Not stalled: maybe chain an extension (≥ 5 s newly schedulable).
+        let endable = StreamSchedule.estimatedFramesEndable(
+            headerClaimedFrames: staged.headerClaimedFrames,
+            deliveredBytes: progress.deliveredBytes,
+            announcedBytes: staged.announcedBytes)
+        let plan = StreamSchedule.extensionPlan(
+            currentEndFrames: staged.scheduledEndFrames,
+            schedulableEndFrames: endable,
+            sampleRate: staged.sampleRate,
+            headerClaimedFrames: staged.headerClaimedFrames)
+        if case .extend(let to) = plan {
+            chainStagedSegment(staged: &staged, toFrames: to)
+        }
+        stagedSchedule = staged
+    }
+
+    /// Opens the partial file and commits the staged path: the .part becomes
+    /// the schedule source and `scheduleCurrentTrack` (staged-aware) makes
+    /// the first honest schedule clamped to the delivered-end estimate. The
+    /// header must have landed (the file opens); otherwise the delivery is
+    /// deferred — the writer keeps rung-delivering and the next one retries.
+    private func startFirstStagedSchedule(progress: TrackFileLoader.StreamProgress) {
+        guard tracks.indices.contains(activeIndex) else { return }
+        let track = tracks[activeIndex]
+        guard track.trackId == progress.trackId else { return }
+        guard let file = try? AVAudioFile(forReading: progress.url), file.length > 0 else {
+            eventAdd(.info, "stream", "partial not openable yet id=\(track.trackId) delivered=\(progress.deliveredBytes)B — deferring first schedule")
+            return
+        }
+        let sr = file.processingFormat.sampleRate
+        let endable = StreamSchedule.estimatedFramesEndable(
+            headerClaimedFrames: file.length,
+            deliveredBytes: progress.deliveredBytes,
+            announcedBytes: progress.announcedBytes)
+        guard endable > 0 else {
+            eventAdd(.info, "stream", "no schedulable evidence yet id=\(track.trackId) — deferring first schedule")
+            return
+        }
+        stagedSourceURL = progress.url
+        stagedSchedule = StagedSchedule(
+            trackId: track.trackId,
+            headerClaimedFrames: file.length,
+            sampleRate: sr,
+            scheduledEndFrames: 0,
+            announcedBytes: progress.announcedBytes,
+            deliveredBytes: progress.deliveredBytes)
+        eventAdd(.info, "stream", "first staged schedule id=\(track.trackId) endable=\(endable) frames (\(String(format: \"%.1f\", Double(endable) / sr))s of header claim \(file.length))")
+        scheduleCurrentTrack(from: 0, autoPlay: stagedAutoPlay)
+    }
+
+    /// The writer promoted a COMPLETE file: the byte gates passed, so the
+    /// header claim is now FILE TRUTH. Chain the remaining full-length
+    /// segment (the estimate's 2 % slack never truncates the tail) and mark
+    /// the schedule complete — its final completion is a REAL natural end.
+    private func completeStagedSchedule(progress: TrackFileLoader.StreamProgress) {
+        guard var staged = stagedSchedule, !staged.isComplete else { return }
+        staged.isComplete = true
+        staged.announcedBytes = progress.announcedBytes > 0 ? progress.announcedBytes : staged.announcedBytes
+        staged.deliveredBytes = progress.deliveredBytes
+        staged.lastProgressAt = Date()
+        stagedSourceURL = progress.url
+        stagedSchedule = staged
+        // Re-open the COMPLETE file: the header claim is now honest, and the
+        // chained tail must reach the real end (the estimate under-promised
+        // by the 2 % slack).
+        if let file = try? AVAudioFile(forReading: progress.url) {
+            staged.headerClaimedFrames = file.length
+            let endable = StreamSchedule.schedulableEndFrames(
+                deliveredEndFrames: file.length,
+                headerClaimedFrames: file.length)
+            let plan = StreamSchedule.extensionPlan(
+                currentEndFrames: staged.scheduledEndFrames,
+                schedulableEndFrames: endable,
+                sampleRate: staged.sampleRate,
+                headerClaimedFrames: staged.headerClaimedFrames)
+            if case .extend(let to) = plan {
+                chainStagedSegment(staged: &staged, toFrames: to)
+            }
+        }
+        stagedSchedule = staged
+        eventAdd(.info, "stream", "staged schedule complete id=\(staged.trackId) — natural end restored")
+        // The stream owned the bandwidth while it ran; now that the file is
+        // COMPLETE the preload chain arms for the upcoming rows (a staged
+        // load deliberately skips the arm in loadAndStart so the user's
+        // stream never competes with the chain).
+        prefetchUpcoming(from: activeIndex)
+        // A stalled schedule is unblocked the moment the full file lands.
+        resumeStalledAfterComplete()
+    }
+
+    /// Chains ONE more segment on the ACTIVE node: from the currently
+    /// promised end to `toFrames`. The completion is registered as a chained
+    /// segment (segmentEnd while successors exist). Nodes are stopped-free:
+    /// `scheduleSegment` on a playing node queues the segment — it renders
+    /// back-to-back with the running one.
+    private func chainStagedSegment(staged: inout StagedSchedule, toFrames: Int64) {
+        guard stagedSourceURL != nil,
+              let file = try? AVAudioFile(forReading: stagedSourceURL!) else { return }
+        let start = staged.scheduledEndFrames
+        let frames = toFrames - start
+        guard StreamSchedule.canSchedule(startFrame: start, endFrames: toFrames), frames > 0 else { return }
+        let sr = staged.sampleRate
+        let player = activeNode
+        let nodeId = ObjectIdentifier(player)
+        let chainedIndex = activeIndex
+        let chainedTrackId = staged.trackId
+        let generation = scheduleGeneration
+        let chainedNode = player
+        pendingChainedSegments[nodeId, default: 0] += 1
+        player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(frames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
+            self?.handleSegmentCompletion(index: chainedIndex, generation: generation, trackId: chainedTrackId, node: chainedNode, standbyGenerationAtStart: nil, isStagedSegment: true)
+        }
+        staged.scheduledEndFrames = toFrames
+        scheduledSegmentSeconds = Double(toFrames) / sr
+        eventAdd(.debug, "stream", "chained segment \(start)→\(toFrames) frames (\(String(format: \"%.1f\", Double(frames) / sr))s) id=\(staged.trackId)")
+    }
+
+    /// The buffering pause: the playhead reached the delivered end while the
+    /// file is still growing. NEVER an advance (the header claims more audio
+    /// — cutting the track short here would be the truncation bug reborn);
+    /// NEVER an evict (the bytes are a valid prefix, not poison). Pause and
+    /// let the writer's progress events resume (≥ 2 s of new audio) or the
+    /// monitor give up after 10 s.
+    private func enterBufferingStall(atSeconds target: Double) {
+        guard var staged = stagedSchedule, !staged.isStalled else { return }
+        staged.isStalled = true
+        staged.stalledAtFrames = Int64(target * staged.sampleRate)
+        staged.lastProgressAt = Date()
+        stagedSchedule = staged
+        cachedPosition = target
+        eventAdd(.danger, "stream", "buffering stall at \(String(format: \"%.1f\", target))s (delivered \(staged.deliveredBytes) of \(staged.announcedBytes)B) — paused, auto-resumes when ≥2 s of new audio lands")
+        stopCrossfadeMonitor()
+        activeNode.pause()
+        standbyNode.pause()
+        setPlaying(false)
+    }
+
+    /// The writer promoted a COMPLETE file while the staged schedule was
+    /// STALLED: the real end is now on disk — resume immediately if the user
+    /// has not paused (play the remaining tail, which the full-length
+    /// schedule below covers).
+    private func resumeStalledAfterComplete() {
+        guard var staged = stagedSchedule, staged.isStalled, !staged.userPaused else { return }
+        staged.isStalled = false
+        stagedSchedule = staged
+        let resumeAt = cachedPosition
+        eventAdd(.info, "stream", "stall cleared by completion — resuming at \(String(format: \"%.1f\", resumeAt))s with the full-length schedule")
+        // Voids the old chain; scheduleCurrentTrack reads isComplete and
+        // schedules the REAL end.
+        cancelScheduled()
+        scheduleCurrentTrack(from: resumeAt, autoPlay: true)
+    }
+
+    /// All staged state gone: fresh cache-served playback rules apply.
+    private func teardownStagedState() {
+        stagedSchedule = nil
+        stagedSourceURL = nil
+        pendingChainedSegments.removeAll()
+    }
+
+    /// 1 s monitor (rides the preload sampler): the stalled schedule's GIVE-UP
+    /// timer. The resume decision rides the writer's progress events; this
+    /// tick only fires when NO bytes arrived for `stallGiveUpSeconds`.
+    private func streamMonitorTick() {
+        guard let staged = stagedSchedule, staged.isStalled else { return }
+        if Date().timeIntervalSince(staged.lastProgressAt) >= StreamSchedule.stallGiveUpSeconds {
+            let title = tracks.indices.contains(activeIndex) ? tracks[activeIndex].title : "track"
+            eventAdd(.danger, "stream", "stall give-up after \(Int(StreamSchedule.stallGiveUpSeconds)) s of no progress at \(String(format: \"%.1f\", cachedPosition))s — handing to JS retry (Range-continues the prefix)")
+            teardownStagedState()
+            onError?("Stream stalled: \(title)")
+        }
+    }
+
     private func nextIndex(after index: Int) -> Int? {
         let next = index + 1
         if next < tracks.count { return next }
@@ -2321,9 +3245,37 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
-    private func handleSegmentCompletion(index completedIndex: Int, generation: Int, trackId: String? = nil, node: AVAudioPlayerNode? = nil, standbyGenerationAtStart: Int? = nil) {
+    private func handleSegmentCompletion(index completedIndex: Int, generation: Int, trackId: String? = nil, node: AVAudioPlayerNode? = nil, standbyGenerationAtStart: Int? = nil, isStagedSegment: Bool = false) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            // STAGED chained-segment completions are classified FIRST (the
+            // ONE new invariant, A15 Phase 2): a data-consumed completion on
+            // a node with another segment queued behind it is a SEGMENT end
+            // — consumed silently, no advance, no gates. Only a completion
+            // with no chained successor reaches the staged end handler.
+            // The GENERATION guard rides FIRST here too: cancelScheduled
+            // (resume, seek, param restart) bumps the generation AND clears
+            // the counter map, so a stale completion from the torn-down
+            // schedule must be dropped before it can eat the NEW schedule's
+            // counter slot and misclassify its real end.
+            if isStagedSegment, let node {
+                guard generation == self.scheduleGeneration else {
+                    eventAdd(.debug, "stream", "staged completion dropped: stale generation \(generation) vs \(self.scheduleGeneration) row \(completedIndex)")
+                    return
+                }
+                let nodeId = ObjectIdentifier(node)
+                let remaining = self.pendingChainedSegments[nodeId] ?? 0
+                if remaining > 0 {
+                    self.pendingChainedSegments[nodeId] = remaining - 1
+                    eventAdd(.debug, "stream", "staged segment completion consumed silently (\(remaining - 1) chained successors left)")
+                    return
+                }
+                // Last segment on the node: the staged end handler decides
+                // (buffering pause while staged; natural advance once
+                // COMPLETE).
+                self.handleStagedCompletion(index: completedIndex, generation: generation, trackId: trackId, node: node)
+                return
+            }
             guard generation == self.scheduleGeneration else {
                 // Routine: every stop() fires its completions (2 per track
                 // change) — verbose domain only, this is expected churn.
@@ -2572,6 +3524,10 @@ public final class NativeAudioEngine: NSObject {
         sleepAtTrackEnd = false
         cancelScheduled()
         hasLiveSchedule = false
+        // A session teardown also ends the staged state (the writer itself
+        // keeps running — its completion is dropped by the generation guard
+        // or finishes into cache, both harmless).
+        teardownStagedState()
         if engine.isRunning {
             engine.pause()
         }
@@ -2583,7 +3539,64 @@ public final class NativeAudioEngine: NSObject {
         stopPreloadProgressTimer()
     }
 
-    /// Stops both players and invalidates all pending schedules/completions.
+    /// The STAGED completion handler (Phase 2): the contract makes this
+    /// completion's meaning unambiguous. The scheduled end sat INSIDE the
+    /// delivered bytes when it was made, so data running out here is one of
+    /// exactly two things:
+    ///
+    /// 1. The delivered end was reached while the file still grows (or the
+    ///    estimate undershot the real end) → the BUFFERING PAUSE: never an
+    ///    advance, never an evict — the writer's progress events resume
+    ///    playback (≥ 2 s of new audio), the monitor gives up after 10 s.
+    /// 2. The file is COMPLETE (the writer promoted; `isComplete` latched)
+    ///    → a REAL natural end: the full advance chain runs unchanged.
+    private func handleStagedCompletion(index completedIndex: Int, generation: Int, trackId: String?, node: AVAudioPlayerNode?) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            guard generation == self.scheduleGeneration else {
+                eventAdd(.debug, "stream", "staged completion dropped: stale generation \(generation) vs \(self.scheduleGeneration) row \(completedIndex)")
+                return
+            }
+            guard let staged = self.stagedSchedule, staged.trackId == trackId else {
+                eventAdd(.info, "stream", "staged completion dropped: state moved on (row \(completedIndex) id \(trackId ?? \"-\"))")
+                return
+            }
+            let consumeQuietly: (String) -> Void = { reason in
+                eventAdd(.debug, "stream", "staged segment completion consumed silently: \(reason)")
+            }
+            if staged.isComplete {
+                // The file passed the gates; this is a REAL end — advance.
+                if self.sleepAtTrackEnd {
+                    self.sleepAtTrackEnd = false
+                    self.pause()
+                    self.waitingAtTrackEnd = true
+                    self.onSleepTimerFired?()
+                    return
+                }
+                if self.loopMode == .one {
+                    self.playTrack(at: self.activeIndex, autoPlay: true, origin: .engineAdvance)
+                    return
+                }
+                if let next = self.nextIndex(after: self.activeIndex) {
+                    eventAdd(.info, "engine", "natural advance \(self.activeIndex)→\(next) (staged complete)")
+                    self.playTrack(at: next, autoPlay: true, origin: .engineAdvance)
+                } else {
+                    self.handleTrackEnd()
+                }
+                return
+            }
+            // Staged + not complete: the playhead reached the promised end.
+            // That is the buffering pause — regardless of whether the user
+            // hears a gap (the estimate under-promised) or not (the data
+            // genuinely ran out).
+            if staged.isStalled {
+                consumeQuietly("already stalled")
+                return
+            }
+            self.enterBufferingStall(atSeconds: staged.scheduledEndSeconds)
+        }
+    }
+
     private func cancelScheduled() {
         eventAdd(.debug, "engine", "cancelScheduled → scheduleGeneration \(scheduleGeneration + 1) (all pending completions void)")
         scheduleGeneration += 1
@@ -2593,6 +3606,10 @@ public final class NativeAudioEngine: NSObject {
         stopVolumeRamp()
         playerA.stop()
         playerB.stop()
+        // Staged chained-segment bookkeeping is generation-scoped: every
+        // cancel voids the outstanding chain counts. A stale chained
+        // completion can no longer misclassify a later schedule.
+        pendingChainedSegments.removeAll()
     }
 
     // MARK: - Crossfade

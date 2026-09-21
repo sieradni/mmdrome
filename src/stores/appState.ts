@@ -93,6 +93,10 @@ export interface MetadataScanState {
 export interface SettingsMap {
   preloadTracks?: number
   crossfadeDuration?: number
+  /** A15 Phase 2: native streaming policy — 'off' (default, nothing
+   *  streams), 'slowLink' (stream direct taps when the measured link is
+   *  the constraint), or 'on' (stream every direct tap). Native only. */
+  nativeStreaming?: 'off' | 'slowLink' | 'on'
   webdavUrl?: string
   webdavUser?: string
   webdavToken?: string
@@ -414,7 +418,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'lastfmApiKey', 'lastfmApiSecret', 'lowDataMode', 'lowDataOnCellular', 'transcodeMode', 'transcodeFormat', 'transcodeBitrate', 'transcodeProbe', 'iosAudioMixing']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'nativeStreaming', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'lastfmApiKey', 'lastfmApiSecret', 'lowDataMode', 'lowDataOnCellular', 'transcodeMode', 'transcodeFormat', 'transcodeBitrate', 'transcodeProbe', 'iosAudioMixing']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]
