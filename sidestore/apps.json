@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.29",
-      "versionDate": "2026-09-20T22:56:21.488Z",
-      "versionDescription": "Structured event log (native + web at parity) for full Copy-dump diagnosability; fixed the 1.2.28 crossfade wedge and same-track loop; observe-only web truncation gate; loop-one restart bound",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.29/mmdrome.ipa",
+      "version": "1.2.30",
+      "versionDate": "2026-09-21T08:44:23.601Z",
+      "versionDescription": "P0 fixes from the first field dump: the crossfade finalize path is now gated by the truncation check (a truncated active file can no longer switch tracks with its tail missing), and refreshQueue reconciles lagging snapshots instead of stopping live playback (the divergence stop-storm). Adds the backward-advance field detector, ring hygiene (network transitions only, artwork-guard drops to info), live debug-HUD toggle without page reload, full event rings in Copy dumps, and a native format-probe bypass fixing the false aac unsupported verdict.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.30/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.30",
+          "buildVersion": "34",
+          "date": "2026-09-21T08:44:23.601Z",
+          "localizedDescription": "P0 fixes from the first field dump: the crossfade finalize path is now gated by the truncation check (a truncated active file can no longer switch tracks with its tail missing), and refreshQueue reconciles lagging snapshots instead of stopping live playback (the divergence stop-storm). Adds the backward-advance field detector, ring hygiene (network transitions only, artwork-guard drops to info), live debug-HUD toggle without page reload, full event rings in Copy dumps, and a native format-probe bypass fixing the false aac unsupported verdict.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.30/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 4933879
+        },
         {
           "version": "1.2.29",
           "buildVersion": "33",
@@ -314,6 +323,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.30",
+      "identifier": "ios-v1.2.30",
+      "appID": "com.mmdrome.player",
+      "caption": "P0 fixes from the first field dump: the crossfade finalize path is now gated by the truncation check (a truncated active file can no longer ",
+      "date": "2026-09-21T08:44:23.601Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.29",
       "identifier": "ios-v1.2.29",
       "appID": "com.mmdrome.player",
@@ -346,15 +364,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Thumbnail lead time doubled and widened to cover the whole screen during scrolls - fresh territory starts loading sooner, placeholders at th",
       "date": "2026-09-18T03:05:21.879Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.25",
-      "identifier": "ios-v1.2.25",
-      "appID": "com.mmdrome.player",
-      "caption": "Covers are requested by content hash, so Navidrome serves them with immutable year-long caching - revisiting thumbnails no longer waits on r",
-      "date": "2026-09-18T02:28:55.895Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
