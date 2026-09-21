@@ -1,30 +1,3 @@
-import Foundation
-
-/// Pure download-sanity decisions for the native track-file loader.
-///
-/// The 2026-09-17 multi-skip fix validated TRANSFER completeness (body size,
-/// 0-frame rejection) but NOT byte-adequacy: audio containers (FLAC, MP4,
-/// MPEG) keep their declared duration in the HEADER, and Ogg/Opus granule
-/// positions let a cut-inside-a-final-page body still report full length, so
-/// a truncated download opens as a "full-length" AVAudioFile and reaches EOF
-/// early — the 2026-09-18 LDM multi-skip (engine-side trackChanged 3–5 rows
-/// ~50–100 ms apart, bridge trail shows no JS cmd between them).
-///
-/// TWO evidence kinds remain here after the 2026-09-19 revision:
-///  1. `isTruncatedAgainstServer` — the byte count vs the server's announced
-///     size, judged at the loader's trust boundary (store + serve). The byte
-///     count is the only cut-position-independent evidence; the container is
-///     the liar.
-///  2. `isPrematureCompletion` — the measured player clock vs the scheduled
-///     segment's own length, judged at completion time.
-///
-/// The 2026-09-18 schedule CLAMP was removed (2026-09-19): the completion
-/// fires when the DATA runs out, which is always before any plausible clamp
-/// bound for the truncations that matter, so the clamp never changed when a
-/// poisoned segment completed — it only risked false-bounding at-floor
-/// encodings. The premature gate (with evict-on-drop) is the defense that
-/// actually fires. These functions live in Core so the matrices are
-/// unit-tested; the loader/engine are thin adapters (design rule F2).
 public enum DownloadSanity {
 
     /// Rejects a completed transfer whose byte count is materially short of
@@ -42,6 +15,23 @@ public enum DownloadSanity {
         // gate scales from small podcast files to 80 MB FLACs.
     }
 
+    /// BYTE-EXACT gate (2026-09-21, the Connectivity Assist workaround): a
+    /// transfer whose own HTTP response announced `Content-Length: N` but
+    /// delivered fewer bytes was cut by a clean early close — URLSession
+    /// reports success (error == nil) for those, so the error path never
+    /// sees them, and the 10 % metadata margin above passes drops up to
+    /// 10 % of the file (~25 s of audio on a 4 MB opus) into the cache as
+    /// poison. The per-transfer announcement IS a promise for raw streams:
+    /// enforce it exactly. Direction-safe under transparent compression
+    /// (URLSession decompresses; decompressed bytes are ≥ the announced
+    /// compressed length, and the gate only rejects actual < announced).
+    /// RAW streams only — a transcode's announced length is an estimate and
+    /// stays excluded (see `isTruncatedAgainstServer`).
+    public static func isShortOfAnnouncedBytes(actualBytes: Int, announcedBytes: Int64) -> Bool {
+        guard announcedBytes > 0 else { return false }
+        return Int64(actualBytes) < announcedBytes
+    }
+
     /// True when a segment completion arrived at a position that cannot be a
     /// real end: the player's clock is MEASURABLE (lastRenderTime/playerTime
     /// resolve — a completed node's clock going nil is not evidence either
@@ -55,11 +45,8 @@ public enum DownloadSanity {
     /// mis-tag case metadata would break. Defends the natural-advance path
     /// against fast completions from header-lying truncations (and any other
     /// poison that slips past the loader) — measured position cannot be faked
-    /// by the container header. The 1 s margin keeps render-quantum slack out
-    /// (cf. the FP-margin lesson, 2026-09-12: never test a boundary AT the
-    /// boundary).
     public static func isPrematureCompletion(elapsedSeconds: Double, totalSeconds: Double, timeMeasured: Bool, remainingSeconds: Double) -> Bool {
-        guard totalSeconds > 0, timeMeasured else { return false }
+        guard timeMeasured else { return false }
         return remainingSeconds >= 1.0
     }
 }

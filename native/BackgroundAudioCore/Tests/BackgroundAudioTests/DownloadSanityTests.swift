@@ -19,6 +19,29 @@ final class DownloadSanityTests: XCTestCase {
         XCTAssertFalse(DownloadSanity.isTruncatedAgainstServer(storedBytes: 10_100_000, serverLength: 10_000_000))
     }
 
+    // MARK: - Byte-exact announced-length gate (Connectivity Assist workaround)
+
+    func testShortOfAnnouncedBytesDetection() {
+        // Clean early close: server promised 4 MB, delivered 3.6 MB (90 %).
+        // The error path never saw this (error == nil) and the 10 % metadata
+        // margin PASSES it — this gate is the only defense.
+        XCTAssertTrue(DownloadSanity.isShortOfAnnouncedBytes(actualBytes: 3_600_000, announcedBytes: 4_000_000))
+        // One byte short is still short: the promise is exact.
+        XCTAssertTrue(DownloadSanity.isShortOfAnnouncedBytes(actualBytes: 3_999_999, announcedBytes: 4_000_000))
+        // Exact match passes.
+        XCTAssertFalse(DownloadSanity.isShortOfAnnouncedBytes(actualBytes: 4_000_000, announcedBytes: 4_000_000))
+        // Oversize is NOT a short delivery (transparent compression
+        // decompresses to MORE than the announced compressed length).
+        XCTAssertFalse(DownloadSanity.isShortOfAnnouncedBytes(actualBytes: 4_100_000, announcedBytes: 4_000_000))
+    }
+
+    func testMissingAnnouncedLengthNeverRejected() {
+        // No Content-Length (chunked) — nothing to enforce.
+        XCTAssertFalse(DownloadSanity.isShortOfAnnouncedBytes(actualBytes: 0, announcedBytes: 0))
+        XCTAssertFalse(DownloadSanity.isShortOfAnnouncedBytes(actualBytes: 5_000, announcedBytes: 0))
+        XCTAssertFalse(DownloadSanity.isShortOfAnnouncedBytes(actualBytes: 5_000, announcedBytes: -1))
+    }
+
     func testMissingServerLengthNeverTruncates() {
         XCTAssertFalse(DownloadSanity.isTruncatedAgainstServer(storedBytes: 0, serverLength: 0))
         XCTAssertFalse(DownloadSanity.isTruncatedAgainstServer(storedBytes: 5_000, serverLength: 0))

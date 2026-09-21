@@ -243,7 +243,7 @@ final class TrackFileLoader {
         // against the source's bytes; its truncations are caught by the
         // elapsed gate instead). 0 disables the server-length gate.
         let expectedBytes: Int64 = requested == .raw ? Int64(track.size) : 0
-        let task = session.downloadTask(with: track.url) { [weak self] tempURL, _, error in
+        let task = session.downloadTask(with: track.url) { [weak self] tempURL, response, error in
             // Swift 6 capture semantics: `event` is an instance method, and the
             // download completion closure is `@Sendable` — explicit `self.` is
             // required at every call inside it (CI compile finding, 2026-09-20).
@@ -313,6 +313,25 @@ final class TrackFileLoader {
                     // nothing downstream can tell truncation from truth except
                     // the promised byte count. Compare against the snapshot's
                     // Subsonic `size` (raw only — see expectedBytes above).
+                    // 2026-09-21 Connectivity Assist workaround: a CLEAN
+                    // early close (server promised Content-Length, sent less,
+                    // closed without error) reports success — the error path
+                    // never sees it and the 10 % metadata margin above passes
+                    // drops up to 10 % of the file into the cache as poison.
+                    // The per-transfer announcement IS a promise for raw
+                    // streams: enforce it exactly (transcodes excluded —
+                    // their announced length is an estimate). Direction-safe
+                    // under transparent compression (decompressed ≥ announced).
+                    let announcedBytes = requested == .raw ? (response?.expectedContentLength ?? 0) : 0
+                    if moveError == nil, movedURL != nil,
+                       DownloadSanity.isShortOfAnnouncedBytes(
+                           actualBytes: tempSize,
+                           announcedBytes: announcedBytes) {
+                        self?.event(.danger, "download short of announced Content-Length for \(track.trackId) (got \(tempSize) of \(announcedBytes), no error) — clean early close, rejecting")
+                        try? FileManager.default.removeItem(at: destination)
+                        movedURL = nil
+                        moveError = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Download cut short (\(tempSize) of \(announcedBytes) bytes): \(track.title)"])
+                    }
                     if moveError == nil, movedURL != nil,
                        DownloadSanity.isTruncatedAgainstServer(
                            storedBytes: tempSize,
