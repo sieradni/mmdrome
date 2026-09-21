@@ -70,7 +70,7 @@ final class MaturationTests: XCTestCase {
         // The lead crossing fires ONCE at the first tick at-or-past the lead
         // (rung arithmetic can overshoot between 1 KB samples; the FIRING
         // condition is lastProbedAt < lead, so the crossing is never skipped).
-        XCTAssertEqual(probed.count(where: { $0 >= 500_000 }), 1)
+        XCTAssertEqual(probed.filter({ $0 >= 500_000 }).count, 1)
     }
 
     func testProbeRungsFireEvenWhenSamplerSkipsExactCounts() {
