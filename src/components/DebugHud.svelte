@@ -413,7 +413,7 @@
 
       <!-- Structured native events (2026-09-19): the engine's danger verdicts
            in one timeline — premature drops, evictions, aborts, stale drops,
-           interruption decisions, artwork-guard drops. Level coloring:
+           interruption decisions, artwork-guard drops (info, deduped). Level coloring:
            danger = red (a gate fired — read this first), info = default
            (state transition), debug = dim (verbose domain). -->
       <div class="mb-1 rounded bg-white/5 p-2">

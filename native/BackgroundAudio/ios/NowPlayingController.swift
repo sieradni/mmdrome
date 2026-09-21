@@ -20,6 +20,11 @@ final class NowPlayingController {
     private var cachedArtwork: UIImage?
     private var artworkTrackId: String?
     private var lastInfo: [String: Any] = [:]
+    /// Dedupe for guard-drop logging (2026-09-21 ring hygiene): the last
+    /// completed trackId whose artwork the guard dropped. A burst of loses
+    /// for the same stale fetch logs once; a different id or a fresh apply
+    /// resets it (main-thread-confined like the rest of this controller).
+    private var lastDroppedArtworkId: String?
     /// Diagnostic sink (2026-09-19): the ArtworkRequestGuard's stale-drop
     /// verdict (the "lock screen shows the default app cover" class) rides
     /// the engine's event log (domain "artwork", wired by the plugin).
@@ -119,9 +124,22 @@ final class NowPlayingController {
                 // completions for a track that is no longer current (TODO 4.4).
                 guard let currentTrackId = self.currentTrackId,
                       self.artworkGuard.shouldApply(completedTrackId: trackId, currentTrackId: currentTrackId) else {
-                    self.event(.danger, "artwork completion DROPPED by guard (completed=\(trackId) current=\(self.currentTrackId ?? "nil"))")
+                    // The guard WORKING is expected churn, not a fault (2026-09-21
+                    // ring hygiene): rapid track changes fire several completions
+                    // that all correctly lose to the newer request — the 1.2.29
+                    // dump showed these as danger-spam drowning the ring.
+                    // info-level, and deduped per completed id so a burst of
+                    // loses for the same stale fetch logs once. A drop that
+                    // left NO artwork applied while one was wanted would be a
+                    // real fault — the `artwork applied` info line (or its
+                    // absence) on the winning fetch is the verifiable signal.
+                    if self.lastDroppedArtworkId != trackId {
+                        self.lastDroppedArtworkId = trackId
+                        self.event(.info, "artwork completion dropped by guard (completed=\(trackId) current=\(self.currentTrackId ?? "nil")) — superseded, info")
+                    }
                     return
                 }
+                self.lastDroppedArtworkId = nil
                 self.event(.debug, "artwork applied \(trackId)")
                 self.cachedArtwork = image
                 self.artworkTrackId = trackId

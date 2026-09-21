@@ -48,6 +48,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private let session = SessionController()
     private let nowPlaying = NowPlayingController()
     private var nowPlayingTimer: Timer?
+    private var lastNetworkState: (Bool, Bool)?
 
     /// Capacitor invokes plugin methods on its serial bridge queue. The native
     /// audio graph, loader, timers, and engine state are main-thread-owned, so
@@ -83,8 +84,14 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         // fires the first event, so JS also gets the boot snapshot via the
         // event channel (plus the on-demand getNetworkState below).
         NetworkMonitor.shared.onNetworkChanged = { [weak self] isExpensive, isConstrained in
-            self?.engineEvent(.info, "network", "changed isExpensive=\(isExpensive) isConstrained=\(isConstrained)")
-            self?.notifyListeners("networkStateChanged", data: [
+            guard let self = self else { return }
+            if let (lastExpensive, lastConstrained) = self.lastNetworkState,
+               lastExpensive == isExpensive, lastConstrained == isConstrained {
+                return // no-op re-evaluation — do not flood the event ring
+            }
+            self.lastNetworkState = (isExpensive, isConstrained)
+            self.engineEvent(.info, "network", "changed isExpensive=\(isExpensive) isConstrained=\(isConstrained)")
+            self.notifyListeners("networkStateChanged", data: [
                 "isExpensive": isExpensive,
                 "isConstrained": isConstrained
             ])
