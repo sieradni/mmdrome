@@ -46,33 +46,26 @@ public enum Maturation {
     }
 
     /// Whether a header probe is worth running at `received` bytes: only
-    /// at the byte counts where the stage boundary could move (the lead
-    /// threshold and, before that, a sparse sampling schedule). The caller
-    /// probes at most once per "rung" — the probe cadence is O(log) over a
-    /// download, not O(bytes).
+    /// at the byte counts where the stage boundary could move. The rung
+    /// schedule derives from `lastProbedAt` (DOUBLE the last probe), never
+    /// from `received` — a rung computed from the current position skips
+    /// crossings that land between sampler ticks (CI-caught: the sampler
+    /// sees 4 KB-boundaries only when a tick lands on one). The lead
+    /// crossing is ALWAYS a probe the first tick at-or-past it — it is the
+    /// playable-vs-headered decision — so its firing condition is
+    /// `lastProbedAt < lead`, independent of rung arithmetic.
     public static func shouldProbeHeader(
         received: Int64,
         lastProbedAt: Int64,
         leadRequiredBytes: Int64?
     ) -> Bool {
         guard received >= minimumHeaderProbeBytes else { return false }
-        // Probe at 16 KB, then double (32 KB, 64 KB, …) up to the lead
-        // threshold. At/after the lead threshold the stage decision only
-        // needs one more probe result (playable vs headered), so probe
-        // exactly at the lead crossing too.
-        let rung: Int64
         if let lead = leadRequiredBytes, received >= lead {
-            rung = lead
-        } else {
-            var r: Int64 = minimumHeaderProbeBytes
-            while r < received, r < (leadRequiredBytes ?? Int64.max) { r *= 2 }
-            // The doubling can overshoot the lead (4 KB powers of two are
-            // rarely exact): cap the rung AT the lead so the crossing is
-            // always probed — it is the playable-vs-headered decision.
-            if let lead = leadRequiredBytes, r > lead { r = lead }
-            rung = r
+            return lastProbedAt < lead
         }
-        return lastProbedAt < rung && received >= rung
+        var next = lastProbedAt > 0 ? lastProbedAt * 2 : minimumHeaderProbeBytes
+        if let lead = leadRequiredBytes, next > lead { next = lead }
+        return received >= next
     }
 
     /// The smallest prefix worth probing: below this, no container header

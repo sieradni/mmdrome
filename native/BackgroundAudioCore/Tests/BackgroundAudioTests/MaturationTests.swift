@@ -67,8 +67,22 @@ final class MaturationTests: XCTestCase {
         }
         // Log cadence: well under 10 probes for a 500 KB download.
         XCTAssertLessThan(probed.count, 10, "probe cadence must be O(log), not O(bytes): \(probed)")
-        // The lead crossing is always probed (playable-vs-headered decision).
-        XCTAssertEqual(probed.last, 500_000)
+        // The lead crossing fires ONCE at the first tick at-or-past the lead
+        // (rung arithmetic can overshoot between 1 KB samples; the FIRING
+        // condition is lastProbedAt < lead, so the crossing is never skipped).
+        XCTAssertEqual(probed.count(where: { $0 >= 500_000 }), 1)
+    }
+
+    func testProbeRungsFireEvenWhenSamplerSkipsExactCounts() {
+        // A 1 s sampler sees ~arbitrary byte counts; rungs derive from the
+        // LAST PROBE, not the received position, so no rung is skipped:
+        // simulate ticks at 3_700, 27_300, 87_300 (odd landing points past
+        // the 4 KB and 8 KB rungs).
+        XCTAssertFalse(Maturation.shouldProbeHeader(received: 3_700, lastProbedAt: 0, leadRequiredBytes: nil))
+        XCTAssertTrue(Maturation.shouldProbeHeader(received: 27_300, lastProbedAt: 0, leadRequiredBytes: nil),
+                      "first probe fires at the first tick ≥ 4 KB regardless of exact landing")
+        XCTAssertTrue(Maturation.shouldProbeHeader(received: 87_300, lastProbedAt: 27_300, leadRequiredBytes: nil),
+                      "next rung = 2× last probe (54_600), firing at the next tick past it")
     }
 
     func testNoProbeBelowMinimum() {
