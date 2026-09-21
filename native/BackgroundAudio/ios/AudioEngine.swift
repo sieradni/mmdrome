@@ -104,6 +104,19 @@ final class TrackFileLoader {
     /// All loader bookkeeping lives here; this class only binds a real
     /// URLSessionDownloadTask to it. Main-thread-only — see `prefetch`.
     private var state = LoaderState<URLSessionDownloadTask>()
+    /// Resumable downloads (2026-09-21, the "discarding delivered bytes on a
+    /// flaky interface is a subpar response" review): retained clean-close
+    /// prefixes per composite cache key — the loader keeps a `.part` file
+    /// and continues it with `Range: bytes=<offset>-` instead of starting
+    /// over. Loud failures carry URLSession's own opaque `resumeData` in
+    /// the completion's error userInfo (no delegate needed — the block API
+    /// delivers it). Main-thread-only like everything else in the loader.
+    private var pendingParts: [String: DownloadResume.Pending] = [:]
+    private var resumeDataByCacheKey: [String: Data] = [:]
+    /// Keys whose server answered 200 (full body) to a Range request — that
+    /// server does not support ranges, so retaining prefixes for them would
+    /// loop replace→close→retain forever. Sticky until a download succeeds.
+    private var rangeUnsupportedKeys: Set<String> = []
     /// Diagnostic sink (2026-09-19): the loader's gate verdicts ride the
     /// engine's structured event log instead of bare prints. Level only —
     /// the domain is fixed ("loader"); set by the engine at init.
@@ -114,6 +127,12 @@ final class TrackFileLoader {
     /// Live counts for the debug snapshot (no file I/O — pure state reads).
     func stats() -> (cached: Int, inFlight: Int) {
         (state.cache.count, state.inFlight.count)
+    }
+    /// Dump-visible scratch count: keys with a retained clean-close prefix
+    /// or an opaque resumeData offer (a stuck resume shows up here as a
+    /// nonzero count that never drains).
+    var pendingResumeScratchCount: Int {
+        pendingParts.count + resumeDataByCacheKey.count
     }
     /// Fired on the MAIN thread the moment a download's bookkeeping settles:
     /// (trackId, succeeded). The engine's 1 s sampler only sees downloads
@@ -142,6 +161,105 @@ final class TrackFileLoader {
         config.timeoutIntervalForResource = 600
         return URLSession(configuration: config)
     }()
+
+    // MARK: Resumable downloads — pure-decision helpers
+
+    /// The `.part` scratch URL for a destination (same directory; hidden
+    /// from serving — `servingURL` only reads `state.cache`).
+    private func partURL(for destination: URL) -> URL {
+        destination.appendingPathExtension("part")
+    }
+
+    /// Retained-prefix byte count for a destination, or nil. Reads the
+    /// `.part` file if the pending state claims one (a purged scratch file
+    /// invalidates the claim).
+    private func retainedPartBytes(for destination: URL, cacheKey: String) -> Int64? {
+        guard let pending = pendingParts[cacheKey], !pending.parts.isEmpty,
+              !pending.fromOpaqueResumeData else { return nil }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: partURL(for: destination).path)
+        let size = (attrs?[.size] as? Int64) ?? 0
+        return size > 0 ? size : nil
+    }
+
+    private func dropPending(cacheKey: String, destination: URL) {
+        pendingParts[cacheKey] = nil
+        try? FileManager.default.removeItem(at: partURL(for: destination))
+    }
+
+    // MARK: Native decode probe (2026-09-21 — evidence, not a table)
+
+    /// Downloads a tiny sample of `sampleURL` (a low-bitrate server-side
+    /// transcode — same shape as the web probe's request) and hands the REAL
+    /// bytes to AVAudioFile, the exact decoder the playback graph uses.
+    /// Two-phase, mirroring `formatProbe.ts`: transport failures and error
+    /// bodies answer `network` (never persisted, retried next boot); only
+    /// bytes the decoder actually opened and read produce `ok`/`unsupported`.
+    func probeDecode(sampleURL: URL, completion: @escaping (_ verdict: String, _ detail: String) -> Void) {
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 10
+        config.timeoutIntervalForResource = 15
+        let probeSession = URLSession(configuration: config)
+        let task = probeSession.dataTask(with: sampleURL) { body, response, error in
+            // Deliberately NOT main-thread-bound: the probe is independent of
+            // the audio graph; the completion hops wherever the caller needs.
+            guard error == nil, let http = response as? HTTPURLResponse else {
+                completion("network", error?.localizedDescription ?? "no response")
+                return
+            }
+            let status = http.statusCode
+            guard let body, !body.isEmpty else {
+                completion("network", "http \(status) empty body")
+                return
+            }
+            let verdict = DecodeProbe.classifyTransportWithMinimum(statusCode: status, bodyBytes: body)
+            switch verdict {
+            case .network:
+                completion("network", "http \(status) body \(body.count)B (error payload or too small)")
+                return
+            case .unsupported(let reason):
+                completion("unsupported", reason)
+                return
+            case .ok:
+                break // real media bytes — proceed to the decoder
+            }
+            let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
+                .appendingPathComponent("mmprobe-").appendingPathExtension("bin")
+            do {
+                try body.write(to: tmp, options: .atomic)
+            } catch {
+                completion("network", "sample write failed: \(error.localizedDescription)")
+                return
+            }
+            defer { try? FileManager.default.removeItem(at: tmp) }
+            var decodeError: String?
+            var frames: Int64 = 0
+            do {
+                let audio = try AVAudioFile(forReading: tmp)
+                frames = audio.length
+                if frames > 0 {
+                    // Read a frame to force real demux work (length alone can
+                    // trust the header; a frame read exercises the decoder).
+                    guard let format = try? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: audio.fileFormat.sampleRate, channels: max(1, audio.fileFormat.channelCount), interleaved: false) else {
+                        throw NSError(domain: "mmdrome.probe", code: 1)
+                    }
+                    let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)
+                    if let buf { try audio.read(into: buf) }
+                }
+            } catch {
+                decodeError = error.localizedDescription
+            }
+            let verdict2 = DecodeProbe.classifyDecode(decodeError: decodeError, decodedFrames: frames)
+            switch verdict2 {
+            case .ok(let f):
+                completion("ok", "\(f) frames decoded by AVAudioFile")
+            case .unsupported(let reason):
+                completion("unsupported", reason)
+            case .network:
+                completion("network", "unexpected transport verdict in decode phase")
+            }
+        }
+        task.resume()
+    }
 
     /// Serve check under the preserve-unless-upgrade rule (TrackVariant): the
     /// exact variant when cached, else the best cached variant of this track
@@ -243,7 +361,51 @@ final class TrackFileLoader {
         // against the source's bytes; its truncations are caught by the
         // elapsed gate instead). 0 disables the server-length gate.
         let expectedBytes: Int64 = requested == .raw ? Int64(track.size) : 0
-        let task = session.downloadTask(with: track.url) { [weak self] tempURL, response, error in
+        // RESUMABLE DOWNLOADS (2026-09-21, the "discarding delivered bytes on
+        // a flaky interface is a subpar response" review): pick the
+        // continuation BEFORE building the task. Three shapes, decided by the
+        // pure `DownloadResume` core: URLSession's own opaque resumeData
+        // (loud failures — the system reassembles internally), a Range
+        // append onto a retained clean-close prefix (the Connectivity-Assist
+        // shape), or a fresh full download. Established mechanisms, no bytes
+        // wasted, and every gate below still runs on the FINAL bytes —
+        // resume changes how a download RECOVERS, never what counts as
+        // complete.
+        let continuation = DownloadResume.planNextAttempt(
+            pending: pendingParts[cacheKey],
+            opaqueResumeData: resumeDataByCacheKey[cacheKey])
+        if case .fresh = continuation {
+            // Stale scratch state must not survive into a fresh attempt.
+            resumeDataByCacheKey[cacheKey] = nil
+            dropPending(cacheKey: cacheKey, destination: destination)
+        }
+        var request: URLRequest? = nil
+        var resumeData: Data? = nil
+        switch continuation {
+        case .fresh:
+            request = URLRequest(url: track.url)
+        case .opaqueResume:
+            // URLSession's own continuation: the opaque data carries the
+            // system's internal byte accounting, which a hand-built Range
+            // request cannot see. Consumed below via
+            // downloadTask(withResumeData:).
+            resumeData = resumeDataByCacheKey[cacheKey]
+            self.event(.info, "resume: opaque resumeData (\(resumeData?.count ?? 0)B) for \(track.trackId) (\(requested))")
+        case .rangeAppend(let offset):
+            let r = URLRequest(url: track.url)
+            r.setValue(DownloadResume.rangeHeader(offset: offset), forHTTPHeaderField: "Range")
+            request = r
+            self.event(.info, "resume: Range bytes=\(offset)- for \(track.trackId) (\(requested))")
+        }
+        let part = partURL(for: destination)
+        // For a Range attempt the response's own Content-Length is the
+        // REMAINDER — the byte gate must judge the merged bytes against the
+        // ORIGINAL transfer's total (recorded when the prefix was retained).
+        let originalAnnounced: Int64 = {
+            if case .rangeAppend = continuation { return pendingParts[cacheKey]?.announcedTotal ?? 0 }
+            return 0
+        }()
+        let completionBody: @Sendable (URL?, URLResponse?, Error?) -> Void = { [weak self] tempURL, response, error in
             // Swift 6 capture semantics: `event` is an instance method, and the
             // download completion closure is `@Sendable` — explicit `self.` is
             // required at every call inside it (CI compile finding, 2026-09-20).
@@ -257,7 +419,71 @@ final class TrackFileLoader {
             // happens on main.
             var movedURL: URL? = nil
             var moveError: Error? = nil
+            // RESUMABLE: the clean-close retention decision made on this
+            // delegate queue is applied to the main-thread state maps in the
+            // main hop below (the loader's maps are main-thread-only).
+            var retainPending: DownloadResume.Pending? = nil
             if let temp = tempURL, error == nil {
+                // RESUMABLE: when this attempt was a Range continuation, the
+                // delivered body is the REMAINDER — append it onto the
+                // retained prefix BEFORE any validation, then judge only the
+                // combined file. A 206 whose Content-Range start does not
+                // equal the requested offset, or a plain 200 (server ignored
+                // the range), means the body is NOT the remainder: the fresh
+                // body REPLACES the prefix (never appended — that would
+                // double the bytes).
+                var effectiveSize = 0
+                if case .rangeAppend(let reqOffset) = continuation, let temp = tempURL {
+                    let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    let rangeStart = DownloadResume.parseContentRangeStart(
+                        (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Range"))
+                    let appendable = DownloadResume.rangeResponseIsAppendable(statusCode: statusCode)
+                        && rangeStart == reqOffset
+                    if appendable {
+                        do {
+                            let handle = try FileHandle(forWritingTo: part)
+                            defer { try? handle.close() }
+                            _ = try handle.seekToEnd()
+                            let data = try Data(contentsOf: temp, options: .mappedIfSafe)
+                            try handle.write(contentsOf: data)
+                            self?.event(.info, "resume: appended \(data.count)B at offset \(reqOffset) for \(track.trackId) (206 aligned)")
+                            effectiveSize = Int((try? FileManager.default.attributesOfItem(atPath: part.path)[.size] as? Int64) ?? 0)
+                            // The combined file now lives at `part` — judge it
+                            // directly (temp is discarded below by moving to
+                            // destination first for gate uniformity).
+                        } catch {
+                            self?.event(.danger, "resume append failed for \(track.trackId): \(error.localizedDescription) — falling back to fresh")
+                            try? FileManager.default.removeItem(at: part)
+                            effectiveSize = -1 // force the fresh path below
+                        }
+                    } else {
+                        self?.event(.info, "resume: server answered \(statusCode) (start \(rangeStart.map(String.init) ?? "nil"), wanted \(reqOffset)) — range ignored, body REPLACES prefix for \(track.trackId)")
+                        try? FileManager.default.removeItem(at: part)
+                        self?.rangeUnsupportedKeys.insert(cacheKey)
+                    }
+                }
+                // A range-appended attempt reads its merged bytes from the
+                // .part file; fresh/200-replaced attempts move `temp` into
+                // the validation pipeline below. `mergeSource` is the file
+                // the gates judge.
+                var mergeSource: URL? = temp
+                if case .rangeAppend(let reqOffset) = continuation,
+                   DownloadResume.rangeResponseIsAppendable(statusCode: (response as? HTTPURLResponse)?.statusCode ?? 0) {
+                    if effectiveSize >= 0, FileManager.default.fileExists(atPath: part.path) {
+                        mergeSource = part
+                        // Move the merged part into destination for validation
+                        // (the gates and AVAudioFile probe work on destination).
+                        let parent = destination.deletingLastPathComponent()
+                        try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+                        if FileManager.default.fileExists(atPath: destination.path) {
+                            try? FileManager.default.removeItem(at: destination)
+                        }
+                        try? FileManager.default.moveItem(at: part, to: destination)
+                        mergeSource = destination
+                        _ = reqOffset
+                    }
+                }
+                if let src = mergeSource {
                 do {
                     // 2026-09-17 multi-skip hardening: the move-to-cache gate
                     // accepted ANY completed transfer. A truncated download
@@ -269,24 +495,27 @@ final class TrackFileLoader {
                     // main-hop bookkeeping below still runs state.complete +
                     // the error deliver — an early return would leave the
                     // loader's in-flight entry active forever.
-                    let attrs = try FileManager.default.attributesOfItem(atPath: temp.path)
+                    let attrs = try FileManager.default.attributesOfItem(atPath: src.path)
                     let tempSize = (attrs[.size] as? Int) ?? 0
                     if tempSize < TrackFileLoader.minimumAudioBytes {
                         self?.event(.danger, "download under \(TrackFileLoader.minimumAudioBytes) bytes for \(track.trackId) (got \(tempSize)) — treating as error")
-                        try? FileManager.default.removeItem(at: temp)
+                        try? FileManager.default.removeItem(at: src)
+                        if src != temp { try? FileManager.default.removeItem(at: temp) }
                         moveError = NSError(domain: "mmdrome.loader", code: -7001, userInfo: [NSLocalizedDescriptionKey: "Download truncated (\(tempSize) bytes) for \(track.title)"])
                     } else {
                     let parent = destination.deletingLastPathComponent()
                     try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
-                    if FileManager.default.fileExists(atPath: destination.path) {
-                        try FileManager.default.removeItem(at: destination)
-                    }
-                    do {
-                        try FileManager.default.moveItem(at: temp, to: destination)
-                    } catch {
-                        self?.event(.info, "moveItem failed for \(track.trackId) \(error.localizedDescription) — trying copy (volume mismatch workaround)")
-                        try FileManager.default.copyItem(at: temp, to: destination)
-                        try? FileManager.default.removeItem(at: temp)
+                    if src != destination {
+                        if FileManager.default.fileExists(atPath: destination.path) {
+                            try FileManager.default.removeItem(at: destination)
+                        }
+                        do {
+                            try FileManager.default.moveItem(at: src, to: destination)
+                        } catch {
+                            self?.event(.info, "moveItem failed for \(track.trackId) \(error.localizedDescription) — trying copy (volume mismatch workaround)")
+                            try FileManager.default.copyItem(at: src, to: destination)
+                            try? FileManager.default.removeItem(at: src)
+                        }
                     }
                     movedURL = destination
                     // 2026-09-17 design hardening: validate at the TRUST
@@ -322,16 +551,60 @@ final class TrackFileLoader {
                     // streams: enforce it exactly (transcodes excluded —
                     // their announced length is an estimate). Direction-safe
                     // under transparent compression (decompressed ≥ announced).
-                    let announcedBytes = requested == .raw ? (response?.expectedContentLength ?? 0) : 0
+                    let announcedBytes = requested == .raw
+                        ? (originalAnnounced > 0 ? originalAnnounced : (response?.expectedContentLength ?? 0))
+                        : 0
                     if moveError == nil, movedURL != nil,
                        DownloadSanity.isShortOfAnnouncedBytes(
                            actualBytes: tempSize,
                            announcedBytes: announcedBytes) {
-                        self?.event(.danger, "download short of announced Content-Length for \(track.trackId) (got \(tempSize) of \(announcedBytes), no error) — clean early close, rejecting")
+                        // RESUMABLE (2026-09-21): a clean early close used to
+                        // DELETE the delivered bytes and start over — on a
+                        // flaky interface one track could re-download from
+                        // zero repeatedly. The prefix is retained as the .part
+                        // scratch file and the next attempt continues it with
+                        // `Range: bytes=<delivered>-` (a 206 aligned answer
+                        // appends; anything else replaces the prefix). Raw
+                        // streams only: a transcode's announced length is an
+                        // estimate and must not anchor a resume. Retention is
+                        // bounded by DownloadResume's part cap —
+                        // planNextAttempt falls back to fresh there.
+                        if requested == .raw && !self.rangeUnsupportedKeys.contains(cacheKey) {
+                            let parent = destination.deletingLastPathComponent()
+                            try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
+                            if FileManager.default.fileExists(atPath: part.path) {
+                                try? FileManager.default.removeItem(at: part)
+                            }
+                            try? FileManager.default.moveItem(at: destination, to: part)
+                            let retainedBytes = (try? FileManager.default.attributesOfItem(atPath: part.path)[.size] as? Int64) ?? 0
+                            if retainedBytes > 0 {
+                                self?.event(.danger, "clean early close for \(track.trackId) (got \(tempSize) of \(announcedBytes)) — prefix retained (\(retainedBytes)B), next attempt Range-resumes")
+                                retainPending = DownloadResume.Pending(parts: [retainedBytes], announcedTotal: announcedBytes)
+                            } else {
+                                self?.event(.danger, "clean early close for \(track.trackId) but prefix retention failed — full re-download on retry")
+                            }
+                        } else {
+                            self?.event(.danger, "download short of announced Content-Length for \(track.trackId) (got \(tempSize) of \(announcedBytes), no error) — rejecting")
+                        }
                         try? FileManager.default.removeItem(at: destination)
                         movedURL = nil
                         moveError = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Download cut short (\(tempSize) of \(announcedBytes) bytes): \(track.title)"])
                     }
+                    if moveError == nil, movedURL != nil,
+                       DownloadSanity.isTruncatedAgainstServer(
+                           storedBytes: tempSize,
+                           serverLength: expectedBytes) {
+                        self?.event(.danger, "download truncated vs server size for \(track.trackId) (got \(tempSize) of \(expectedBytes)) — rejecting")
+                        try? FileManager.default.removeItem(at: destination)
+                        movedURL = nil
+                        moveError = NSError(domain: "mmdrome.loader", code: -7003, userInfo: [NSLocalizedDescriptionKey: "Download truncated vs server size: \(track.title)"])
+                    }
+                    }
+                } catch {
+                    moveError = error
+                    self?.event(.danger, "final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(error.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: temp.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
+                }
+                }
                     if moveError == nil, movedURL != nil,
                        DownloadSanity.isTruncatedAgainstServer(
                            storedBytes: tempSize,
@@ -358,6 +631,11 @@ final class TrackFileLoader {
                 }
                 let pendings = self.state.complete(cacheKey, requestID: requestID)
                 if let moved = movedURL {
+                    // RESUMABLE: a completed transfer clears all scratch
+                    // state for the key — the next attempt is a plain hit.
+                    self.resumeDataByCacheKey[cacheKey] = nil
+                    self.rangeUnsupportedKeys.remove(cacheKey)
+                    self.dropPending(cacheKey: cacheKey, destination: destination)
                     // Record the delivered byte count at store time — the only
                     // moment it is trustworthy (a later disk stat can race a
                     // Caches purge). The schedule clamp reads it via
@@ -370,14 +648,33 @@ final class TrackFileLoader {
                     self.onDownloadFinished?(track.trackId, true)
                 } else {
                     let err = moveError ?? error
-                    // If we moved but became stale, the file was already cleaned above.
-                    // Otherwise report the download/move error to trigger retry.
+                    // RESUMABLE: a loud failure (connection ripped out) may
+                    // carry URLSession's opaque resumeData in the error's
+                    // userInfo — the system's own continuation offer. Store it
+                    // for the next attempt (planNextAttempt prefers it over a
+                    // Range append: the opaque data carries URLSession's
+                    // internal byte accounting). A retained clean-close
+                    // prefix stands too (retainPending from the gate above).
+                    // Both are cleared on eventual success or a fresh-attempt
+                    // fallback.
+                    if let resume = (err as NSError?)?.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+                        self.resumeDataByCacheKey[cacheKey] = resume
+                    }
+                    if let retain = retainPending {
+                        self.pendingParts[cacheKey] = retain
+                    }
                     deliver(nil, err)
                     pendings.forEach { $0(nil, err) }
                     self.onDownloadFinished?(track.trackId, false)
                 }
             }
         }
+        // The SAME completion body drives both task constructors: a plain
+        // request (fresh / Range-append) and URLSession's own resumeData
+        // continuation — identical gates on the final bytes either way.
+        let task: URLSessionDownloadTask = resumeData != nil
+            ? session.downloadTask(withResumeData: resumeData!, completionHandler: completionBody)
+            : session.downloadTask(with: request!, completionHandler: completionBody)
         if state.claim(cacheKey, task: task, requestID: requestID) {
             task.resume()
         } else {
@@ -408,8 +705,15 @@ final class TrackFileLoader {
             let (task, url) = state.evict(key)
             variantOf.removeValue(forKey: key)
             task?.cancel()
+            // RESUMABLE: scratch state is keyed per cache key — drop it with
+            // the cache entry or a stale prefix/offer survives into the next
+            // fetch (and the .part file lingers on disk).
+            pendingParts[key] = nil
+            resumeDataByCacheKey[key] = nil
+            rangeUnsupportedKeys.remove(key)
             if let url = url {
                 try? FileManager.default.removeItem(at: url)
+                try? FileManager.default.removeItem(at: partURL(for: url))
             }
         }
     }
@@ -516,6 +820,10 @@ public final class NativeAudioEngine: NSObject {
     // MARK: - State
 
     private let loader = TrackFileLoader()
+    /// The codec probe lives on the loader (it owns the download machinery);
+    /// the plugin reaches it through this accessor — the engine's other
+    /// surface (queue, graph, state) is orthogonal to byte fetching.
+    var loaderForProbe: TrackFileLoader { loader }
     /// Structured diagnostics (2026-09-19): every print()/diagnostic the
     /// engine emits rides THIS instead of stdout, so the Debug HUD Copy dump
     /// carries the danger verdicts (premature drops, evictions, aborts,
@@ -1614,6 +1922,9 @@ public final class NativeAudioEngine: NSObject {
             "preloadCount": preloadCount,
             "replayGainMode": replayGainMode,
             "prefetchGeneration": prefetchGeneration,
+            // Resumable-download scratch state (2026-09-21): dump-visible so
+            // a stuck resume is diagnosable from the field.
+            "loaderPendingResume": loader.pendingResumeScratchCount,
             "standbyScheduleGeneration": standbyScheduleGeneration,
             "standbyGenerationCaptured": standbyGeneration,
             "seekSuppressed": track.map { $0.trackId == seekSuppressedTrackId } ?? false,

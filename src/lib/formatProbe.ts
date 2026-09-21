@@ -7,27 +7,35 @@ import { nativeEngine } from './nativePlugin'
 /**
  * Per-device codec capability probe (low-data/transcoding plan, PR-D).
  *
- * On NATIVE platforms the probe is BYPASSED (2026-09-21): the web-only Audio
- * element has no bearing on AVAudioFile's decoders, and the WKWebView probe
- * produced false 'unsupported' verdicts that persisted forever — pinning a
- * bogus mp3 fallback for the native engine. Native verdicts come from the
- * static per-platform table below instead (no probe is required — absence of
- * evidence never triggers the fallback, the plan's "necessity demonstrated,
- * not assumed"). A native 'unsupported' entry therefore only suppresses a
- * probe that would measure the WRONG stack.
+ * ONE PROBE PHILOSOPHY ON BOTH PLATFORMS (2026-09-21, "what is the point of
+ * checking if it doesn't actually verify"): a verdict is only ever backed by
+ * EVIDENCE — real bytes fed to the decoder that actually plays audio. The
+ * earlier native shortcut (a static per-platform table, then an OS-version
+ * gate) decided codec support with zero evidence and field-pinned a bogus
+ * mp3 fallback twice; lookup tables wearing a probe's clothes are worse
+ * than no probe, because their wrong answers persist forever while looking
+ * authoritative.
  *
- * On the WEB the probe is unchanged: one-shot check per format at connect —
- * an `new Audio()` element is fed a real ~1 s transcoded response
- * (`maxBitRate=16` keeps the sample tiny), so BOTH the device decoder stack
- * AND the server's ability to produce the format are verified. Verdicts
- * persist in the settings store (the DOM never survives a reload, so the
- * persisted flag is the cache); a FAILED probe retries on the next app
- * start — OS updates can add support, and the fallback must un-fall-back.
+ * - WEB: fetch a tiny ~1 s server-transcoded sample (`maxBitRate=16`), then
+ *   feed the RECEIVED bytes to an `Audio` element via a blob URL. The
+ *   element's decoder is the browser stack the web engine uses.
+ * - NATIVE (iOS): the SAME sample URL goes over the bridge
+ *   (`probeFormat`); the native loader writes the bytes to a temp file and
+ *   hands them to `AVAudioFile` — the exact decoder the playback graph
+ *   uses — and reads frames. An 'ok' verdict is therefore proof the engine
+ *   can play the format, on that device, today.
  *
- * Node/test safety: the web body is guarded — under `node --test` there is
- * no `Audio` constructor and no cached config, so it resolves `unknown`
- * without touching the DOM. Verdict writes go through `updateSetting` so the
- * persisted settings row stays the single source.
+ * TWO-PHASE, both platforms (2026-09-08): transport problems (offline
+ * boot, captive portal, server down) and non-media bodies (a Subsonic
+ * error-JSON payload) classify as 'network' — never persisted, retried at
+ * the next boot. Only an `error`/decode failure AFTER real media bytes is
+ * 'unsupported' — the device, not the network.
+ *
+ * Verdicts persist in the settings store (`transcodeProbe`); 'ok' and
+ * 'unsupported' both persist (evidence-backed), 'network'/'unknown' never
+ * do (a flaky boot must not pin a permanent fallback). Node/test safety:
+ * under `node --test` there is no Audio constructor, no cached config, and
+ * no bridge — every path degrades to 'unknown' without touching the DOM.
  */
 
 export type FormatVerdict = 'ok' | 'unsupported' | 'network' | 'unknown'
@@ -35,6 +43,9 @@ export type FormatVerdict = 'ok' | 'unsupported' | 'network' | 'unknown'
 export interface FormatProbeDeps {
   audioFactory: () => HTMLAudioElement
   now: () => number
+  /** NATIVE injection point: the bridge probe call. Defaults to
+   *  `nativeEngine.probeFormat`; tests inject a fake. Absent on web/node. */
+  nativeProbe?: (url: string) => Promise<{ verdict: string; detail: string }>
 }
 
 const defaultDeps = (): FormatProbeDeps => ({
@@ -45,101 +56,54 @@ const defaultDeps = (): FormatProbeDeps => ({
 const PROBE_TIMEOUT_MS = 8000
 
 /**
- * Static NATIVE decode verdicts — what AVAudioFile / CoreAudio decodes on the
- * platform, independent of any webview. 'unsupported' here only suppresses a
- * probe that would measure the wrong stack; it never upgrades anything to
- * 'ok'.
- *
- * VERSION-GATED opus (2026-09-21 field correction): the 1.2.30 table shipped
- * saying iOS opus = unsupported — true for old iOS, but the user's iOS 26/27
- * device plays raw Ogg-Opus through AVAudioFile fine (the native engine's own
- * `AVAudioFile(forReading:)` probe accepted every preloaded opus file). The
- * codec landscape moved: modern CoreAudio opens Ogg-Opus. iOS 18+ reads 'ok'
- * (conservative floor — older devices keep mp3 as the LDM transcode target,
- * the safe default for a codec we cannot probe natively).
+ * PURE persistence decision (exported for the test suite): given the
+ * current probe map, a format, and a fresh verdict — should it be stored,
+ * and what does the next map look like? Evidence-backed verdicts
+ * ('ok'/'unsupported') persist and OVERWRITE stale rows (a device that
+ * gained or lost decode support via an OS update must converge);
+ * 'network'/'unknown' leave the map untouched (no evidence → no pin).
  */
-const IOS_OPUS_OK_MIN_MAJOR = 18
-
-/**
- * The OS version comes from the NATIVE BRIDGE (2026-09-21e, the persisted
- * `opus: unsupported` on an iOS 26/27 device): the WKWebView UA guess was
- * wrong in the field — the UA on a Capacitor build does not reliably carry
- * an iOS-tracking `Version/<major>` token, the parse returned 0, and the
- * version gate conservatively pinned 'unsupported' → the mp3 LDM fallback
- * the user could hear. `ProcessInfo.operatingSystemVersion` is authoritative;
- * the plugin exposes it as `getOsVersion { major }` (registered in
- * pluginMethods — the §3.4 getMethod gate drops unregistered names). Absent
- * bridge (web/old build) → null → caller falls back to the UA parse.
- * Exported pure for the test suite.
- */
-export function iosMajorVersionForTest(ua: string): number {
-  const m = /Version\/(\d+)\.\d+/.exec(ua)
-  return m ? parseInt(m[1], 10) : 0
+export function applyProbeResult(
+  current: Record<string, FormatVerdict> | undefined,
+  format: string,
+  verdict: FormatVerdict,
+): { persist: boolean; next: Record<string, FormatVerdict> } {
+  const base: Record<string, FormatVerdict> = { ...(current ?? {}) }
+  if (verdict === 'ok' || verdict === 'unsupported') {
+    if (base[format] !== verdict) {
+      base[format] = verdict
+      return { persist: true, next: base }
+    }
+    return { persist: false, next: base }
+  }
+  return { persist: false, next: base }
 }
 
-async function iosMajorVersion(): Promise<number> {
+/**
+ * The NATIVE probe (2026-09-21, evidence-based): one bridge call with the
+ * same tiny-sample URL the web probe builds. The bridge returns
+ * 'ok' | 'unsupported' | 'network' + a diagnostic detail string. Errors
+ * (old build without the method, bridge hiccup) → 'unknown' — same
+ * not-persisted semantics as a web timeout.
+ */
+async function nativeProbeOnce(
+  format: string,
+  rawSongId: string,
+  deps: FormatProbeDeps,
+): Promise<FormatVerdict> {
+  const config = getCachedConfig()
+  if (!config || !rawSongId) return 'unknown'
+  const probe = deps.nativeProbe ?? ((url: string) => nativeEngine.probeFormat({ url }))
+  const url = buildStreamUrl(config, rawSongId, { format, maxBitRate: 16 })
   try {
-    if (Capacitor.getPlatform() !== 'ios') return 0
-    const bridge = nativeEngine as unknown as { getOsVersion?: (o?: object) => Promise<{ major?: number }> }
-    if (typeof bridge.getOsVersion === 'function') {
-      const res = await bridge.getOsVersion()
-      const major = Number(res?.major)
-      if (Number.isFinite(major) && major > 0) return major
+    const res = await probe(url)
+    if (res?.verdict === 'ok' || res?.verdict === 'unsupported' || res?.verdict === 'network') {
+      return res.verdict
     }
-    return iosMajorVersionForTest(navigator.userAgent)
+    return 'unknown'
   } catch {
-    return 0
+    return 'unknown'
   }
-}
-
-const NATIVE_VERDICTS: Record<string, 'ok' | 'unsupported'> = {
-  mp3: 'ok',
-  aac: 'ok',
-  flac: 'ok',
-  // Opus/ogg are resolved per-call (async OS-version read) — not in this
-  // static map; nativeVerdictFor consults them via `resolvedNativeVerdict`.
-}
-
-let cachedOsMajor: number | null = null
-
-/**
- * The synchronous verdict path for the STATIC table (mp3/aac/flac) plus the
- * async opus/ogg resolution. `ensureFormatProbe` awaits this before answering;
- * the OS major is read once per session and cached (it cannot change mid-run).
- */
-async function resolvedNativeVerdict(format: string): Promise<'ok' | 'unsupported' | null> {
-  if (Capacitor.getPlatform() !== 'ios') return null // android/web — probe path
-  const staticVerdict = NATIVE_VERDICTS[format]
-  if (staticVerdict) return staticVerdict
-  if (format === 'opus' || format === 'ogg') {
-    if (cachedOsMajor === null) cachedOsMajor = await iosMajorVersion()
-    return cachedOsMajor >= IOS_OPUS_OK_MIN_MAJOR ? 'ok' : 'unsupported'
-  }
-  return null
-}
-
-/**
- * Boot-time sync: force the STATIC table over any persisted verdict (2026-09-21
- * regression fix). The 1.2.30 bootstrap only wrote table entries the map was
- * MISSING — it never overwrote stale rows the old WEBVIEW probe had persisted
- * ('aac: unsupported' rode forever even though the table says ok). Every boot
- * now reconciles the whole native-known map; rows outside the table are
- * untouched (the web probe owns them). Opus/ogg resolve through the SAME map
- * once `resolvedNativeVerdict` has computed them (the OS-version gate result
- * is passed in by `ensureFormatProbe`, which awaits the bridge read).
- */
-function syncNativeVerdicts(verdicts: Record<string, 'ok' | 'unsupported'>): void {
-  if (Capacitor.getPlatform() !== 'ios') return
-  const current = get(settings).transcodeProbe ?? {}
-  const next = { ...current }
-  let changed = false
-  for (const [format, verdict] of Object.entries(verdicts)) {
-    if (next[format] !== verdict) {
-      next[format] = verdict
-      changed = true
-    }
-  }
-  if (changed) updateSetting('transcodeProbe', next)
 }
 
 export interface ProbeOutcome {
@@ -149,7 +113,7 @@ export interface ProbeOutcome {
 }
 
 /**
- * TWO-PHASE probe (2026-09-08): the old single-shot design fed the stream URL
+ * TWO-PHASE WEB probe (2026-09-08): the old single-shot design fed the stream URL
  * straight to an Audio element, so a NETWORK failure (offline boot, captive
  * portal, server down) or an ERROR-JSON body (stale song id after a server
  * switch) fired the element's `error` event and got branded 'unsupported' —
@@ -213,6 +177,12 @@ async function probeFormatOnce(format: string, songId: string, deps: FormatProbe
  * verdict. Fire-and-forget at connect: callers must not await boot on it.
  * `rawSongId` (a REAL navidrome song id, prefix stripped — usually the first
  * library track) is required: without one the probe is skipped (`unknown`).
+ *
+ * An ALREADY-persisted evidence-backed verdict short-circuits the probe
+ * (one check per format per install — the same cache semantics on both
+ * platforms). 'network'/'unknown' outcomes never persist, so the next app
+ * start re-probes: OS updates can add support, and the fallback must
+ * un-fall-back.
  */
 export async function ensureFormatProbe(
   format: string,
@@ -220,32 +190,17 @@ export async function ensureFormatProbe(
   deps: FormatProbeDeps = defaultDeps(),
 ): Promise<ProbeOutcome> {
   if (!format) return { verdict: 'unknown', format }
-  // NATIVE BYPASS: the web probe measures the WKWebView's decoders, which the
-  // native engine never uses. The static table above is the native truth —
-  // opus/ogg included (the OS-version gate reads the REAL OS version from the
-  // native bridge; the UA guess misfired in the field and pinned mp3).
-  const native = await resolvedNativeVerdict(format)
-  if (native !== null) {
-    // Sync the FULL effective table (static rows + this format's verdict) over
-    // any persisted rows — the 2026-09-21d bootstrap's partial-write hole let
-    // stale 'unsupported' entries ride forever.
-    const effective: Record<string, 'ok' | 'unsupported'> = { ...NATIVE_VERDICTS, [format]: native }
-    syncNativeVerdicts(effective)
-    return { verdict: native, format }
-  }
-  const probeMap = get(settings).transcodeProbe
+  const probeMap = get(settings).transcodeProbe as Record<string, FormatVerdict> | undefined
   const existing = probeMap?.[format]
   if (existing === 'ok' || existing === 'unsupported') {
     return { verdict: existing, format }
   }
-  const verdict = await probeFormatOnce(format, rawSongId, deps)
-  // `unknown` (0 s timeout) and `network` (offline boot / server down / error
-  // JSON) are deliberately NOT persisted — a slow server on one boot, or a
-  // captive portal, must not pin a permanent mp3 fallback. Only a verdict
-  // backed by real received bytes that the ELEMENT rejected is 'unsupported'.
-  if (verdict !== 'unknown' && verdict !== 'network') {
-    updateSetting('transcodeProbe', { ...(get(settings).transcodeProbe ?? {}), [format]: verdict })
+  const verdict = Capacitor.isNativePlatform()
+    ? await nativeProbeOnce(format, rawSongId, deps)
+    : await probeFormatOnce(format, rawSongId, deps)
+  const { persist, next } = applyProbeResult(probeMap, format, verdict)
+  if (persist) {
+    updateSetting('transcodeProbe', next as Record<string, 'ok' | 'unsupported'>)
   }
   return { verdict, format }
 }
-

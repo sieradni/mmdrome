@@ -11,6 +11,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "initialize", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getOsVersion", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "probeFormat", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setQueue", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setQueueAndPlay", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "refreshQueue", returnType: CAPPluginReturnPromise),
@@ -185,6 +186,24 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
         call.resolve(["major": major])
 
+    }
+
+    /// Evidence-based codec probe (2026-09-21 — the static OS-version table
+    /// decided verdicts with ZERO evidence and pinned a bogus mp3 fallback
+    /// twice in the field). The engine's loader downloads a tiny sample of
+    /// `url` (a low-bitrate server-side transcode) and hands the REAL bytes
+    /// to AVAudioFile — the exact decoder the playback graph uses. Verdicts:
+    /// 'ok' | 'unsupported' (evidence-backed, persistable) | 'network'
+    /// (transport failure / error body — NEVER persisted, retried next boot).
+    @objc func probeFormat(_ call: CAPPluginCall) {
+        guard let urlStr = call.getString("url", ""), let url = URL(string: urlStr),
+              url.scheme == "http" || url.scheme == "https" else {
+            call.reject("probeFormat requires an http(s) url")
+            return
+        }
+        engine.loaderForProbe.probeDecode(sampleURL: url) { verdict, detail in
+            call.resolve(["verdict": verdict, "detail": detail])
+        }
     }
 
 

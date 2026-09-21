@@ -51,8 +51,14 @@ export type NativeCrossfadeCurve = 'linear' | 'exponential' | 'sigmoid'
 
 interface BackgroundAudioPlugin {
   initialize(): Promise<void>
-  /** The OS major version from the native side (codec-gate truth; 2026-09-21e). */
+  /** The OS major version from the native side (HUD dump diagnostic). */
   getOsVersion(): Promise<{ major: number }>
+  /** Evidence-based codec probe: the native loader downloads a tiny sample
+   *  of `url` (low-bitrate server-side transcode) and feeds the REAL bytes
+   *  to AVAudioFile — the exact decoder the playback graph uses. Verdicts:
+   *  'ok' | 'unsupported' (evidence-backed) | 'network' (transport failure,
+   *  never persisted). Registered in pluginMethods (the §3.4 gate). */
+  probeFormat(options: { url: string }): Promise<{ verdict: string; detail: string }>
   setQueue(options: { tracks: NativeTrackSnapshot[]; activeIndex: number; loopMode: NativeLoopMode }): Promise<void>
   setQueueAndPlay(options: {
     tracks: NativeTrackSnapshot[]
@@ -185,6 +191,29 @@ export class NativeAudioEngineApp {
   async setDebugDomains(domains: string[]): Promise<void> {
     if (!this.isNative()) return
     await BackgroundAudio.setDebugDomains({ domains }).catch(() => {})
+  }
+
+  /** The OS major version (HUD dump context — the false-opus saga proved
+   *  verdict context matters). Null off-native or on failure. */
+  async getOsVersion(): Promise<{ major: number } | null> {
+    if (!this.isNative()) return null
+    try {
+      return await BackgroundAudio.getOsVersion()
+    } catch {
+      return null
+    }
+  }
+
+  /** Evidence-based codec probe (see formatProbe.ts): the native loader
+   *  downloads a tiny sample of `url` and feeds the REAL bytes to
+   *  AVAudioFile. Null off-native; errors degrade to 'unknown'. */
+  async probeFormat(options: { url: string }): Promise<{ verdict: string; detail: string } | null> {
+    if (!this.isNative()) return null
+    try {
+      return await BackgroundAudio.probeFormat(options)
+    } catch {
+      return null
+    }
   }
 
   plugin(): BackgroundAudioPlugin {

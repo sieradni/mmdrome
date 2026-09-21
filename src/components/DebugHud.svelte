@@ -97,6 +97,8 @@
     lastError = msg
   }
 
+  let osMajor: number | null = $state(null)
+
   async function refreshNative() {
     if (!Capacitor.isNativePlatform()) return
     try {
@@ -104,6 +106,14 @@
       nativeState = s
     } catch (e: any) {
       nativeState = { error: String(e?.message ?? e) }
+    }
+    // OS version for the dump (codec-probe context — the false-opus saga
+    // proved verdict context matters; read once, never re-pollled).
+    if (osMajor === null) {
+      void nativeEngine
+        .getOsVersion()
+        .then((r) => (osMajor = r?.major ?? null))
+        .catch(() => {})
     }
     // @ts-ignore optional
     if ((BackgroundAudio as any).getDebugState) {
@@ -206,6 +216,7 @@
         lowData: { effective: get(effectiveLowData), network: get(networkStatusStore) },
         transcode: tp ?? 'original',
       },
+      osMajor,
       nativeState,
       nativeDebug,
       lastError,
