@@ -661,6 +661,12 @@ public final class NativeAudioEngine: NSObject {
     /// would instantly re-fade into the (evicted) target and churn. Cleared
     /// in playTrack (a new track instance gets fresh fades).
     private var fadeAbortedTrackId: String?
+    /// Recently played track ids, NEWEST FIRST (2026-09-21 field detector).
+    /// Written at the END of a successful playTrack (the outgoing row joins;
+    /// same-id restarts are skipped so a row's own restart doesn't count as a
+    /// prior play). Capped at 8 — deep history is irrelevant to a "jumped back
+    /// 5-10 rows" signature and duplicates dedupe naturally.
+    private var recentlyPlayedTrackIds: [String] = []
     /// Previous run's NSException breadcrumb, when present (debugState only).
     private var lastLaunchCrash: String?
 
@@ -883,11 +889,40 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
+    /// Who ordered a playTrack — the backward-advance detector only trusts
+    /// ENGINE-initiated advances: a user next/previous intentionally lands on
+    /// any row (previous() targets the just-played row by design, and loop-all
+    /// wraps legitimately re-enter played rows), so those must never log.
+    private enum PlayOrigin {
+        case userCommand
+        case engineAdvance
+    }
+
     public func playTrack(at index: Int, autoPlay: Bool) {
+        playTrack(at: index, autoPlay: autoPlay, origin: .userCommand)
+    }
+
+    private func playTrack(at index: Int, autoPlay: Bool, origin: PlayOrigin) {
         guard !tracks.isEmpty else { return }
         eventAdd(.info, "engine", "playTrack \(activeIndex)→\(index) autoPlay=\(autoPlay) id=\(tracks.indices.contains(index) ? tracks[index].trackId : "-")")
         let clamped = max(0, min(index, tracks.count - 1))
         let oldTrackId = currentTrackId
+        // 2026-09-21 field detector (the "queue jumped BACKWARD 5-10 rows and
+        // repeated" report, shape unconfirmed): a NATURAL advance (the engine
+        // moving itself forward, loop-none) that lands on a row RECENTLY
+        // PLAYED is the signature of an index regression — a stale snapshot
+        // re-engaging an old row. Healthy loop-none playback never re-enters
+        // a played row; user commands and loop-all wraps are excluded (they
+        // land where they aim). Log-only: the next dump either confirms the
+        // shape (danger lines clustering at each perceived skip) or acquits
+        // it (no danger, bug lies elsewhere).
+        if origin == .engineAdvance, loopMode == .none, !recentlyPlayedTrackIds.isEmpty, let oldId = tracks.indices.contains(activeIndex) ? tracks[activeIndex].trackId : nil {
+            let targetId = tracks.indices.contains(clamped) ? tracks[clamped].trackId : ""
+            if autoPlay, !targetId.isEmpty, targetId != oldId,
+               let depth = recentlyPlayedTrackIds.firstIndex(of: targetId) {
+                eventAdd(.danger, "queue", "BACKWARD-ADVANCE target=\(targetId) was played \(depth + 1) advance(s) ago (current=\(oldId)) — index regression signature, observe-only")
+            }
+        }
         // A new track instance starts with clean crossfade automation — a
         // suppression latched by seeking inside the PREVIOUS track's window
         // must not leak (loop-one restarts clear it too; same id, new play).
@@ -906,6 +941,13 @@ public final class NativeAudioEngine: NSObject {
             let cached = loader.cacheKeys.contains { $0.hasPrefix(prefix) }
             emitPreload(oldTrackId, cached ? "done" : "gone", nil)
         }
+        if oldTrackId != tracks[clamped].trackId, !oldTrackId.isEmpty {
+            recentlyPlayedTrackIds.removeAll { $0 == oldTrackId }
+            recentlyPlayedTrackIds.insert(oldTrackId, at: 0)
+            if recentlyPlayedTrackIds.count > 8 {
+                recentlyPlayedTrackIds.removeLast(recentlyPlayedTrackIds.count - 8)
+            }
+        }
         activeIndex = clamped
         syncPreloadWindow()
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
@@ -921,19 +963,39 @@ public final class NativeAudioEngine: NSObject {
     public func refreshQueue(tracks: [NativeTrack], activeIndex: Int) {
         guard !tracks.isEmpty else { return }
         let snapshotActiveId = tracks.indices.contains(activeIndex) ? tracks[activeIndex].trackId : ""
-        guard let synchronizedIndex = synchronizedQueueActiveIndex(
+        let decision = queueRefreshDecision(
             snapshotActiveId: snapshotActiveId,
             engineCurrentId: currentTrackId,
             requestedIndex: activeIndex,
-            trackCount: tracks.count
-        ) else {
+            trackCount: tracks.count,
+            snapshotTrackIds: tracks.map { $0.trackId }
+        )
+        let synchronizedIndex: Int
+        switch decision {
+        case .synced(let index):
+            synchronizedIndex = index
+        case .containsCurrent(let index):
+            // 2026-09-21 P0b, the divergence stop-storm: during a natural
+            // advance the trackChanged→refreshQueue pair crosses in flight and
+            // JS's snapshot arrives naming the JUST-PLAYED row. The old strict
+            // compare called that a divergence and STOPPED the live row — the
+            // field dump caught three consecutive stops in ~70 ms (rows
+            // 159→160→161), each one killing a track that had just started.
+            // The live row still exists in the snapshot, so reconcile:
+            // re-anchor to where it lives THERE and rebuild the tail. Playback
+            // never stops for a lag; only a snapshot that has LOST the live
+            // row takes the reset path below.
+            eventAdd(.danger, "queue", "refreshQueue lag-tolerated: snapshot activeId=\(snapshotActiveId)@\(activeIndex) is behind engine currentId=\(currentTrackId) — re-anchored to snapshot row \(index), playback preserved")
+            synchronizedIndex = index
+        case .divergent:
             // Divergent queue — fall back to a full reset and report ENDED (1.4,
             // mirroring handleTrackEnd): the honest signal that JS navigates the
             // stale index. On `ended` JS re-snapshots from its own authoritative
             // queue, so the engine can't sit on a snapshot JS can't navigate.
-            // DANGER-level: this stops playback — the dumps' "paused + ended"
-            // signature comes from exactly this branch.
-            eventAdd(.danger, "queue", "refreshQueue DIVERGENT: snapshot activeId=\(snapshotActiveId)@\(activeIndex) not reconcilable with engine currentId=\(currentTrackId) — stopping and reporting ended")
+            // DANGER-level: this stops playback. Reached only when the snapshot
+            // has lost the engine's live row entirely (or the engine is idle) —
+            // a merely-BEHIND snapshot takes the lag-tolerated path above.
+            eventAdd(.danger, "queue", "refreshQueue DIVERGENT: snapshot activeId=\(snapshotActiveId)@\(activeIndex) missing engine currentId=\(currentTrackId) — stopping and reporting ended")
             stopPlayback()
             self.tracks = tracks
             self.activeIndex = max(0, min(activeIndex, tracks.count - 1))
@@ -1807,7 +1869,7 @@ public final class NativeAudioEngine: NSObject {
             return
         }
         if let next = nextIndex(after: activeIndex) {
-            playTrack(at: next, autoPlay: true)
+            playTrack(at: next, autoPlay: true, origin: .engineAdvance)
         } else {
             handleTrackEnd()
         }
@@ -1856,11 +1918,44 @@ public final class NativeAudioEngine: NSObject {
                     // pathological length tie). Finalizing here would switch
                     // to an EXHAUSTED node whose only pending completion just
                     // fired: the queue would stall silently. Abort instead:
-                    // stop the dead standby, evict its poison (evidence-based
-                    // — the data ran out before the ramp finished), suppress
-                    // further fades for this track instance, and let the
-                    // outgoing track's real end drive the advance.
+                    // stop the dead standby and suppress further fades for
+                    // this track instance, letting the outgoing track's real
+                    // end drive the advance. The TARGET row's file is the
+                    // poison — evict it so the next fade re-downloads.
+                    let targetTrack = tracks.indices.contains(crossfade.targetIndex) ? tracks[crossfade.targetIndex] : nil
                     self.abortCrossfadeKeepActive()
+                    if let targetTrack {
+                        loader.evict(targetTrack.trackId, variant: TrackVariant(url: targetTrack.url))
+                    }
+                    return
+                }
+                // 2026-09-21 dump, P0a: the ACTIVE node's EOF during a fade
+                // is the switch point ONLY when it is a real end. A truncated
+                // active file EOFs early and previously finalized UNGATED —
+                // the switch put the mid-ramp standby live with the outgoing
+                // track's tail missing: the audible "plays ~10 s, then the
+                // next track starts ~10 s in" signature (EVERY track boundary
+                // rides this path when crossfade is on). The same
+                // DownloadSanity verdict the natural path applies must judge
+                // this completion first. On a premature verdict the response
+                // is the standby-EOF shape — keep the outgoing track, pause
+                // for the JS bounded retry — plus eviction of the ACTIVE
+                // row's poison so the retry re-downloads fresh bytes.
+                let elapsed = max(0, currentPosition)
+                let remaining = scheduledSegmentSeconds - elapsed
+                if DownloadSanity.isPrematureCompletion(
+                        elapsedSeconds: elapsed,
+                        totalSeconds: scheduledSegmentSeconds,
+                        timeMeasured: isNodeTimeMeasured,
+                        remainingSeconds: remaining) {
+                    let elapsedOneDp = String(format: "%.1f", elapsed)
+                    let segmentOneDp = String(format: "%.1f", scheduledSegmentSeconds)
+                    eventAdd(.danger, "engine", "dropped premature completion of ACTIVE node mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — fade aborted, evicted for re-fetch")
+                    self.abortCrossfadeKeepActive()
+                    activeNode.pause()
+                    setPlaying(false)
+                    loader.evict(tracks[activeIndex].trackId, variant: TrackVariant(url: tracks[activeIndex].url))
+                    onError?("Track ended early mid-fade (partial download evicted): \(tracks[activeIndex].title)")
                     return
                 }
                 self.finalizeCrossfadeSwitch()
@@ -1945,7 +2040,7 @@ public final class NativeAudioEngine: NSObject {
 
             if self.loopMode == .one {
                 eventAdd(.info, "engine", "loop-one restart row \(activeIndex) (\(currentTrackId))")
-                self.playTrack(at: self.activeIndex, autoPlay: true)
+                self.playTrack(at: self.activeIndex, autoPlay: true, origin: .engineAdvance)
                 return
             }
 
@@ -1959,7 +2054,7 @@ public final class NativeAudioEngine: NSObject {
             // value in the undisturbed case, so nothing else changes.
             if let next = self.nextIndex(after: self.activeIndex) {
                 eventAdd(.info, "engine", "natural advance \(self.activeIndex)→\(next) (\(tracks.indices.contains(next) ? tracks[next].trackId : "-"))")
-                self.playTrack(at: next, autoPlay: true)
+                self.playTrack(at: next, autoPlay: true, origin: .engineAdvance)
             } else {
                 self.handleTrackEnd()
             }
@@ -2215,8 +2310,13 @@ public final class NativeAudioEngine: NSObject {
     ///  - SUPPRESS further fades for this track instance (fadeAbortedTrackId,
     ///    cleared in playTrack): the outgoing track plays out its tail
     ///    without automation and its real completion advances normally.
+    /// Stops the in-flight fade, keeps the outgoing track live, and suppresses
+    /// further fades for this track instance. Does NOT evict: the caller owns
+    /// the eviction evidence — a standby-EOF abort poisons the TARGET row, an
+    /// active-EOF abort (P0a, 2026-09-21) poisons the ACTIVE row. A blind
+    /// target-evict here would discard the HEALTHY standby download in the
+    /// active-EOF case (that file is the next track the retry will need).
     private func abortCrossfadeKeepActive() {
-        let targetTrack = tracks.indices.contains(crossfade.targetIndex) ? tracks[crossfade.targetIndex] : nil
         standbyNode.stop()
         stopVolumeRamp()
         stopCrossfadeMonitor()
@@ -2225,13 +2325,10 @@ public final class NativeAudioEngine: NSObject {
         // The ramp may have already faded the active side partway down.
         refreshActiveGain()
         fadeAbortedTrackId = currentTrackId
-        if let targetTrack {
-            loader.evict(targetTrack.trackId, variant: TrackVariant(url: targetTrack.url))
-        }
         if isPlaying {
             setupCrossfadeMonitor()
         }
-        eventAdd(.danger, "crossfade", "abort-keep-active current=\(currentTrackId) (target ended mid-fade) — target evicted, fades suppressed for this instance")
+        eventAdd(.danger, "crossfade", "abort-keep-active current=\(currentTrackId) (completing node died mid-fade) — fades suppressed for this instance")
     }
 
     private func finalizeCrossfadeSwitch() {

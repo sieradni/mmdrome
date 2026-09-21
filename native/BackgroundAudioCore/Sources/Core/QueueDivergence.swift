@@ -45,3 +45,55 @@ public func synchronizedQueueActiveIndex(
     }
     return requestedIndex
 }
+
+/// The outcome of a lag-tolerant refresh decision (2026-09-21 P0b).
+public enum QueueRefreshDecision: Equatable {
+    /// The snapshot's active row IS the engine's current row — the normal
+    /// synced path (re-anchor by id, rebuild the tail). `index` is the
+    /// caller-validated requested index.
+    case synced(index: Int)
+    /// The snapshot's active row is BEHIND the engine (a natural advance's
+    /// trackChanged/refreshQueue pair crossed in flight), but the row the
+    /// engine is actually playing EXISTS in the snapshot. Re-anchor to
+    /// `index` — where the live row lives in the snapshot — and rebuild the
+    /// tail. Playback is never disturbed: the engine's active row stays the
+    /// row its node is rendering (the identity invariant the completion
+    /// guards key on), only the tail is re-synced. Duplicate ids re-anchor
+    /// to the first occurrence — every guard compares track-id STRINGS, so
+    /// instance identity is not load-bearing.
+    case containsCurrent(index: Int)
+    /// True divergence — full reset and `ended` so JS re-snapshots.
+    case divergent
+}
+
+/// Pure refresh decision for a snapshot whose active row does not match the
+/// engine's current row. During a natural advance the two `trackChanged`
+/// snapshots cross in flight (each advance fires trackChanged → advance →
+/// refreshQueue on BOTH sides): a plain mismatch is not necessarily a broken
+/// queue — it may simply be a LAG. If the engine's live row is present
+/// anywhere in the snapshot, the queue is reconcilable without stopping;
+/// only a snapshot that has lost the live row entirely is a real divergence.
+///
+/// `snapshotTrackIds` is the snapshot's rows in order (the caller maps
+/// `tracks.map(\.trackId)`); the contains-current lookup is its only use.
+public func queueRefreshDecision(
+    snapshotActiveId: String,
+    engineCurrentId: String,
+    requestedIndex: Int,
+    trackCount: Int,
+    snapshotTrackIds: [String]
+) -> QueueRefreshDecision {
+    let inRange = requestedIndex >= 0 && requestedIndex < trackCount
+    // Synced: snapshot names the live row (or both sides are idle).
+    if queueDivergence(snapshotActiveId: snapshotActiveId, engineCurrentId: engineCurrentId) == .synced {
+        return inRange ? .synced(index: requestedIndex) : .divergent
+    }
+    // Engine idle: there is no live row to find in the snapshot — a snapshot
+    // claiming a current track while the engine plays nothing is a reset case.
+    guard !engineCurrentId.isEmpty else { return .divergent }
+    // Lag-tolerated: the live row exists in the snapshot (view one behind).
+    if let found = snapshotTrackIds.firstIndex(of: engineCurrentId) {
+        return .containsCurrent(index: found)
+    }
+    return .divergent
+}

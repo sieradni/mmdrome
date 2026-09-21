@@ -1,23 +1,32 @@
 import { get } from 'svelte/store'
+import { Capacitor } from '@capacitor/core'
 import { settings, updateSetting } from '../stores/appState'
 import { getCachedConfig, buildStreamUrl } from './navidromeApi'
 
 /**
  * Per-device codec capability probe (low-data/transcoding plan, PR-D).
  *
- * One-shot check per format at connect: an `new Audio()` element is fed a real
- * ~1 s transcoded response (`maxBitRate=16` keeps the sample tiny), so BOTH
- * the device decoder stack AND the server's ability to produce the format are
- * verified. Verdicts persist in the settings store (the DOM never survives a
- * reload, so the persisted flag is the cache); a FAILED probe retries on the
- * next app start — OS updates can add support, and the fallback must
- * un-fall-back. No probe pass is ever required: absence of evidence never
- * triggers the mp3 fallback (the plan's "necessity demonstrated, not assumed").
+ * On NATIVE platforms the probe is BYPASSED (2026-09-21): the web-only Audio
+ * element has no bearing on AVAudioFile's decoders, and the WKWebView probe
+ * produced false 'unsupported' verdicts that persisted forever — pinning a
+ * bogus mp3 fallback for the native engine. Native verdicts come from the
+ * static per-platform table below instead (no probe is required — absence of
+ * evidence never triggers the fallback, the plan's "necessity demonstrated,
+ * not assumed"). A native 'unsupported' entry therefore only suppresses a
+ * probe that would measure the WRONG stack.
  *
- * Node/test safety: the whole function body is guarded — under `node --test`
- * there is no `Audio` constructor and no cached config, so it resolves
- * `unknown` without touching the DOM. Verdict writes go through
- * `updateSetting` so the persisted settings row stays the single source.
+ * On the WEB the probe is unchanged: one-shot check per format at connect —
+ * an `new Audio()` element is fed a real ~1 s transcoded response
+ * (`maxBitRate=16` keeps the sample tiny), so BOTH the device decoder stack
+ * AND the server's ability to produce the format are verified. Verdicts
+ * persist in the settings store (the DOM never survives a reload, so the
+ * persisted flag is the cache); a FAILED probe retries on the next app
+ * start — OS updates can add support, and the fallback must un-fall-back.
+ *
+ * Node/test safety: the web body is guarded — under `node --test` there is
+ * no `Audio` constructor and no cached config, so it resolves `unknown`
+ * without touching the DOM. Verdict writes go through `updateSetting` so the
+ * persisted settings row stays the single source.
  */
 
 export type FormatVerdict = 'ok' | 'unsupported' | 'network' | 'unknown'
@@ -33,6 +42,44 @@ const defaultDeps = (): FormatProbeDeps => ({
 })
 
 const PROBE_TIMEOUT_MS = 8000
+
+/**
+ * Static NATIVE decode verdicts — what AVAudioFile / CoreAudio decodes on the
+ * platform, independent of any webview. This is the truth the web probe
+ * cannot measure: iOS natively decodes AAC/M4A, MP3, FLAC, ALAC, PCM
+ * (platform stack — Apple's documented CoreAudio formats); Ogg and Opus are
+ * NOT supported natively. Web (the WKWebView's webkit codecs for
+ * HTMLAudioElement) handles AAC/MP3/FLAC but not raw Ogg.
+ * 'unsupported' here suppresses the web probe for that format (measuring the
+ * wrong stack); it never upgrades anything to 'ok'.
+ */
+const NATIVE_VERDICTS: Record<string, Record<string, 'ok' | 'unsupported'>> = {
+  ios: {
+    mp3: 'ok',
+    aac: 'ok',
+    flac: 'ok',
+    opus: 'unsupported',
+    ogg: 'unsupported',
+  },
+  android: {
+    // Android's MediaCodec/MediaExtractor stack handles these natively;
+    // extended formats exist but 'ok' here only skips a probe for formats
+    // any modern device decodes.
+    mp3: 'ok',
+    aac: 'ok',
+    flac: 'ok',
+    opus: 'ok',
+    ogg: 'ok',
+  },
+}
+
+function nativeVerdictFor(format: string): 'ok' | 'unsupported' | null {
+  const platform = Capacitor.getPlatform() // 'ios' | 'android' | 'web'
+  const table = NATIVE_VERDICTS[platform]
+  if (!table) return null // web — probe path
+  const hit = table[format]
+  return hit ?? null // unknown format on native: nothing to skip a probe for
+}
 
 export interface ProbeOutcome {
   verdict: FormatVerdict
@@ -112,6 +159,19 @@ export async function ensureFormatProbe(
   deps: FormatProbeDeps = defaultDeps(),
 ): Promise<ProbeOutcome> {
   if (!format) return { verdict: 'unknown', format }
+  // NATIVE BYPASS: the web probe measures the WKWebView's decoders, which the
+  // native engine never uses. The static table above is the native truth.
+  // A native 'unsupported' entry is PERSISTED so the user-visible probe
+  // status reads honestly (e.g. iOS opus → unsupported), and it suppresses
+  // any future web-probe attempt for that format (the wrong stack).
+  const native = nativeVerdictFor(format)
+  if (native !== null) {
+    const probeMap = get(settings).transcodeProbe
+    if (probeMap?.[format] !== native) {
+      updateSetting('transcodeProbe', { ...(get(settings).transcodeProbe ?? {}), [format]: native })
+    }
+    return { verdict: native, format }
+  }
   const probeMap = get(settings).transcodeProbe
   const existing = probeMap?.[format]
   if (existing === 'ok' || existing === 'unsupported') {

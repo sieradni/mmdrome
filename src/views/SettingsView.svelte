@@ -2362,12 +2362,18 @@
             <p class="mb-3 text-xs text-muted">Show live engine + queue state to diagnose playback stalls. Persists until closed. Also toggled via URL <code>?debug</code> or console <code>__toggleDebugHud()</code>.</p>
             <button
               onclick={() => {
-                try {
-                  const cur = localStorage.getItem('mmdrome:debugHud') === '1'
-                  if (cur) localStorage.removeItem('mmdrome:debugHud')
-                  else localStorage.setItem('mmdrome:debugHud', '1')
-                  location.reload()
-                } catch {}
+                // Live toggle via the App-level hook — no reload, so the event
+                // ring and playback state survive opening/closing the HUD.
+                const w = window as unknown as { __toggleDebugHud?: () => void }
+                if (typeof w.__toggleDebugHud === 'function') w.__toggleDebugHud()
+                else {
+                  // Fallback for exotic embeds where App hasn't booted the hook.
+                  try {
+                    if (localStorage.getItem('mmdrome:debugHud') === '1') localStorage.removeItem('mmdrome:debugHud')
+                    else localStorage.setItem('mmdrome:debugHud', '1')
+                    location.reload()
+                  } catch {}
+                }
               }}
               class="btn-quiet btn-md"
             >Toggle Debug HUD</button>

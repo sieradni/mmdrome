@@ -1142,11 +1142,17 @@ class AudioManager {
       if (shouldPauseOldElement(oldEl.ended, oldEl === this.activeElement)) {
         oldEl.pause()
         dbg('crossfade', `retire old element (ended=${oldEl.ended})`)
+      } else if (oldEl.ended) {
+        // BENIGN: the old element reached its natural end before the delayed
+        // retire fired (short track / fade longer than the remaining tail).
+        // Nothing to pause — this is the normal raced-out completion, recorded
+        // quietly so it never reads as a fault in a dump.
+        dbg('crossfade', 'retire skipped — old element already ended naturally (benign)')
       } else {
-        // The validity check REFUSED the retire — the old element became
-        // active again (or ended) mid-fade. This is the "next song pauses"
-        // bug's guard firing: rare enough to always record.
-        dbgAlways('crossfade', 'retire SKIPPED — old element re-became active or ended mid-fade')
+        // DANGEROUS: the element is NOT ended but is active again — pausing it
+        // would stop live audio (the "next song pauses" bug). The guard just
+        // prevented that; always record.
+        dbgAlways('crossfade', 'retire REFUSED — old element re-became ACTIVE mid-fade (guard prevented live-audio pause)')
       }
     }, fadeDuration * 1000)
 

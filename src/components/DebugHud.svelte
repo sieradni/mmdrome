@@ -213,11 +213,13 @@
       errorLog: errorLog.slice(0, 20),
       nativeBridgeTrail: nativeBridgeTrailSnapshot(),
       // The structured event logs: native danger/info history + JS-side
-      // verbose entries. nativeEvents is capped at the newest 250 rows here
-      // so the dump stays pasteable (the native ring holds 400; `nextSeq` in
-      // nativeDebug lets a follow-up pull prove nothing was skipped).
-      nativeEvents: nativeEvents.slice(-250),
-      jsEvents: jsDebugEventsSnapshot().slice(-120),
+      // verbose entries. Both carry the FULL ring here (1000 entries each) —
+      // truncating to the panel's display window silently discarded exactly
+      // the pre-open evidence the dump exists to preserve (2026-09-21: a web
+      // Copy carried 120 rows of a 1000-entry ring; the bug window was in the
+      // discarded tail). Paste size is the user's call; missing evidence is not.
+      nativeEvents: nativeEvents.slice(-1000),
+      jsEvents: jsDebugEventsSnapshot().slice(-1000),
       debugDomains: domains,
       // Web-only (null on native): the engine's decision inputs — ctx state,
       // element error, crossfade/fade state, EQ branch — the getDebugState
