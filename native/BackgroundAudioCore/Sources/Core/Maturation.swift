@@ -66,6 +66,10 @@ public enum Maturation {
         } else {
             var r: Int64 = minimumHeaderProbeBytes
             while r < received, r < (leadRequiredBytes ?? Int64.max) { r *= 2 }
+            // The doubling can overshoot the lead (4 KB powers of two are
+            // rarely exact): cap the rung AT the lead so the crossing is
+            // always probed — it is the playable-vs-headered decision.
+            if let lead = leadRequiredBytes, r > lead { r = lead }
             rung = r
         }
         return lastProbedAt < rung && received >= rung
