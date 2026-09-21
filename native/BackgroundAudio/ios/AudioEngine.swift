@@ -392,7 +392,7 @@ final class TrackFileLoader {
             resumeData = resumeDataByCacheKey[cacheKey]
             self.event(.info, "resume: opaque resumeData (\(resumeData?.count ?? 0)B) for \(track.trackId) (\(requested))")
         case .rangeAppend(let offset):
-            let r = URLRequest(url: track.url)
+            var r = URLRequest(url: track.url)
             r.setValue(DownloadResume.rangeHeader(offset: offset), forHTTPHeaderField: "Range")
             request = r
             self.event(.info, "resume: Range bytes=\(offset)- for \(track.trackId) (\(requested))")
@@ -569,7 +569,7 @@ final class TrackFileLoader {
                         // estimate and must not anchor a resume. Retention is
                         // bounded by DownloadResume's part cap —
                         // planNextAttempt falls back to fresh there.
-                        if requested == .raw && !self.rangeUnsupportedKeys.contains(cacheKey) {
+                        if requested == .raw && !(self?.rangeUnsupportedKeys.contains(cacheKey) ?? true) {
                             let parent = destination.deletingLastPathComponent()
                             try? FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
                             if FileManager.default.fileExists(atPath: part.path) {

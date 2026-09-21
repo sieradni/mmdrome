@@ -196,9 +196,10 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     /// 'ok' | 'unsupported' (evidence-backed, persistable) | 'network'
     /// (transport failure / error body — NEVER persisted, retried next boot).
     @objc func probeFormat(_ call: CAPPluginCall) {
-        guard let urlStr = call.getString("url", ""), let url = URL(string: urlStr),
+        let urlStr = call.getString("url", "")
+        guard let url = URL(string: urlStr), !urlStr.isEmpty,
               url.scheme == "http" || url.scheme == "https" else {
-            call.reject("probeFormat requires an http(s) url")
+            call.resolve(["verdict": "unknown", "detail": "probeFormat requires an http(s) url"])
             return
         }
         engine.loaderForProbe.probeDecode(sampleURL: url) { verdict, detail in
