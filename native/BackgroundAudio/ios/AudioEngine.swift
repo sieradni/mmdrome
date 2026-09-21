@@ -1734,6 +1734,8 @@ public final class NativeAudioEngine: NSObject {
               tracks.indices.contains(next),
               seen.insert(next).inserted else { return }
         let track = tracks[next]
+        let seenSnapshot = seen // Sendable capture: the Task below must not
+        // reference the mutating var (Swift 6 concurrency, CI compile).
         eventAdd(.debug, "preload", "chain: prefetch row \(next) (\(track.trackId)) attempt \(attempt)")
         loader.prefetch(track) { [weak self] _, error in
             guard let self = self else { return }
@@ -1751,7 +1753,7 @@ public final class NativeAudioEngine: NSObject {
                 Task { @MainActor [weak self] in
                     try? await Task.sleep(nanoseconds: Self.prefetchRetryBackoffNanos)
                     guard let self, gen == self.prefetchGeneration else { return }
-                    self.prefetchUpcoming(from: index, total: totalCount, seen: seen, generation: gen, attempt: attempt + 1)
+                    self.prefetchUpcoming(from: index, total: totalCount, seen: seenSnapshot, generation: gen, attempt: attempt + 1)
                 }
             } else {
                 self.eventAdd(.danger, "preload", "prefetch FAILED row \(next) (\(track.trackId)) after \(attempt) attempts: \(error.localizedDescription) — moving on")
