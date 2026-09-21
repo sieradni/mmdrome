@@ -2,6 +2,7 @@ import { get } from 'svelte/store'
 import { Capacitor } from '@capacitor/core'
 import { settings, updateSetting } from '../stores/appState'
 import { getCachedConfig, buildStreamUrl } from './navidromeApi'
+import { nativeEngine } from './nativePlugin'
 
 /**
  * Per-device codec capability probe (low-data/transcoding plan, PR-D).
@@ -60,10 +61,15 @@ const PROBE_TIMEOUT_MS = 8000
 const IOS_OPUS_OK_MIN_MAJOR = 18
 
 /**
- * The OS version comes from the USER-AGENT (Capacitor core exposes no OS
- * version API): a WKWebView UA carries "Version/x.y Safari/605" on iOS, and
- * the Version major tracks the iOS major there. Absent/unparsable → 0 →
- * conservative 'unsupported' (mp3 fallback stays; never a false 'ok').
+ * The OS version comes from the NATIVE BRIDGE (2026-09-21e, the persisted
+ * `opus: unsupported` on an iOS 26/27 device): the WKWebView UA guess was
+ * wrong in the field — the UA on a Capacitor build does not reliably carry
+ * an iOS-tracking `Version/<major>` token, the parse returned 0, and the
+ * version gate conservatively pinned 'unsupported' → the mp3 LDM fallback
+ * the user could hear. `ProcessInfo.operatingSystemVersion` is authoritative;
+ * the plugin exposes it as `getOsVersion { major }` (registered in
+ * pluginMethods — the §3.4 getMethod gate drops unregistered names). Absent
+ * bridge (web/old build) → null → caller falls back to the UA parse.
  * Exported pure for the test suite.
  */
 export function iosMajorVersionForTest(ua: string): number {
@@ -71,9 +77,15 @@ export function iosMajorVersionForTest(ua: string): number {
   return m ? parseInt(m[1], 10) : 0
 }
 
-function iosMajorVersion(): number {
+async function iosMajorVersion(): Promise<number> {
   try {
     if (Capacitor.getPlatform() !== 'ios') return 0
+    const bridge = nativeEngine as unknown as { getOsVersion?: (o?: object) => Promise<{ major?: number }> }
+    if (typeof bridge.getOsVersion === 'function') {
+      const res = await bridge.getOsVersion()
+      const major = Number(res?.major)
+      if (Number.isFinite(major) && major > 0) return major
+    }
     return iosMajorVersionForTest(navigator.userAgent)
   } catch {
     return 0
@@ -84,13 +96,26 @@ const NATIVE_VERDICTS: Record<string, 'ok' | 'unsupported'> = {
   mp3: 'ok',
   aac: 'ok',
   flac: 'ok',
-  opus: iosMajorVersion() >= IOS_OPUS_OK_MIN_MAJOR ? 'ok' : 'unsupported',
-  ogg: iosMajorVersion() >= IOS_OPUS_OK_MIN_MAJOR ? 'ok' : 'unsupported',
+  // Opus/ogg are resolved per-call (async OS-version read) — not in this
+  // static map; nativeVerdictFor consults them via `resolvedNativeVerdict`.
 }
 
-function nativeVerdictFor(format: string): 'ok' | 'unsupported' | null {
+let cachedOsMajor: number | null = null
+
+/**
+ * The synchronous verdict path for the STATIC table (mp3/aac/flac) plus the
+ * async opus/ogg resolution. `ensureFormatProbe` awaits this before answering;
+ * the OS major is read once per session and cached (it cannot change mid-run).
+ */
+async function resolvedNativeVerdict(format: string): Promise<'ok' | 'unsupported' | null> {
   if (Capacitor.getPlatform() !== 'ios') return null // android/web — probe path
-  return NATIVE_VERDICTS[format] ?? null
+  const staticVerdict = NATIVE_VERDICTS[format]
+  if (staticVerdict) return staticVerdict
+  if (format === 'opus' || format === 'ogg') {
+    if (cachedOsMajor === null) cachedOsMajor = await iosMajorVersion()
+    return cachedOsMajor >= IOS_OPUS_OK_MIN_MAJOR ? 'ok' : 'unsupported'
+  }
+  return null
 }
 
 /**
@@ -99,14 +124,16 @@ function nativeVerdictFor(format: string): 'ok' | 'unsupported' | null {
  * MISSING — it never overwrote stale rows the old WEBVIEW probe had persisted
  * ('aac: unsupported' rode forever even though the table says ok). Every boot
  * now reconciles the whole native-known map; rows outside the table are
- * untouched (the web probe owns them).
+ * untouched (the web probe owns them). Opus/ogg resolve through the SAME map
+ * once `resolvedNativeVerdict` has computed them (the OS-version gate result
+ * is passed in by `ensureFormatProbe`, which awaits the bridge read).
  */
-function syncNativeVerdicts(): void {
+function syncNativeVerdicts(verdicts: Record<string, 'ok' | 'unsupported'>): void {
   if (Capacitor.getPlatform() !== 'ios') return
   const current = get(settings).transcodeProbe ?? {}
   const next = { ...current }
   let changed = false
-  for (const [format, verdict] of Object.entries(NATIVE_VERDICTS)) {
+  for (const [format, verdict] of Object.entries(verdicts)) {
     if (next[format] !== verdict) {
       next[format] = verdict
       changed = true
@@ -194,10 +221,16 @@ export async function ensureFormatProbe(
 ): Promise<ProbeOutcome> {
   if (!format) return { verdict: 'unknown', format }
   // NATIVE BYPASS: the web probe measures the WKWebView's decoders, which the
-  // native engine never uses. The static table above is the native truth.
-  syncNativeVerdicts()
-  const native = nativeVerdictFor(format)
+  // native engine never uses. The static table above is the native truth —
+  // opus/ogg included (the OS-version gate reads the REAL OS version from the
+  // native bridge; the UA guess misfired in the field and pinned mp3).
+  const native = await resolvedNativeVerdict(format)
   if (native !== null) {
+    // Sync the FULL effective table (static rows + this format's verdict) over
+    // any persisted rows — the 2026-09-21d bootstrap's partial-write hole let
+    // stale 'unsupported' entries ride forever.
+    const effective: Record<string, 'ok' | 'unsupported'> = { ...NATIVE_VERDICTS, [format]: native }
+    syncNativeVerdicts(effective)
     return { verdict: native, format }
   }
   const probeMap = get(settings).transcodeProbe

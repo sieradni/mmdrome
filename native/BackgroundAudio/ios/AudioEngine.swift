@@ -2020,12 +2020,24 @@ public final class NativeAudioEngine: NSObject {
                     }
                     let elapsedOneDp = String(format: "%.1f", elapsed)
                     let segmentOneDp = String(format: "%.1f", scheduledSegmentSeconds)
-                    eventAdd(.danger, "engine", "dropped premature completion of ACTIVE node mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — fade aborted, evicted for re-fetch")
+                    // 2026-09-21e (the 03:59 dump, the "went back to the previous
+                    // song" report): the old response PAUSED + EVICTED + errored.
+                    // The pause silenced the app; the JS retry re-engaged the
+                    // SAME row, whose re-load restarted the fade machinery while
+                    // the queue store was still catching up — the observable
+                    // result was the queue stepping BACKWARD into the row the
+                    // user had just heard. Stopping playback mid-fade was the
+                    // whole failure: the retry machine was invented for DEAD
+                    // bytes, and this file is not dead — the gate proved only
+                    // that it is SHORT. The response is now the minimum: keep
+                    // playing, drop only the crossfade automation. The outgoing
+                    // track plays out its real remaining tail (the scheduled
+                    // segment is file truth) and its genuine natural end
+                    // advances the queue. Nothing evicted, nothing pauses, no
+                    // retry, no storm — the cost is only the missing fade
+                    // overlap at this one boundary.
+                    eventAdd(.danger, "engine", "dropped premature completion of ACTIVE node mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — fade automation dropped, tail continues unattended")
                     self.abortCrossfadeKeepActive()
-                    activeNode.pause()
-                    setPlaying(false)
-                    loader.evict(tracks[activeIndex].trackId, variant: TrackVariant(url: tracks[activeIndex].url))
-                    onError?("Track ended early mid-fade (partial download evicted): \(tracks[activeIndex].title)")
                     return
                 }
                 self.finalizeCrossfadeSwitch()
@@ -2394,10 +2406,12 @@ public final class NativeAudioEngine: NSObject {
     ///    without automation and its real completion advances normally.
     /// Stops the in-flight fade, keeps the outgoing track live, and suppresses
     /// further fades for this track instance. Does NOT evict: the caller owns
-    /// the eviction evidence — a standby-EOF abort poisons the TARGET row, an
-    /// active-EOF abort (P0a, 2026-09-21) poisons the ACTIVE row. A blind
-    /// target-evict here would discard the HEALTHY standby download in the
-    /// active-EOF case (that file is the next track the retry will need).
+    /// the eviction evidence — a standby-EOF abort poisons the TARGET row; the
+    /// active-EOF premature drop (2026-09-21e) evicts NOTHING — a short file
+    /// keeps playing its delivered tail, so the P0a eviction/removal is gone.
+    /// A blind target-evict here would discard the HEALTHY standby download in
+    /// the active-EOF case (that file is the next track playback will need
+    /// seconds later).
     private func abortCrossfadeKeepActive() {
         standbyNode.stop()
         stopVolumeRamp()

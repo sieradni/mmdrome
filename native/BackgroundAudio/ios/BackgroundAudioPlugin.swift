@@ -10,6 +10,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "initialize", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "getOsVersion", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setQueue", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setQueueAndPlay", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "refreshQueue", returnType: CAPPluginReturnPromise),
@@ -167,6 +168,25 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func initialize(_ call: CAPPluginCall) {
         call.resolve()
     }
+
+    /// The OS major version (2026-09-21: the codec-capability table's gate).
+
+    /// The WKWebView UA is NOT a reliable OS signal - Capacitor/Safari UA
+
+    /// freezes and spoofing both break the Version token parse, which
+
+    /// silently forced the mp3 LDM fallback on an iOS 26/27 device. The OS
+
+    /// itself is authoritative and cheap.
+
+    @objc func getOsVersion(_ call: CAPPluginCall) {
+
+        let major = ProcessInfo.processInfo.operatingSystemVersion.majorVersion
+
+        call.resolve(["major": major])
+
+    }
+
 
     @objc func setQueue(_ call: CAPPluginCall) {
         let raw = call.getArray("tracks", [])

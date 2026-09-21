@@ -51,6 +51,8 @@ export type NativeCrossfadeCurve = 'linear' | 'exponential' | 'sigmoid'
 
 interface BackgroundAudioPlugin {
   initialize(): Promise<void>
+  /** The OS major version from the native side (codec-gate truth; 2026-09-21e). */
+  getOsVersion(): Promise<{ major: number }>
   setQueue(options: { tracks: NativeTrackSnapshot[]; activeIndex: number; loopMode: NativeLoopMode }): Promise<void>
   setQueueAndPlay(options: {
     tracks: NativeTrackSnapshot[]

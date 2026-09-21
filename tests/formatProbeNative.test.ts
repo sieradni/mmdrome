@@ -6,10 +6,12 @@ import { iosMajorVersionForTest } from '../src/lib/formatProbe.ts'
  * The 1.2.30 static-table regression (2026-09-21 field dump): the table said
  * iOS opus = 'unsupported' and the bootstrap persisted it, so an iOS 26/27
  * device that decodes raw Ogg-Opus in AVAudioFile silently fell back to mp3
- * transcoding under LDM. The verdict is now version-gated off the WKWebView
- * user-agent ("Version/<major>.x Safari/605..." — the Version major tracks
- * the iOS major). These pins cover the pure UA parser the gate rides on;
- * the platform dispatch itself needs Capacitor (web only in node).
+ * transcoding under LDM. The verdict is version-gated, but the 1.2.31 UA
+ * guess ALSO misfired in the field (the persisted `opus: unsupported` rode
+ * through the fix): the OS version now comes from the native bridge
+ * (`getOsVersion` → `ProcessInfo.operatingSystemVersion`), with the UA parse
+ * as fallback only. These pins cover the pure UA fallback parser; the bridge
+ * read itself needs Capacitor (web-only in node).
  */
 
 test('iosMajorVersionForTest parses the WKWebView Safari Version token', () => {
