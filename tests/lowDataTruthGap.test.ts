@@ -6,7 +6,6 @@ import assert from 'node:assert/strict'
  * (tests below import from networkMode.ts — keep the imports at top).
  */
 import { effectiveLowData } from '../src/lib/networkMode.ts'
-import { get } from 'svelte/store'
 
 /**
  * The 2026-09-21 truth gap: the user was on stable Wi-Fi the whole session,

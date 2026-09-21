@@ -661,6 +661,11 @@ public final class NativeAudioEngine: NSObject {
     /// would instantly re-fade into the (evicted) target and churn. Cleared
     /// in playTrack (a new track instance gets fresh fades).
     private var fadeAbortedTrackId: String?
+    /// Re-entrancy beacon for finalizeCrossfadeSwitch (2026-09-21c): the
+    /// premature-drop eviction (and any future mid-fade decision) checks
+    /// this — a completion arriving WHILE finalize runs is a crossed-state
+    /// artifact of the re-entrant chain, not evidence about the file.
+    private var reentrancyGuard = 0
     /// Recently played track ids, NEWEST FIRST (2026-09-21 field detector).
     /// Written at the END of a successful playTrack (the outgoing row joins;
     /// same-id restarts are skipped so a row's own restart doesn't count as a
@@ -1966,6 +1971,17 @@ public final class NativeAudioEngine: NSObject {
                 // is the standby-EOF shape — keep the outgoing track, pause
                 // for the JS bounded retry — plus eviction of the ACTIVE
                 // row's poison so the retry re-downloads fresh bytes.
+                // 2026-09-21c: the finalize itself can re-enter this handler
+                // (the deferred-less prefetch chain's SYNCHRONOUS cache-hit
+                // completion ran crossfadeMonitorTick inside finalize; the
+                // tick armed a fade; its torn-down node's completion landed
+                // here) — the crossed state made the healthy freshly-switched
+                // file read as "premature" (elapsed 0.0 of 155.2) and EVICTED
+                // it. With the finalize re-entry closed (chain deferred) and
+                // the stale-clock tick guard, this branch only fires on real
+                // truncations again — but the eviction is now held one beat
+                // while a finalize is in progress (reentrancyGuard) to make
+                // the state crossing impossible rather than merely unlikely.
                 let elapsed = max(0, currentPosition)
                 let remaining = scheduledSegmentSeconds - elapsed
                 if DownloadSanity.isPrematureCompletion(
@@ -1973,6 +1989,16 @@ public final class NativeAudioEngine: NSObject {
                         totalSeconds: scheduledSegmentSeconds,
                         timeMeasured: isNodeTimeMeasured,
                         remainingSeconds: remaining) {
+                    if reentrancyGuard > 0 {
+                        // The completion fired DURING a finalize — the crossed
+                        // half-swapped state, not file evidence (the 09:55 dump
+                        // evicted a healthy file exactly this way: elapsed 0.0
+                        // of 155.2 seconds after a healthy switch). Drop the
+                        // completion WITHOUT the eviction/pause/retry storm;
+                        // the finalize's own teardown handles the nodes.
+                        eventAdd(.info, "engine", "dropped completion during finalize re-entry row \(completedIndex) id=\(currentTrackId) — crossed state, no eviction")
+                        return
+                    }
                     let elapsedOneDp = String(format: "%.1f", elapsed)
                     let segmentOneDp = String(format: "%.1f", scheduledSegmentSeconds)
                     eventAdd(.danger, "engine", "dropped premature completion of ACTIVE node mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — fade aborted, evicted for re-fetch")
@@ -2193,6 +2219,18 @@ public final class NativeAudioEngine: NSObject {
 
         let current = tracks[activeIndex]
         let transitionPoint = current.duration - crossfadeDuration
+        // Stale-clock defense (2026-09-21, the "next track restarts after the
+        // crossfade" dump): a measured position PAST this track's duration
+        // cannot be this track's clock — it is a previous track's node still
+        // rendering through a re-entrant call. seq 14 of the field dump:
+        // position=295.27 judged against a 155 s track (the outgoing 296 s
+        // track's clock read mid-finalize). Arming a fade on that clock
+        // destroyed the freshly-switched track. A healthy clock never exceeds
+        // its own segment; +1 s slack for float/rounding edge.
+        if currentPosition > current.duration + 1 {
+            eventAdd(.danger, "crossfade", "tick SKIPPED — position \(String(format: "%.2f", currentPosition)) exceeds current \(current.trackId) duration \(String(format: "%.1f", current.duration)) — stale clock, observe-only")
+            return
+        }
         guard currentPosition >= transitionPoint else { return }
         guard let nextIdx = nextIndex(after: activeIndex), tracks.indices.contains(nextIdx) else { return }
         let next = tracks[nextIdx]
@@ -2357,6 +2395,8 @@ public final class NativeAudioEngine: NSObject {
     }
 
     private func finalizeCrossfadeSwitch() {
+        reentrancyGuard += 1
+        defer { reentrancyGuard -= 1 }
         stopVolumeRamp()
         stopCrossfadeMonitor()
         let targetIndex = crossfade.targetIndex
@@ -2374,12 +2414,6 @@ public final class NativeAudioEngine: NSObject {
         } else {
             scheduledSegmentSeconds = 0
         }
-        syncPreloadWindow()
-        // A crossfade switched WITHOUT playTrack: a refreshQueue during the
-        // fade killed the in-flight chain (generation bump) and the old chain
-        // was sized for the PREVIOUS position anyway. Restart from the new
-        // current index so the window keeps filling (2026-09-15).
-        prefetchUpcoming(from: targetIndex)
         isActiveB.toggle()
         standbyNode.stop()
         standbyGain.outputVolume = 0
@@ -2391,6 +2425,25 @@ public final class NativeAudioEngine: NSObject {
 
         onTrackChanged?(tracks[activeIndex].trackId)
         setupCrossfadeMonitor()
+        // The chain re-arm runs LAST and DEFERRED one runloop turn (2026-09-21,
+        // the "next track restarts after the crossfade" root cause): the
+        // loader's cache-hit path delivers SYNCHRONOUSLY on main, so a fully-
+        // cached window re-entered crossfadeMonitorTick FROM INSIDE finalize
+        // while the engine was half-swapped — activeIndex already on the new
+        // track, node roles not yet toggled. The re-entrant tick read the OLD
+        // node's clock (position 295.27 on a 155 s track), armed a fade against
+        // the half-swapped engine, and startCrossfade tore down the node about
+        // to become active — the freshly-switched track restarted from 0 via
+        // the premature-drop retry. The old position (before the toggle) is
+        // also why the arm MUST NOT run before the swap. The generation guard
+        // preserves the re-arm contract (a queue change in the interim kills
+        // the deferred chain like any other stale arm).
+        let deferredGeneration = prefetchGeneration
+        let deferredFrom = activeIndex
+        DispatchQueue.main.async { [weak self] in
+            guard let self, deferredGeneration == self.prefetchGeneration else { return }
+            self.prefetchUpcoming(from: deferredFrom)
+        }
     }
 
     private static func mapFilterType(_ type: String) -> AVAudioUnitEQFilterType {
