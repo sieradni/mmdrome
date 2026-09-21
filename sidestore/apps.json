@@ -27,7 +27,8 @@
           "date": "2026-09-21T10:45:31.720Z",
           "localizedDescription": "Truncation defense completed: byte-exact Content-Length gate for clean early closes (Connectivity Assist churn), finalize re-entrancy fix (crossfaded track restarts), bounded prefetch retry with backoff, version-gated iOS opus verdict (LDM transcodes to opus again), stale-clock crossfade guard, and a finalize re-entry completion drop. Web: live debug-HUD toggle, full event rings in the dump, honest retire discrimination, native format-probe bypass.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.31/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4938281
         },
         {
           "version": "1.2.30",
