@@ -1,3 +1,11 @@
+## 2026-09-21 — Streaming Phase 1: loader-side maturation staging (A15)
+
+**What**: `Maturation.swift` pure core (EMPTY -> HEADERED -> PLAYABLE -> COMPLETE staging decisions) + loader wiring in `AudioEngine.swift`. The loader now tracks per-key delivered bytes (`ensureProgress`), derives a stage (header probe ~64 KB heuristic, playable = delivered >= lead bytes), and the existing 1 s `tickPreloadProgress` sampler also calls `tickMaturation`, emitting `maturation: key stage=...` info events and exposing `streamMaturation` in `getDebugState`.
+
+**Why now, inert**: the design (`docs/plans/2026-09-21-native-streaming.md`) calls for the schedule layer (Phase 2) to consume stages; landing the observation layer first means the next field dump already carries stage evidence for real downloads — the same dump-first loop that caught the truncation class. Playback behavior is byte-identical: `scheduleCurrentTrack` still only reads COMPLETE cache entries.
+
+**Lesson (test-caught twice in one rung)**: probe cadence derived from `received` bytes skipped crossings between ticks — rungs must derive from `lastProbedAt`. Also the first probe-cadence design overshot the lead threshold (doubling) so the crossing was never probed; e2e-style crossing tests caught both.
+
 # mmdrome — Development Log (historical archive)
 
 Chronological record of technical discoveries, platform workarounds, and architectural decisions (2026-07-25 → present). This file is NOT auto-injected into agent context — read it on demand for the *why* behind the rules in AGENTS.md §4.
