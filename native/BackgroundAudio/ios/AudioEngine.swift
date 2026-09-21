@@ -605,20 +605,6 @@ final class TrackFileLoader {
                     self?.event(.danger, "final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(error.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: temp.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
                 }
                 }
-                    if moveError == nil, movedURL != nil,
-                       DownloadSanity.isTruncatedAgainstServer(
-                           storedBytes: tempSize,
-                           serverLength: expectedBytes) {
-                        self?.event(.danger, "download truncated vs server size for \(track.trackId) (got \(tempSize) of \(expectedBytes)) — rejecting")
-                        try? FileManager.default.removeItem(at: destination)
-                        movedURL = nil
-                        moveError = NSError(domain: "mmdrome.loader", code: -7003, userInfo: [NSLocalizedDescriptionKey: "Download truncated vs server size: \(track.title)"])
-                    }
-                    }
-                } catch {
-                    moveError = error
-                    self?.event(.danger, "final store failed for \(track.trackId) dir=\(destination.deletingLastPathComponent().path) err=\(error.localizedDescription) tempExists=\(FileManager.default.fileExists(atPath: temp.path)) destParentExists=\(FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path))")
-                }
             }
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else {
