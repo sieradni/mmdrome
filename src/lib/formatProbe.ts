@@ -45,40 +45,74 @@ const PROBE_TIMEOUT_MS = 8000
 
 /**
  * Static NATIVE decode verdicts — what AVAudioFile / CoreAudio decodes on the
- * platform, independent of any webview. This is the truth the web probe
- * cannot measure: iOS natively decodes AAC/M4A, MP3, FLAC, ALAC, PCM
- * (platform stack — Apple's documented CoreAudio formats); Ogg and Opus are
- * NOT supported natively. Web (the WKWebView's webkit codecs for
- * HTMLAudioElement) handles AAC/MP3/FLAC but not raw Ogg.
- * 'unsupported' here suppresses the web probe for that format (measuring the
- * wrong stack); it never upgrades anything to 'ok'.
+ * platform, independent of any webview. 'unsupported' here only suppresses a
+ * probe that would measure the wrong stack; it never upgrades anything to
+ * 'ok'.
+ *
+ * VERSION-GATED opus (2026-09-21 field correction): the 1.2.30 table shipped
+ * saying iOS opus = unsupported — true for old iOS, but the user's iOS 26/27
+ * device plays raw Ogg-Opus through AVAudioFile fine (the native engine's own
+ * `AVAudioFile(forReading:)` probe accepted every preloaded opus file). The
+ * codec landscape moved: modern CoreAudio opens Ogg-Opus. iOS 18+ reads 'ok'
+ * (conservative floor — older devices keep mp3 as the LDM transcode target,
+ * the safe default for a codec we cannot probe natively).
  */
-const NATIVE_VERDICTS: Record<string, Record<string, 'ok' | 'unsupported'>> = {
-  ios: {
-    mp3: 'ok',
-    aac: 'ok',
-    flac: 'ok',
-    opus: 'unsupported',
-    ogg: 'unsupported',
-  },
-  android: {
-    // Android's MediaCodec/MediaExtractor stack handles these natively;
-    // extended formats exist but 'ok' here only skips a probe for formats
-    // any modern device decodes.
-    mp3: 'ok',
-    aac: 'ok',
-    flac: 'ok',
-    opus: 'ok',
-    ogg: 'ok',
-  },
+const IOS_OPUS_OK_MIN_MAJOR = 18
+
+/**
+ * The OS version comes from the USER-AGENT (Capacitor core exposes no OS
+ * version API): a WKWebView UA carries "Version/x.y Safari/605" on iOS, and
+ * the Version major tracks the iOS major there. Absent/unparsable → 0 →
+ * conservative 'unsupported' (mp3 fallback stays; never a false 'ok').
+ * Exported pure for the test suite.
+ */
+export function iosMajorVersionForTest(ua: string): number {
+  const m = /Version\/(\d+)\.\d+/.exec(ua)
+  return m ? parseInt(m[1], 10) : 0
+}
+
+function iosMajorVersion(): number {
+  try {
+    if (Capacitor.getPlatform() !== 'ios') return 0
+    return iosMajorVersionForTest(navigator.userAgent)
+  } catch {
+    return 0
+  }
+}
+
+const NATIVE_VERDICTS: Record<string, 'ok' | 'unsupported'> = {
+  mp3: 'ok',
+  aac: 'ok',
+  flac: 'ok',
+  opus: iosMajorVersion() >= IOS_OPUS_OK_MIN_MAJOR ? 'ok' : 'unsupported',
+  ogg: iosMajorVersion() >= IOS_OPUS_OK_MIN_MAJOR ? 'ok' : 'unsupported',
 }
 
 function nativeVerdictFor(format: string): 'ok' | 'unsupported' | null {
-  const platform = Capacitor.getPlatform() // 'ios' | 'android' | 'web'
-  const table = NATIVE_VERDICTS[platform]
-  if (!table) return null // web — probe path
-  const hit = table[format]
-  return hit ?? null // unknown format on native: nothing to skip a probe for
+  if (Capacitor.getPlatform() !== 'ios') return null // android/web — probe path
+  return NATIVE_VERDICTS[format] ?? null
+}
+
+/**
+ * Boot-time sync: force the STATIC table over any persisted verdict (2026-09-21
+ * regression fix). The 1.2.30 bootstrap only wrote table entries the map was
+ * MISSING — it never overwrote stale rows the old WEBVIEW probe had persisted
+ * ('aac: unsupported' rode forever even though the table says ok). Every boot
+ * now reconciles the whole native-known map; rows outside the table are
+ * untouched (the web probe owns them).
+ */
+function syncNativeVerdicts(): void {
+  if (Capacitor.getPlatform() !== 'ios') return
+  const current = get(settings).transcodeProbe ?? {}
+  const next = { ...current }
+  let changed = false
+  for (const [format, verdict] of Object.entries(NATIVE_VERDICTS)) {
+    if (next[format] !== verdict) {
+      next[format] = verdict
+      changed = true
+    }
+  }
+  if (changed) updateSetting('transcodeProbe', next)
 }
 
 export interface ProbeOutcome {
@@ -161,15 +195,9 @@ export async function ensureFormatProbe(
   if (!format) return { verdict: 'unknown', format }
   // NATIVE BYPASS: the web probe measures the WKWebView's decoders, which the
   // native engine never uses. The static table above is the native truth.
-  // A native 'unsupported' entry is PERSISTED so the user-visible probe
-  // status reads honestly (e.g. iOS opus → unsupported), and it suppresses
-  // any future web-probe attempt for that format (the wrong stack).
+  syncNativeVerdicts()
   const native = nativeVerdictFor(format)
   if (native !== null) {
-    const probeMap = get(settings).transcodeProbe
-    if (probeMap?.[format] !== native) {
-      updateSetting('transcodeProbe', { ...(get(settings).transcodeProbe ?? {}), [format]: native })
-    }
     return { verdict: native, format }
   }
   const probeMap = get(settings).transcodeProbe

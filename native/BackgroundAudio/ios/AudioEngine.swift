@@ -1713,7 +1713,18 @@ public final class NativeAudioEngine: NSObject {
     /// ready inside the fade window does not wait for the next 100 ms tick.
     /// A chain is generation-guarded: a queue replacement (setQueue/refresh)
     /// bumps `prefetchGeneration` and the surviving completions drop the rest.
-    private func prefetchUpcoming(from index: Int, total: Int? = nil, seen: Set<Int> = [], generation: Int? = nil) {
+    /// Bounded per-row prefetch retries (2026-09-21, the "preload shows nothing"
+    /// report): the old chain MOVED PAST a failed row and never came back — on
+    /// a flaky cellular link every re-arm died at the same row N+1
+    /// (`cannot parse response`, URLSession's response-parse failure), so the
+    /// loader stayed at cache=1 with preload=5 for whole sessions. The chain
+    /// now re-attempts the failed row up to `prefetchMaxAttempts` times with a
+    /// short backoff before moving past it. Generation-guarded throughout:
+    /// a queue/track change kills pending backoffs with the rest of the chain.
+    private static let prefetchMaxAttempts = 3
+    private static let prefetchRetryBackoffNanos: UInt64 = 1_500_000_000
+
+    private func prefetchUpcoming(from index: Int, total: Int? = nil, seen: Set<Int> = [], generation: Int? = nil, attempt: Int = 1) {
         let totalCount = total ?? (crossfadeDuration > 0 ? max(1, preloadCount) : preloadCount)
         guard totalCount > 0, seen.count < totalCount else { return }
         let gen = generation ?? prefetchGeneration
@@ -1723,18 +1734,30 @@ public final class NativeAudioEngine: NSObject {
               tracks.indices.contains(next),
               seen.insert(next).inserted else { return }
         let track = tracks[next]
-        eventAdd(.debug, "preload", "chain: prefetch row \(next) (\(track.trackId))")
+        eventAdd(.debug, "preload", "chain: prefetch row \(next) (\(track.trackId)) attempt \(attempt)")
         loader.prefetch(track) { [weak self] _, error in
             guard let self = self else { return }
             guard gen == self.prefetchGeneration else { return }
-            if error != nil {
-                // A failed prefetch must not sit "fetching" forever (frozen-
-                // tint report): gone clears the row's tint now.
-                self.eventAdd(.danger, "preload", "prefetch FAILED row \(next) (\(track.trackId)): \(error?.localizedDescription ?? "?")")
-                self.emitPreload(track.trackId, "gone", nil)
+            guard let error else {
+                self.crossfadeMonitorTick()
+                self.prefetchUpcoming(from: next, total: totalCount, seen: seen, generation: gen)
+                return
             }
-            self.crossfadeMonitorTick()
-            self.prefetchUpcoming(from: next, total: totalCount, seen: seen, generation: gen)
+            // A failed prefetch must not sit "fetching" forever (frozen-tint
+            // report): gone clears the row's tint now.
+            self.emitPreload(track.trackId, "gone", nil)
+            if attempt < Self.prefetchMaxAttempts {
+                self.eventAdd(.info, "preload", "prefetch FAILED row \(next) (\(track.trackId)) attempt \(attempt)/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — retrying")
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: Self.prefetchRetryBackoffNanos)
+                    guard let self, gen == self.prefetchGeneration else { return }
+                    self.prefetchUpcoming(from: index, total: totalCount, seen: seen, generation: gen, attempt: attempt + 1)
+                }
+            } else {
+                self.eventAdd(.danger, "preload", "prefetch FAILED row \(next) (\(track.trackId)) after \(attempt) attempts: \(error.localizedDescription) — moving on")
+                self.crossfadeMonitorTick()
+                self.prefetchUpcoming(from: next, total: totalCount, seen: seen, generation: gen)
+            }
         }
     }
 
