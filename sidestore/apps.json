@@ -27,7 +27,8 @@
           "date": "2026-09-21T08:44:23.601Z",
           "localizedDescription": "P0 fixes from the first field dump: the crossfade finalize path is now gated by the truncation check (a truncated active file can no longer switch tracks with its tail missing), and refreshQueue reconciles lagging snapshots instead of stopping live playback (the divergence stop-storm). Adds the backward-advance field detector, ring hygiene (network transitions only, artwork-guard drops to info), live debug-HUD toggle without page reload, full event rings in Copy dumps, and a native format-probe bypass fixing the false aac unsupported verdict.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.30/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 4933879
         },
         {
           "version": "1.2.29",
