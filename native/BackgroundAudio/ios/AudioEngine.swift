@@ -186,6 +186,91 @@ final class TrackFileLoader {
         try? FileManager.default.removeItem(at: partURL(for: destination))
     }
 
+    // MARK: Maturation staging (A15 Phase 1 — events only, inert otherwise)
+
+    /// Per-key maturation state: last known stage + the last byte count at
+    /// which a header probe ran (the probe cadence is log, not per-tick).
+    /// Main-thread-only like all loader state.
+    private var maturationStages: [String: Maturation.Stage] = [:]
+    private var maturationLastProbeAt: [String: Int64] = [:]
+
+    /// Advances the maturation state for one in-flight key and reports
+    /// TRANSITIONS as structured events (Phase 1's entire purpose: the ring
+    /// carries the staged model's field evidence before the engine consumes
+    /// any of it). Called from the engine's 1 s preload sampler — same
+    /// cadence, no new timer.
+    func tickMaturation() {
+        for (key, trackId, received, expected) in inFlightProgress {
+            let previous = maturationStages[key] ?? .empty
+            // Lead requirement: Phase 1 uses the policy minimum over the
+            // track's metadata duration (the conservative default); a real
+            // per-track decision arrives with Phase 2 wiring.
+            let track = trackForId(trackId)
+            let lead = StreamPolicy.effectiveLeadSeconds(trackDuration: track?.duration ?? 0)
+            let leadBytes = MaturationStageSupport.bytesForLeadWithFallback(
+                fileBytes: Int64(track?.size ?? 0),
+                duration: track?.duration ?? 0,
+                leadSeconds: lead)
+            let probed: Bool
+            let probeSaysAudio: Bool
+            if Maturation.shouldProbeHeader(received: received, lastProbedAt: maturationLastProbeAt[key] ?? 0, leadRequiredBytes: leadBytes) {
+                maturationLastProbeAt[key] = received
+                // The probe: an AVAudioFile open over the CURRENT cache
+                // destination (the in-flight task is a downloadTask; its
+                // temp file is not readable by us). Only keys with a
+                // destination on disk can be probed; the downloadTask temp
+                // is off-limits, so a HEADERED verdict is deferred to the
+                // completion path for direct downloads. The .part resume
+                // prefix, however, IS readable — probe it when present.
+                if let part = partScratchURL(forKey: key) , FileManager.default.fileExists(atPath: part.path) {
+                    let frames = (try? AVAudioFile(forReading: part).length) ?? 0
+                    probeSaysAudio = frames > 0
+                    probed = true
+                } else {
+                    probed = false
+                    probeSaysAudio = false
+                }
+            } else {
+                probed = false
+                probeSaysAudio = false
+            }
+            let stage = Maturation.stage(
+                received: received,
+                announced: expected ?? 0,
+                leadRequiredBytes: leadBytes,
+                headerProbeSaysAudio: probed ? probeSaysAudio : (previous == .headered || previous == .playable))
+            if stage != previous {
+                maturationStages[key] = stage
+                event(.info, "stream", "maturation \(previous)→\(stage) track=\(trackId) received=\(received) announced=\(expected.map(String.init) ?? \"?\")")
+            }
+        }
+    }
+
+    /// The .part scratch URL for a cache key, if one is being retained.
+    private func partScratchURL(forKey key: String) -> URL? {
+        guard let destination = destinationByKey[key] else { return nil }
+        let part = partURL(for: destination)
+        return FileManager.default.fileExists(atPath: part.path) ? part : nil
+    }
+
+    /// Destinations recorded at prefetch start (the key alone cannot rebuild
+    /// the URL — the file extension comes from the track's URL). Pruned in
+    /// evict.
+    private var destinationByKey: [String: URL] = [:]
+
+    /// The queued track for a trackId (nil if gone from the queue).
+    private func trackForId(_ trackId: String) -> NativeTrack? {
+        engineTrackLookup?(trackId)
+    }
+    /// Injected by the engine at init (it owns the queue).
+    var engineTrackLookup: ((String) -> NativeTrack?)?
+
+    /// The maturation stages map — dump-visible (a staged model that never
+    /// leaves `empty` on a slow link is field-diagnosable).
+    var maturationSummary: [String: String] {
+        maturationStages.mapValues { "\($0)" }
+    }
+
     // MARK: Native decode probe (2026-09-21 — evidence, not a table)
 
     /// Downloads a tiny sample of `sampleURL` (a low-bitrate server-side
@@ -398,6 +483,7 @@ final class TrackFileLoader {
             self.event(.info, "resume: Range bytes=\(offset)- for \(track.trackId) (\(requested))")
         }
         let part = partURL(for: destination)
+        destinationByKey[cacheKey] = destination
         // For a Range attempt the response's own Content-Length is the
         // REMAINDER — the byte gate must judge the merged bytes against the
         // ORIGINAL transfer's total (recorded when the prefix was retained).
@@ -697,6 +783,9 @@ final class TrackFileLoader {
             pendingParts[key] = nil
             resumeDataByCacheKey[key] = nil
             rangeUnsupportedKeys.remove(key)
+            maturationStages[key] = nil
+            maturationLastProbeAt[key] = nil
+            destinationByKey[key] = nil
             if let url = url {
                 try? FileManager.default.removeItem(at: url)
                 try? FileManager.default.removeItem(at: partURL(for: url))
@@ -994,6 +1083,11 @@ public final class NativeAudioEngine: NSObject {
         // verdicts into the structured event log (domain "loader").
         loader.eventSink = { [weak self] level, message in
             self?.eventAdd(level, "loader", message)
+        }
+        // Maturation staging (A15 Phase 1): the loader's per-tick stage
+        // machine needs the queue for per-track lead sizing.
+        loader.engineTrackLookup = { [weak self] trackId in
+            self?.tracks.first(where: { $0.trackId == trackId })
         }
         // The real fix for the 1.2.13 launch crash is in setupGraph(): every
         // node is attached before it is connected (the crash was an
@@ -1726,6 +1820,9 @@ public final class NativeAudioEngine: NSObject {
     /// downloads keep running while paused, and their tints must not freeze;
     /// the user's "indicator has a brief period of movement then freezes").
     private func tickPreloadProgress() {
+        // A15 Phase 1: maturation stage transitions ride the same 1 s tick
+        // (events only — no schedule behavior changes until Phase 2).
+        loader.tickMaturation()
         let currentId = currentTrackId
         for (key, trackId, received, expected) in loader.inFlightProgress {
             if trackId != currentId, !preloadWindowIds.contains(trackId) { continue }
@@ -1911,6 +2008,9 @@ public final class NativeAudioEngine: NSObject {
             // Resumable-download scratch state (2026-09-21): dump-visible so
             // a stuck resume is diagnosable from the field.
             "loaderPendingResume": loader.pendingResumeScratchCount,
+            // A15 Phase 1: staged-model field evidence (stage per in-flight
+            // key; empty until a slow-link session shows maturation).
+            "maturationStages": loader.maturationSummary,
             "standbyScheduleGeneration": standbyScheduleGeneration,
             "standbyGenerationCaptured": standbyGeneration,
             "seekSuppressed": track.map { $0.trackId == seekSuppressedTrackId } ?? false,
