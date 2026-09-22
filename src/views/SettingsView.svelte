@@ -1647,7 +1647,7 @@
           <h3 class="mb-3 text-base font-medium text-primary">Native Streaming</h3>
           <p class="mb-2 text-sm text-muted">Start playing before the file finishes downloading (iOS app only). Off waits for the full download, as before.</p>
           <div class="flex gap-2">
-            {#each [['off', 'Off'], ['slowLink', 'Slow link'], ['on', 'Always']] as [val, label]}
+            {#each [['off', 'Full file'], ['slowLink', 'Slow link'], ['on', 'Always stream']] as [val, label]}
               <button
                 onclick={() => setStreamingMode(val as 'off' | 'slowLink' | 'on')}
                 class="btn-sm border border-white/15 hover:bg-white/5"
