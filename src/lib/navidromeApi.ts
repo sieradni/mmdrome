@@ -5,6 +5,7 @@ import { webdavFetch } from './webdavUtils'
 
 import { md5 } from './md5'
 import { recordAuthOutcome, authBaseKey } from './authHealth'
+import { dbgDanger } from './debugLog'
 
 const API_VERSION = '1.16.1'
 const CLIENT_NAME = 'mmdrome'
@@ -292,7 +293,15 @@ async function callSubsonicWithPairs(
     // credentials stop hitting the server after the first authoritative no
     // (Navidrome 0.64.1 also rate-limits failed logins server-side, so the
     // spam is now self-throttling punishment, not just noise).
-    if (code === 40) recordAuthOutcome(authBaseKey(config.baseUrl, config.username), code, message)
+    if (code === 40) {
+      const verdict = recordAuthOutcome(authBaseKey(config.baseUrl, config.username), code, message)
+      // The ONE-TIME park transition is a danger event (a gate verdict the
+      // Copy dump must verify); repeat rejections dedupe to 'already-parked'
+      // and stay out of the ring.
+      if (verdict === 'parked') {
+        dbgDanger('sync', `credentials REJECTED (code 40: ${message}) — auth-health parked for this server; gated legs (scrobbles/feedback/lyrics) stop until a successful connect or a credential change`)
+      }
+    }
     throw createSubsonicError(code, message)
   }
   return response

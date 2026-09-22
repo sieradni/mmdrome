@@ -17,6 +17,15 @@ import {
   __resetAuthHealthForTests,
 } from '../src/lib/authHealth'
 
+test('recordAuthOutcome discriminates the park transition for the danger log', () => {
+  __resetAuthHealthForTests()
+  assert.equal(recordAuthOutcome('srv|u', 40, 'no'), 'parked', 'first rejection = the one-time danger transition')
+  assert.equal(recordAuthOutcome('srv|u', 40, 'no again'), 'already-parked', 'repeats dedupe — no ring spam')
+  assert.equal(recordAuthOutcome('srv|u', 0, 'HTTP 503'), 'ignored', 'transient outcomes are not transitions')
+  markAuthSuccess('srv|u')
+  assert.equal(recordAuthOutcome('srv|u', 40, 'again after success'), 'parked', 'a fresh park after recovery is a new transition')
+})
+
 test('a code-40 outcome marks the credentials unhealthy', () => {
   __resetAuthHealthForTests()
   recordAuthOutcome('srv|u', 40, 'Wrong username or password')

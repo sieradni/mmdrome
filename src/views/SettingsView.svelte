@@ -269,6 +269,16 @@
    */
   async function commitCredentials(): Promise<void> {
     const s = get(settings)
+    // Snapshot the PERSISTED values BEFORE any write: updateSetting writes
+    // through to Dexie immediately, so reading after the write loop would
+    // compare the new values against themselves and never see a change.
+    // getSetting covers the Keychain-diverted password on native (the store
+    // hydration list never carried it — §3.4 secret keys).
+    const [prevUrl, prevUser, prevPass] = await Promise.all([
+      getSetting('navidromeUrl'),
+      getSetting('navidromeUser'),
+      getSetting('navidromePassword'),
+    ])
     const entries: [keyof SettingsMap, string][] = [
       ['webdavUrl', s.webdavUrl ?? ''],
       ['webdavUser', s.webdavUser ?? ''],
@@ -298,9 +308,7 @@
     // A REAL credential change (vs. the same values re-committed by the test
     // button) starts the auth-health ledger clean: the user acted on the
     // rejection — new credentials get one fresh chance against the server.
-    const prevUrl = await getSetting('navidromeUrl')
-    const prevUser = await getSetting('navidromeUser')
-    const prevPass = await getSetting('navidromePassword')
+    // navUrl/navUser above are the same post-normalize values.
     const navPass = normalize('navidromePassword', s.navidromePassword ?? '')
     if (prevUrl !== navUrl || prevUser !== navUser || prevPass !== navPass) {
       resetCredentials(authBaseKey(navUrl, navUser))

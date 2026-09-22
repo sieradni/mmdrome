@@ -56,20 +56,27 @@ export function __resetAuthHealthForTests(): void {
  * `subsonic-response.error.code` (0 = transport/HTTP-level). A code 40 is
  * the server's authoritative "credentials rejected" — everything else is
  * transient by definition here.
+ *
+ * Returns whether this call PARKED the key (`'parked'` — the first code 40
+ * for this baseKey), found it already parked (`'already-parked'`), or ignored
+ * the outcome (`'ignored'` — transient). The caller logs the one-time
+ * `'parked'` transition as a danger event; repeat rejections stay silent in
+ * the ring (the ledger dedupes them anyway).
  */
-export function recordAuthOutcome(baseKey: string, subsonicCode: number, detail = ''): void {
+export function recordAuthOutcome(baseKey: string, subsonicCode: number, detail = ''): 'parked' | 'already-parked' | 'ignored' {
   if (subsonicCode === 40) {
     const existing = ledger.get(baseKey)
     // Keep the FIRST rejection's timestamp (the `sinceMs` is diagnostics;
     // re-recording would slide the window and hide real outage duration).
-    if (existing) return
+    if (existing) return 'already-parked'
     ledger.set(baseKey, { state: 'unhealthy', sinceMs: nowFn(), detail })
-    return
+    return 'parked'
   }
   // Any non-40 outcome (success or transient failure) does NOT clear an
   // unhealthy state — only an explicit SUCCESSFUL connect does (below).
   // A network blip must not resurrect spammed credentials, and a gated
   // scrobble leg never reaches the server to produce an outcome anyway.
+  return 'ignored'
 }
 
 /**

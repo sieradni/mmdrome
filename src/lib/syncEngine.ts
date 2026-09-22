@@ -9,7 +9,7 @@ import { shouldKeepPushPending, shouldSkipBeforePut, classifyRowForPush } from "
 import { cachedLibraryUsable } from "./syncCachePolicy"
 import { planNavidromeLoad } from "./navidromeLoadPlan"
 import { effectiveLowData } from "./networkMode"
-import { dbgAlways } from "./debugLog"
+import { dbgAlways, dbgDanger } from "./debugLog"
 import { markAuthSuccess, authBaseKey } from "./authHealth"
 import {
   testNavidromeConnection as navidromeTestConnection,
@@ -197,6 +197,7 @@ export async function connectNavidrome(
         lastScan: cached.lastScan,
       }
     }
+    dbgDanger('sync', `fallback REJECTED — no usable cached snapshot for this server (library will be empty: ${connection.error ?? 'unknown'})`)
     return { connection, songs: [], loadResult: { loaded: 0, failed: 0, error: connection.error } }
   }
 
@@ -229,6 +230,12 @@ export async function connectNavidrome(
       lastScan,
     }
   }
+  // The WHY a full re-pagination happened — dump-visible so a "why did my
+  // library reload" report is answerable: a version mismatch here is the
+  // migration gate doing its job (the cache predates the running server).
+  if (cached && connection.serverVersion !== undefined && cached.serverVersion !== connection.serverVersion) {
+    dbgAlways('sync', `cache rejected: serverVersion ${cached.serverVersion ?? '(legacy, none recorded)'} ≠ live ${connection.serverVersion} — full re-sync`)
+  }
 
   const { songs, result } = await navidromeLoadSongs(config, { isCancelled: opts.isCancelled })
 
@@ -251,6 +258,7 @@ export async function connectNavidrome(
 
   if (songs.length > 0) {
     await saveSongLibraryCache({ tracks: songs, lastScan, baseKey, serverVersion: connection.serverVersion })
+    dbgAlways('sync', `library cache persisted: ${songs.length} songs @ server ${connection.serverVersion ?? 'unknown'}`)
   }
 
   return { connection, songs, loadResult: result, lastScan }
