@@ -106,3 +106,151 @@ jobs:
           gh release create "${{ github.ref_name }}" ./mmdrome.ipa \
             --title "mmdrome iOS ${{ github.ref_name }}" \
             --notes "Unsigned IPA for SideStore (source auto-signs on install). Add the source once in SideStore, then install / update from there."
+
+  # AUTOMATED RELEASE FINALIZE (2026-09-22, ios-v1.2.32 post-mortem): the
+  # manual two-phase choreography (size backfill commit -> CDN purge -> web
+  # deploy -> per-surface verification) was exactly the part of E11 that a
+  # manual release skipped — the tag published, but SideStore kept serving
+  # 1.2.31 because apps.json had no size and no deploy ever mirrored the
+  # manifest. This job closes that gap at the source: every tagged release
+  # now finalizes itself, with hard verification of every surface the
+  # SideStore update flow reads (jsDelivr CDN, gh-pages mirror, release
+  # asset). The size is read from the PUBLISHED release asset (bytes are
+  # ground truth). The default-token push does not re-trigger workflows, so
+  # the manifest commit cannot re-enter the build queue. A failure here is
+  # loud and ON the release run — no more silent post-release drift.
+  finalize-release:
+    name: Finalize SideStore release
+    needs: release-ios
+    if: startsWith(github.ref, 'refs/tags/ios-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Read release version from tag
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#ios-v}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch published IPA size
+        id: size
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ASSET_SIZE=$(gh release view "${{ github.ref_name }}" --json assets \
+            -q '.assets[] | select(.name == "mmdrome.ipa") | .size')
+          if [ -z "$ASSET_SIZE" ] || [ "$ASSET_SIZE" = "0" ]; then
+            echo "::error::release has no mmdrome.ipa asset — cannot stamp SideStore size"
+            exit 1
+          fi
+          echo "size=$ASSET_SIZE" >> "$GITHUB_OUTPUT"
+          echo "IPA size: $ASSET_SIZE bytes"
+
+      - name: Backfill apps.json size (same-version script re-run)
+        # Idempotent by design (E11): preserves the published build number and
+        # date, adds ONLY size, and re-passes the manifest's own notes so the
+        # description fields can never reset to the default (2026-09-11 1.2.0
+        # lesson). Uses the repo's OWN script — never a hand-rolled JSON edit —
+        # so every E11 manifest invariant stays in one place.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          SIZE="${{ steps.size.outputs.size }}"
+          NOTES=$(node -e "const m=require('./sidestore/apps.json');const v=m.apps[0].versions.find(v=>v.version===process.argv[1]);console.log(v&&v.localizedDescription?v.localizedDescription:'')" "$VERSION")
+          node scripts/release-ios.mjs "$VERSION" "$NOTES" --size "$SIZE"
+
+      - name: Commit backfill when not already stamped
+        id: commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet -- sidestore/apps.json; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "apps.json already carries the stamped size — idempotent re-run, nothing to commit"
+          else
+            git add sidestore/apps.json
+            git commit -m "chore: stamp ${{ steps.ver.outputs.version }} SideStore manifest size (automated finalize)"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push backfill commit to main
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The tag checkout is a detached HEAD at the tag commit; main may
+          # have moved on since. Rebase the single manifest commit onto
+          # origin/main and push that — tag state never merges into main.
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
+
+      - name: Deploy gh-pages mirror (SideStore fallback source)
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npm run deploy
+
+      - name: Purge jsDelivr CDN
+        # PLAIN GET (curl -X PURGE 400s at Cloudflare — E11 2026-09-13).
+        run: |
+          curl -fsS "https://purge.jsdelivr.net/gh/${{ github.repository }}@main/sidestore/apps.json" > /dev/null
+          echo "CDN purge requested"
+
+      - name: Verify every SideStore surface serves the new release
+        # The verification E11 mandates, now enforced by CI: each surface is
+        # polled until it serves the new version AND its stamped size (or the
+        # job fails loudly). A red step here means SideStore cannot see the
+        # release — fix before anything else.
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          SIZE="${{ steps.size.outputs.size }}"
+          check () {
+            NAME="$1"; URL="$2"
+            for i in 1 2 3 4 5 6 7 8 9 10; do
+              BODY=$(curl -fsS "$URL" 2>/dev/null || true)
+              GOT_VERSION=$(printf '%s' "$BODY" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).apps[0].version)}catch(e){console.log('PARSE-FAIL')}})")
+              GOT_SIZE=$(printf '%s' "$BODY" | node -e "let d='',v=process.argv[1];process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const e=JSON.parse(d).apps[0].versions.find(x=>x.version===v);console.log(e&&e.size!==undefined?e.size:'MISSING')}catch(e2){console.log('PARSE-FAIL')}})" "$VERSION")
+              if [ "$GOT_VERSION" = "$VERSION" ] && [ "$GOT_SIZE" = "$SIZE" ]; then
+                echo "$NAME serves $VERSION (size $SIZE) - OK"
+                return 0
+              fi
+              echo "$NAME attempt $i: version=$GOT_VERSION size=$GOT_SIZE — retrying in 15 s"
+              sleep 15
+            done
+            echo "::error::$NAME never served $VERSION (size $SIZE) — SideStore cannot see this release"
+            return 1
+          }
+          check "jsDelivr CDN" "https://cdn.jsdelivr.net/gh/${{ github.repository }}@main/sidestore/apps.json"
+          check "gh-pages mirror" "https://${{ github.repository_owner }}.github.io/${GITHUB_REPOSITORY#*/}/sidestore/apps.json"
+
+      - name: Verify release asset integrity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The stamped size must equal the published asset's byte size — the
+          # exact mismatch class that makes SideStore refuse an install.
+          SIZE="${{ steps.size.outputs.size }}"
+          ASSET_SIZE=$(gh release view "${{ github.ref_name }}" --json assets \
+            -q '.assets[] | select(.name == "mmdrome.ipa") | .size')
+          if [ "$ASSET_SIZE" != "$SIZE" ]; then
+            echo "::error::asset size $ASSET_SIZE != stamped size $SIZE"
+            exit 1
+          fi
+          echo "Release asset mmdrome.ipa: $ASSET_SIZE bytes - OK"
