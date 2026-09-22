@@ -4,75 +4,11 @@ import XCTest
 
 final class StreamPolicyTests: XCTestCase {
 
-    // MARK: - direct-tap decision
-
-    func testOffModeNeverStreams() {
-        XCTAssertFalse(StreamPolicy.shouldStreamDirectTap(
-            mode: .off, rangeSupported: true, estimatedFullDownloadSeconds: 1000, estimatedSecondsToPlayable: 1))
-    }
-
-    func testOnModeStreamsWhenRangeSupported() {
-        XCTAssertTrue(StreamPolicy.shouldStreamDirectTap(
-            mode: .on, rangeSupported: true, estimatedFullDownloadSeconds: 3, estimatedSecondsToPlayable: 5))
-        XCTAssertFalse(StreamPolicy.shouldStreamDirectTap(
-            mode: .on, rangeSupported: false, estimatedFullDownloadSeconds: 1000, estimatedSecondsToPlayable: 1),
-            "no Range support → no forward-progress guarantee → fallback")
-    }
-
-    // F7 (design review): slowLink never routes through shouldStreamDirectTap
-    // — the old ratio form was vacuous (both estimates shared one rate, so the
-    // rate cancelled and the decision reduced to lead×1.375 < duration, i.e.
-    // "stream any track over ~21 s" regardless of the link). The engine calls
-    // shouldStreamSlowLink for that mode; the direct-tap entry returns the
-    // safe default so a caller that forgets the split cannot stream.
-    func testSlowLinkModeFallsThroughToSafeDefault() {
-        XCTAssertFalse(StreamPolicy.shouldStreamDirectTap(
-            mode: .slowLink, rangeSupported: true, estimatedFullDownloadSeconds: 60, estimatedSecondsToPlayable: 10))
-        XCTAssertFalse(StreamPolicy.shouldStreamDirectTap(
-            mode: .slowLink, rangeSupported: false, estimatedFullDownloadSeconds: 600, estimatedSecondsToPlayable: 10))
-    }
-
-    func testSlowLinkSustainableLinkStaysOnFullDownload() {
-        // 3 MB over 60 s = 50 KB/s delivered; the track needs 3 MB / 200 s =
-        // 15 KB/s realtime. The link sustains playback and the wait is ~30 %
-        // of the track — full download wins on simplicity (60 × 1.25 = 75 <
-        // 200 → false).
-        XCTAssertFalse(StreamPolicy.shouldStreamSlowLink(
-            estimatedFullDownloadSeconds: 60, trackDuration: 200))
-    }
-
-    func testSlowLinkTrulySlowLinkStreams() {
-        // 3 MB over 300 s: the download outlasts the song itself (200 s) —
-        // the link cannot keep pace with the playhead, streaming is the only
-        // timely path (300 × 1.25 = 375 > 200 → true).
-        XCTAssertTrue(StreamPolicy.shouldStreamSlowLink(
-            estimatedFullDownloadSeconds: 300, trackDuration: 200))
-    }
-
-    func testSlowLinkBorderlineMarginHoldsFullDownload() {
-        // Exactly realtime (200 s download, 200 s track): ×1.25 margin streams.
-        // A link with 25 % headroom (160 s vs 200 s) stays on full download.
-        XCTAssertTrue(StreamPolicy.shouldStreamSlowLink(
-            estimatedFullDownloadSeconds: 200, trackDuration: 200))
-        XCTAssertFalse(StreamPolicy.shouldStreamSlowLink(
-            estimatedFullDownloadSeconds: 160, trackDuration: 200))
-    }
-
-    func testSlowLinkZeroInputsNeverStream() {
-        XCTAssertFalse(StreamPolicy.shouldStreamSlowLink(
-            estimatedFullDownloadSeconds: 0, trackDuration: 200))
-        XCTAssertFalse(StreamPolicy.shouldStreamSlowLink(
-            estimatedFullDownloadSeconds: 100, trackDuration: 0))
-    }
-
-    // MARK: - the preload hard rule
-
-    func testPreloadRowsNeverStream() {
-        // The offline buffer (A14) is contractually immune to streaming.
-        for mode in [StreamPolicy.Mode.off, .slowLink, .on] {
-            XCTAssertFalse(StreamPolicy.shouldStreamPreloadRow(mode: mode))
-        }
-    }
+    // Streaming is fully integrated (2026-09-21 user decision): the mode
+    // enum and its decision functions were REMOVED — eligibility is the
+    // engine-side per-tap gate (`TrackFileLoader.streamDecision`), and the
+    // policy core owns the staged contract's quantities only. The lead,
+    // delivery, and verdict pins below ARE the policy now.
 
     // MARK: - lead sizing
 

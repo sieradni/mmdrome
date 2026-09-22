@@ -1,80 +1,24 @@
 import Foundation
 
-/// Pure policy for WHEN native playback may stream instead of full-download
-/// (A15 design §3 — Phase 0). Inert until Phase 2 wires it into `loadAndStart`.
+/// Pure policy for native staged streaming (A15 design §3). Streaming is
+/// FULLY INTEGRATED (2026-09-21 user decision — the off/slowLink/on setting
+/// was removed as unnecessary UI): every ELIGIBLE raw direct tap streams.
+/// Eligibility lives engine-side (`TrackFileLoader.streamDecision` — the
+/// loader owns the evidence); this core owns the quantities the staged
+/// contract is built on: the lead sizing, the writer's delivery cadence,
+/// and the final-promotion byte verdict.
 ///
-/// Principles:
-/// - Streaming is for the DIRECT TAP (the user is waiting) and only when the
-///   link cannot deliver the full file faster than the staged lead needs.
+/// Standing principles:
 /// - The preload window is the OFFLINE BUFFER — never streamed (A14's
-///   offline-advance contract).
+///   offline-advance contract; the engine's gate never routes preload rows
+///   to the writer).
 /// - A server without Range support cannot guarantee forward progress on a
 ///   stalled stream → full-download fallback (the `rangeUnsupportedKeys`
 ///   lesson, 2026-09-21f).
+/// - Transcoded variants keep the full-download `downloadTask` path: their
+///   announced length is a server-side estimate, which the byte-exact
+///   promotion verdict cannot use.
 public enum StreamPolicy {
-
-    public enum Mode: Equatable {
-        /// Feature off (the default until field data): everything full-download.
-        case off
-        /// Stream only when the link is the constraint.
-        case slowLink
-        /// Stream every direct tap regardless of bandwidth (diagnostics).
-        case on
-    }
-
-    /// DECISION for one direct tap. `estimatedFullDownloadSeconds` comes from
-    /// the recent-transfer bandwidth estimate × file size (caller-owned);
-    /// `estimatedSecondsToPlayable` from the same bandwidth over the lead
-    /// bytes. A fast link wins by full download: simpler, cache-warms for
-    /// offline, byte-gate-protected (the staged path trades the byte-exact
-    /// gate for the lead contract).
-    ///
-    /// `.slowLink` NEVER reaches here from the engine — it routes through
-    /// `shouldStreamSlowLink` (F7, design review: the ratio form below was
-    /// vacuous — both estimates shared one rate, so the rate cancelled and
-    /// the comparison reduced to lead×1.375 < duration, true for any track
-    /// over ~21 s regardless of the link). Direct callers passing .slowLink
-    /// get the safe default (no streaming).
-    public static func shouldStreamDirectTap(
-        mode: Mode,
-        rangeSupported: Bool,
-        estimatedFullDownloadSeconds: Double,
-        estimatedSecondsToPlayable: Double
-    ) -> Bool {
-        switch mode {
-        case .off, .slowLink:
-            return false
-        case .on:
-            return rangeSupported
-        }
-    }
-
-    /// The slow-link decision (F7, design review): the only genuinely
-    /// link-dependent question is whether the transfer rate can sustain
-    /// realtime playback. `estimatedFullDownloadSeconds > trackDuration`
-    /// is EXACTLY `rate < realtime bitrate` (both divide file bytes) — the
-    /// link cannot keep pace with the playhead, so waiting for the whole
-    /// file takes longer than listening to it and streaming is the only
-    /// timely option (the buffering contract exists for precisely this
-    /// shape). A link that CAN sustain playback stays on the simpler
-    /// full-download path: the wait is bounded by ~the track length, the
-    /// cache warms for offline, and no stall machinery is exercised.
-    /// The 25 % margin keeps borderline-sustainable links on full download.
-    public static func shouldStreamSlowLink(
-        estimatedFullDownloadSeconds: Double,
-        trackDuration: Double
-    ) -> Bool {
-        guard estimatedFullDownloadSeconds > 0, trackDuration > 0 else { return false }
-        return estimatedFullDownloadSeconds * 1.25 > trackDuration
-    }
-
-    /// Preload-window rows NEVER stream — they are the offline buffer. This
-    /// is a hard rule, not a heuristic: streaming preloads would break the
-    /// offline-advance contract (A14) that the web engine's cache-hit/miss
-    /// split already provides.
-    public static func shouldStreamPreloadRow(mode: Mode) -> Bool {
-        false
-    }
 
     /// The lead-buffer requirement for a PLAYABLE schedule: enough audio
     /// ahead of the playhead that a normal network jitter does not stall

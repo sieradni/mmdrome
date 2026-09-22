@@ -89,11 +89,6 @@ interface BackgroundAudioPlugin {
   }): Promise<void>
   setAudioMixing(options: { mode: string }): Promise<void>
   setPreloadCount(options: { count: number }): Promise<void>
-  /** A15 Phase 2: streaming policy mode for staged native playback
-   *  ('off' default — nothing streams; 'slowLink' streams direct taps when
-   *  the measured link cannot deliver the full file faster than the lead;
-   *  'on' streams every direct tap). Affects future loads only. */
-  setStreamingMode(options: { mode: 'off' | 'slowLink' | 'on' }): Promise<void>
   setSleepTimer(options: { active: boolean; mode: 'minutes' | 'endOfTrack'; minutes: number }): Promise<void>
   setEq(options: { filters: NativeFilterSnapshot[]; bypassed: boolean }): Promise<void>
   getState(): Promise<NativeEngineState>

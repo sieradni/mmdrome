@@ -33,7 +33,6 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setCrossfade", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAudioMixing", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPreloadCount", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setStreamingMode", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSleepTimer", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setEq", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
@@ -425,18 +424,6 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
             self.engine.setPreloadCount(count)
-            call.resolve()
-        }
-    }
-
-    /// A15 Phase 2: streaming policy mode ('off' | 'slowLink' | 'on').
-    /// MUST be in `pluginMethods` above — the getMethod gate silently drops
-    /// unregistered names and the JS promise never resolves (§3.4).
-    @objc func setStreamingMode(_ call: CAPPluginCall) {
-        let mode = call.getString("mode", "off")
-        performOnMain { [weak self] in
-            guard let self else { call.resolve(); return }
-            self.engine.setStreamingMode(mode)
             call.resolve()
         }
     }

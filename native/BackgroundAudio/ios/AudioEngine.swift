@@ -255,13 +255,14 @@ final class TrackFileLoader {
         let announcedBytes: Int64
     }
 
-    /// The full Phase 2 policy gate: should THIS direct tap stream instead of
-    /// full-download? Reads every piece of loader state the answer keys on
-    /// (variant, in-flight, scratch, range support) and hands the bandwidth
-    /// math to the pure `StreamPolicy` core. The engine asks; the loader owns
-    /// the evidence; the core owns the decision.
-    func streamDecision(for track: NativeTrack, mode: StreamPolicy.Mode) -> Bool {
-        guard mode != .off else { return false }
+    /// The full streaming policy gate: should THIS direct tap stream instead
+    /// of full-download? Streaming is FULLY INTEGRATED (2026-09-21 user
+    /// decision — the off/slowLink/on setting was removed as unnecessary UI;
+    /// every eligible raw tap streams): the gate is per-tap eligibility only
+    /// (variant, in-flight, scratch, range support, size/duration evidence).
+    /// The engine asks; the loader owns the evidence; the eligibility list
+    /// is the contract.
+    func streamDecision(for track: NativeTrack) -> Bool {
         let requested = TrackVariant(url: track.url)
         // Transcodes keep the full-download path in Phase 2: their announced
         // length is a server-side estimate, which the honesty contract (the
@@ -284,20 +285,6 @@ final class TrackFileLoader {
         // Unknown byte size or duration: no lead estimate → no streaming
         // (no evidence, no action — the standing principle).
         guard track.size > 0, track.duration > 0 else { return false }
-        if mode == .slowLink {
-            // Slow-link needs a bandwidth estimate from a completed download;
-            // without one, treat the link as fast (full download wins).
-            // F7: the link-dependent question is "can the link sustain
-            // realtime playback" — the OLD comparison here (playable vs
-            // full, both from the same rate) was vacuous: the rate cancelled
-            // and it reduced to lead×1.375 < duration, streaming every track
-            // over ~21 s on ANY link. shouldStreamSlowLink does the real
-            // math: full-download time × 1.25 margin vs the track duration.
-            guard let rate = recentTransferRate, rate > 0 else { return false }
-            return StreamPolicy.shouldStreamSlowLink(
-                estimatedFullDownloadSeconds: Double(track.size) / rate,
-                trackDuration: track.duration)
-        }
         return true
     }
 
@@ -2318,21 +2305,6 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
-    /// A15 Phase 2: the streaming policy mode pushed from JS settings
-    /// ('off' | 'slowLink' | 'on' — default off). Affects only FUTURE loads:
-    /// the live schedule is untouched.
-    public func setStreamingMode(_ mode: String) {
-        let parsed: StreamPolicy.Mode
-        switch mode {
-        case "on": parsed = .on
-        case "slowLink": parsed = .slowLink
-        default: parsed = .off
-        }
-        guard parsed != streamingMode else { return }
-        eventAdd(.info, "stream", "setStreamingMode \(streamingMode == .off ? "off" : (streamingMode == .on ? "on" : "slowLink"))→\(mode)")
-        streamingMode = parsed
-    }
-
     // MARK: - Preload progress (queue-row tint parity with web)
 
     /// REMOVED — the JS-pushed window raced every snapshot (the push rode
@@ -2560,8 +2532,7 @@ public final class NativeAudioEngine: NSObject {
             // A15 Phase 1: staged-model field evidence (stage per in-flight
             // key; empty until a slow-link session shows maturation).
             "maturationStages": loader.maturationSummary,
-            // A15 Phase 2: the live staged schedule's every decision input.
-            "streamMode": "\(streamingMode)",
+            // A15: the live staged schedule's every decision input.
             "streamActive": stagedSchedule != nil,
             "streamComplete": stagedSchedule?.isComplete ?? false,
             "streamStalled": stagedSchedule?.isStalled ?? false,
@@ -2585,7 +2556,6 @@ public final class NativeAudioEngine: NSObject {
             "stagedEndSeconds": stagedSchedule.map { $0.scheduledEndSeconds } ?? 0,
             "stagedDeliveredBytes": stagedSchedule?.deliveredBytes ?? 0,
             "stagedAnnouncedBytes": stagedSchedule?.announcedBytes ?? 0,
-            "streamingMode": streamingMode == .off ? "off" : (streamingMode == .on ? "on" : "slowLink"),
             "eventLogNextSeq": eventLog.nextSeq,
             "eventLogDropped": eventLog.droppedCount,
             "debugDomains": eventLog.activeDomains.sorted().joined(separator: ","),
@@ -2664,7 +2634,7 @@ public final class NativeAudioEngine: NSObject {
         // behavior byte-for-byte. A staged load deliberately does NOT arm
         // prefetchUpcoming here: the writer owns the bandwidth, and the
         // chain arms when the writer completes (completeStagedSchedule).
-        if loader.streamDecision(for: track, mode: streamingMode) {
+        if loader.streamDecision(for: track) {
             startStagedLoad(track: track, index: index, autoPlay: autoPlay)
             return
         }
@@ -2988,7 +2958,6 @@ public final class NativeAudioEngine: NSObject {
 
     /// The streaming policy mode (mirrored from JS settings; default OFF —
     /// nothing streams until the user or the field data says otherwise).
-    var streamingMode: StreamPolicy.Mode = .off
 
     /// Live state of the CURRENT staged schedule (nil = no staged track).
     /// The schedule contract lives in `StreamSchedule`; this carries the
