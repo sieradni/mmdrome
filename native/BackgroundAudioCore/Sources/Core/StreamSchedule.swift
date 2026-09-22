@@ -273,4 +273,18 @@ public enum StreamSchedule {
         /// automation, then take the buffering pause.
         case abortFadeThenPause
     }
+
+    /// F3 (2026-09-22 field dump): the stall-ledger rescue verdict. A stall
+    /// whose delivered bytes have REACHED the announced total means the
+    /// transfer is DONE — a live completion path would have promoted the
+    /// file and un-stalled the schedule. Remaining stalled at
+    /// delivered == announced is therefore a lost-completion defect (the F1
+    /// class), not slow bandwidth: burning the give-up timer plus a JS retry
+    /// round trip on a fully-downloaded track is pure waste. Rescue =
+    /// complete the schedule from the on-disk file.
+    /// `announcedBytes == 0` (no Content-Length evidence) never rescues —
+    /// equality with zero means nothing.
+    public static func stallRescueEligible(deliveredBytes: Int64, announcedBytes: Int64) -> Bool {
+        announcedBytes > 0 && deliveredBytes >= announcedBytes
+    }
 }

@@ -335,20 +335,27 @@ final class TrackFileLoader {
         streamWriter = writer
         claimAt[cacheKey] = writer.claimedAt
         destinationByKey[cacheKey] = destination
-        // The delegate appends bytes on its serial queue; hand it the handle
-        // (materializing streamSession here also creates the delegate).
-        streamWriterDelegate?.attach(handle)
-        event(.info, "stream: writer started for \(track.trackId) (\(requested)) announced=\(writer.announcedBytes)")
         var request = URLRequest(url: track.url)
         request.timeoutInterval = 120
+        // Materialize the session FIRST (F2, 2026-09-22 field dump): the
+        // lazy init is what creates `streamWriterDelegate`. The old order —
+        // attach before first touch — attached the handle to NIL on the
+        // session's FIRST-ever stream (the delegate didn't exist yet), then
+        // the lazy init minted a fresh delegate with no handle, and every
+        // `didReceive data` hit `guard let handle else { return }` — the
+        // writer "ran" while dropping ALL bytes (the dump's attempt 1:
+        // "writer started", then total silence — no schedule, no maturation,
+        // no bytes, for 74 s until the user's seek forced attempt 2, where
+        // the now-existing delegate attached fine and everything worked).
         let task = streamSession.dataTask(with: request)
-        streamWriterTask = task
+        streamWriterDelegate?.attach(handle)
         // The multi-delivery closures ride the writer struct: main-thread
         // updates happen in the delegate hop (didReceive data → main), which
         // calls writerDidReceiveBytes/writerDidComplete below.
         streamProgressHandler = onProgress
         streamFinishedHandler = onFinished
         streamArrivalHandler = onArrival
+        streamWriterTask = task
         task.resume()
     }
 
@@ -403,15 +410,33 @@ final class TrackFileLoader {
     /// MAIN: the transfer ended (cleanly or with an error). Run the writer's
     /// completion verdict: promote through the SAME gate chain as a download,
     /// or retain the scratch for Range-continue.
+    ///
+    /// HANDLER-DELIVERY ORDER (F1, 2026-09-22 field dump): `clearWriterState`
+    /// used to run BEFORE the verdict — but it nils `streamFinishedHandler`,
+    /// so every subsequent `streamFinishedHandler?(...)` call was a silent
+    /// no-op: the loader promoted/retained/error'd, and the ENGINE never
+    /// heard a word. Row 4 of the dump played the full symptom: delivered ==
+    /// announced → promotion succeeded in the loader → engine never told →
+    /// its staged schedule stayed non-complete → the playhead hit the
+    /// delivered end → buffering stall at the LAST tick → 10 s give-up → JS
+    /// retry — for a file that was already fully downloaded. The handlers
+    /// are captured BEFORE any state clears; `clearWriterState` runs after.
     func writerDidComplete(_ error: Error?) {
         guard let writer = streamWriter else { return }
+        // Capture the engine legs up front (F1): the verdict branches below
+        // may run async work before delivering; state clears must never
+        // precede a delivery that still needs the handler.
+        let onFinished = streamFinishedHandler
         let handle = streamWriterHandle
         streamWriterHandle = nil
         try? handle?.close()
         // The writer state stays live through the whole verdict below (the
         // promotion path reads writer.announcedBytes etc.), so the maps are
         // cleared HERE, explicitly, not in a defer that would run before the
-        // body finished reading them.
+        // body finished reading them. Handler STORAGE is nil'd here (hygiene:
+        // no stale closures retained past the writer's life) — this is safe
+        // ONLY because every delivery below goes through the `onFinished`
+        // CAPTURE, not the storage. That ordering is the F1 invariant.
         func clearWriterState() {
             streamWriter = nil
             streamWriterTask = nil
@@ -432,7 +457,8 @@ final class TrackFileLoader {
                     announcedTotal: writer.announcedBytes)
             }
             flushWriterChains(key: writer.cacheKey, url: nil, error: error)
-            streamFinishedHandler?(nil, error)
+            clearWriterState()
+            onFinished?(nil, error)
             onDownloadFinished?(writer.track.trackId, false)
             return
         }
@@ -454,7 +480,8 @@ final class TrackFileLoader {
                     try? FileManager.default.removeItem(at: writer.part)
                     let err = NSError(domain: "mmdrome.loader", code: -7001, userInfo: [NSLocalizedDescriptionKey: "Streamed file truncated (\(size) bytes): \(writer.track.title)"])
                     flushWriterChains(key: writer.cacheKey, url: nil, error: err)
-                    streamFinishedHandler?(nil, err)
+                    clearWriterState()
+                    onFinished?(nil, err)
                     onDownloadFinished?(writer.track.trackId, false)
                     return
                 }
@@ -468,7 +495,8 @@ final class TrackFileLoader {
                     try? FileManager.default.removeItem(at: writer.destination)
                     let err = NSError(domain: "mmdrome.loader", code: -7002, userInfo: [NSLocalizedDescriptionKey: "Streamed file is not decodable audio: \(writer.track.title)"])
                     flushWriterChains(key: writer.cacheKey, url: nil, error: err)
-                    streamFinishedHandler?(nil, err)
+                    clearWriterState()
+                    onFinished?(nil, err)
                     onDownloadFinished?(writer.track.trackId, false)
                     return
                 }
@@ -478,7 +506,8 @@ final class TrackFileLoader {
                     pendingParts[writer.cacheKey] = DownloadResume.Pending(parts: [size], announcedTotal: writer.announcedBytes)
                     let err = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(size) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
                     flushWriterChains(key: writer.cacheKey, url: nil, error: err)
-                    streamFinishedHandler?(nil, err)
+                    clearWriterState()
+                    onFinished?(nil, err)
                     onDownloadFinished?(writer.track.trackId, false)
                     return
                 }
@@ -499,16 +528,17 @@ final class TrackFileLoader {
                     stage: .complete,
                     deliveredBytes: size,
                     announcedBytes: writer.announcedBytes)
-                streamFinishedHandler?(final, nil)
+                clearWriterState()
+                onFinished?(final, nil)
                 onDownloadFinished?(writer.track.trackId, true)
             } catch {
                 event(.danger, "stream: promotion failed for \(writer.track.trackId): \(error.localizedDescription)")
                 flushWriterChains(key: writer.cacheKey, url: nil, error: error)
-                streamFinishedHandler?(nil, error)
+                clearWriterState()
+                onFinished?(nil, error)
                 onDownloadFinished?(writer.track.trackId, false)
             }
         case .earlyClose:
-            clearWriterState()
             if writer.accumulatedBytes >= TrackFileLoader.minimumAudioBytes {
                 event(.danger, "stream: clean early close for \(writer.track.trackId) (\(writer.accumulatedBytes) of \(writer.announcedBytes)) — scratch retained, next attempt Range-resumes")
                 pendingParts[writer.cacheKey] = DownloadResume.Pending(
@@ -522,10 +552,10 @@ final class TrackFileLoader {
             }
             let err = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(writer.accumulatedBytes) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
             flushWriterChains(key: writer.cacheKey, url: nil, error: err)
-            streamFinishedHandler?(nil, err)
+            clearWriterState()
+            onFinished?(nil, err)
             onDownloadFinished?(writer.track.trackId, false)
         case nil:
-            clearWriterState()
             // No announced length: the byte verdict cannot run. Treat the
             // transfer's end as final and judge through the decodability
             // gate only (an honest server without Content-Length is rare;
@@ -542,7 +572,8 @@ final class TrackFileLoader {
                     try? FileManager.default.removeItem(at: writer.destination)
                     let err = NSError(domain: "mmdrome.loader", code: -7002, userInfo: [NSLocalizedDescriptionKey: "Streamed file is not decodable audio: \(writer.track.title)"])
                     flushWriterChains(key: writer.cacheKey, url: nil, error: err)
-                    streamFinishedHandler?(nil, err)
+                    clearWriterState()
+                    onFinished?(nil, err)
                     onDownloadFinished?(writer.track.trackId, false)
                     return
                 }
@@ -556,11 +587,13 @@ final class TrackFileLoader {
                     stage: .complete,
                     deliveredBytes: size,
                     announcedBytes: 0)
-                streamFinishedHandler?(final, nil)
+                clearWriterState()
+                onFinished?(final, nil)
                 onDownloadFinished?(writer.track.trackId, true)
             } catch {
                 flushWriterChains(key: writer.cacheKey, url: nil, error: error)
-                streamFinishedHandler?(nil, error)
+                clearWriterState()
+                onFinished?(nil, error)
                 onDownloadFinished?(writer.track.trackId, false)
             }
         }
@@ -1253,6 +1286,19 @@ final class TrackFileLoader {
     /// Cached composite keys — read by the engine's preload-progress sampler
     /// to distinguish "download finished" (key present) from "evicted/gone".
     var cacheKeys: Set<String> { Set(state.cache.keys) }
+
+    /// F4 (2026-09-22 field dump): the ACTIVE WRITER's byte progress, read
+    /// by the engine's 1 s sampler exactly like `inFlightProgress`. The
+    /// writer is a dataTask with a delegate — it NEVER appears in
+    /// `state.inFlight` (that map holds downloadTasks only) — so streamed
+    /// tracks were invisible to the progress channel: no queue-row tint, no
+    /// seek-bar loaded layer, for the entire stream (the "no visual for
+    /// loaded/buffered" report). Nil when no writer is live.
+    var writerProgress: (key: String, trackId: String, received: Int64, expected: Int64?)? {
+        guard let writer = streamWriter else { return nil }
+        return (writer.cacheKey, writer.track.trackId, writer.accumulatedBytes,
+                writer.announcedBytes > 0 ? writer.announcedBytes : nil)
+    }
 
     /// Deletes cached files for tracks that are no longer within `keepRadius` of `currentIndex`.
     func cleanup(currentIndex: Int, tracks: [NativeTrack], keepRadius: Int = 3) {
@@ -2341,7 +2387,12 @@ public final class NativeAudioEngine: NSObject {
         // (events only — no schedule behavior changes until Phase 2).
         loader.tickMaturation()
         let currentId = currentTrackId
-        for (key, trackId, received, expected) in loader.inFlightProgress {
+        // F4: the streamed track's writer rides the SAME progress channel as
+        // the downloadTasks — the seek-bar loaded layer and queue-row tint
+        // fill during streaming too (the writer never appears in the
+        // in-flight map; without this it was invisible for its whole life).
+        let writerRow = loader.writerProgress
+        for (key, trackId, received, expected) in loader.inFlightProgress + (writerRow.map { [$0] } ?? []) {
             if trackId != currentId, !preloadWindowIds.contains(trackId) { continue }
             let ratio: Double? = {
                 guard let expected = expected, expected > 0 else { return nil }
@@ -2373,7 +2424,11 @@ public final class NativeAudioEngine: NSObject {
         // bar's loaded layer would stay hidden forever. The pass announces
         // its cached state once; rows still downloading are owned by pass 1.
         candidates.insert(currentId)
-        let inFlightIds = Set(loader.inFlightProgress.map { $0.trackId })
+        // F4: the active writer's track counts as in-flight here too — pass
+        // 1 owns its progress; a track served by the writer must never be
+        // misread by this pass as "fetching → gone".
+        var inFlightIds = Set(loader.inFlightProgress.map { $0.trackId })
+        if let writerRow { inFlightIds.insert(writerRow.trackId) }
         for trackId in candidates {
             if trackId != currentId, !preloadWindowIds.contains(trackId) { continue }
             if inFlightIds.contains(trackId) { continue } // pass 1 owns it this tick
@@ -3291,19 +3346,56 @@ public final class NativeAudioEngine: NSObject {
     /// tick only fires when NO bytes arrived for `stallGiveUpSeconds`.
     private func streamMonitorTick() {
         guard let staged = stagedSchedule, staged.isStalled else { return }
-        if Date().timeIntervalSince(staged.lastProgressAt) >= StreamSchedule.stallGiveUpSeconds {
-            let title = tracks.indices.contains(activeIndex) ? tracks[activeIndex].title : "track"
-            eventAdd(.danger, "stream", "stall give-up after \(Int(StreamSchedule.stallGiveUpSeconds)) s of no progress at \(String(format: "%.1f", cachedPosition))s — handing to JS retry (Range-continues the prefix)")
-            // Cancel the writer FIRST: its cancel-triggered completion path
-            // records the delivered prefix into pendingParts (the Range
-            // substrate the retry continues) — but with the engine legs nil'd,
-            // so the monitor's onError below is the ONLY report (no double
-            // engage) and no later rung can resurrect the staged schedule.
-            // Teardown of the engine-side staged state rides the normal path.
-            loader.cancelActiveWriterRetainingScratch()
-            teardownStagedState()
-            onError?("Stream stalled: \(title)")
+        // F3 rescue (2026-09-22 field dump): delivered == announced while
+        // stalled is a LOST COMPLETION (the F1 class), not slow bandwidth —
+        // a live writer would have promoted the file and un-stalled the
+        // schedule. Complete from the on-disk file immediately instead of
+        // burning the give-up timer plus a JS retry on a fully-downloaded
+        // track. No announced evidence (0) never rescues.
+        if StreamSchedule.stallRescueEligible(deliveredBytes: staged.deliveredBytes,
+                                              announcedBytes: staged.announcedBytes) {
+            eventAdd(.info, "stream", "stall rescue: delivered \(staged.deliveredBytes) == announced — completion was lost, completing from disk")
+            let url = stagedSourceURL
+            if let url, FileManager.default.fileExists(atPath: url.path) {
+                let final = TrackFileLoader.StreamProgress(
+                    trackId: staged.trackId,
+                    url: url,
+                    stage: .complete,
+                    deliveredBytes: staged.deliveredBytes,
+                    announcedBytes: staged.announcedBytes)
+                let rescuedTrackId = staged.trackId
+                // The completion path (completeStagedSchedule) cancels and
+                // re-schedules — defer one runloop turn so this tick unwinds
+                // first (the 1.2.31 re-entrancy lesson).
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.stagedSchedule?.trackId == rescuedTrackId else { return }
+                    self.completeStagedSchedule(progress: final)
+                }
+            } else {
+                // The .part vanished under us — no substrate to complete
+                // from; the give-up path (retry + Range-continue) owns it.
+                eventAdd(.danger, "stream", "stall rescue skipped: scratch missing at delivered==announced")
+                doGiveUpAfterRescueSkip()
+            }
+            return
         }
+        if Date().timeIntervalSince(staged.lastProgressAt) >= StreamSchedule.stallGiveUpSeconds {
+            doGiveUpAfterRescueSkip()
+        }
+    }
+
+    /// The give-up body (shared by the genuine timeout and the rescue's
+    /// scratch-missing fall-through): cancel the writer FIRST — its
+    /// cancel-triggered completion path records the delivered prefix into
+    /// pendingParts (the Range substrate the retry continues) — but with the
+    /// engine legs nil'd, so the onError below is the ONLY report (no double
+    /// engage) and no later rung can resurrect the staged schedule.
+    private func doGiveUpAfterRescueSkip() {
+        let title = tracks.indices.contains(activeIndex) ? tracks[activeIndex].title : "track"
+        eventAdd(.danger, "stream", "stall give-up after \(Int(StreamSchedule.stallGiveUpSeconds)) s of no progress at \(String(format: "%.1f", cachedPosition))s — handing to JS retry (Range-continues the prefix)")
+        loader.cancelActiveWriterRetainingScratch()
+        teardownStagedState()
+        onError?("Stream stalled: \(title)")
     }
 
     private func nextIndex(after index: Int) -> Int? {

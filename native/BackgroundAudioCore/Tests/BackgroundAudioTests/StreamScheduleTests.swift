@@ -206,4 +206,27 @@ final class StreamScheduleTests: XCTestCase {
             .abortFadeThenPause,
             "contractually impossible — defense in depth: no finalize against an expired promise")
     }
+
+    // MARK: - F3: the stall-ledger rescue (2026-09-22 field dump)
+
+    func testStallRescueFiresWhenDeliveredReachesAnnounced() {
+        // Row 4's exact shape: the playhead stalled at the delivered end
+        // while the transfer had in fact finished (its completion was lost —
+        // the F1 class). Remaining stalled is a defect, not bandwidth.
+        XCTAssertTrue(StreamSchedule.stallRescueEligible(deliveredBytes: 3_027_467, announcedBytes: 3_027_467))
+        XCTAssertTrue(StreamSchedule.stallRescueEligible(deliveredBytes: 3_027_467, announcedBytes: 3_000_000))
+    }
+
+    func testStallRescueHoldsWhenTransferStillShort() {
+        // A genuine slow link still owes bytes — the buffering pause and the
+        // give-up timer stay in charge.
+        XCTAssertFalse(StreamSchedule.stallRescueEligible(deliveredBytes: 1_500_000, announcedBytes: 3_027_467))
+    }
+
+    func testStallRescueNeverFiresWithoutAnnouncedEvidence() {
+        // No Content-Length: equality with zero means nothing — the give-up
+        // path (Range-continue + decodability gate) stays the sole recovery.
+        XCTAssertFalse(StreamSchedule.stallRescueEligible(deliveredBytes: 0, announcedBytes: 0))
+        XCTAssertFalse(StreamSchedule.stallRescueEligible(deliveredBytes: 500, announcedBytes: 0))
+    }
 }

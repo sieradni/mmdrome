@@ -1,6 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { applyProbeResult, type FormatVerdict } from '../src/lib/formatProbe.ts'
+import {
+  applyProbeResult,
+  probeMapIsStale,
+  stampProbeMap,
+  PROBE_STAMP_KEY,
+  type FormatVerdict,
+} from '../src/lib/formatProbe.ts'
 
 /**
  * The codec probe is now EVIDENCE-BASED on both platforms (2026-09-21,
@@ -49,4 +55,37 @@ test('applyProbeResult: other formats in the map are preserved', () => {
   assert.equal(r.next.mp3, 'ok')
   assert.equal(r.next.flac, 'ok')
   assert.equal(r.next.opus, 'ok')
+})
+
+// --- F5: the probe-stamp gate (2026-09-22 field dump) ------------------------
+// Verdicts persisted by the 1.2.30 static-table regression carried no
+// provenance and short-circuited the (now evidence-based) probe forever —
+// an iOS 27 device kept its bogus "opus unsupported" pin. The stamp makes
+// provenance part of the cached shape.
+
+test('probeMapIsStale: a legacy un-stamped map is stale by definition', () => {
+  const legacy = { opus: 'unsupported' } as Record<string, FormatVerdict>
+  assert.equal(probeMapIsStale(legacy, '1.2.33'), true)
+})
+
+test('probeMapIsStale: undefined map is not stale (nothing cached)', () => {
+  assert.equal(probeMapIsStale(undefined, '1.2.33'), false)
+})
+
+test('probeMapIsStale: same-version stamp is fresh, older stamp is stale', () => {
+  const fresh = stampProbeMap({ opus: 'ok' }, '1.2.33')
+  assert.equal(probeMapIsStale(fresh, '1.2.33'), false)
+  assert.equal(probeMapIsStale(fresh, '1.2.34'), true, 'an app update re-probes')
+})
+
+test('stampProbeMap: preserves verdicts and carries the version', () => {
+  const stamped = stampProbeMap({ opus: 'ok', mp3: 'ok' }, '1.2.33')
+  assert.equal(stamped.opus, 'ok')
+  assert.equal(stamped.mp3, 'ok')
+  assert.equal((stamped as Record<string, unknown>)[PROBE_STAMP_KEY], '1.2.33')
+})
+
+test('probeMapIsStale: a non-string stamp (corrupt) is stale', () => {
+  const corrupt = { opus: 'ok', [PROBE_STAMP_KEY]: 42 } as unknown as Record<string, FormatVerdict>
+  assert.equal(probeMapIsStale(corrupt, '1.2.33'), true)
 })

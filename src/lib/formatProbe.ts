@@ -3,6 +3,7 @@ import { Capacitor } from '@capacitor/core'
 import { settings, updateSetting } from '../stores/appState'
 import { getCachedConfig, buildStreamUrl } from './navidromeApi'
 import { nativeEngine } from './nativePlugin'
+import { appVersion } from './version'
 
 /**
  * Per-device codec capability probe (low-data/transcoding plan, PR-D).
@@ -77,6 +78,39 @@ export function applyProbeResult(
     return { persist: false, next: base }
   }
   return { persist: false, next: base }
+}
+
+/**
+ * F5 (2026-09-22 field dump): the PROBE-STAMP gate. Verdicts persisted by
+ * the 1.2.30 static-table regression shipped inside `transcodeProbe` with
+ * NO provenance — the short-circuit in `ensureFormatProbe` then trusted
+ * them forever, so an iOS 27 device kept its bogus "opus unsupported" pin
+ * even after the probe became evidence-based (the real probe WOULD answer
+ * 'ok'). PURE decision, pinned in tests: a map that carries no stamp (the
+ * legacy shape) is stale by definition; a map stamped by an older app
+ * version is stale; same-version is fresh.
+ */
+export const PROBE_STAMP_KEY = '__probedBy'
+
+export function probeMapIsStale(
+  map: Record<string, FormatVerdict> | undefined,
+  currentVersion: string,
+): boolean {
+  if (!map) return false // empty = nothing cached, the probe runs anyway
+  const stamp = (map as Record<string, unknown>)[PROBE_STAMP_KEY]
+  if (typeof stamp !== 'string') return true // legacy map — table-era verdicts
+  return stamp !== currentVersion
+}
+
+/**
+ * Pure: stamp a probe map with the app version that produced it. Called on
+ * every persist so the map always carries provenance.
+ */
+export function stampProbeMap(
+  map: Record<string, FormatVerdict>,
+  version: string,
+): Record<string, FormatVerdict> {
+  return { ...map, [PROBE_STAMP_KEY]: version } as Record<string, FormatVerdict>
 }
 
 /**
@@ -188,19 +222,29 @@ export async function ensureFormatProbe(
   format: string,
   rawSongId = '',
   deps: FormatProbeDeps = defaultDeps(),
+  /** F5: skip the cached-verdict short-circuit (the Settings test button —
+   *  a stale pin must be re-testable on demand). */
+  force = false,
 ): Promise<ProbeOutcome> {
   if (!format) return { verdict: 'unknown', format }
   const probeMap = get(settings).transcodeProbe as Record<string, FormatVerdict> | undefined
-  const existing = probeMap?.[format]
-  if (existing === 'ok' || existing === 'unsupported') {
-    return { verdict: existing, format }
+  // F5 stamp gate: verdicts persisted before the current app version (or by
+  // the pre-stamp table era) are stale — they re-probe this boot. A stale
+  // map must never short-circuit the probe that can correct it.
+  if (!force && !probeMapIsStale(probeMap, appVersion)) {
+    const existing = probeMap?.[format]
+    if (existing === 'ok' || existing === 'unsupported') {
+      return { verdict: existing, format }
+    }
   }
   const verdict = Capacitor.isNativePlatform()
     ? await nativeProbeOnce(format, rawSongId, deps)
     : await probeFormatOnce(format, rawSongId, deps)
   const { persist, next } = applyProbeResult(probeMap, format, verdict)
   if (persist) {
-    updateSetting('transcodeProbe', next as Record<string, 'ok' | 'unsupported'>)
+    // Every persist re-stamps provenance (F5) — the map can never go back
+    // to the unversioned shape that trusted 1.2.30's table verdicts.
+    updateSetting('transcodeProbe', stampProbeMap(next, appVersion) as Record<string, 'ok' | 'unsupported'>)
   }
   return { verdict, format }
 }

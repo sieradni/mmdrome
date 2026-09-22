@@ -140,6 +140,18 @@
     }
   }
 
+  /** F5 (2026-09-22 field dump): the manual test must actually TEST — the
+   *  cached-verdict short-circuit made it a no-op that just re-read the
+   *  (possibly stale) pin. force=true bypasses the cache and re-stamps on
+   *  persist, so the button can always correct a wrong verdict. */
+  function retestTranscodeFormat() {
+    const val = $settings.transcodeFormat ?? 'opus'
+    const probeTrack = get(library).find((t) => t.trackId.startsWith('navidrome-'))
+    if (probeTrack) {
+      void ensureFormatProbe(val, probeTrack.trackId.replace(/^navidrome-/, ''), undefined, true).catch(() => {})
+    }
+  }
+
   function setTranscodeBitrate(val: number) {
     updateSetting('transcodeBitrate', val)
   }
@@ -1701,8 +1713,12 @@
                 <p class="text-sm text-muted">Lossless format — the server ignores the bitrate setting.</p>
               {/if}
               {#if ($settings.transcodeProbe?.[$settings.transcodeFormat ?? 'opus']) === 'unsupported'}
-                <p class="text-sm text-yellow-500/90">This device couldn't decode {$settings.transcodeFormat ?? 'opus'} during a test — MP3 is used until it passes. If your files play fine, tap the {$settings.transcodeFormat ?? 'opus'} button to re-test.</p>
+                <p class="text-sm text-yellow-500/90">This device couldn't decode {$settings.transcodeFormat ?? 'opus'} during a test — MP3 is used until it passes. If your files play fine, tap “Re-test {$settings.transcodeFormat ?? 'opus'}” below.</p>
               {/if}
+              <button
+                onclick={retestTranscodeFormat}
+                class="btn-sm border border-white/15 hover:bg-white/5 text-muted"
+              >Re-test {$settings.transcodeFormat ?? 'opus'}</button>
               {#if ($settings.transcodeMode ?? 'off') === 'lowData'}
                 <p class="text-sm text-muted" data-testid="transcode-effective">
                   {#if $effectiveLowData}
