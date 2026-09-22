@@ -10,6 +10,12 @@
   let { track, wrapperClass = '', size = 128 }: { track: Track; wrapperClass?: string; size?: 96 | 128 | 256 | 512 } = $props()
 
   let visible = $state(false)
+  /** The loader's cached-lane claim at arm time (the revisit-after-unlatch
+   *  case: the cover is an immutable HTTP-cache hit, near-instant). Cached
+   *  arms skip the micro placeholder entirely AND mount the main img at full
+   *  opacity — a 300 ms fade-in on an instantly-available cover was a tax on
+   *  exactly the scroll-back scenario the cached lane exists to make instant. */
+  let armedCached = $state(false)
   let container: HTMLDivElement
 
   // Far-window unlatch (2026-09-17j, the "scrollbar-style jump broke covers"
@@ -115,6 +121,7 @@
     // micro rendition (or a failed one) must never bleed into the next row.
     microLoaded = false
     microFailed = false
+    armedCached = false
   })
 
   function handleImgError(): void {
@@ -135,6 +142,7 @@
       ([entry]) => {
         if (entry.isIntersecting && !visible) {
           const cached = currentUrl !== null && currentUrl === lastLoadedUrl
+          armedCached = cached
           requestThumb(container, () => { visible = true }, cached)
         }
       },
@@ -186,7 +194,7 @@
          over the same 300 ms the real image fades IN — a crossfade, not a
          pop. Stays mounted for the identity's lifetime (removal would churn
          the DOM and cut the fade short). -->
-    {#if microUrl && !microFailed}
+    {#if microUrl && !microFailed && !armedCached}
       <img
         src={microUrl}
         alt=""
@@ -203,7 +211,7 @@
       <img
         src={currentUrl}
         alt=""
-        class="h-full w-full object-cover transition-opacity duration-300 {microUrl && !microLoaded ? 'opacity-0' : 'opacity-100'}"
+        class="h-full w-full object-cover transition-opacity duration-300 {microUrl && !microLoaded && !armedCached ? 'opacity-0' : 'opacity-100'}"
         decoding="async"
         onerror={handleImgError}
         onload={() => { lastLoadedUrl = currentUrl; microLoaded = true }}
