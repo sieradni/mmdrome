@@ -1,3 +1,9 @@
+## 2026-09-22b — Release 1.2.33: 0.64.1 migration readiness + streaming field-dump fixes
+
+Ships the merge of `feature/navidrome-064-migration` (six commits: serverVersion cache gate, required cover size + micro-rendition placeholder, auth-health ledger, stale-ID reconcile pins, flow-review fixes) on top of main's F1-F5 streaming fixes (swallowed writer completions, first-stream dead writer, stall rescue, seekbar progress for streamed tracks, probe stamp-gate re-probe) and the thumbflow e2e deflake. Merge was conflict-free; 1043/1043 unit tests, svelte-check clean, sync/thumbflow-landing/viewchunking e2e green post-merge.
+
+Field expectations for the 0.64 upgrade (see 2026-09-21c for the design): first connect after the server upgrade performs exactly ONE full library re-sync (logged as `cache rejected: serverVersion ... != live ...`); queue rows referencing dead ids are dropped with counts logged; the opus probe re-runs on first boot (stamp gate) so the stale `unsupported` verdict self-corrects; streamed tracks now show seekbar progress and their completions reach the engine.
+
 ## 2026-09-21c — Navidrome 0.64.1 migration readiness (client-side A–D)
 
 The server released 0.64.0 (Sep 12) + 0.64.1 security fixes (Sep 21). 0.64.0's breaking change re-encodes EVERY internal id to canonical 128-bit base62 while leaving scan timestamps intact — the exact trap: the library cache's `lastScan` validation would happily serve a full library of dead ids. **A (cache gate)**: `SongLibraryCache.serverVersion` (recorded from ping.view `serverVersion` on save), `cachedLibraryUsable` rejects any version mismatch on every path where the live version is KNOWN (offline fallback keeps old semantics — unreachable server has nothing fresher). Legacy rows (field absent) mismatch any known version → exactly one forced full re-sync, which IS the user's migration; the seeded-cache e2e path still passes because the mock's `0.50.0` is consistent across connect+reconnect.
