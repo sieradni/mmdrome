@@ -29,6 +29,8 @@
   import { ensureFormatProbe } from '../lib/formatProbe'
   import { lbValidateToken } from '../lib/listenbrainzApi'
   import { getCachedConfig, setCachedConfig, cachedConfigMatches } from '../lib/navidromeApi'
+  import { resetCredentials, authBaseKey } from '../lib/authHealth'
+  import { getSetting } from '../lib/db'
   import { tick } from 'svelte'
   import type { SettingsMap } from '../stores/appState'
   import type { WebdavFileEntry } from '../lib/db'
@@ -292,6 +294,16 @@
     const navUser = normalize('navidromeUser', s.navidromeUser ?? '')
     if (!cachedConfigMatches(getCachedConfig(), navUrl, navUser)) {
       setCachedConfig(null)
+    }
+    // A REAL credential change (vs. the same values re-committed by the test
+    // button) starts the auth-health ledger clean: the user acted on the
+    // rejection — new credentials get one fresh chance against the server.
+    const prevUrl = await getSetting('navidromeUrl')
+    const prevUser = await getSetting('navidromeUser')
+    const prevPass = await getSetting('navidromePassword')
+    const navPass = normalize('navidromePassword', s.navidromePassword ?? '')
+    if (prevUrl !== navUrl || prevUser !== navUser || prevPass !== navPass) {
+      resetCredentials(authBaseKey(navUrl, navUser))
     }
   }
 

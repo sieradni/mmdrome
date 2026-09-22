@@ -18,6 +18,7 @@
 import { writable } from 'svelte/store'
 import { db } from './db'
 import { getCachedConfig, getLyricsBySongId } from './navidromeApi'
+import { credentialsHealthy, authBaseKey } from './authHealth'
 import {
   deriveLineEnds,
   normalizeStructuredLyrics,
@@ -128,6 +129,9 @@ export async function getLyricsForTrack(trackId: string, durationMs: number | nu
   if (!trackId.startsWith('navidrome-')) return null
   const config = getCachedConfig()
   if (!config) return null
+  // Auth-health gate: rejected credentials re-probing every play is exactly
+  // the spam the ledger exists to stop (the doc stays a cache miss).
+  if (!credentialsHealthy(authBaseKey(config.baseUrl, config.username))) return null
 
   const cached = await readCache(trackId)
   if (cached) {

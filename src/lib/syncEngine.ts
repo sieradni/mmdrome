@@ -10,6 +10,7 @@ import { cachedLibraryUsable } from "./syncCachePolicy"
 import { planNavidromeLoad } from "./navidromeLoadPlan"
 import { effectiveLowData } from "./networkMode"
 import { dbgAlways } from "./debugLog"
+import { markAuthSuccess, authBaseKey } from "./authHealth"
 import {
   testNavidromeConnection as navidromeTestConnection,
   loadNavidromeSongs as navidromeLoadSongs,
@@ -176,7 +177,7 @@ export async function connectNavidrome(
   // Trim the username for the cache identity: commitCredentials persists the
   // trimmed value, so a legacy row with stray whitespace must not silently
   // change the cache key (baseUrl is already trimmed by getNavidromeConfig).
-  const baseKey = `${config.baseUrl.trim()}|${config.username.trim()}`
+  const baseKey = authBaseKey(config.baseUrl, config.username)
 
   const connection = await navidromeTestConnection(config)
   if (!connection.connected) {
@@ -199,6 +200,10 @@ export async function connectNavidrome(
     return { connection, songs: [], loadResult: { loaded: 0, failed: 0, error: connection.error } }
   }
 
+  // A successful ping proves the credentials work — clear any unhealthy
+  // mark so gated legs (scrobbles, feedback pushes, lyrics) resume.
+  markAuthSuccess(baseKey)
+
   let lastScan = ""
   try {
     const scanStatus = await navidromeGetScanStatus(config)
@@ -215,7 +220,7 @@ export async function connectNavidrome(
   // whose getScanStatus is empty/failing re-paginated the whole catalog on
   // every launch.
   const cached = await getSongLibraryCache()
-  if (cached && cachedLibraryUsable(cached, baseKey, { forceRefresh, lastScan, requireFreshScan: true })) {
+  if (cached && cachedLibraryUsable(cached, baseKey, { forceRefresh, lastScan, serverVersion: connection.serverVersion, requireFreshScan: true })) {
     navidromeSetCachedConfig(config)
     return {
       connection,
@@ -245,7 +250,7 @@ export async function connectNavidrome(
   }
 
   if (songs.length > 0) {
-    await saveSongLibraryCache({ tracks: songs, lastScan, baseKey })
+    await saveSongLibraryCache({ tracks: songs, lastScan, baseKey, serverVersion: connection.serverVersion })
   }
 
   return { connection, songs, loadResult: result, lastScan }

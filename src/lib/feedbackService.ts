@@ -4,6 +4,7 @@ import type { Track } from '../stores/appState'
 import type { LocalMetadataStore } from '../lib/db'
 import { getAllMetadata } from '../lib/db'
 import { getCachedConfig, setNavidromeRating, setNavidromeStarred } from './navidromeApi'
+import { credentialsHealthy, authBaseKey } from './authHealth'
 import { getCachedLfmSession } from './lastfmAuth'
 import { scrobbleFlushEngine } from './scrobbleFlush'
 
@@ -110,6 +111,9 @@ function fanOutHearts(track: Track, loved: boolean, prevLoved: boolean): void {
 async function pushToNavidrome(track: Track, rating: number, loved: boolean, prevRating: number): Promise<void> {
   const config = getCachedConfig()
   if (!config) return
+  // Auth-health gate: rejected credentials don't push (the rating/loved
+  // stays pending locally and pushes once a connect succeeds again).
+  if (!credentialsHealthy(authBaseKey(config.baseUrl, config.username))) return
   const songId = navSongId(track.trackId)
   if (!songId) return
   try {
@@ -144,6 +148,9 @@ function navSongId(trackId: string): string | null {
 export async function reconcileToNavidrome(): Promise<{ pushed: number; cleared: number; skipped: number }> {
   const config = getCachedConfig()
   if (!config) return { pushed: 0, cleared: 0, skipped: 0 }
+  // Auth-health gate: a bulk reconcile against rejected credentials would be
+  // exactly the retry storm this module exists to prevent.
+  if (!credentialsHealthy(authBaseKey(config.baseUrl, config.username))) return { pushed: 0, cleared: 0, skipped: 0 }
 
   const all = await getAllMetadata()
   const targets: { id: string; rating: number; loved: boolean }[] = []
