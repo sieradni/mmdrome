@@ -59,7 +59,7 @@ final class MaturationTests: XCTestCase {
         // 4 KB, 8 KB, 16 KB, 32 KB, 64 KB … then the lead crossing itself.
         var probed: [Int64] = []
         var lastProbed: Int64 = 0
-        for received in stride(from: Int64(1), through: 500_000, by: 1_000) {
+        for received in stride(from: Int64(1), through: 520_000, by: 1_000) {
             if Maturation.shouldProbeHeader(received: received, lastProbedAt: lastProbed, leadRequiredBytes: 500_000) {
                 probed.append(received)
                 lastProbed = received
@@ -70,6 +70,7 @@ final class MaturationTests: XCTestCase {
         // The lead crossing fires ONCE at the first tick at-or-past the lead
         // (rung arithmetic can overshoot between 1 KB samples; the FIRING
         // condition is lastProbedAt < lead, so the crossing is never skipped).
+        // The stride must REACH past the lead or the crossing can never fire.
         XCTAssertEqual(probed.filter({ $0 >= 500_000 }).count, 1)
     }
 
