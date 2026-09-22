@@ -4,6 +4,8 @@ import { writable } from 'svelte/store'
 import { webdavFetch } from './webdavUtils'
 
 import { md5 } from './md5'
+import { recordAuthOutcome, authBaseKey } from './authHealth'
+import { dbgDanger } from './debugLog'
 
 const API_VERSION = '1.16.1'
 const CLIENT_NAME = 'mmdrome'
@@ -285,6 +287,21 @@ async function callSubsonicWithPairs(
   if (response['status'] === 'failed') {
     const code = response.error?.['code'] ?? 0
     const message = response.error?.['message'] ?? 'Unknown error'
+    // THE auth-health choke point: code 40 is the server's authoritative
+    // "credentials rejected". Every Subsonic call flows through here, so a
+    // single record feeds the ledger that gates all retry callers — wrong
+    // credentials stop hitting the server after the first authoritative no
+    // (Navidrome 0.64.1 also rate-limits failed logins server-side, so the
+    // spam is now self-throttling punishment, not just noise).
+    if (code === 40) {
+      const verdict = recordAuthOutcome(authBaseKey(config.baseUrl, config.username), code, message)
+      // The ONE-TIME park transition is a danger event (a gate verdict the
+      // Copy dump must verify); repeat rejections dedupe to 'already-parked'
+      // and stay out of the ring.
+      if (verdict === 'parked') {
+        dbgDanger('sync', `credentials REJECTED (code 40: ${message}) — auth-health parked for this server; gated legs (scrobbles/feedback/lyrics) stop until a successful connect or a credential change`)
+      }
+    }
     throw createSubsonicError(code, message)
   }
   return response
@@ -440,10 +457,19 @@ export function buildStreamUrl(config: NavidromeConfig, songId: string, transcod
   return url.toString()
 }
 
-export function buildCoverArtUrl(config: NavidromeConfig, id: string, size?: number): string {
+/**
+ * Builds a getCoverArt URL. `size` is REQUIRED: Navidrome's `size` param
+ * bounds the server-side rendition so a request can never pull a 1–3 MB
+ * original through a thumbnail-sized `<img>` (the historical every-thumbnail-
+ * downloads-the-original bug), and 0.64's artwork decode cap (MaxImageSize)
+ * plus the negative/oversized-dimension rejection make the bound authoritative
+ * server-side. Removing the optional path is the client-side half of that
+ * cap — a compile-time guarantee no future caller can regress it.
+ */
+export function buildCoverArtUrl(config: NavidromeConfig, id: string, size: number): string {
   const params = buildAuthParams(config.username, config.password, false)
   params.id = id
-  if (size) params.size = String(size)
+  params.size = String(size)
 
   const url = new URL(`${normalizeUrl(config.baseUrl)}/rest/getCoverArt.view`)
   Object.entries(params).forEach(([key, value]) => {

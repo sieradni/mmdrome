@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { coverLadderUrls } from '../lib/coverArtCache'
+  import { coverLadderUrls, microCoverUrl } from '../lib/coverArtCache'
   import { coverConfig } from '../lib/navidromeApi'
   import { requestThumb, cancelThumb } from '../lib/thumbLoader'
   import { effectiveLowData } from '../lib/networkMode'
@@ -10,6 +10,17 @@
   let { track, wrapperClass = '', size = 128 }: { track: Track; wrapperClass?: string; size?: 96 | 128 | 256 | 512 } = $props()
 
   let visible = $state(false)
+  /** The loader's cached-lane claim at arm time (the revisit-after-unlatch
+   *  case: the cover is an immutable HTTP-cache hit, near-instant). Cached
+   *  arms skip the micro placeholder entirely AND mount the main img at full
+   *  opacity — a 300 ms fade-in on an instantly-available cover was a tax on
+   *  exactly the scroll-back scenario the cached lane exists to make instant. */
+  let armedCached = $state(false)
+  /** Fast-reveal (flow review): a main cover that loads within FAST_REVEAL_MS
+   *  of arming (HTTP-cache hit after an app restart — lastLoadedUrl is
+   *  component-lifetime, so such revisits arm as "fresh") skips the crossfade
+   *  and appears instantly. Slow network loads keep the wash + fade. */
+  let fastLoaded = $state(false)
   let container: HTMLDivElement
 
   // Far-window unlatch (2026-09-17j, the "scrollbar-style jump broke covers"
@@ -45,6 +56,10 @@
 
   const fallbackIcon = `${import.meta.env.BASE_URL}icon-192.png`
 
+  /** A main cover that onloads this soon after arming reveals instantly (no
+   *  300 ms fade) — the post-restart HTTP-cache-hit case. */
+  const FAST_REVEAL_MS = 150
+
   // LDM steps the thumbnail down one canonical level (512→256→128→96); the
   // derived chain re-derives the URL when the effective mode flips. A
   // track/config change restarts the ladder (the fallback icon must never
@@ -79,6 +94,20 @@
     return coverLadderUrls(track, coverCfg, renderTarget)
   })
 
+  // Blurred micro-rendition placeholder: a ~1–2 KB `size=32` rendition painted
+  // blurred+enlarged UNDER the real image, so an armed row shows the cover's
+  // color wash immediately instead of a flat surface while the real rendition
+  // downloads (slow LAN / cold server resize cache). Hidden once the real
+  // image fires onload — a failed micro is simply not shown (the failure
+  // ladder below still governs the real attempts).
+  let microLoaded = $state(false)
+  let microFailed = $state(false)
+  let microUrl = $derived.by(() => {
+    if (!track || !coverCfg) return null
+    const url = microCoverUrl(track, coverCfg)
+    return url === '' ? null : url
+  })
+
   let currentUrl = $derived.by(() => {
     for (let i = attemptIndex; i < ladder.length; i++) {
       const url = ladder[i]
@@ -97,7 +126,17 @@
     renderedSize = renderTarget
     failedUrls = new Set()
     attemptIndex = 0
+    // The placeholder underlay belongs to the SAME identity — a new track's
+    // micro rendition (or a failed one) must never bleed into the next row.
+    microLoaded = false
+    microFailed = false
+    armedCached = false
+    fastLoaded = false
   })
+
+  /** Arm timestamp for the fast-reveal window (set by the request observer's
+   *  arm callback — NOT component init, or pre-roll time would count). */
+  let armedAt = 0
 
   function handleImgError(): void {
     const url = currentUrl
@@ -117,7 +156,8 @@
       ([entry]) => {
         if (entry.isIntersecting && !visible) {
           const cached = currentUrl !== null && currentUrl === lastLoadedUrl
-          requestThumb(container, () => { visible = true }, cached)
+          armedCached = cached
+          requestThumb(container, () => { visible = true; armedAt = performance.now() }, cached)
         }
       },
       // 2000px pre-roll (widened 2026-09-17 from 800px, the "far scroll takes
@@ -162,23 +202,43 @@
   })
 </script>
 
-<div bind:this={container} class="{wrapperClass} overflow-hidden bg-surface-hover">
-  {#if visible && currentUrl}
-    <!-- No loading="lazy": scheduling is OWNED by the IO pre-roll + thumbLoader
-         queue, and the browser's own lazy threshold (small on iOS Safari) would
-         re-defer cells armed early — fighting the pre-roll. -->
-    <img
-      src={currentUrl}
-      alt=""
-      class="h-full w-full object-cover"
-      decoding="async"
-      onerror={handleImgError}
-      onload={() => { lastLoadedUrl = currentUrl }}
-    />
-  {:else if visible}
-    <!-- No cover URL, the ladder exhausted, or no cover config: the app icon.
-         A transient failure recovers on the next track/config change (the
-         failure memory resets with the ladder). -->
-    <img src={fallbackIcon} alt="" class="h-full w-full object-cover opacity-60" decoding="async" />
+<div bind:this={container} class="{wrapperClass} relative overflow-hidden bg-surface-hover">
+  {#if visible}
+    <!-- Micro-rendition underlay: sits BEHIND the real image and fades OUT
+         over the same 300 ms the real image fades IN — a crossfade, not a
+         pop. Stays mounted for the identity's lifetime (removal would churn
+         the DOM and cut the fade short). -->
+    {#if microUrl && !microFailed && !armedCached}
+      <img
+        src={microUrl}
+        alt=""
+        class="absolute inset-0 h-full w-full scale-110 object-cover blur-xl transition-opacity duration-300 {microLoaded ? 'opacity-0' : 'opacity-60'}"
+        decoding="async"
+        onerror={() => { microFailed = true }}
+        onload={() => { microLoaded = true }}
+      />
+    {/if}
+    {#if currentUrl}
+      <!-- No loading="lazy": scheduling is OWNED by the IO pre-roll + thumbLoader
+           queue, and the browser's own lazy threshold (small on iOS Safari) would
+           re-defer cells armed early — fighting the pre-roll. -->
+      <img
+        src={currentUrl}
+        alt=""
+        class="h-full w-full object-cover {fastLoaded ? '' : 'transition-opacity duration-300'} {microUrl && !microLoaded && !armedCached ? 'opacity-0' : 'opacity-100'}"
+        decoding="async"
+        onerror={handleImgError}
+        onload={() => {
+          lastLoadedUrl = currentUrl
+          microLoaded = true
+          if (performance.now() - armedAt < FAST_REVEAL_MS) fastLoaded = true
+        }}
+      />
+    {:else}
+      <!-- No cover URL, the ladder exhausted, or no cover config: the app icon.
+           A transient failure recovers on the next track/config change (the
+           failure memory resets with the ladder). -->
+      <img src={fallbackIcon} alt="" class="h-full w-full object-cover opacity-60" decoding="async" />
+    {/if}
   {/if}
 </div>

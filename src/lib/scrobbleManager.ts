@@ -7,6 +7,7 @@ import { lfmUpdateNowPlaying } from './lastfmApi'
 import { lbSubmitListen } from './listenbrainzApi'
 import { scrobbleFlushEngine } from './scrobbleFlush'
 import { effectiveLowData } from './networkMode'
+import { credentialsHealthy, authBaseKey } from './authHealth'
 
 /**
  * Client-side listening tracker. Feeds Navidrome's Subsonic `scrobble` endpoint
@@ -124,6 +125,11 @@ function defaultDestinations(): ScrobbleDestinations {
       if (lowDataSuppressesNavidromeScrobble(get(effectiveLowData))) return
       const config = getCachedConfig()
       if (!config) return
+      // Auth-health gate: credentials the server authoritatively rejected
+      // (Subsonic code 40) stop hitting the server — 0.64.1 rate-limits
+      // failed logins, so re-sending them is self-punishing noise. Gated-out
+      // listens resurface on the next successful connect (markAuthSuccess).
+      if (!credentialsHealthy(authBaseKey(config.baseUrl, config.username))) return
       void submitScrobble(config, stripPrefix(track.trackId), startedAtMs).catch(() => {
         // A failed scrobble is dropped — the server is authoritative anyway and
         // external listeners (Last.fm) keep their own session; retries add noise.
@@ -134,6 +140,8 @@ function defaultDestinations(): ScrobbleDestinations {
       if (lowDataSuppressesNavidromeScrobble(get(effectiveLowData))) return
       const config = getCachedConfig()
       if (!config) return
+      // Same auth-health gate as the submission leg.
+      if (!credentialsHealthy(authBaseKey(config.baseUrl, config.username))) return
       void submitNowPlaying(config, stripPrefix(track.trackId)).catch(() => {
         // Non-fatal: a failed nowPlaying heartbeat is not worth surfacing.
       })

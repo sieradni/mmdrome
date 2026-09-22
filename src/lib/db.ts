@@ -90,6 +90,12 @@ export interface SongLibraryCache {
   lastScan: string
   /** `baseUrl|username` this cache belongs to — prevents cross-server reuse. */
   baseKey?: string
+  /** The server's version when this snapshot was captured (ping.view
+   *  `serverVersion`). A version MISMATCH invalidates the cache: the
+   *  Navidrome 0.64 upgrade re-encoded every item id, so a snapshot from a
+   *  previous server version must never be served. Legacy rows (field
+   *  absent) mismatch any known live version → one full re-sync. */
+  serverVersion?: string
 }
 
 export interface UserSettings {
