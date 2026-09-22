@@ -2553,6 +2553,7 @@ public final class NativeAudioEngine: NSObject {
             "stagedActive": stagedSchedule != nil,
             "stagedComplete": stagedSchedule?.isComplete ?? false,
             "stagedStalled": stagedSchedule?.isStalled ?? false,
+            "stagedFadeEligible": stagedSchedule.map { StreamSchedule.fadeEligibility(isScheduleComplete: $0.isComplete) } ?? false,
             "stagedEndSeconds": stagedSchedule.map { $0.scheduledEndSeconds } ?? 0,
             "stagedDeliveredBytes": stagedSchedule?.deliveredBytes ?? 0,
             "stagedAnnouncedBytes": stagedSchedule?.announcedBytes ?? 0,
@@ -2842,9 +2843,15 @@ public final class NativeAudioEngine: NSObject {
                 }
                 player.play()
                 setPlaying(true)
-                // Crossfade automation stays OFF for staged tracks in Phase 2
-                // (hard cut at the natural end) — Phase 3 owns staged fades.
-                stopCrossfadeMonitor()
+                // Phase 3: fade automation rides the schedule's COMPLETENESS,
+                // not its stagedness — a COMPLETE staged track fades like any
+                // other; a streaming schedule keeps automation off (the
+                // buffering pause would tear a mid-flight fade down).
+                if StreamSchedule.fadeEligibility(isScheduleComplete: staged.isComplete) {
+                    setupCrossfadeMonitor()
+                } else {
+                    stopCrossfadeMonitor()
+                }
             } else {
                 setPlaying(false)
                 stopCrossfadeMonitor()
@@ -3185,6 +3192,21 @@ public final class NativeAudioEngine: NSObject {
         }
         stagedSchedule = staged
         eventAdd(.info, "stream", "staged schedule complete id=\(staged.trackId) — natural end restored")
+        // Phase 3: the schedule just became file truth — fades arm now (if
+        // the transition point is ahead) even though they never armed while
+        // the track was streaming. Deferred one runloop turn like every
+        // post-switch re-arm (the 1.2.31 re-entrancy lesson). If a fade is
+        // somehow already in flight the monitor stays hands-off until it
+        // resolves (the setup guard reads crossfade state).
+        if staged.isStalled == false {
+            let rearmGeneration = scheduleGeneration
+            DispatchQueue.main.async { [weak self] in
+                guard let self, rearmGeneration == self.scheduleGeneration else { return }
+                if self.isPlaying, self.crossfade.isInFlight == false {
+                    self.setupCrossfadeMonitor()
+                }
+            }
+        }
         // The stream owned the bandwidth while it ran; now that the file is
         // COMPLETE the preload chain arms for the upcoming rows (a staged
         // load deliberately skips the arm in loadAndStart so the user's
@@ -3631,7 +3653,18 @@ public final class NativeAudioEngine: NSObject {
                 self.eventAdd(.debug, "stream", "staged segment completion consumed silently: \(reason)")
             }
             if staged.isComplete {
-                // The file passed the gates; this is a REAL end — advance.
+                // The file passed the gates; this is a REAL end. Phase 3:
+                // with a fade in flight this completion IS the switch point —
+                // finalize (the standby is already mid-ramp; a direct advance
+                // would race it — the 1.2.28 wedge's shape). No premature
+                // gate here: the byte gates proved this file, and
+                // abort-keep-active would strand it (a complete staged
+                // schedule has no remaining tail to "keep playing").
+                if self.crossfade.isInFlight {
+                    eventAdd(.info, "stream", "staged end during fade — finalizing switch to row \(String(describing: self.crossfade.targetIndex))")
+                    self.finalizeCrossfadeSwitch()
+                    return
+                }
                 if self.sleepAtTrackEnd {
                     self.sleepAtTrackEnd = false
                     self.pause()
@@ -3654,10 +3687,18 @@ public final class NativeAudioEngine: NSObject {
             // Staged + not complete: the playhead reached the promised end.
             // That is the buffering pause — regardless of whether the user
             // hears a gap (the estimate under-promised) or not (the data
-            // genuinely ran out).
+            // genuinely ran out). Phase 3 defense in depth (the core's
+            // .abortFadeThenPause verdict): a fade should NEVER be in flight
+            // here (fades arm only on complete schedules) — but if the
+            // contract is ever violated, dropping the automation before the
+            // pause is strictly safer than pausing under a live ramp.
             if staged.isStalled {
                 consumeQuietly("already stalled")
                 return
+            }
+            if self.crossfade.isInFlight {
+                eventAdd(.danger, "stream", "staged buffering during fade (contract violation) — aborting fade automation, then pausing")
+                self.abortCrossfadeKeepActive()
             }
             self.enterBufferingStall(atSeconds: staged.scheduledEndSeconds)
         }
@@ -3683,15 +3724,19 @@ public final class NativeAudioEngine: NSObject {
     private func setupCrossfadeMonitor() {
         stopCrossfadeMonitor()
         guard crossfadeDuration > 0, isPlaying, loopMode != .one, !sleepAtTrackEnd, tracks.indices.contains(activeIndex) else { return }
-        // A15 Phase 2: a STAGED schedule owns its own end (handleStagedCompletion
-        // drives the advance) — crossfade automation stays OFF for the whole
-        // staged track instance. The monitor's arming sites are many (play()
-        // plain-resume, setLoopMode, setCrossfade, finalize), so the rule is
-        // enforced here at the ONE choke point rather than at each caller: a
-        // fade racing the staged completion chain would finalize against a
-        // schedule the staged advance already tore down. Fades resume on the
-        // next non-staged load (Phase 3 owns staged fades).
-        guard stagedSchedule == nil else { return }
+        // A15: a STAGED schedule's fade automation keys on its COMPLETENESS
+        // (Phase 3 — `StreamSchedule.fadeEligibility`): while streaming, the
+        // estimate under-promises (the fade window cannot cover the ramp and
+        // the buffering pause would tear the fade down mid-flight), so no
+        // monitor. Once COMPLETE the schedule is file truth — fades exactly
+        // like a full-download track. The monitor's arming sites are many
+        // (play() plain-resume, setLoopMode, setCrossfade, finalize), so the
+        // rule is enforced here at the ONE choke point rather than at each
+        // caller: a fade racing the staged completion chain would finalize
+        // against a schedule the staged advance already tore down.
+        if let staged = stagedSchedule {
+            guard StreamSchedule.fadeEligibility(isScheduleComplete: staged.isComplete) else { return }
+        }
         // A seek-suppressed track gets no monitor at all — automation is off
         // for the remainder of this track instance.
         guard tracks[activeIndex].trackId != seekSuppressedTrackId,
@@ -3941,6 +3986,17 @@ public final class NativeAudioEngine: NSObject {
         standbyGain.outputVolume = 0
         positionBias = 0
         cachedPosition = 0
+        // Phase 3: the staged schedule belongs to the OUTGOING track. If its
+        // end drove this finalize (the staged→fade switch), the state must go
+        // BEFORE the new track's bookkeeping — a surviving stagedSchedule
+        // would send scheduleCurrentTrack down the staged branch with the old
+        // track's .part, and its pending chained counts would corrupt the new
+        // track's end discrimination. cancelScheduled already cleared the
+        // counters; the snapshot reference goes here. The writer is NOT
+        // touched: a promote-complete writer has already delivered its
+        // cache entry (localURL serves the next track); there is nothing to
+        // cancel.
+        teardownStagedState()
         activeGain.outputVolume = Float(tracks[activeIndex].replayGainLinear(mode: replayGainMode))
         let formattedPosition = String(format: "%.2f", currentPosition)
         eventAdd(.info, "crossfade", "fade complete track=\(tracks[activeIndex].trackId) position=\(formattedPosition)")

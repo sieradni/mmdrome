@@ -179,4 +179,31 @@ final class StreamScheduleTests: XCTestCase {
     func testStallGiveUpIsBounded() {
         XCTAssertEqual(StreamSchedule.stallGiveUpSeconds, 10.0)
     }
+
+    // MARK: - Phase 3: staged tracks and the crossfade
+
+    func testFadeEligibilityTracksScheduleCompleteness() {
+        XCTAssertFalse(StreamSchedule.fadeEligibility(isScheduleComplete: false),
+                       "a streaming estimate under-promises — the fade window cannot cover the ramp")
+        XCTAssertTrue(StreamSchedule.fadeEligibility(isScheduleComplete: true),
+                      "a COMPLETE staged schedule is file truth — fades like any full-download track")
+    }
+
+    func testStagedEndVerdictMatrix() {
+        XCTAssertEqual(
+            StreamSchedule.stagedEndVerdict(isScheduleComplete: true, fadeInFlight: true),
+            .finalizeSwitch,
+            "complete + fade = the switch point; a direct advance would race the mid-ramp standby")
+        XCTAssertEqual(
+            StreamSchedule.stagedEndVerdict(isScheduleComplete: true, fadeInFlight: false),
+            .advance)
+        XCTAssertEqual(
+            StreamSchedule.stagedEndVerdict(isScheduleComplete: false, fadeInFlight: false),
+            .bufferingPause,
+            "a staged promise expiring without a fade is the buffering pause — never an advance")
+        XCTAssertEqual(
+            StreamSchedule.stagedEndVerdict(isScheduleComplete: false, fadeInFlight: true),
+            .abortFadeThenPause,
+            "contractually impossible — defense in depth: no finalize against an expired promise")
+    }
 }

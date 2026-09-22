@@ -217,4 +217,60 @@ public enum StreamSchedule {
         else { return nil }
         return schedulableEndFrames
     }
+
+    // MARK: - Phase 3: staged tracks and the crossfade
+
+    /// May a fade be AUTOMATED for the staged track in this state? While
+    /// still streaming (estimate-based schedule), NO: the promise ends short
+    /// of the metadata transition point (the 2 % slack biases down), so the
+    /// fade window cannot cover the ramp — and the buffering pause would tear
+    /// a mid-flight fade down. Once COMPLETE the schedule IS file truth (the
+    /// byte gates proved it) and the staged track fades exactly like a
+    /// full-download track. The engine applies this at the monitor's setup
+    /// choke point AND in the staged schedule branch (an armed monitor must
+    /// not survive a re-schedule that lost eligibility).
+    public static func fadeEligibility(isScheduleComplete: Bool) -> Bool {
+        isScheduleComplete
+    }
+
+    /// The verdict for a staged node's LAST-segment completion (no chained
+    /// successor) — the Phase 3 end-discrimination matrix. This is the one
+    /// new interaction: the staged end and the fade switch point are the
+    /// SAME completion when a fade is in flight.
+    ///
+    /// - complete + fade in flight → the SWITCH POINT: finalize (the standby
+    ///   is already mid-ramp; a direct advance would race it — the 1.2.28
+    ///   wedge's shape). No premature gate here: the byte gates already
+    ///   proved this file, and abort-keep-active would strand it (a complete
+    ///   staged schedule has no remaining tail to "keep playing").
+    /// - complete + no fade → the natural advance (sleep/loop/next logic).
+    /// - not complete + no fade → the buffering pause.
+    /// - not complete + fade in flight → contractually impossible (fades arm
+    ///   only on complete schedules) — defense in depth: abort the fade and
+    ///   take the buffering pause rather than finalize against a promise that
+    ///   just expired.
+    public static func stagedEndVerdict(
+        isScheduleComplete: Bool,
+        fadeInFlight: Bool
+    ) -> StagedEndVerdict {
+        switch (isScheduleComplete, fadeInFlight) {
+        case (true, true): return .finalizeSwitch
+        case (true, false): return .advance
+        case (false, false): return .bufferingPause
+        case (false, true): return .abortFadeThenPause
+        }
+    }
+
+    public enum StagedEndVerdict: Equatable {
+        /// The fade's switch point: finalizeCrossfadeSwitch (the standby
+        /// becomes active; the outgoing staged state tears down in finalize).
+        case finalizeSwitch
+        /// Natural end: sleep-park / loop-one / advance / queue-end logic.
+        case advance
+        /// The buffering pause (never an advance, never an evict).
+        case bufferingPause
+        /// Defense in depth only (contractually unreachable): drop the fade
+        /// automation, then take the buffering pause.
+        case abortFadeThenPause
+    }
 }
