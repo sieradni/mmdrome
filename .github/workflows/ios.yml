@@ -205,7 +205,21 @@ jobs:
         if: steps.commit.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: npm run deploy
+        run: |
+          # deploy-web.mjs pushes from gh-pages' OWN cache clone (outside this
+          # workspace), which does NOT inherit actions/checkout's persisted
+          # credentials — the 1.2.33 finalize failure ("could not read Username
+          # for 'https://github.com'"). Inject the checkout's auth header into
+          # the ambient git config: `git -C <cache>` still reads the CWD repo's
+          # ~/.gitconfig? No — it reads config from the CWD upward, so write it
+          # into the cache clone itself via -c (per-invocation, no file edit).
+          # http.extraheader carries the runner's own auth header value.
+          AUTH_HEADER=$(git config --get "http.https://github.com/.extraheader")
+          if [ -z "$AUTH_HEADER" ]; then
+            echo "::error::no checkout auth header found — cannot authenticate the gh-pages cache push"
+            exit 1
+          fi
+          npm run deploy -- --git-config-extraheader "$AUTH_HEADER"
 
       - name: Purge jsDelivr CDN
         # PLAIN GET (curl -X PURGE 400s at Cloudflare — E11 2026-09-13).

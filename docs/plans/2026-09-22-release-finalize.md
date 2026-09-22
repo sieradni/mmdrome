@@ -28,9 +28,7 @@ Every `ios-v*` tag run now finishes the release itself, after `release-ios` publ
    reset to the default — E11 2026-09-11 lesson).
 2. **Commit + push to main** — rebase-onto-main (tag state never merges); the
    default-token push does not re-trigger workflows, so the manifest commit cannot
-   re-enter the build queue.
-3. **gh-pages mirror deploy** — `npm run deploy` (pure branch push, never tags, so
-   it cannot collide with the tag in the concurrency group).
+   re-enter the build queue.3. **gh-pages mirror deploy** — `npm run deploy -- --git-config-extraheader <auth>` (pure branch push, never tags, so it cannot collide with the tag in the concurrency group). The extraheader is REQUIRED in CI (added 2026-09-22, the 1.2.33 finalize failure): deploy-web.mjs pushes from gh-pages' OWN cache clone, which lives outside the workspace and inherits no credentials from actions/checkout — locally the ambient credential helper fills the gap, in CI the push died with `could not read Username for 'https://github.com'`. The header value comes from the checkout's own `http.https://github.com/.extraheader` git config; deploy-web.mjs applies it via `git -c` to the cache-clone push only (no credential material written to disk).
 4. **jsDelivr purge** — plain GET on `purge.jsdelivr.net` (`-X PURGE` 400s at
    Cloudflare).
 5. **Surface verification (hard gate)** — polls BOTH the jsDelivr CDN and the

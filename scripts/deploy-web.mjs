@@ -22,6 +22,15 @@ import ghpages from 'gh-pages'
 
 const execFileP = promisify(execFile)
 
+// Optional per-invocation git config for the cache-clone push (CI: the
+// http.extraheader injected by actions/checkout — the cache clone lives
+// OUTSIDE the workspace repo and inherits no credentials of its own).
+// Local runs pass nothing and keep using the ambient credential helper.
+const flagIdx = process.argv.indexOf('--git-config-extraheader')
+const extraPushArgs = flagIdx !== -1 && process.argv[flagIdx + 1]
+  ? ['-c', `http.extraheader=${process.argv[flagIdx + 1]}`]
+  : []
+
 // The SideStore source rides along on gh-pages as a SECOND source URL —
 // a fallback for jsDelivr edge staleness (SideStore kept an old version
 // after purge; a different CDN lets the user re-add the source without
@@ -64,5 +73,5 @@ const cacheDir = ghpages.getCacheDir(repoUrl.trim())
 console.log('Pushing gh-pages (refs only, no tags)...')
 // The clone checks out origin/gh-pages as a DETACHED HEAD and commits on it —
 // there is no local `gh-pages` branch, so push HEAD to the remote branch.
-await execFileP('git', ['-C', cacheDir, 'push', 'origin', 'HEAD:refs/heads/gh-pages'], { stdio: 'inherit' })
+await execFileP('git', ['-C', cacheDir, ...extraPushArgs, 'push', 'origin', 'HEAD:refs/heads/gh-pages'], { stdio: 'inherit' })
 console.log('Deployed.')
