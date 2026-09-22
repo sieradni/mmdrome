@@ -652,7 +652,7 @@ final class TrackFileLoader {
                 headerProbeSaysAudio: probed ? probeSaysAudio : (previous == .headered || previous == .playable))
             if stage != previous {
                 maturationStages[key] = stage
-                event(.info, "stream", "maturation \(previous)→\(stage) track=\(trackId) received=\(received) announced=\(expected.map(String.init) ?? "?")")
+                event(.info, "maturation \(previous)→\(stage) track=\(trackId) received=\(received) announced=\(expected.map(String.init) ?? "?")")
             }
         }
     }
@@ -3659,7 +3659,7 @@ public final class NativeAudioEngine: NSObject {
                 return
             }
             let consumeQuietly: (String) -> Void = { reason in
-                eventAdd(.debug, "stream", "staged segment completion consumed silently: \(reason)")
+                self.eventAdd(.debug, "stream", "staged segment completion consumed silently: \(reason)")
             }
             if staged.isComplete {
                 // The file passed the gates; this is a REAL end — advance.
