@@ -27,7 +27,8 @@
           "date": "2026-09-22T19:31:25.350Z",
           "localizedDescription": "Navidrome 0.64.1 migration readiness: version-gated library cache (one full re-sync after a server upgrade — dead-id protection), required cover-art size with blurred micro-rendition placeholders, auth-health ledger stops the invalid-credential request spam (0.64.1 rate-limits failed logins), stale-ID queue/metadata reconcile pins, plus the streaming field-dump fixes (staged play race, swallowed completions, stall rescue, seekbar progress for streamed tracks).",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.33/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5019169
         },
         {
           "version": "1.2.32",
