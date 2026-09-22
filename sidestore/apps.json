@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.31",
-      "versionDate": "2026-09-21T10:45:31.720Z",
-      "versionDescription": "Truncation defense completed: byte-exact Content-Length gate for clean early closes (Connectivity Assist churn), finalize re-entrancy fix (crossfaded track restarts), bounded prefetch retry with backoff, version-gated iOS opus verdict (LDM transcodes to opus again), stale-clock crossfade guard, and a finalize re-entry completion drop. Web: live debug-HUD toggle, full event rings in the dump, honest retire discrimination, native format-probe bypass.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.31/mmdrome.ipa",
+      "version": "1.2.32",
+      "versionDate": "2026-09-22T03:23:38.123Z",
+      "versionDescription": "Native streaming: audio starts before the download finishes. Crossfade works on streamed tracks once files complete. Resumable downloads on shaky connections. New debug fields (stagedActive/Complete/Stalled/FadeEligible) and stream/maturation event domains in the dump.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.32/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.32",
+          "buildVersion": "36",
+          "date": "2026-09-22T03:23:38.123Z",
+          "localizedDescription": "Native streaming: audio starts before the download finishes. Crossfade works on streamed tracks once files complete. Resumable downloads on shaky connections. New debug fields (stagedActive/Complete/Stalled/FadeEligible) and stream/maturation event domains in the dump.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.32/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5017333
+        },
         {
           "version": "1.2.31",
           "buildVersion": "35",
@@ -332,6 +341,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.32",
+      "identifier": "ios-v1.2.32",
+      "appID": "com.mmdrome.player",
+      "caption": "Native streaming: audio starts before the download finishes. Crossfade works on streamed tracks once files complete. Resumable downloads on ",
+      "date": "2026-09-22T03:23:38.123Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.31",
       "identifier": "ios-v1.2.31",
       "appID": "com.mmdrome.player",
@@ -364,15 +382,6 @@
       "appID": "com.mmdrome.player",
       "caption": "LDM multi-skip fix: truncated preload downloads are rejected and re-fetched; crossfade standby mid-fade abort keeps the queue alive; HUD Las",
       "date": "2026-09-18T09:37:18.269Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.27",
-      "identifier": "ios-v1.2.27",
-      "appID": "com.mmdrome.player",
-      "caption": "Two-lane thumbnail landing: the far-scroll 5s was a self-caused server flood (tier lane empties the screen before the band trickle starts); ",
-      "date": "2026-09-18T04:37:23.252Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
