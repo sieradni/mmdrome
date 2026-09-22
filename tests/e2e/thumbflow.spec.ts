@@ -169,23 +169,46 @@ test('covers unmount when their row leaves the far window (fetch abort, no pile-
   await page.waitForTimeout(800)
 
   await fling(page, 14, 50)
+  // ATOMIC snapshot (flake fix 2026-09-22): total and near MUST come from one
+  // evaluate — two separate evaluates raced the page between samples and the
+  // post-poll hard assertion caught a moved state ("imgs total 8, near 0").
+  const snapshot = () =>
+    page.evaluate(() => {
+      const vh = window.innerHeight
+      const mid = vh / 2
+      let total = 0
+      let near = 0
+      for (const img of document.querySelectorAll<HTMLImageElement>('img[src*="getCoverArt"]')) {
+        total++
+        const r = img.getBoundingClientRect()
+        const dist = Math.abs(r.top + r.height / 2 - mid)
+        if (dist <= vh * 5.5) near++
+      }
+      return { total, near }
+    })
   // Let the gesture end, the gate open, and the landing batch load — POLLED
   // until the unlatch invariant stabilizes (everything still mounted sits
   // near the current position); in-flight arming transiently mounts pre-roll
   // rows that the far window then drops, so an early fixed sample raced.
+  // STABILITY GATE: expect.poll passes on the FIRST true sample, and a
+  // mid-settle transient (old imgs unlatched, new arms mid-flight) can satisfy
+  // total===near for one tick before moving on. The predicate therefore must
+  // HOLD across a 400 ms quiet window before it counts — the settled state,
+  // not a passing moment, is the contract.
   await expect
     .poll(
       async () => {
-        const total = await page.evaluate(() => document.querySelectorAll('img[src*="getCoverArt"]').length)
-        const near = await nearViewportCoverImgs(page, 5.5)
-        return total === near && total >= 1
+        const s1 = await snapshot()
+        if (!(s1.total === s1.near && s1.total >= 1)) return false
+        await page.waitForTimeout(400)
+        const s2 = await snapshot()
+        return s2.total === s2.near && s2.total >= 1
       },
-      { timeout: 10_000, intervals: [250] },
+      { timeout: 15_000, intervals: [250] },
     )
     .toBe(true)
 
-  const total = await page.evaluate(() => document.querySelectorAll('img[src*="getCoverArt"]').length)
-  const near = await nearViewportCoverImgs(page, 5.5)
+  const { total, near } = await snapshot()
   console.log(`[thumbflow] imgs total ${total}, near viewport ${near}`)
 
   // The unlatch means the mounted-img set tracks the viewport window instead
