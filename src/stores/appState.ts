@@ -4,6 +4,7 @@ import type { NoMatchReason } from '$lib/metadataCore'
 import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
 import { persisted, type PersistedValue } from '$lib/persistedStore'
 import { sanitizeRecent } from '$lib/recentWindow'
+import { dbgAlways } from '$lib/debugLog'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
 
@@ -346,6 +347,16 @@ function reconcileQueueWithLibrary(tracks: Track[]): void {
       activeIndex = idx >= 0 ? idx : -1
     }
 
+    // Dump-visible drops: a server ID migration (Navidrome 0.64 re-encoding)
+    // zeroes every match at once — a "my queue lost songs" report must be
+    // answerable with counts, not silence.
+    const droppedUser = q.userQueue.length - userQueue.length
+    const droppedAuto = q.autoQueue.length - autoQueue.length
+    const droppedRecent = q.recentTrackIds.length - recentTrackIds.length
+    if (droppedUser + droppedAuto + droppedRecent > 0) {
+      dbgAlways('sync', `queue reconcile: dropped ${droppedUser} user + ${droppedAuto} auto + ${droppedRecent} recent stale ids; activeIndex ${q.activeIndex} → ${activeIndex}`)
+    }
+
     const updated = { userQueue, autoQueue, recentTrackIds, activeIndex }
     saveQueue(updated)
     return updated
@@ -356,14 +367,19 @@ function pruneStaleMetadata(tracks: Track[]): void {
   const ids = new Set(tracks.map((t) => t.trackId))
   const cache = get(metadataCache)
   const toDelete: string[] = []
+  let keptPending = 0
   const remaining = new Map(cache)
   for (const [id, meta] of cache) {
     if (ids.has(id)) continue
-    if (meta.syncStatus === 'pending_sync') continue
+    if (meta.syncStatus === 'pending_sync') {
+      keptPending += 1
+      continue
+    }
     remaining.delete(id)
     toDelete.push(id)
   }
   if (toDelete.length === 0) return
+  dbgAlways('sync', `metadata GC: pruned ${toDelete.length} orphaned rows${keptPending > 0 ? `, kept ${keptPending} pending_sync (Push Changes)` : ''}`)
   metadataCache.set(remaining)
   void bulkDeleteMetadata(toDelete)
 }
