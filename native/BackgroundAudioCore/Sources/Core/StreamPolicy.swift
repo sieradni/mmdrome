@@ -28,6 +28,13 @@ public enum StreamPolicy {
     /// bytes. A fast link wins by full download: simpler, cache-warms for
     /// offline, byte-gate-protected (the staged path trades the byte-exact
     /// gate for the lead contract).
+    ///
+    /// `.slowLink` NEVER reaches here from the engine — it routes through
+    /// `shouldStreamSlowLink` (F7, design review: the ratio form below was
+    /// vacuous — both estimates shared one rate, so the rate cancelled and
+    /// the comparison reduced to lead×1.375 < duration, true for any track
+    /// over ~21 s regardless of the link). Direct callers passing .slowLink
+    /// get the safe default (no streaming).
     public static func shouldStreamDirectTap(
         mode: Mode,
         rangeSupported: Bool,
@@ -35,17 +42,30 @@ public enum StreamPolicy {
         estimatedSecondsToPlayable: Double
     ) -> Bool {
         switch mode {
-        case .off:
+        case .off, .slowLink:
             return false
         case .on:
             return rangeSupported
-        case .slowLink:
-            guard rangeSupported else { return false }
-            // Only stream when waiting for full completion is meaningfully
-            // slower than reaching the playable lead. The 1.25× slack keeps
-            // borderline links on the simpler full-download path.
-            return estimatedSecondsToPlayable * 1.25 < estimatedFullDownloadSeconds
         }
+    }
+
+    /// The slow-link decision (F7, design review): the only genuinely
+    /// link-dependent question is whether the transfer rate can sustain
+    /// realtime playback. `estimatedFullDownloadSeconds > trackDuration`
+    /// is EXACTLY `rate < realtime bitrate` (both divide file bytes) — the
+    /// link cannot keep pace with the playhead, so waiting for the whole
+    /// file takes longer than listening to it and streaming is the only
+    /// timely option (the buffering contract exists for precisely this
+    /// shape). A link that CAN sustain playback stays on the simpler
+    /// full-download path: the wait is bounded by ~the track length, the
+    /// cache warms for offline, and no stall machinery is exercised.
+    /// The 25 % margin keeps borderline-sustainable links on full download.
+    public static func shouldStreamSlowLink(
+        estimatedFullDownloadSeconds: Double,
+        trackDuration: Double
+    ) -> Bool {
+        guard estimatedFullDownloadSeconds > 0, trackDuration > 0 else { return false }
+        return estimatedFullDownloadSeconds * 1.25 > trackDuration
     }
 
     /// Preload-window rows NEVER stream — they are the offline buffer. This

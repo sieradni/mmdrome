@@ -4,6 +4,44 @@ import XCTest
 
 final class StreamScheduleTests: XCTestCase {
 
+    // MARK: - The promote tail (F3, design review 2026-09-21)
+
+    /// At completion the tail reaches the file's REAL end — no 5 s bar. The
+    /// estimate's 2 % slack on a 4 min track is ~6 s; dropping it on the
+    /// churn bar was silence at the end of every streamed track.
+    func testCompletionTailReachesTheRealEndRegardlessOfChunkSize() {
+        let sr: Double = 44_100
+        let plan = StreamSchedule.completionTailPlan(
+            currentEndFrames: 170_000_000,
+            schedulableEndFrames: 170_352_800,
+            sampleRate: sr,
+            headerClaimedFrames: 170_352_800)
+        XCTAssertEqual(plan, 170_352_800)
+        // The sub-second tail shape (small file, 2 % slack under 5 s).
+        let small = StreamSchedule.completionTailPlan(
+            currentEndFrames: 10_000_000,
+            schedulableEndFrames: 10_192_000,
+            sampleRate: 48_000,
+            headerClaimedFrames: 10_192_000)
+        XCTAssertEqual(small, 10_192_000)
+    }
+
+    func testCompletionTailNilWhenNothingRemains() {
+        let sr: Double = 44_100
+        // Already at the end.
+        XCTAssertNil(StreamSchedule.completionTailPlan(
+            currentEndFrames: 170_352_800, schedulableEndFrames: 170_352_800,
+            sampleRate: sr, headerClaimedFrames: 170_352_800))
+        // Schedulable beyond the header claim: never rewind/overshoot — nil.
+        XCTAssertNil(StreamSchedule.completionTailPlan(
+            currentEndFrames: 200, schedulableEndFrames: 300,
+            sampleRate: sr, headerClaimedFrames: 100))
+        // No sample rate: no evidence, no plan.
+        XCTAssertNil(StreamSchedule.completionTailPlan(
+            currentEndFrames: 0, schedulableEndFrames: 100,
+            sampleRate: 0, headerClaimedFrames: 100))
+    }
+
     // MARK: - schedulableEndFrames (the lying-header clamp)
 
     func testSchedulableEndIsMinOfDeliveredAndHeaderClaim() {

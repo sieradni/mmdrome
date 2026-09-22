@@ -287,15 +287,16 @@ final class TrackFileLoader {
         if mode == .slowLink {
             // Slow-link needs a bandwidth estimate from a completed download;
             // without one, treat the link as fast (full download wins).
+            // F7: the link-dependent question is "can the link sustain
+            // realtime playback" — the OLD comparison here (playable vs
+            // full, both from the same rate) was vacuous: the rate cancelled
+            // and it reduced to lead×1.375 < duration, streaming every track
+            // over ~21 s on ANY link. shouldStreamSlowLink does the real
+            // math: full-download time × 1.25 margin vs the track duration.
             guard let rate = recentTransferRate, rate > 0 else { return false }
-            let lead = StreamPolicy.effectiveLeadSeconds(trackDuration: track.duration)
-            guard let leadBytes = StreamPolicy.bytesForLead(
-                fileBytes: Int64(track.size), trackDuration: track.duration, leadSeconds: lead) else { return false }
-            return StreamPolicy.shouldStreamDirectTap(
-                mode: .slowLink,
-                rangeSupported: true,
+            return StreamPolicy.shouldStreamSlowLink(
                 estimatedFullDownloadSeconds: Double(track.size) / rate,
-                estimatedSecondsToPlayable: Double(leadBytes) / rate)
+                trackDuration: track.duration)
         }
         return true
     }
@@ -310,7 +311,8 @@ final class TrackFileLoader {
     func streamLoad(
         _ track: NativeTrack,
         onProgress: @escaping (StreamProgress) -> Void,
-        onFinished: @escaping (StreamProgress?, Error?) -> Void
+        onFinished: @escaping (StreamProgress?, Error?) -> Void,
+        onArrival: @escaping (Int64) -> Void
     ) {
         let requested = TrackVariant(url: track.url)
         let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
@@ -359,11 +361,18 @@ final class TrackFileLoader {
         // calls writerDidReceiveBytes/writerDidComplete below.
         streamProgressHandler = onProgress
         streamFinishedHandler = onFinished
+        streamArrivalHandler = onArrival
         task.resume()
     }
 
     private var streamProgressHandler: ((StreamProgress) -> Void)? = nil
     private var streamFinishedHandler: ((StreamProgress?, Error?) -> Void)? = nil
+    /// Fires on MAIN for EVERY byte arrival (not just 512 KB rung crossings):
+    /// the engine's stall-resume decision and give-up timer key on RAW
+    /// progress — gating them on rungs starved a resuming trickle stream for
+    /// tens of seconds and killed making-progress streams as "no progress"
+    /// (F2, design review). Cheap per-arrival struct updates only.
+    private var streamArrivalHandler: ((Int64) -> Void)? = nil
 
     /// MAIN: the response header landed — the server's own Content-Length
     /// refines the snapshot's size estimate for the schedule math.
@@ -382,6 +391,12 @@ final class TrackFileLoader {
         let lead = StreamPolicy.effectiveLeadSeconds(trackDuration: track.duration)
         let leadBytes = MaturationStageSupport.bytesForLeadWithFallback(
             fileBytes: Int64(track.size), duration: track.duration, leadSeconds: lead)
+        // F2 (design review): EVERY arrival feeds the engine's progress
+        // ledger (stall resume + give-up timer) — rung-gated deliveries alone
+        // starved a resuming trickle stream for tens of seconds and let the
+        // give-up timer kill streams that WERE making progress. Cheap struct
+        // update, before the rung guard below.
+        streamArrivalHandler?(received)
         let shouldDeliver = StreamPolicy.writerShouldDeliver(
             accumulatedBytes: received,
             leadRequiredBytes: leadBytes,
@@ -415,6 +430,7 @@ final class TrackFileLoader {
             streamWriterTask = nil
             streamProgressHandler = nil
             streamFinishedHandler = nil
+            streamArrivalHandler = nil
             claimAt.removeValue(forKey: writer.cacheKey)
         }
         if let error {
@@ -566,6 +582,27 @@ final class TrackFileLoader {
     private func flushWriterChains(key: String, url: URL?, error: Error?) {
         let chains = streamWriterChains.removeValue(forKey: key) ?? []
         for chain in chains { chain(url, error) }
+    }
+
+    /// Engine-facing give-up (A15 Phase 2, the stall contract): cancel the
+    /// active writer WITHOUT the engine seeing a second error — the monitor
+    /// tick's `onError` is the single report, the JS retry re-engages, and
+    /// the writer's own completion path (didCompleteWithError, fired by
+    /// cancel()) records the delivered prefix into `pendingParts` so the
+    /// retry's prefetch Range-continues it instead of re-downloading from
+    /// zero. Without this, a stalled stream kept running and its next 512 KB
+    /// rung re-scheduled a STAGED schedule from 0:00 behind the retry —
+    /// the restart-from-the-beginning bug class, resurrected.
+    func cancelActiveWriterRetainingScratch() {
+        guard streamWriter != nil else { return }
+        // Silence the ENGINE legs first (nil both handlers): the completion
+        // that cancel() triggers must not deliver to onFinished/onProgress —
+        // the monitor already reported, and a second report would double-
+        // engage the JS retry. The loader-side bookkeeping still runs.
+        streamProgressHandler = nil
+        streamFinishedHandler = nil
+        streamArrivalHandler = nil
+        streamWriterTask?.cancel()
     }
 
     /// Advances the maturation state for one in-flight key and reports
@@ -1098,11 +1135,27 @@ final class TrackFileLoader {
                     let storedSize = (try? FileManager.default.attributesOfItem(atPath: moved.path)[.size] as? Int) ?? 0
                     self.state.store(moved, for: cacheKey, bytes: storedSize > 0 ? storedSize : nil)
                     self.variantOf[cacheKey] = requested
+                    // Bandwidth evidence (F1, design review): the slow-link
+                    // decision reads recentTransferRate — it must be fed by
+                    // EVERY completed transfer, not only the writer's promote
+                    // (a first-session slowLink mode could otherwise never
+                    // stream, and a writer-fed rate went stale across the
+                    // non-streaming tracks between staged loads). The claim
+                    // timestamp is recorded at prefetch start (the same map
+                    // the writer uses) and cleared just below.
+                    if let startedAt = self.claimAt.removeValue(forKey: cacheKey), storedSize > 0 {
+                        let elapsed = max(0.05, Date().timeIntervalSince(startedAt))
+                        self.recentTransferRate = Double(storedSize) / elapsed
+                    }
                     deliver(moved, nil)
                     pendings.forEach { $0(moved, nil) }
                     self.onDownloadFinished?(track.trackId, true)
                 } else {
                     let err = moveError ?? error
+                    // The failed attempt consumed its claim timestamp — drop
+                    // it so a retained-prefix retry's rate is not measured
+                    // across the dead gap.
+                    claimAt.removeValue(forKey: cacheKey)
                     // RESUMABLE: a loud failure (connection ripped out) may
                     // carry URLSession's opaque resumeData in the error's
                     // userInfo — the system's own continuation offer. Store it
@@ -1131,6 +1184,12 @@ final class TrackFileLoader {
             ? session.downloadTask(withResumeData: resumeData!, completionHandler: completionBody)
             : session.downloadTask(with: request!, completionHandler: completionBody)
         if state.claim(cacheKey, task: task, requestID: requestID) {
+            // Bandwidth-evidence start time (F1, design review): the
+            // completion hop reads this to update recentTransferRate for the
+            // slow-link decision. Recorded only when the claim WINS — a
+            // chained request never transfers, so its timestamp would poison
+            // the rate (claimAt is cleared by the writer paths and evict).
+            claimAt[cacheKey] = Date()
             task.resume()
         } else {
             // Unreachable on the main thread (the isActive check above already
@@ -1171,6 +1230,7 @@ final class TrackFileLoader {
                 streamWriterTask = nil
                 streamProgressHandler = nil
                 streamFinishedHandler = nil
+                streamArrivalHandler = nil
                 claimAt.removeValue(forKey: key)
                 flushWriterChains(key: key, url: nil, error: NSError(domain: "mmdrome.loader", code: -7005, userInfo: [NSLocalizedDescriptionKey: "Streamed load evicted: \(trackId)"]))
                 try? FileManager.default.removeItem(at: writer.part)
@@ -2773,7 +2833,14 @@ public final class NativeAudioEngine: NSObject {
             scheduleGeneration += 1
             let generation = scheduleGeneration
             staged.scheduledEndFrames = endFrames
-            scheduledSegmentSeconds = Double(endFrames) / sr
+            // A successful schedule REPLACES the stall: isStalled/stalledAt
+            // described the PREVIOUS promise, and leaving them set made the
+            // resumed track's final completion swallow as "already stalled"
+            // (silent queue stall — F6, design review). userPaused too: the
+            // schedule only exists because the user (or the auto-resume)
+            // asked to play.
+            staged.isStalled = false
+            staged.userPaused = false
             stagedSchedule = staged
             activeGain.outputVolume = Float(track.replayGainLinear(mode: replayGainMode))
             standbyGain.outputVolume = 0
@@ -3000,7 +3067,27 @@ public final class NativeAudioEngine: NSObject {
                     self.onError?("Stream failed before start: \(error.localizedDescription)")
                 }
             }
+        }, onArrival: { [weak self] deliveredBytes in
+            // F2: raw progress ledger — the ONLY keep-alive the stalled
+            // schedule and the give-up timer read. Rung-gated deliveries
+            // (onProgress) cannot serve this role on a trickle link.
+            guard let self = self else { return }
+            guard self.tracks.indices.contains(self.activeIndex),
+                  self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+            self.recordStreamArrival(deliveredBytes: deliveredBytes)
         })
+    }
+
+    /// MAIN, on every byte arrival (F2): update the progress ledger the
+    /// stall machinery reads. The schedule resume itself still rides the
+    /// rung-gated deliveries (which carry full StreamProgress) — arrivals
+    /// only keep the give-up timer honest and unblock resume promptly at
+    /// rung cadence (~2-4 s on a trickle link, not ~30-60 s).
+    private func recordStreamArrival(deliveredBytes: Int64) {
+        guard var staged = stagedSchedule else { return }
+        staged.deliveredBytes = deliveredBytes
+        staged.lastProgressAt = Date()
+        stagedSchedule = staged
     }
 
     /// MAIN, on each writer delivery: the staged schedule's growth engine.
@@ -3115,13 +3202,16 @@ public final class NativeAudioEngine: NSObject {
             let endable = StreamSchedule.schedulableEndFrames(
                 deliveredEndFrames: file.length,
                 headerClaimedFrames: file.length)
-            let plan = StreamSchedule.extensionPlan(
+            // The COMPLETION tail (F3, design review): no 5 s churn bar —
+            // this is the last extension ever, so any remainder must be
+            // chained or the estimate's 2 % slack is silence at the end of
+            // every streamed track.
+            if let tail = StreamSchedule.completionTailPlan(
                 currentEndFrames: staged.scheduledEndFrames,
                 schedulableEndFrames: endable,
                 sampleRate: staged.sampleRate,
-                headerClaimedFrames: staged.headerClaimedFrames)
-            if case .extend(let to) = plan {
-                chainStagedSegment(staged: &staged, toFrames: to)
+                headerClaimedFrames: staged.headerClaimedFrames) {
+                chainStagedSegment(staged: &staged, toFrames: tail)
             }
         }
         stagedSchedule = staged
@@ -3213,6 +3303,13 @@ public final class NativeAudioEngine: NSObject {
         if Date().timeIntervalSince(staged.lastProgressAt) >= StreamSchedule.stallGiveUpSeconds {
             let title = tracks.indices.contains(activeIndex) ? tracks[activeIndex].title : "track"
             eventAdd(.danger, "stream", "stall give-up after \(Int(StreamSchedule.stallGiveUpSeconds)) s of no progress at \(String(format: \"%.1f\", cachedPosition))s — handing to JS retry (Range-continues the prefix)")
+            // Cancel the writer FIRST: its cancel-triggered completion path
+            // records the delivered prefix into pendingParts (the Range
+            // substrate the retry continues) — but with the engine legs nil'd,
+            // so the monitor's onError below is the ONLY report (no double
+            // engage) and no later rung can resurrect the staged schedule.
+            // Teardown of the engine-side staged state rides the normal path.
+            loader.cancelActiveWriterRetainingScratch()
             teardownStagedState()
             onError?("Stream stalled: \(title)")
         }
@@ -3617,6 +3714,15 @@ public final class NativeAudioEngine: NSObject {
     private func setupCrossfadeMonitor() {
         stopCrossfadeMonitor()
         guard crossfadeDuration > 0, isPlaying, loopMode != .one, !sleepAtTrackEnd, tracks.indices.contains(activeIndex) else { return }
+        // A15 Phase 2: a STAGED schedule owns its own end (handleStagedCompletion
+        // drives the advance) — crossfade automation stays OFF for the whole
+        // staged track instance. The monitor's arming sites are many (play()
+        // plain-resume, setLoopMode, setCrossfade, finalize), so the rule is
+        // enforced here at the ONE choke point rather than at each caller: a
+        // fade racing the staged completion chain would finalize against a
+        // schedule the staged advance already tore down. Fades resume on the
+        // next non-staged load (Phase 3 owns staged fades).
+        guard stagedSchedule == nil else { return }
         // A seek-suppressed track gets no monitor at all — automation is off
         // for the remainder of this track instance.
         guard tracks[activeIndex].trackId != seekSuppressedTrackId,

@@ -194,4 +194,27 @@ public enum StreamSchedule {
         case truncation
         case streamStall
     }
+
+    // MARK: - The promote tail (design review 2026-09-21, F3)
+
+    /// DECISION when the writer PROMOTES a COMPLETE file: the chained tail
+    /// must reach the file's REAL end. Deliberately NO minimum-extension
+    /// bar — `minExtensionSeconds` exists to bound timer churn on a RUNNING
+    /// schedule; at completion there will be no further extensions, so any
+    /// positive remainder must be chained or it is silence at the end of
+    /// every streamed track (the 0.98 estimate slack ≈ 2 % of the file —
+    //  ~6 s at 4 min — was previously dropped on the 5 s bar). Still never
+    /// past the header claim, never a no-op, never a rewind.
+    public static func completionTailPlan(
+        currentEndFrames: Int64,
+        schedulableEndFrames: Int64,
+        sampleRate: Double,
+        headerClaimedFrames: Int64
+    ) -> Int64? {
+        guard sampleRate > 0,
+              headerClaimedFrames > currentEndFrames,
+              schedulableEndFrames > currentEndFrames
+        else { return nil }
+        return schedulableEndFrames
+    }
 }
