@@ -384,7 +384,7 @@ final class TrackFileLoader {
 
     /// MAIN: recompute the stage after a byte arrival and deliver when the
     /// writer policy says so. Called from the delegate hop.
-    private func writerDidReceiveBytes(_ received: Int64) {
+    func writerDidReceiveBytes(_ received: Int64) {
         guard var writer = streamWriter else { return }
         writer.accumulatedBytes = received
         let track = writer.track
@@ -416,7 +416,7 @@ final class TrackFileLoader {
     /// MAIN: the transfer ended (cleanly or with an error). Run the writer's
     /// completion verdict: promote through the SAME gate chain as a download,
     /// or retain the scratch for Range-continue.
-    private func writerDidComplete(_ error: Error?) {
+    func writerDidComplete(_ error: Error?) {
         guard let writer = streamWriter else { return }
         let handle = streamWriterHandle
         streamWriterHandle = nil
@@ -485,7 +485,7 @@ final class TrackFileLoader {
                     onDownloadFinished?(writer.track.trackId, false)
                     return
                 }
-                if DownloadSanity.isShortOfAnnouncedBytes(actualBytes: size, announcedBytes: writer.announcedBytes) {
+                if DownloadSanity.isShortOfAnnouncedBytes(actualBytes: Int(size), announcedBytes: writer.announcedBytes) {
                     event(.danger, "stream: promoted body short of announced (\(size) of \(writer.announcedBytes)) for \(writer.track.trackId) — retaining for Range-continue")
                     try? FileManager.default.moveItem(at: writer.destination, to: writer.part)
                     pendingParts[writer.cacheKey] = DownloadResume.Pending(parts: [size], announcedTotal: writer.announcedBytes)
@@ -502,7 +502,7 @@ final class TrackFileLoader {
                 resumeDataByCacheKey[writer.cacheKey] = nil
                 rangeUnsupportedKeys.remove(writer.cacheKey)
                 dropPending(cacheKey: writer.cacheKey, destination: writer.destination)
-                state.store(writer.destination, for: writer.cacheKey, bytes: size)
+                state.store(writer.destination, for: writer.cacheKey, bytes: Int(size))
                 variantOf[writer.cacheKey] = TrackVariant(url: writer.track.url)
                 event(.info, "stream: promoted \(writer.track.trackId) (\(size)B, \(probeFrames) frames) — cache entry complete")
                 flushWriterChains(key: writer.cacheKey, url: writer.destination, error: nil)
@@ -559,7 +559,7 @@ final class TrackFileLoader {
                     onDownloadFinished?(writer.track.trackId, false)
                     return
                 }
-                state.store(writer.destination, for: writer.cacheKey, bytes: size)
+                state.store(writer.destination, for: writer.cacheKey, bytes: Int(size))
                 variantOf[writer.cacheKey] = TrackVariant(url: writer.track.url)
                 event(.info, "stream: promoted \(writer.track.trackId) (\(size)B, no announced length — decodability-gated)")
                 flushWriterChains(key: writer.cacheKey, url: writer.destination, error: nil)
@@ -652,7 +652,7 @@ final class TrackFileLoader {
                 headerProbeSaysAudio: probed ? probeSaysAudio : (previous == .headered || previous == .playable))
             if stage != previous {
                 maturationStages[key] = stage
-                event(.info, "stream", "maturation \(previous)→\(stage) track=\(trackId) received=\(received) announced=\(expected.map(String.init) ?? \"?\")")
+                event(.info, "stream", "maturation \(previous)→\(stage) track=\(trackId) received=\(received) announced=\(expected.map(String.init) ?? "?")")
             }
         }
     }
@@ -2051,11 +2051,11 @@ public final class NativeAudioEngine: NSObject {
         // now, and scheduleCurrentTrack re-clamps to the fresh end. This is
         // ALSO the user's manual resume after pausing during a stall
         // (userPaused latched) — the auto-resume path never touched audio.
-        if let staged = stagedSchedule, staged.isStalled, stagedSourceURL != nil {
+        if var staged = stagedSchedule, staged.isStalled, stagedSourceURL != nil {
             staged.userPaused = false
             stagedSchedule = staged
             let resumeAt = cachedPosition
-            eventAdd(.info, "stream", "play() resumes stalled staged schedule at \(String(format: \"%.1f\", resumeAt))s")
+            eventAdd(.info, "stream", "play() resumes stalled staged schedule at \(String(format: "%.1f", resumeAt))s")
             cancelScheduled()
             scheduleCurrentTrack(from: resumeAt, autoPlay: true)
             return
@@ -2664,7 +2664,7 @@ public final class NativeAudioEngine: NSObject {
         // behavior byte-for-byte. A staged load deliberately does NOT arm
         // prefetchUpcoming here: the writer owns the bandwidth, and the
         // chain arms when the writer completes (completeStagedSchedule).
-        if streamDecision(for: track, mode: streamingMode) {
+        if loader.streamDecision(for: track, mode: streamingMode) {
             startStagedLoad(track: track, index: index, autoPlay: autoPlay)
             return
         }
@@ -2818,7 +2818,7 @@ public final class NativeAudioEngine: NSObject {
                 // Seek (or stall resume) at/past the delivered end: the
                 // buffering pause, not an error. autoPlay=false so the stall
                 // resume (or the user's own play tap) restarts audio.
-                eventAdd(.info, "stream", "schedule target past delivered end id=\(track.trackId) (seek \(String(format: \"%.1f\", seconds))s vs endable \(String(format: \"%.1f\", Double(endFrames) / sr))s) — buffering")
+                eventAdd(.info, "stream", "schedule target past delivered end id=\(track.trackId) (seek \(String(format: "%.1f", seconds))s vs endable \(String(format: "%.1f", Double(endFrames) / sr))s) — buffering")
                 staged.userPaused = !autoPlay
                 staged.isStalled = true
                 staged.stalledAtFrames = min(startFrame, endFrames)
@@ -3094,11 +3094,11 @@ public final class NativeAudioEngine: NSObject {
     /// Not stalled → maybe chain an extension. Stalled → maybe resume.
     /// First delivery → the first honest schedule.
     private func extendStagedSchedule(progress: TrackFileLoader.StreamProgress) {
-        guard let staged = stagedSchedule, stagedSourceURL != nil else {
+        guard let current = stagedSchedule, stagedSourceURL != nil else {
             startFirstStagedSchedule(progress: progress)
             return
         }
-        var staged = staged
+        var staged = current
         staged.announcedBytes = progress.announcedBytes > 0 ? progress.announcedBytes : staged.announcedBytes
         staged.deliveredBytes = progress.deliveredBytes
         staged.lastProgressAt = Date()
@@ -3122,7 +3122,7 @@ public final class NativeAudioEngine: NSObject {
                 staged.userPaused = false
                 stagedSchedule = staged
                 let resumeAt = cachedPosition
-                eventAdd(.info, "stream", "stall resume at \(String(format: \"%.1f\", resumeAt))s — re-scheduling from the delivered end (autoPlay=\(!userPaused))")
+                eventAdd(.info, "stream", "stall resume at \(String(format: "%.1f", resumeAt))s — re-scheduling from the delivered end (autoPlay=\(!userPaused))")
                 // Voids the old chain + chained-segment bookkeeping; the
                 // staged state survives (scheduleCurrentTrack reads it) and
                 // re-clamps the schedule to the CURRENT delivered estimate.
@@ -3178,7 +3178,7 @@ public final class NativeAudioEngine: NSObject {
             scheduledEndFrames: 0,
             announcedBytes: progress.announcedBytes,
             deliveredBytes: progress.deliveredBytes)
-        eventAdd(.info, "stream", "first staged schedule id=\(track.trackId) endable=\(endable) frames (\(String(format: \"%.1f\", Double(endable) / sr))s of header claim \(file.length))")
+        eventAdd(.info, "stream", "first staged schedule id=\(track.trackId) endable=\(endable) frames (\(String(format: "%.1f", Double(endable) / sr))s of header claim \(file.length))")
         scheduleCurrentTrack(from: 0, autoPlay: stagedAutoPlay)
     }
 
@@ -3249,7 +3249,7 @@ public final class NativeAudioEngine: NSObject {
         }
         staged.scheduledEndFrames = toFrames
         scheduledSegmentSeconds = Double(toFrames) / sr
-        eventAdd(.debug, "stream", "chained segment \(start)→\(toFrames) frames (\(String(format: \"%.1f\", Double(frames) / sr))s) id=\(staged.trackId)")
+        eventAdd(.debug, "stream", "chained segment \(start)→\(toFrames) frames (\(String(format: "%.1f", Double(frames) / sr))s) id=\(staged.trackId)")
     }
 
     /// The buffering pause: the playhead reached the delivered end while the
@@ -3265,7 +3265,7 @@ public final class NativeAudioEngine: NSObject {
         staged.lastProgressAt = Date()
         stagedSchedule = staged
         cachedPosition = target
-        eventAdd(.danger, "stream", "buffering stall at \(String(format: \"%.1f\", target))s (delivered \(staged.deliveredBytes) of \(staged.announcedBytes)B) — paused, auto-resumes when ≥2 s of new audio lands")
+        eventAdd(.danger, "stream", "buffering stall at \(String(format: "%.1f", target))s (delivered \(staged.deliveredBytes) of \(staged.announcedBytes)B) — paused, auto-resumes when ≥2 s of new audio lands")
         stopCrossfadeMonitor()
         activeNode.pause()
         standbyNode.pause()
@@ -3281,7 +3281,7 @@ public final class NativeAudioEngine: NSObject {
         staged.isStalled = false
         stagedSchedule = staged
         let resumeAt = cachedPosition
-        eventAdd(.info, "stream", "stall cleared by completion — resuming at \(String(format: \"%.1f\", resumeAt))s with the full-length schedule")
+        eventAdd(.info, "stream", "stall cleared by completion — resuming at \(String(format: "%.1f", resumeAt))s with the full-length schedule")
         // Voids the old chain; scheduleCurrentTrack reads isComplete and
         // schedules the REAL end.
         cancelScheduled()
@@ -3302,7 +3302,7 @@ public final class NativeAudioEngine: NSObject {
         guard let staged = stagedSchedule, staged.isStalled else { return }
         if Date().timeIntervalSince(staged.lastProgressAt) >= StreamSchedule.stallGiveUpSeconds {
             let title = tracks.indices.contains(activeIndex) ? tracks[activeIndex].title : "track"
-            eventAdd(.danger, "stream", "stall give-up after \(Int(StreamSchedule.stallGiveUpSeconds)) s of no progress at \(String(format: \"%.1f\", cachedPosition))s — handing to JS retry (Range-continues the prefix)")
+            eventAdd(.danger, "stream", "stall give-up after \(Int(StreamSchedule.stallGiveUpSeconds)) s of no progress at \(String(format: "%.1f", cachedPosition))s — handing to JS retry (Range-continues the prefix)")
             // Cancel the writer FIRST: its cancel-triggered completion path
             // records the delivered prefix into pendingParts (the Range
             // substrate the retry continues) — but with the engine legs nil'd,
@@ -3655,7 +3655,7 @@ public final class NativeAudioEngine: NSObject {
                 return
             }
             guard let staged = self.stagedSchedule, staged.trackId == trackId else {
-                eventAdd(.info, "stream", "staged completion dropped: state moved on (row \(completedIndex) id \(trackId ?? \"-\"))")
+                eventAdd(.info, "stream", "staged completion dropped: state moved on (row \(completedIndex) id \(trackId ?? "-"))")
                 return
             }
             let consumeQuietly: (String) -> Void = { reason in
