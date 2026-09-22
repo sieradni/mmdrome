@@ -16,6 +16,11 @@
    *  opacity — a 300 ms fade-in on an instantly-available cover was a tax on
    *  exactly the scroll-back scenario the cached lane exists to make instant. */
   let armedCached = $state(false)
+  /** Fast-reveal (flow review): a main cover that loads within FAST_REVEAL_MS
+   *  of arming (HTTP-cache hit after an app restart — lastLoadedUrl is
+   *  component-lifetime, so such revisits arm as "fresh") skips the crossfade
+   *  and appears instantly. Slow network loads keep the wash + fade. */
+  let fastLoaded = $state(false)
   let container: HTMLDivElement
 
   // Far-window unlatch (2026-09-17j, the "scrollbar-style jump broke covers"
@@ -50,6 +55,10 @@
   let lastLoadedUrl: string | null = null
 
   const fallbackIcon = `${import.meta.env.BASE_URL}icon-192.png`
+
+  /** A main cover that onloads this soon after arming reveals instantly (no
+   *  300 ms fade) — the post-restart HTTP-cache-hit case. */
+  const FAST_REVEAL_MS = 150
 
   // LDM steps the thumbnail down one canonical level (512→256→128→96); the
   // derived chain re-derives the URL when the effective mode flips. A
@@ -122,7 +131,12 @@
     microLoaded = false
     microFailed = false
     armedCached = false
+    fastLoaded = false
   })
+
+  /** Arm timestamp for the fast-reveal window (set by the request observer's
+   *  arm callback — NOT component init, or pre-roll time would count). */
+  let armedAt = 0
 
   function handleImgError(): void {
     const url = currentUrl
@@ -143,7 +157,7 @@
         if (entry.isIntersecting && !visible) {
           const cached = currentUrl !== null && currentUrl === lastLoadedUrl
           armedCached = cached
-          requestThumb(container, () => { visible = true }, cached)
+          requestThumb(container, () => { visible = true; armedAt = performance.now() }, cached)
         }
       },
       // 2000px pre-roll (widened 2026-09-17 from 800px, the "far scroll takes
@@ -211,10 +225,14 @@
       <img
         src={currentUrl}
         alt=""
-        class="h-full w-full object-cover transition-opacity duration-300 {microUrl && !microLoaded && !armedCached ? 'opacity-0' : 'opacity-100'}"
+        class="h-full w-full object-cover {fastLoaded ? '' : 'transition-opacity duration-300'} {microUrl && !microLoaded && !armedCached ? 'opacity-0' : 'opacity-100'}"
         decoding="async"
         onerror={handleImgError}
-        onload={() => { lastLoadedUrl = currentUrl; microLoaded = true }}
+        onload={() => {
+          lastLoadedUrl = currentUrl
+          microLoaded = true
+          if (performance.now() - armedAt < FAST_REVEAL_MS) fastLoaded = true
+        }}
       />
     {:else}
       <!-- No cover URL, the ladder exhausted, or no cover config: the app icon.

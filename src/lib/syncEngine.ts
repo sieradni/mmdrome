@@ -127,7 +127,14 @@ export async function testNavidromeConn(): Promise<NavidromeConnectionStatus> {
   if (!config) {
     return { connected: false, error: "Navidrome credentials not configured" }
   }
-  return navidromeTestConnection(config)
+  const result = await navidromeTestConnection(config)
+  // A successful authenticated ping is evidence the credentials work — clear
+  // any auth-health park so the "fix the password, hit Test Connection" flow
+  // un-gates immediately instead of waiting for the next full connect. This
+  // also self-heals the park if the 0.64.1 login rate limiter ever surfaces
+  // as a Subsonic code 40 (a throttled user must not stay parked forever).
+  if (result.connected) markAuthSuccess(authBaseKey(config.baseUrl, config.username))
+  return result
 }
 
 export async function testWebdavConn(): Promise<{ connected: boolean; error?: string }> {
