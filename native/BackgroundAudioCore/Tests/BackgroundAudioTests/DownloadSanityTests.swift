@@ -90,7 +90,7 @@ final class DownloadSanityTests: XCTestCase {
         // Trivially under the floors: 1.5 s gap on a long track (metadata
         // slop / encoder padding territory).
         XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
-            probeFrames: 146.5 * 44_100, sampleRate: 44_100,
+            probeFrames: Int64(146.5 * 44_100), sampleRate: 44_100,
             metadataDuration: 148.0, bytes: 2_880_000, transcode: true))
         // Just over the absolute floor but inside the 8 % relative floor
         // (long track, small proportional gap).
