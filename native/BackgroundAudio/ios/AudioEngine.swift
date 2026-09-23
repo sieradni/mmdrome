@@ -593,7 +593,7 @@ final class TrackFileLoader {
                     event(.danger, "stream: promoted transcode cut short (container claim \(String(format: "%.1f", Double(probeFrames) / max(1, probeSampleRate)))s of metadata \(String(format: "%.1f", writer.track.duration))s) for \(writer.track.trackId) — rejecting, scratch retained")
                     try? FileManager.default.moveItem(at: writer.destination, to: writer.part)
                     pendingParts[writer.cacheKey] = DownloadResume.Pending(
-                        parts: [Int(size)],
+                        parts: [Int64(size)],
                         announcedTotal: 0)
                     let err = NSError(domain: "mmdrome.loader", code: -7003, userInfo: [NSLocalizedDescriptionKey: "Transcode cut short (container claims \(Int(Double(probeFrames) / max(1, probeSampleRate)))s of \(Int(writer.track.duration))s): \(writer.track.title)"])
                     flushWriterChains(key: writer.cacheKey, url: nil, error: err)
