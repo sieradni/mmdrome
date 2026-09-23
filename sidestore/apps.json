@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.33",
-      "versionDate": "2026-09-22T19:31:25.350Z",
-      "versionDescription": "Navidrome 0.64.1 migration readiness: version-gated library cache (one full re-sync after a server upgrade — dead-id protection), required cover-art size with blurred micro-rendition placeholders, auth-health ledger stops the invalid-credential request spam (0.64.1 rate-limits failed logins), stale-ID queue/metadata reconcile pins, plus the streaming field-dump fixes (staged play race, swallowed completions, stall rescue, seekbar progress for streamed tracks).",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.33/mmdrome.ipa",
+      "version": "1.2.34",
+      "versionDate": "2026-09-23T02:16:01.185Z",
+      "versionDescription": "Dead-air watchdog: crossfade-then-stop wedge fixed — a playing track whose clock runs past its scheduled end now advances instead of sitting in silence; abort logs carry elapsed evidence",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.34/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.34",
+          "buildVersion": "38",
+          "date": "2026-09-23T02:16:01.185Z",
+          "localizedDescription": "Dead-air watchdog: crossfade-then-stop wedge fixed — a playing track whose clock runs past its scheduled end now advances instead of sitting in silence; abort logs carry elapsed evidence",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.34/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5021588
+        },
         {
           "version": "1.2.33",
           "buildVersion": "37",
@@ -350,6 +359,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.34",
+      "identifier": "ios-v1.2.34",
+      "appID": "com.mmdrome.player",
+      "caption": "Dead-air watchdog: crossfade-then-stop wedge fixed — a playing track whose clock runs past its scheduled end now advances instead of sitting",
+      "date": "2026-09-23T02:16:01.185Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.33",
       "identifier": "ios-v1.2.33",
       "appID": "com.mmdrome.player",
@@ -382,15 +400,6 @@
       "appID": "com.mmdrome.player",
       "caption": "P0 fixes from the first field dump: the crossfade finalize path is now gated by the truncation check (a truncated active file can no longer ",
       "date": "2026-09-21T08:44:23.601Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.29",
-      "identifier": "ios-v1.2.29",
-      "appID": "com.mmdrome.player",
-      "caption": "Structured event log (native + web at parity) for full Copy-dump diagnosability; fixed the 1.2.28 crossfade wedge and same-track loop; observe-only web truncation gate; loop-one restart bound",
-      "date": "2026-09-20T22:56:21.488Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
