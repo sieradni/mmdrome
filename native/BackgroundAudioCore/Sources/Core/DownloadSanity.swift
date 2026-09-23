@@ -32,6 +32,59 @@ public enum DownloadSanity {
         return Int64(actualBytes) < announcedBytes
     }
 
+    /// TRANSCODE DURATION-CORROBORATION GATE (2026-09-23, the LDM-cellular
+    /// `cannot parse response` post-mortem). A transcode body is exempt from
+    /// BOTH byte gates (isTruncatedAgainstServer / isShortOfAnnouncedBytes):
+    /// the announced Content-Length is a server-side ESTIMATE of the yet-to-be-
+    /// encoded output, and the snapshot's `size` is the SOURCE file's bytes.
+    /// That exemption left a transcode cut mid-stream — Navidrome's stream
+    /// socket dying (URLSession -1010 `cannot parse response`) or a clean early
+    /// close — with NO evidence gate: it decodes to N>0 frames, so the 0-frame
+    /// probe passes, and it was stored as a COMPLETE cache entry. The poisoned
+    /// entry then became a fade TARGET: `scheduleSegment` scheduled exactly the
+    /// frames the container currently reports, the standby's audio ran out
+    /// mid-ramp, and `abort-keep-active` killed the fade (the aborts the D1
+    /// dead-air watchdog now recovers from).
+    ///
+    /// The corroboration that IS available: the container itself. A truncated
+    /// Ogg/Opus cut inside the stream still re-serializes page headers with
+    /// accurate granule positions for the audio it DOES carry, so
+    /// AVAudioFile.length answers the REAL decodable duration of the delivered
+    /// bytes — while the snapshot's metadata duration states the full track.
+    /// A container claim materially short of the metadata duration is
+    /// byte-truncation evidence that survives the estimate problem: no byte
+    /// count is compared at all, and the verdict only fires when the gap is
+    /// large (>= 3 s AND >= 8 %) so conservative roundings, per-track metadata
+    /// slop and encoder padding can never false-reject. Bytes >= claim is NOT
+    /// truncation (the file carries what it says).
+    /// - Parameters:
+    ///   - probeFrames: AVAudioFile.length over the delivered body (0 =
+    ///     undecodable — already rejected by the caller's 0-frame gate).
+    ///   - sampleRate: the container's sample rate (frames → seconds).
+    ///   - metadataDuration: the snapshot's track duration in seconds.
+    ///   - bytes: delivered byte count (direction guard only).
+    ///   - transcode: raw streams stay on the byte gates — their container
+    ///     claim is FULL (the header was downloaded complete) and a
+    ///     mis-tagged duration must not false-reject them.
+    public static func transcodeDurationCorroborated(
+        probeFrames: Int64,
+        sampleRate: Double,
+        metadataDuration: Double,
+        bytes: Int,
+        transcode: Bool
+    ) -> Bool {
+        guard transcode else { return false }
+        guard probeFrames > 0, sampleRate > 0, metadataDuration > 1.0 else { return false }
+        let claimSeconds = Double(probeFrames) / sampleRate
+        let gap = metadataDuration - claimSeconds
+        // A body whose bytes exceed its own claim is short-but-honest (a
+        // legitimate short file) — never truncation evidence.
+        guard gap > 0 else { return false }
+        // Absolute AND relative: 3 s floor (rounding slop) and 8 % floor
+        // (per-track metadata inaccuracy on long tracks).
+        return gap >= 3.0 && gap >= 0.08 * metadataDuration
+    }
+
     /// True when a segment completion arrived at a position that cannot be a
     /// real end: the player's clock is MEASURABLE (lastRenderTime/playerTime
     /// resolve — a completed node's clock going nil is not evidence either

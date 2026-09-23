@@ -577,6 +577,32 @@ final class TrackFileLoader {
                     onDownloadFinished?(writer.track.trackId, false)
                     return
                 }
+                // TRANSCODE DURATION CORROBORATION at the stream promote
+                // boundary (same rationale as the download path): a socket-cut
+                // transcode promoted on decodability alone would poison the
+                // cache as "complete" and later die mid-fade as a standby.
+                // RAW streams stay exempt (container claim is full; a
+                // mis-tagged duration must not false-reject) — variant decides.
+                let probeSampleRate = (try? AVAudioFile(forReading: writer.destination).fileFormat.sampleRate) ?? 0
+                let writerVariant = TrackVariant(url: writer.track.url)
+                if DownloadSanity.transcodeDurationCorroborated(
+                    probeFrames: probeFrames,
+                    sampleRate: probeSampleRate,
+                    metadataDuration: writer.track.duration,
+                    bytes: Int(size),
+                    transcode: writerVariant != .raw) {
+                    event(.danger, "stream: promoted transcode cut short (container claim \(String(format: "%.1f", Double(probeFrames) / max(1, probeSampleRate)))s of metadata \(String(format: "%.1f", writer.track.duration))s) for \(writer.track.trackId) — rejecting, scratch retained")
+                    try? FileManager.default.moveItem(at: writer.destination, to: writer.part)
+                    pendingParts[writer.cacheKey] = DownloadResume.Pending(
+                        parts: [Int(size)],
+                        announcedTotal: 0)
+                    let err = NSError(domain: "mmdrome.loader", code: -7003, userInfo: [NSLocalizedDescriptionKey: "Transcode cut short (container claims \(Int(Double(probeFrames) / max(1, probeSampleRate)))s of \(Int(writer.track.duration))s): \(writer.track.title)"])
+                    flushWriterChains(key: writer.cacheKey, url: nil, error: err)
+                    clearWriterState()
+                    onFinished?(nil, err)
+                    onDownloadFinished?(writer.track.trackId, false)
+                    return
+                }
                 state.store(writer.destination, for: writer.cacheKey, bytes: Int(size))
                 variantOf[writer.cacheKey] = TrackVariant(url: writer.track.url)
                 event(.info, "stream: promoted \(writer.track.trackId) (\(size)B, no announced length — decodability-gated)")
@@ -1124,6 +1150,37 @@ final class TrackFileLoader {
                         try? FileManager.default.removeItem(at: destination)
                         movedURL = nil
                         moveError = NSError(domain: "mmdrome.loader", code: -7003, userInfo: [NSLocalizedDescriptionKey: "Download truncated vs server size: \(track.title)"])
+                    }
+                    // TRANSCODE DURATION CORROBORATION (2026-09-23, the LDM
+                    // `cannot parse response` post-mortem): a transcode is
+                    // exempt from BOTH byte gates (its Content-Length is an
+                    // estimate, the snapshot size is the SOURCE's bytes),
+                    // which left a socket-cut transcode — decodable to N>0
+                    // frames — a COMPLETE cache entry. That poisoned entry
+                    // became a fade target whose audio ran out mid-ramp (the
+                    // abort-keep-active aborts the D1 watchdog recovers from).
+                    // The container claim (AVAudioFile.length over the
+                    // delivered bytes — Ogg page granule positions are
+                    // accurate per page) corroborated against the metadata
+                    // duration is the evidence that survives the estimate
+                    // problem: no byte count compared at all. The poisoned
+                    // transcode NEVER enters the cache → the standby slot
+                    // stays honest (in-flight chain + fade re-check), and the
+                    // truncated transfer resumes like any other -7003
+                    // rejection.
+                    let probeSampleRate = (try? AVAudioFile(forReading: destination).fileFormat.sampleRate) ?? 0
+                    if moveError == nil, movedURL != nil, requested != .raw,
+                       DownloadSanity.transcodeDurationCorroborated(
+                           probeFrames: probeFrames,
+                           sampleRate: probeSampleRate,
+                           metadataDuration: track.duration,
+                           bytes: tempSize,
+                           transcode: true) {
+                        let claimSeconds = Double(probeFrames) / max(1, probeSampleRate)
+                        self?.event(.danger, "download transcode cut short (container claim \(String(format: "%.1f", claimSeconds))s of metadata \(String(format: "%.1f", track.duration))s) for \(track.trackId) — rejecting")
+                        try? FileManager.default.removeItem(at: destination)
+                        movedURL = nil
+                        moveError = NSError(domain: "mmdrome.loader", code: -7003, userInfo: [NSLocalizedDescriptionKey: "Transcode cut short (container claims \(Int(claimSeconds))s of \(Int(track.duration))s): \(track.title)"])
                     }
                     }
                 } catch {
