@@ -2445,6 +2445,58 @@ public final class NativeAudioEngine: NSObject {
         // left here after the resume decision moved to the writer's progress
         // events is the stall give-up (10 s of zero progress).
         streamMonitorTick()
+        // D1 (2026-09-23 field dumps): the dead-air watchdog. The abort path
+        // (a standby dying mid-fade) leaves the active node playing its
+        // "remaining tail" — which is ~0 s when the fade had run 10 s into
+        // the last 15 — and the completion that should advance is gone with
+        // the fade teardown. The result: silence with the clock climbing
+        // past the scheduled end until a manual skip (the "crossfade then
+        // stop" report, twice in one session). A playing, measurable clock
+        // more than the grace past the scheduled segment's own end is ALWAYS
+        // the wedge — a healthy track advances at its data end via its
+        // completion — so the engine advances itself here. This tick runs for
+        // the whole engaged session (it survives fade suppression and the
+        // staged state), which is why the watchdog lives here and not in the
+        // crossfade monitor (suppressed by fadeAbortedTrackId) or the staged
+        // monitor (nil without a staged schedule).
+        checkDeadAir()
+    }
+
+    /// D1: the wedge verdict + advance. Re-checked at tick time (1 s) — the
+    /// state may have moved since the sampler tick began. Only advances when
+    /// the pure verdict says every wedge condition holds; logs the evidence
+    /// (elapsed vs scheduled end, the abort flag) so the next dump can
+    /// verify the advance instead of a silent stop.
+    private func checkDeadAir() {
+        guard tracks.indices.contains(activeIndex) else { return }
+        // A staged schedule in flight owns its own end machinery (the
+        // buffering stall / staged advance); its scheduledEndFrames is a
+        // moving estimate, not a wedge reference. The watchdog is for
+        // fixed-schedule playback only.
+        guard stagedSchedule == nil, hasLiveSchedule, scheduledSegmentSeconds > 0 else { return }
+        guard StreamSchedule.deadAirAdvanceEligible(
+            isPlaying: isPlaying,
+            timeMeasured: isNodeTimeMeasured,
+            elapsedSeconds: max(0, currentPosition),
+            scheduledEndSeconds: scheduledSegmentSeconds,
+            loopOne: loopMode == .one) else { return }
+        let elapsedOneDp = String(format: "%.1f", max(0, currentPosition))
+        let endOneDp = String(format: "%.1f", scheduledSegmentSeconds)
+        let aborted = fadeAbortedTrackId == currentTrackId ? " (fade aborted earlier)" : ""
+        eventAdd(.danger, "engine", "dead-air advance: clock \(elapsedOneDp)s ran past the scheduled end \(endOneDp)s\(aborted) with no completion — node exhausted, advancing")
+        if sleepAtTrackEnd {
+            sleepAtTrackEnd = false
+            pause()
+            waitingAtTrackEnd = true
+            onSleepTimerFired?()
+            return
+        }
+        if let next = nextIndex(after: activeIndex) {
+            eventAdd(.info, "engine", "natural advance \(activeIndex)→\(next) (dead-air) (\(tracks.indices.contains(next) ? tracks[next].trackId : "-"))")
+            playTrack(at: next, autoPlay: true, origin: .engineAdvance)
+        } else {
+            handleTrackEnd()
+        }
     }
 
     private func startPreloadProgressTimer() {
@@ -3501,6 +3553,10 @@ public final class NativeAudioEngine: NSObject {
                     // end drive the advance. The TARGET row's file is the
                     // poison — evict it so the next fade re-downloads.
                     let targetTrack = tracks.indices.contains(crossfade.targetIndex) ? tracks[crossfade.targetIndex] : nil
+                    // D2: numbers on the standby-death abort (elapsed vs end —
+                    // elapsed ≈ end means the active tail was already gone; that
+                    // shape dead-ends in the D1 watchdog, logged there).
+                    eventAdd(.danger, "engine", "abort-keep-active (standby died) current=\(currentTrackId) elapsed=\(String(format: "%.1f", max(0, currentPosition))) of \(String(format: "%.1f", scheduledSegmentSeconds)) target=\(targetTrack?.trackId ?? "-") — fades suppressed for this instance")
                     self.abortCrossfadeKeepActive()
                     if let targetTrack {
                         loader.evict(targetTrack.trackId, variant: TrackVariant(url: targetTrack.url))
@@ -3565,7 +3621,7 @@ public final class NativeAudioEngine: NSObject {
                     // advances the queue. Nothing evicted, nothing pauses, no
                     // retry, no storm — the cost is only the missing fade
                     // overlap at this one boundary.
-                    eventAdd(.danger, "engine", "dropped premature completion of ACTIVE node mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — fade automation dropped, tail continues unattended")
+                    eventAdd(.danger, "engine", "dropped premature completion of ACTIVE node mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — fade automation dropped, tail continues unattended (D1 watchdog owns a lost end past \(segmentOneDp)s)")
                     self.abortCrossfadeKeepActive()
                     return
                 }
@@ -3593,7 +3649,11 @@ public final class NativeAudioEngine: NSObject {
             let idMismatch = trackId != nil && trackId != self.currentTrackId
             let indexMismatch = trackId == nil && completedIndex != self.activeIndex
             if idMismatch || indexMismatch {
-                eventAdd(.danger, "engine", "dropped stale completion for row \(completedIndex) id=\(trackId ?? "-") (active row \(self.activeIndex) id \(self.currentTrackId))")
+                // D2: numbers on the drop — if the ACTIVE track's own end
+                // completion is ever eaten here (the 2026-09-23 wedge: silence
+                // past the end until a manual skip), this line carries the
+                // elapsed evidence that identifies it.
+                eventAdd(.danger, "engine", "dropped stale completion for row \(completedIndex) id=\(trackId ?? "-") (active row \(self.activeIndex) id \(self.currentTrackId)) elapsed=\(String(format: "%.1f", max(0, currentPosition))) of \(String(format: "%.1f", scheduledSegmentSeconds))")
                 return
             }
 
@@ -4050,7 +4110,13 @@ public final class NativeAudioEngine: NSObject {
         if isPlaying {
             setupCrossfadeMonitor()
         }
-        eventAdd(.danger, "crossfade", "abort-keep-active current=\(currentTrackId) (completing node died mid-fade) — fades suppressed for this instance")
+        // D2 (2026-09-23 dumps): the abort verdicts carried no numbers —
+        // three dumps were needed to see the active tail was already ~0 s
+        // when the standby died. Elapsed vs scheduled end on the abort line
+        // makes each future dump self-describing: elapsed ≈ end ⇒ the wedge
+        // the D1 watchdog now rescues; elapsed ≪ end ⇒ a genuine mid-track
+        // standby death worth a separate hunt.
+        eventAdd(.danger, "crossfade", "abort-keep-active current=\(currentTrackId) elapsed=\(String(format: "%.1f", max(0, currentPosition))) of \(String(format: "%.1f", scheduledSegmentSeconds)) (completing node died mid-fade) — fades suppressed for this instance")
     }
 
     private func finalizeCrossfadeSwitch() {

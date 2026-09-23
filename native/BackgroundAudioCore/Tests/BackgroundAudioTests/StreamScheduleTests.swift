@@ -229,4 +229,48 @@ final class StreamScheduleTests: XCTestCase {
         XCTAssertFalse(StreamSchedule.stallRescueEligible(deliveredBytes: 0, announcedBytes: 0))
         XCTAssertFalse(StreamSchedule.stallRescueEligible(deliveredBytes: 500, announcedBytes: 0))
     }
+
+    // MARK: - D1: the dead-air watchdog (2026-09-23 field dumps)
+
+    func testDeadAirAdvanceFiresPastTheScheduledEnd() {
+        // The dump signature: clock climbing seconds past the scheduled end
+        // while playing (170.2 of 161.05; 166.7 of 148.3) — the node is
+        // silent, its completion is gone, nothing will ever advance.
+        XCTAssertTrue(StreamSchedule.deadAirAdvanceEligible(
+            isPlaying: true, timeMeasured: true,
+            elapsedSeconds: 170.2, scheduledEndSeconds: 161.05, loopOne: false))
+        XCTAssertTrue(StreamSchedule.deadAirAdvanceEligible(
+            isPlaying: true, timeMeasured: true,
+            elapsedSeconds: 166.7, scheduledEndSeconds: 148.33, loopOne: false))
+    }
+
+    func testDeadAirHoldsInsideTheGraceWindow() {
+        // A healthy tail approaching its real end must never be raced: the
+        // data-consumed completion fires AT the data end, which can sit
+        // slightly past the scheduled seconds float rounding — the grace
+        // absorbs it.
+        XCTAssertFalse(StreamSchedule.deadAirAdvanceEligible(
+            isPlaying: true, timeMeasured: true,
+            elapsedSeconds: 161.9, scheduledEndSeconds: 161.05, loopOne: false))
+    }
+
+    func testDeadAirHoldsWhenNotPlayingOrUnmeasurable() {
+        // A paused wedge belongs to the buffering-stall / sleep-park
+        // machines; an unmeasurable clock means the position fell back to
+        // the stale cachedPosition — not evidence (the §3.4 rule).
+        XCTAssertFalse(StreamSchedule.deadAirAdvanceEligible(
+            isPlaying: false, timeMeasured: true,
+            elapsedSeconds: 200, scheduledEndSeconds: 161.05, loopOne: false))
+        XCTAssertFalse(StreamSchedule.deadAirAdvanceEligible(
+            isPlaying: true, timeMeasured: false,
+            elapsedSeconds: 200, scheduledEndSeconds: 161.05, loopOne: false))
+    }
+
+    func testDeadAirNeverAdvancesLoopOne() {
+        // Loop-one restarts via its own path; a watchdog advance there would
+        // double-advance.
+        XCTAssertFalse(StreamSchedule.deadAirAdvanceEligible(
+            isPlaying: true, timeMeasured: true,
+            elapsedSeconds: 200, scheduledEndSeconds: 161.05, loopOne: true))
+    }
 }

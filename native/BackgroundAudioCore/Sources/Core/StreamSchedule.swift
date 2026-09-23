@@ -287,4 +287,45 @@ public enum StreamSchedule {
     public static func stallRescueEligible(deliveredBytes: Int64, announcedBytes: Int64) -> Bool {
         announcedBytes > 0 && deliveredBytes >= announcedBytes
     }
+
+    // MARK: - Dead-air watchdog (D1, 2026-09-23 field dumps)
+
+    /// How far past the scheduled segment's end a PLAYING, measurable clock
+    /// may run before the engine concludes the end trigger was lost and
+    /// advances itself. A healthy track never needs this: its node's
+    /// data-consumed completion fires AT the data end and the advance runs
+    /// there. A clock RUNNING PAST the end means the node is rendering
+    /// nothing (silence) while its completion is gone — the exact 1.2.28
+    /// exhausted-node wedge, now reached via abort-keep-active: the standby
+    /// died mid-fade, the abort kept an active whose remaining tail was
+    /// already ~0 s, and no completion exists to advance the queue. The
+    /// dumps show the clock climbing 9-18 s past the scheduled end in that
+    /// state (170.2 of 161.05; 166.7 of 148.3) until a manual skip.
+    /// Generous margin so a slow tail never races it: the wedge signature is
+    /// seconds past the end, and only silence lives there.
+    public static let deadAirGraceSeconds: Double = 1.5
+
+    /// DECISION: advance the queue without a completion. True only when EVERY
+    /// wedge condition holds: playing (a paused wedge is the buffering stall
+    /// or a sleep park — different machines own those), the clock is
+    /// measurable (an unmeasurable clock fell back to the stale cached
+    /// position — not evidence, the §3.4 rule), and the measured position
+    /// exceeds the scheduled segment's end by more than the grace. The
+    /// reference is the SCHEDULED SEGMENT (file truth at schedule time), the
+    /// same reference `DownloadSanity.isPrematureCompletion` judges.
+    /// Deliberately NOT gated on a fade having aborted: any lost end trigger
+    /// (abort path today, unknown paths tomorrow) presents identically —
+    /// silence past the end — and the watchdog is the last line for all of
+    /// them. `loopOne` returns false: loop-one restarts via its own path and
+    /// a watchdog advance there would double-advance.
+    public static func deadAirAdvanceEligible(
+        isPlaying: Bool,
+        timeMeasured: Bool,
+        elapsedSeconds: Double,
+        scheduledEndSeconds: Double,
+        loopOne: Bool
+    ) -> Bool {
+        guard isPlaying, timeMeasured, !loopOne else { return false }
+        return elapsedSeconds > scheduledEndSeconds + deadAirGraceSeconds
+    }
 }
