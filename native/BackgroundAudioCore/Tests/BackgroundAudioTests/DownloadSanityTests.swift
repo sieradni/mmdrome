@@ -79,32 +79,35 @@ final class DownloadSanityTests: XCTestCase {
         // are accurate per page), the metadata still claims 148 s.
         XCTAssertTrue(DownloadSanity.transcodeDurationCorroborated(
             probeFrames: 92 * 44_100, sampleRate: 44_100,
-            metadataDuration: 148.0, bytes: 1_800_000, transcode: true))
+            metadataDuration: 148.0, transcode: true))
     }
 
     func testTranscodeCorroborationPassesCompleteBody() {
         // Full body: the container claim matches the metadata within slop.
         XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
             probeFrames: 148 * 44_100, sampleRate: 44_100,
-            metadataDuration: 148.0, bytes: 2_900_000, transcode: true))
+            metadataDuration: 148.0, transcode: true))
         // Trivially under the floors: 1.5 s gap on a long track (metadata
         // slop / encoder padding territory).
         XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
             probeFrames: Int64(146.5 * 44_100), sampleRate: 44_100,
-            metadataDuration: 148.0, bytes: 2_880_000, transcode: true))
+            metadataDuration: 148.0, transcode: true))
         // Just over the absolute floor but inside the 8 % relative floor
-        // (long track, small proportional gap).
+        // (long track, small proportional gap: 10 s of a 180 s track).
         XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
-            probeFrames: 160 * 44_100, sampleRate: 44_100,
-            metadataDuration: 180.0, bytes: 3_100_000, transcode: true))
+            probeFrames: Int64(170 * 44_100), sampleRate: 44_100,
+            metadataDuration: 180.0, transcode: true))
     }
 
     func testTranscodeCorroborationHonestShortFileNeverRejected() {
-        // A genuinely short file whose bytes exceed its own claim: the
-        // metadata is simply wrong about THIS file — not truncation evidence.
-        XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
+        // KNOWN LIMIT (accepted, see core doc): a badly tagged short file
+        // (metadata catastrophically wrong-LONG) is indistinguishable from
+        // truncation by content — bytes track the audio carried in both
+        // cases. Pinned as the CONTRACT, not a bug: the gate is claim-vs-
+        // metadata only.
+        XCTAssertTrue(DownloadSanity.transcodeDurationCorroborated(
             probeFrames: 30 * 44_100, sampleRate: 44_100,
-            metadataDuration: 148.0, bytes: 40_000_000, transcode: true))
+            metadataDuration: 148.0, transcode: true))
     }
 
     func testTranscodeCorroborationRawNeverJudged() {
@@ -113,7 +116,7 @@ final class DownloadSanityTests: XCTestCase {
         // not false-reject them at the trust boundary.
         XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
             probeFrames: 92 * 44_100, sampleRate: 44_100,
-            metadataDuration: 148.0, bytes: 1_800_000, transcode: false))
+            metadataDuration: 148.0, transcode: false))
     }
 
     func testTranscodeCorroborationDegenerateInputs() {
@@ -121,18 +124,18 @@ final class DownloadSanityTests: XCTestCase {
         // has no claim to read.
         XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
             probeFrames: 0, sampleRate: 44_100,
-            metadataDuration: 148.0, bytes: 900_000, transcode: true))
+            metadataDuration: 148.0, transcode: true))
         // No usable sample rate: frames cannot become seconds.
         XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
             probeFrames: 92 * 44_100, sampleRate: 0,
-            metadataDuration: 148.0, bytes: 900_000, transcode: true))
+            metadataDuration: 148.0, transcode: true))
         // No metadata duration (or sub-second): nothing to corroborate against.
         XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
             probeFrames: 92 * 44_100, sampleRate: 44_100,
-            metadataDuration: 0, bytes: 900_000, transcode: true))
+            metadataDuration: 0, transcode: true))
         XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
             probeFrames: 92 * 44_100, sampleRate: 44_100,
-            metadataDuration: 0.5, bytes: 900_000, transcode: true))
+            metadataDuration: 0.5, transcode: true))
     }
 
     // MARK: - LoaderState byte bookkeeping

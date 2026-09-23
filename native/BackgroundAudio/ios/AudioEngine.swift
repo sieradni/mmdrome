@@ -589,7 +589,6 @@ final class TrackFileLoader {
                     probeFrames: probeFrames,
                     sampleRate: probeSampleRate,
                     metadataDuration: writer.track.duration,
-                    bytes: Int(size),
                     transcode: writerVariant != .raw) {
                     event(.danger, "stream: promoted transcode cut short (container claim \(String(format: "%.1f", Double(probeFrames) / max(1, probeSampleRate)))s of metadata \(String(format: "%.1f", writer.track.duration))s) for \(writer.track.trackId) — rejecting, scratch retained")
                     try? FileManager.default.moveItem(at: writer.destination, to: writer.part)
@@ -1170,12 +1169,11 @@ final class TrackFileLoader {
                     // rejection.
                     let probeSampleRate = (try? AVAudioFile(forReading: destination).fileFormat.sampleRate) ?? 0
                     if moveError == nil, movedURL != nil, requested != .raw,
-                       DownloadSanity.transcodeDurationCorroborated(
-                           probeFrames: probeFrames,
-                           sampleRate: probeSampleRate,
-                           metadataDuration: track.duration,
-                           bytes: tempSize,
-                           transcode: true) {
+                   DownloadSanity.transcodeDurationCorroborated(
+                       probeFrames: probeFrames,
+                       sampleRate: probeSampleRate,
+                       metadataDuration: track.duration,
+                       transcode: true) {
                         let claimSeconds = Double(probeFrames) / max(1, probeSampleRate)
                         self?.event(.danger, "download transcode cut short (container claim \(String(format: "%.1f", claimSeconds))s of metadata \(String(format: "%.1f", track.duration))s) for \(track.trackId) — rejecting")
                         try? FileManager.default.removeItem(at: destination)

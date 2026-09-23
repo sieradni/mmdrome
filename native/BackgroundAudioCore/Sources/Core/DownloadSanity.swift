@@ -53,16 +53,26 @@ public enum DownloadSanity {
     /// bytes — while the snapshot's metadata duration states the full track.
     /// A container claim materially short of the metadata duration is
     /// byte-truncation evidence that survives the estimate problem: no byte
-    /// count is compared at all, and the verdict only fires when the gap is
-    /// large (>= 3 s AND >= 8 %) so conservative roundings, per-track metadata
-    /// slop and encoder padding can never false-reject. Bytes >= claim is NOT
-    /// truncation (the file carries what it says).
+    /// count is compared at all (delivered bytes track the audio actually
+    /// carried in BOTH the truncated and the honest-short case, so they
+    /// cannot discriminate — the parameter would be dead weight). The verdict
+    /// only fires when the gap is large (>= 3 s AND >= 8 % of the track) so
+    /// conservative roundings, per-track metadata slop and encoder padding
+    /// can never false-reject.
+    ///
+    /// KNOWN LIMIT (accepted): a file whose metadata duration is
+    /// catastrophically wrong-LONG (a badly tagged 30 s file recorded as
+    /// 148 s) is indistinguishable from truncation by content alone and is
+    /// rejected too. Its old behavior was also broken (cached, played short,
+    /// premature-evicted, retried in a loop) — the terminal outcome is the
+    /// same bounded-retry → fromError advance, minus the audible churn; the
+    /// only cost is re-downloading that track on future sessions.
+    ///
     /// - Parameters:
     ///   - probeFrames: AVAudioFile.length over the delivered body (0 =
     ///     undecodable — already rejected by the caller's 0-frame gate).
     ///   - sampleRate: the container's sample rate (frames → seconds).
     ///   - metadataDuration: the snapshot's track duration in seconds.
-    ///   - bytes: delivered byte count (direction guard only).
     ///   - transcode: raw streams stay on the byte gates — their container
     ///     claim is FULL (the header was downloaded complete) and a
     ///     mis-tagged duration must not false-reject them.
@@ -70,15 +80,14 @@ public enum DownloadSanity {
         probeFrames: Int64,
         sampleRate: Double,
         metadataDuration: Double,
-        bytes: Int,
         transcode: Bool
     ) -> Bool {
         guard transcode else { return false }
         guard probeFrames > 0, sampleRate > 0, metadataDuration > 1.0 else { return false }
         let claimSeconds = Double(probeFrames) / sampleRate
         let gap = metadataDuration - claimSeconds
-        // A body whose bytes exceed its own claim is short-but-honest (a
-        // legitimate short file) — never truncation evidence.
+        // Claim >= metadata: the container carries everything the metadata
+        // promises (or more — tag slop the other way). Not truncation.
         guard gap > 0 else { return false }
         // Absolute AND relative: 3 s floor (rounding slop) and 8 % floor
         // (per-track metadata inaccuracy on long tracks).
