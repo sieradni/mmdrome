@@ -27,7 +27,8 @@
           "date": "2026-09-23T02:16:01.185Z",
           "localizedDescription": "Dead-air watchdog: crossfade-then-stop wedge fixed — a playing track whose clock runs past its scheduled end now advances instead of sitting in silence; abort logs carry elapsed evidence",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.34/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5021588
         },
         {
           "version": "1.2.33",
