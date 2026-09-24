@@ -27,7 +27,8 @@
           "date": "2026-09-24T01:18:49.507Z",
           "localizedDescription": "Scroll-jank and thumbnail fixes: song rows render ratings conditionally, view-state persistence is debounced off the scroll path, stable queue keys end the DOM churn behind thumbnails-not-loading, blur only where genuinely upscaled, cellular-flap hysteresis, and a COVERS diagnostics section in the debug HUD; LDM thumbnails step down except Now Playing art",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.36/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5024458
         },
         {
           "version": "1.2.35",
