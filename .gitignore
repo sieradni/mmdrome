@@ -29,3 +29,7 @@ dist-ssr
 
 # Local tool caches
 .freebuff/
+
+# release-phases driver state (records "gates ran for this sha"; the file
+# must never dirty the tree — the driver's own preflight requires clean)
+.release-phase-state.json
