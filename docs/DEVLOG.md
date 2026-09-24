@@ -1,3 +1,7 @@
+## Release 1.2.36 — scroll-jank + queue-thumbnail package (P1–P6, the 00:09 dump)
+
+The 2026-09-23 scroll review shipped: conditional ratings (P1), debounced view-state persistence (P2), stable queue keys + restore hardening (P3), upscale-only micro blur (P4), cellular-flap hysteresis with the both-bits emit gate (P5), and the coverStats COVERS diagnostics (P6) — plus the adversarial re-review's four wiring fixes and the final LDM thumbnail design (step-down restored with 512 exempt; see the entry below for the full remove→quantify→restore arc).
+
 ## 2026-09-23 (latest) — LDM thumbnail step-down: removed on principle, restored with a 512 exemption after the cost was quantified
 
 The user asked to confirm "thumbnails should never be downgraded, only upgraded". The audit found exactly one true downgrade — the LDM one-level step-down (`effectiveThumbSize`: 512→256, 256→128, 128→96; LazyThumb the sole consumer) plus the `shouldSwapThumbSize` defer that softened its toggle edge — and one legitimate non-downgrade, the failure ladder (`coverLadderUrls`, only after a URL actually fails, kept). The step-down was removed entirely on principle.
