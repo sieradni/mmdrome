@@ -107,11 +107,13 @@ test('isLosslessTranscodeFormat: flac/wav/alac yes, opus/mp3/aac no', () => {
   assert.equal(isLosslessTranscodeFormat('aac'), false)
 })
 
-test('effectiveThumbSize: steps down one canonical level under LDM', () => {
-  assert.equal(effectiveThumbSize({ size: 512, lowDataActive: true }), 256)
+// ── effectiveThumbSize (LDM step-down, 512 EXEMPT per the 2026-09-23 decision) ──
+
+test('effectiveThumbSize: steps down one canonical level under LDM, 512 exempt', () => {
+  assert.equal(effectiveThumbSize({ size: 512, lowDataActive: true }), 512, 'Now Playing hero art never softens (2026-09-23 decision)')
   assert.equal(effectiveThumbSize({ size: 256, lowDataActive: true }), 128)
   assert.equal(effectiveThumbSize({ size: 128, lowDataActive: true }), 96)
-  assert.equal(effectiveThumbSize({ size: 96, lowDataActive: true }), 96)
+  assert.equal(effectiveThumbSize({ size: 96, lowDataActive: true }), 96, '96 floors — no smaller canonical size exists')
 })
 
 test('effectiveThumbSize: unchanged when LDM is off', () => {
@@ -122,15 +124,13 @@ test('effectiveThumbSize: unchanged when LDM is off', () => {
 // ── shouldSwapThumbSize (the LDM downgrade-defer, the user's data call) ─────
 
 test('a size downgrade never re-requests a loaded thumbnail', () => {
-  assert.equal(shouldSwapThumbSize({ displayedSize: 512, wantedSize: 256 }), false, 'replacing a paid-for decoded 512 with a fresh 128 download wastes data — the small size lands on the next arm instead')
-  assert.equal(shouldSwapThumbSize({ displayedSize: 256, wantedSize: 128 }), false)
+  assert.equal(shouldSwapThumbSize({ displayedSize: 256, wantedSize: 128 }), false, 'replacing a paid-for decoded cover with a fresh smaller download wastes data — the small size lands on the next arm instead')
   assert.equal(shouldSwapThumbSize({ displayedSize: 128, wantedSize: 96 }), false)
 })
 
 test('an upsize always applies (restoring quality is explicit intent, and the immutable path makes the pre-LDM rendition a cache hit)', () => {
   assert.equal(shouldSwapThumbSize({ displayedSize: 96, wantedSize: 128 }), true)
   assert.equal(shouldSwapThumbSize({ displayedSize: 128, wantedSize: 256 }), true)
-  assert.equal(shouldSwapThumbSize({ displayedSize: 256, wantedSize: 512 }), true)
 })
 
 test('a first load is not a swap and always proceeds', () => {

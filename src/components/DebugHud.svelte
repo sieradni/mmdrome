@@ -20,6 +20,7 @@
     setEnabledDomains,
   } from '../lib/debugLog'
   import { thumbLoaderDebugSnapshot } from '../lib/thumbLoader'
+  import { coverStatsSummary } from '../lib/coverStats'
   import { audioManager } from '../lib/audioManager'
 
   let { onclose }: { onclose?: () => void } = $props()
@@ -34,7 +35,7 @@
   // 2026-09-17: section collapse state — the state dumps are bulky; the trail
   // and log are the diagnosis surfaces and stay open. Sections persist only
   // for the session (no Dexie: debug-only preference).
-  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false, events: false, jsEvents: true })
+  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false, covers: false, events: false, jsEvents: true })
   // Structured native events (2026-09-19): the engine's danger verdicts
   // (premature drops, evictions, aborts, stale drops) land here via the
   // incremental `getDebugEvents` poll — a bug that fired BEFORE the HUD was
@@ -237,6 +238,10 @@
       // parity so a web dump verifies the same assumptions a native one does.
       engineDebug,
       thumbnails: getThumbDebug(),
+      // Cover outcomes (P6): the post-arm half of the thumbnail story —
+      // failures, ladder step-downs, mean latency, newest records. Counters
+      // and timings only; no credential surface.
+      covers: coverStats ? { ...coverStats, recent: coverStats.recent.slice(0, 20) } : null,
       settings: scrubSettings(st8 as unknown as Record<string, unknown>),
     }
     const text = JSON.stringify(payload, null, 2)
@@ -357,6 +362,16 @@
   let thumbDebug = $derived.by(() => {
     void jsTick
     return getThumbDebug()
+  })
+  // Cover outcomes (P6): the THUMBS counters stop at arming; this section is
+  // what happened after (latency, ladder step-downs, fallback give-ups).
+  let coverStats = $derived.by(() => {
+    void jsTick
+    try {
+      return coverStatsSummary()
+    } catch {
+      return null
+    }
   })
 </script>
 
@@ -496,6 +511,28 @@
             <div>pending: {thumbDebug.pending} state: {thumbDebug.blocked ? (thumbDebug.visibleTier ? 'VISIBLE (scrolling)' : 'BLOCKED (scrolling)') : 'open'}{thumbDebug.stationary ? ' · settled' : ''}</div>
             <div>armed: {thumbDebug.armedTotal} cached: {thumbDebug.cachedTotal} dropped: {thumbDebug.droppedTotal}</div>
             <div>last armed: {thumbDebug.lastArmedAt ? `${Math.floor((Date.now() - thumbDebug.lastArmedAt) / 1000)}s ago` : 'never'}</div>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Cover fetch outcomes (P6): failures (app-icon fallback), ladder
+           step-downs (first-choice URL errored), mean arm→onload latency and
+           the newest per-cover records. The post-arm half of the thumbnail
+           diagnosis — a THUMBS section that says armed but a COVERS section
+           showing failures/latency answers "didn't load" without deduction. -->
+      <div class="mb-1 rounded bg-white/5 p-2">
+        <button onclick={() => toggleSection('covers')} class="mb-1 flex w-full items-center justify-between font-bold text-yellow-300">
+          <span>{openSections.covers ? '▾' : '▸'} COVERS{coverStats ? ` (fail ${coverStats.failed})` : ''}</span>
+        </button>
+        {#if openSections.covers && coverStats}
+          <div class="text-[10px]">
+            <div>loaded: {coverStats.loaded} failed: {coverStats.failed} step-downs: {coverStats.stepDowns} micro-failed: {coverStats.microFailed}</div>
+            <div>mean load: {coverStats.meanLoadMs !== null ? `${coverStats.meanLoadMs} ms` : '—'}</div>
+            {#each coverStats.recent.slice(0, 8) as ev (ev.seq)}
+              <div class="border-t border-white/5 py-0.5 {ev.outcome === 'failed' ? 'text-red-300' : ev.outcome === 'micro-failed' ? 'text-white/40' : ''}">
+                +{Math.max(0, Math.round((Date.now() - ev.t) / 1000))}s {ev.role} {ev.size || ''} {ev.outcome === 'ok' ? `ok ${ev.loadMs !== null ? `${Math.round(ev.loadMs)}ms` : ''}${ev.ladderStep > 0 ? ` step${ev.ladderStep}` : ''}` : ev.outcome}
+              </div>
+            {/each}
           </div>
         {/if}
       </div>

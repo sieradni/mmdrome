@@ -84,13 +84,19 @@ export interface ThumbSizeInput {
 }
 
 /**
- * LDM steps thumbnails DOWN one canonical level (512→256, 256→128, 128→96);
- * 96 stays. Failure mode is cosmetic blur only. Returns canonical sizes only
- * so the server's disk-cached resizes are reused.
+ * LDM steps thumbnails DOWN one canonical level (256→128, 128→96); 96 stays.
+ * **512 is EXEMPT (2026-09-23 user decision): Now Playing hero art never
+ * softens.** The brief removal of the whole step-down was reverted when the
+ * cost was quantified — rows+grids carry ~4 MB on a cold full-library browse
+ * (grids dominate), real bytes on a metered connection — while the 512
+ * exemption keeps the most quality-sensitive surface (the enlarged artwork
+ * panel) out of the trade. Rows are 40 px CSS and grids downscale heavily,
+ * so their step is invisible in practice. Returns canonical sizes only so
+ * the server's disk-cached resizes are reused.
  */
 export function effectiveThumbSize(input: ThumbSizeInput): number {
   if (!input.lowDataActive) return input.size
-  if (input.size >= 512) return 256
+  if (input.size >= 512) return 512
   if (input.size >= 256) return 128
   if (input.size >= 128) return 96
   return input.size
@@ -105,9 +111,9 @@ export interface ThumbSwapInput {
 
 /**
  * Whether a size change should RE-REQUEST an already-loaded thumbnail
- * (2026-09-17, the user's call on the LDM toggle): a DOWNGRADE never does —
- * replacing a paid-for, already-decoded 512 with a fresh 128 download spends
- * data for a worse image. The stepped-down size lands on the row's next arm
+ * (2026-09-17, the user's data call): a DOWNGRADE never does — replacing a
+ * paid-for, already-decoded cover with a fresh smaller download spends data
+ * for a worse image. The stepped-down size lands on the row's next arm
  * (re-entry after the unlatch), where it costs nothing extra; rows not yet
  * loaded just take the small size directly. An UPSIZE always applies —
  * restoring quality is explicit user intent, and the immutable path makes the
@@ -118,3 +124,5 @@ export function shouldSwapThumbSize(input: ThumbSwapInput): boolean {
   if (input.displayedSize === 0) return true
   return input.wantedSize > input.displayedSize
 }
+
+

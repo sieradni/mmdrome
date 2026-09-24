@@ -5,9 +5,18 @@
   import { requestThumb, cancelThumb } from '../lib/thumbLoader'
   import { effectiveLowData } from '../lib/networkMode'
   import { effectiveThumbSize, shouldSwapThumbSize } from '../lib/transcodePolicy'
+  import { coverStatsRecord } from '../lib/coverStats'
   import type { Track } from '../stores/appState'
 
   let { track, wrapperClass = '', size = 128 }: { track: Track; wrapperClass?: string; size?: 96 | 128 | 256 | 512 } = $props()
+
+  /** Blur the micro only when its 32 px source is genuinely UPSCALED into the
+   *  target (grid cells 256/512 — the wash is the point there, and the upscale
+   *  needs hiding). Row thumbs (96/128 → 40 px CSS) render the micro ~1:1 or
+   *  downscaled: an unblurred 32 px upscale of a 40 px box reads as an
+   *  intentional soft thumbnail, and the blur was a per-loading-row filter
+   *  surface paid during exactly the landing bursts (P4, 2026-09-23). */
+  let blurMicro = $derived(size >= 256)
 
   let visible = $state(false)
   /** The loader's cached-lane claim at arm time (the revisit-after-unlatch
@@ -60,10 +69,23 @@
    *  300 ms fade) — the post-restart HTTP-cache-hit case. */
   const FAST_REVEAL_MS = 150
 
-  // LDM steps the thumbnail down one canonical level (512→256→128→96); the
-  // derived chain re-derives the URL when the effective mode flips. A
-  // track/config change restarts the ladder (the fallback icon must never
-  // outlive its failure — the stale-snapshot cover bug).
+  /** Cover-stats feed (P6): every LazyThumb is a cover render point, so it
+   *  records outcomes into the pure ring (tests/coverStats.test.ts) — the
+   *  "thumbnails don't load" reports become dump-visible numbers (failures,
+   *  ladder step-downs, mean latency) instead of deduction. Module-level
+   *  singleton state, tiny sync appends. */
+  function noteMainCover(ladderStep: number, loadMs: number | null, outcome: 'ok' | 'failed'): void {
+    coverStatsRecord({ role: 'main', size: renderTarget, ladderStep, loadMs, outcome })
+  }
+
+  // LDM steps the thumbnail down one canonical level (256→128, 128→96) — the
+  // quantified data saving (~4 MB on a cold full-library browse; grids
+  // dominate) with 512 EXEMPT (2026-09-23 decision: Now Playing hero art
+  // never softens; row thumbs are 40 px CSS and grids downscale heavily, so
+  // their step is invisible). The derived chain re-derives the URL when the
+  // effective mode flips. A track/config change restarts the ladder (the
+  // fallback icon must never outlive its failure — the stale-snapshot cover
+  // bug); the FAILURE ladder still only steps down after a URL fails.
   let lowDataActive = $derived($effectiveLowData)
   let effectiveSize = $derived(effectiveThumbSize({ size, lowDataActive }))
 
@@ -149,6 +171,10 @@
     let idx = attemptIndex
     while (idx < ladder.length && failedUrls.has(ladder[idx])) idx++
     attemptIndex = idx
+    // Ladder exhausted → the app-icon fallback renders. Recorded HERE (once,
+    // per give-up — not per intermediate URL failure; the step that answered
+    // is recorded by the eventual onload's ladderStep).
+    if (idx >= ladder.length) noteMainCover(idx, null, 'failed')
   }
 
   onMount(() => {
@@ -212,9 +238,9 @@
       <img
         src={microUrl}
         alt=""
-        class="absolute inset-0 h-full w-full scale-110 object-cover blur-xl transition-opacity duration-300 {microLoaded ? 'opacity-0' : 'opacity-60'}"
+        class="absolute inset-0 h-full w-full object-cover transition-opacity duration-300 {microLoaded ? 'opacity-0' : 'opacity-60'} {blurMicro ? 'scale-110 blur-xl' : ''}"
         decoding="async"
-        onerror={() => { microFailed = true }}
+        onerror={() => { microFailed = true; coverStatsRecord({ role: 'micro', size: 0, ladderStep: 0, loadMs: null, outcome: 'micro-failed' }) }}
         onload={() => { microLoaded = true }}
       />
     {/if}
@@ -231,7 +257,11 @@
         onload={() => {
           lastLoadedUrl = currentUrl
           microLoaded = true
-          if (performance.now() - armedAt < FAST_REVEAL_MS) fastLoaded = true
+          const loadMs = performance.now() - armedAt
+          if (loadMs < FAST_REVEAL_MS) fastLoaded = true
+          // armedAt is set in the SAME arm callback that flips `visible`, so
+          // a pre-arm load is impossible; the floor guards a reset-order edge.
+          if (loadMs >= 0) noteMainCover(attemptIndex, loadMs, 'ok')
         }}
       />
     {:else}

@@ -3,6 +3,8 @@ import { settings } from '../stores/appState'
 import { BackgroundAudio } from './nativePlugin'
 import { Capacitor } from '@capacitor/core'
 import { trailBridge } from './playbackCore/nativeBridgeTrail'
+import { decideCellularFlap, freshNetworkHysteresis, type NetworkHysteresisState } from './networkHysteresis'
+import { dbgAlways } from './debugLog'
 
 /**
  * Network mode (low-data mode): cellular/expensive detection + the effective
@@ -91,15 +93,62 @@ function wireNative(): void {
   // Live updates while the app runs (Wi-Fi ↔ cellular transitions).
   void BackgroundAudio.addListener('networkStateChanged', (data: { isExpensive: boolean; isConstrained: boolean }) => {
     // The dump must show LDM flapping — a low-data transition silently
-    // changes the transcode/preload economy mid-session.
+    // changes the transcode/preload economy mid-session. The RAW value is
+    // recorded; the FILTERED value below decides the store write.
     trailBridge('event', `network exp=${!!data.isExpensive} ldm=${!!data.isConstrained}`)
-    networkStatus.set({
-      known: true,
-      isCellular: !!data.isExpensive,
+    // Cellular-bit flap hysteresis (2026-09-23, the `exp=false → true → false`
+    // in-6 s dump): NWPathMonitor blips used to flip `effectiveLowData` (and
+    // with it transcode/preload economics + the native params push) twice in
+    // a second. A blip must HOLD 3 s before the store commits (pure core,
+    // tests/networkHysteresis.test.ts); the OS Low Data Mode bit rides live
+    // — it flips on an explicit user toggle and never flaps.
+    const verdict = decideCellularFlap(!!data.isExpensive, Date.now(), flapState)
+    flapState = verdict.state
+    // Gate the store write on `changed` — the hysteresis contract's whole
+    // point. An unconditional set() hands subscribers a fresh object on EVERY
+    // monitor event (NWPathMonitor re-fires generously), re-deriving
+    // effectiveLowData and every consumer each time: the churn the filter
+    // exists to prevent (re-review 2026-09-23).
+    //
+    // BUT `verdict.changed` describes the CELLULAR bit only. The OS Low Data
+    // Mode bit rides LIVE by contract (an explicit user toggle, never flaps) —
+    // if the cellular bit is meanwhile unchanged, gating the whole write on
+    // `changed` would silently DROP the user's LDM toggle. Track the last
+    // WRITTEN tuple and emit when EITHER bit moves.
+    const next = {
+      known: true as const,
+      isCellular: verdict.effective,
       osLowData: !!data.isConstrained,
-      source: 'native',
-    })
+      source: 'native' as const,
+    }
+    const last = lastWrittenNetwork
+    if (
+      verdict.changed ||
+      last === null ||
+      last.osLowData !== next.osLowData ||
+      last.isCellular !== next.isCellular
+    ) {
+      lastWrittenNetwork = next
+      networkStatus.set(next)
+    }
+    if (flapState.suppressed > suppressedReported) {
+      suppressedReported = flapState.suppressed
+      dbgAlways('network', `cellular flap suppressed (total ${flapState.suppressed})`)
+    }
   }).catch(() => {})
+}
+
+/** Cellular-flap filter state (module-level: one session, one monitor). */
+let flapState: NetworkHysteresisState = freshNetworkHysteresis()
+/** Last tuple actually written to the store (the emit gate covers BOTH bits,
+ *  not just the filtered cellular one — see the listener comment). */
+let lastWrittenNetwork: { isCellular: boolean; osLowData: boolean } | null = null
+/** How many suppressed blips the dump has already reported (dedupe). */
+let suppressedReported = 0
+
+/** Test/dump hook: blips that never survived confirmation this session. */
+export function networkFlapSuppressedCount(): number {
+  return flapState.suppressed
 }
 
 /**
@@ -119,6 +168,14 @@ export async function initNetworkMode(): Promise<void> {
         osLowData: !!state.isConstrained,
         source: 'native',
       })
+      // Seed the flap filter with the boot snapshot so the first post-boot
+      // listener event is judged against it (not unconditionally adopted).
+      flapState = { ...freshNetworkHysteresis(), effective: !!state.isExpensive }
+      lastWrittenNetwork = {
+        isCellular: !!state.isExpensive,
+        osLowData: !!state.isConstrained,
+      }
+      suppressedReported = 0
     } catch { /* older plugin build without the method — boot proceeds ungated */ }
     return
   }

@@ -115,30 +115,36 @@
   </div>
 
   <div class="-ml-1 flex flex-shrink-0 items-center gap-0.5">
-    {#each starSegments(getRating(track.trackId)) as seg, si}
-      <svg class="h-3.5 w-3.5" viewBox="0 0 24 24">
-        {#if seg === 'half'}
-          <defs>
-            <linearGradient id="tr-{track.trackId}-{si}">
-              <stop offset="50%" stop-color="#facc15" />
-              <stop offset="50%" stop-color="transparent" />
-            </linearGradient>
-          </defs>
-        {/if}
-        <path
-          d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26Z"
-          fill={seg === 'full' ? '#facc15' : seg === 'half' ? 'url(#tr-' + track.trackId + '-' + si + ')' : 'none'}
-          stroke={seg === 'empty' ? '#555' : '#facc15'}
-          stroke-width="1"
-        />
-      </svg>
-    {/each}
+    <!-- Ratings render ONLY when there is something to show (2026-09-23 scroll
+         review): the old unconditional block put 5 star SVGs (+ a gradient
+         <defs> per half-star) on EVERY row — a library of unrated tracks was
+         hundreds of invisible gray-stroke SVGs and unique gradient defs, all
+         repainted on every scroll frame. Rated rows render stars; a loved
+         row without a rating renders just the heart. Row height is
+         unchanged; the trailing area is empty for the common unrated case
+         (same as Spotify/Apple Music). -->
+    {#if getRating(track.trackId) > 0}
+      {#each starSegments(getRating(track.trackId)) as seg, si}
+        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24">
+          {#if seg === 'half'}
+            <defs>
+              <linearGradient id="tr-{track.trackId}-{si}">
+                <stop offset="50%" stop-color="#facc15" />
+                <stop offset="50%" stop-color="transparent" />
+              </linearGradient>
+            </defs>
+          {/if}
+          <path
+            d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26Z"
+            fill={seg === 'full' ? '#facc15' : seg === 'half' ? 'url(#tr-' + track.trackId + '-' + si + ')' : 'none'}
+            stroke={seg === 'empty' ? '#555' : '#facc15'}
+            stroke-width="1"
+          />
+        </svg>
+      {/each}
+    {/if}
     {#if getLoved(track.trackId)}
       <svg class="ml-0.5 h-3.5 w-3.5 text-red-400" viewBox="0 0 24 24" fill="currentColor">
-        <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-      </svg>
-    {:else}
-      <svg class="ml-0.5 h-3.5 w-3.5 text-muted/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
       </svg>
     {/if}

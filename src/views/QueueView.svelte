@@ -188,14 +188,27 @@
   let previewUserItems = $derived.by<KeyedTrack[]>(() => {
     if (!dragPlan) {
       return userTracks.map((track, i) => ({
-        key: `u-${i}-${track.trackId}`,
+        // Each key is the TRACK ID, not an index-embedded key (2026-09-23
+        // scroll review): every advance/promote/replenish rewrites the queues
+        // and shifted the old `u-${i}-${id}` keys — Svelte destroyed and
+        // re-created EVERY row's DOM on each advance, unmounting LazyThumbs
+        // and re-arming their covers as fresh (paced) requests. The
+        // "queue thumbnails don't load even in view" report. Section-scoped
+        // prefixes stay (a track CAN sit in both sections — auto Tier 3
+        // deliberately admits user-queued tracks (B4) — so the sections'
+        // keyspaces must not collide); the position index survives ONLY as
+        // originalCombinedIdx (drag-start resolution), never in the key.
+        // Within-section id uniqueness is enforced by the mutation layer
+        // (addToUserQueue no-ops on an existing copy; promotions move rather
+        // than duplicate).
+        key: `u-${track.trackId}`,
         track,
         originalCombinedIdx: i,
       }))
     }
     return dragPlan.user.flatMap((id, i) => {
       const track = trackMap.get(id)
-      return track ? [{ key: `u-${i}-${id}`, track, originalCombinedIdx: i }] : []
+      return track ? [{ key: `u-${id}`, track, originalCombinedIdx: i }] : []
     })
   })
 
@@ -203,7 +216,10 @@
   let previewAutoItems = $derived.by<KeyedTrack[]>(() => {
     if (!dragPlan) {
       return autoTracks.map((track, i) => ({
-        key: `a-${i}-${track.trackId}`,
+        // Track-id key, same rationale as previewUserItems above (the
+        // position index in the old `a-${i}-${id}` key was the churn); the
+        // index still feeds originalCombinedIdx (drag-start resolution).
+        key: `a-${track.trackId}`,
         track,
         originalCombinedIdx: userTracks.length + i,
       }))
@@ -211,7 +227,7 @@
     const U = dragPlan.user.length
     return dragPlan.auto.flatMap((id, i) => {
       const track = trackMap.get(id)
-      return track ? [{ key: `a-${i}-${id}`, track, originalCombinedIdx: U + i }] : []
+      return track ? [{ key: `a-${id}`, track, originalCombinedIdx: U + i }] : []
     })
   })
 

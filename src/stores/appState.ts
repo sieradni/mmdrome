@@ -399,11 +399,26 @@ export async function initStores(): Promise<void> {
   if (q) {
     // `?? q.historyQueue` tolerates rows persisted by app versions that still
     // used the old field name — the first saveQueue overwrites the row.
+    // Section-scoped dedupe (2026-09-23 re-review): the queue views key rows
+    // by `u-${id}` / `a-${id}` (the advance-churn fix), which TRUSTS
+    // within-section id uniqueness. The mutation layer maintains it, but this
+    // restore is a raw pass-through of whatever an older app version
+    // persisted — a single legacy duplicate would collide the each-keys and
+    // silently DROP rows. First occurrence wins (Set preserves order).
+    const userQueue = [...new Set(q.userQueue)]
+    const autoQueue = [...new Set(q.autoQueue)]
+    // Re-anchor the active row BY ID (the reconcileQueueWithLibrary rule): a
+    // deduped duplicate BEFORE the active row shifts positions, so a pasted
+    // index would point at the wrong row.
+    const oldCombined = [...q.userQueue, ...q.autoQueue]
+    const oldActiveId = q.activeIndex >= 0 && q.activeIndex < oldCombined.length ? oldCombined[q.activeIndex] : undefined
+    const newCombined = [...userQueue, ...autoQueue]
+    const reAnchoredActive = oldActiveId !== undefined ? newCombined.indexOf(oldActiveId) : -1
     queue.set({
-      userQueue: q.userQueue,
-      autoQueue: q.autoQueue,
+      userQueue,
+      autoQueue,
       recentTrackIds: sanitizeRecent(q.recentTrackIds ?? (q as { historyQueue?: string[] }).historyQueue),
-      activeIndex: q.activeIndex,
+      activeIndex: reAnchoredActive >= 0 ? reAnchoredActive : q.activeIndex < newCombined.length ? q.activeIndex : -1,
     })
   }
 
