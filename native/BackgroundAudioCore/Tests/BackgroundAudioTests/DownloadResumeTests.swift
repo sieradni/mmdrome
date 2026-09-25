@@ -169,7 +169,8 @@ final class DownloadResumeTests: XCTestCase {
         let long = String(repeating: "x", count: 80)
         let line = DownloadResume.responseFingerprintLine(
             fingerprint(contentType: long))
-        XCTAssertTrue(line.contains("ctype=xxx..."), line)
+        // Truncation keeps prefix(45) THEN appends the ellipsis.
+        XCTAssertTrue(line.contains("ctype=" + String(repeating: "x", count: 45) + "..."), line)
         XCTAssertFalse(line.contains(long), "values over 48 chars must be truncated")
     }
 }
