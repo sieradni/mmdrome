@@ -795,9 +795,10 @@ final class TrackFileLoader {
         event(.info, "stream: writer continuation Range bytes=\(offset)- for \(track.trackId) — same .part, staged schedule undisturbed")
         // The old handle is ALREADY closed (the delegate closed it at
         // completion). Reopen for append — same permissions the writer had.
-        let handle: FileHandle
+        var reopenedHandle: FileHandle?
         do {
-            handle = try FileHandle(forWritingTo: writer.part)
+            let h = try FileHandle(forWritingTo: writer.part)
+            reopenedHandle = h
             // APPEND SEMANTICS (adversarial trace 2026-09-24): FileHandle
             // (forWritingTo:) positions at BYTE 0 — writing without seeking
             // would overwrite the retained prefix from its first byte (the
@@ -808,7 +809,7 @@ final class TrackFileLoader {
             // the end. The download path's append does the same seek.
             let onDisk = (try? FileManager.default.attributesOfItem(atPath: writer.part.path)[.size] as? Int64) ?? 0
             guard onDisk == offset else {
-                try? handle.close()
+                try? h.close()
                 event(.danger, "stream: continuation aborted — scratch size \(onDisk)B != offset \(offset)B for \(track.trackId) — scratch destroyed, fresh download")
                 // The scratch is UNTRUSTWORTHY (purged or truncated mid-
                 // flush): retaining pendingParts would send the JS retry's
@@ -823,7 +824,7 @@ final class TrackFileLoader {
                 abortContinuation(writer: writer, chained: chained)
                 return
             }
-            try handle.seekToEndOfFile()
+            try h.seekToEndOfFile()
         } catch {
             // Fallback = the OLD recovery: the JS retry re-engages and its
             // reload's prefetch continues the retained prefix. The reopen
@@ -831,11 +832,14 @@ final class TrackFileLoader {
             // failure reason the retry machine is entitled to act on). The
             // handle may be OPEN here (seek threw after a successful open)
             // — close it before aborting or the FD leaks.
-            try? handle.close()
+            try? reopenedHandle?.close()
             event(.danger, "stream: continuation reopen failed for \(track.trackId): \(error.localizedDescription) — handing to the JS retry")
             abortContinuation(writer: writer, chained: chained)
             return
         }
+        // Every failure path above returns; reaching here means the reopen
+        // and the append-seek both succeeded.
+        guard let handle = reopenedHandle else { return }
         var request = URLRequest(url: track.url)
         request.timeoutInterval = 120
         request.setValue(DownloadResume.rangeHeader(offset: offset), forHTTPHeaderField: "Range")
