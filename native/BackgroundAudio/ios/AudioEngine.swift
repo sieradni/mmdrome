@@ -496,10 +496,23 @@ final class TrackFileLoader {
         // F2 (design review): EVERY arrival feeds the engine's progress
         // ledger (stall resume + give-up timer) — rung-gated deliveries alone
         // starved a resuming trickle stream for tens of seconds and let the
-        // give-up timer kill streams that WERE making progress. Cheap struct
-        // update, before the rung guard below.
+        // give-up timer kill streams that WERE making progress.
         streamArrivalHandler?(writer.accumulatedBytes)
         let merged = writer.accumulatedBytes
+        // COUNTER TRUTH (2026-09-25 dump — the "repeatedly skipping" report):
+        // the writer state is stored on EVERY arrival. The old code advanced
+        // accumulatedBytes ONLY inside the rung-delivery branch, so the
+        // counter ran up to one 512 KB rung behind the on-disk .part (the
+        // delegate writes per byte) — and the early-close verdict then
+        // compared the COUNTER against the DISK: the continuation's Range
+        // offset never matched the scratch size, every continuation aborted
+        // as a "size mismatch", destroyed a ~97 %-complete file, and the row
+        // cycled JS retries into give-up skips (all four dump gaps were
+        // < 524288 B: 348007/67429/4691, 400136/285044/389678, 231941/510469
+        // /196099). The rung gate paces PROGRESS DELIVERIES (the extension
+        // channel's cadence) — it must never quantize the byte COUNT, which
+        // is the completion verdict's and the continuation offset's truth.
+        streamWriter = writer
         let shouldDeliver = StreamPolicy.writerShouldDeliver(
             accumulatedBytes: merged,
             leadRequiredBytes: leadBytes,
@@ -792,10 +805,11 @@ final class TrackFileLoader {
     private func startWriterContinuation(writer: StreamWriter, chained: [(URL?, Error?) -> Void]) {
         let offset = writer.accumulatedBytes
         let track = writer.track
-        event(.info, "stream: writer continuation Range bytes=\(offset)- for \(track.trackId) — same .part, staged schedule undisturbed")
+        event(.info, "stream: writer continuation for \(track.trackId) — counter offset \(offset)B, continuing from disk truth — same .part, staged schedule undisturbed")
         // The old handle is ALREADY closed (the delegate closed it at
         // completion). Reopen for append — same permissions the writer had.
         var reopenedHandle: FileHandle?
+        var continueFrom = writer.accumulatedBytes
         do {
             let h = try FileHandle(forWritingTo: writer.part)
             reopenedHandle = h
@@ -803,14 +817,23 @@ final class TrackFileLoader {
             // (forWritingTo:) positions at BYTE 0 — writing without seeking
             // would overwrite the retained prefix from its first byte (the
             // spliced-file poison class, and the byte COUNTER would still
-            // report the full total, passing the gates on a lie). Verify the
-            // on-disk size matches the offset FIRST (a purge or truncated
-            // flush must not continue from a phantom offset), then seek to
-            // the end. The download path's append does the same seek.
+            // report the full total, passing the gates on a lie).
             let onDisk = (try? FileManager.default.attributesOfItem(atPath: writer.part.path)[.size] as? Int64) ?? 0
-            guard onDisk == offset else {
+            // DISK-FIRST CONTINUATION (2026-09-25 dump — the "repeatedly
+            // skipping" report): `offset` is the SCHEDULING counter, the
+            // disk is the DELIVERED truth. The old `onDisk == offset` guard
+            // inverted that trust: a normal rung-short close (onDisk >
+            // offset) aborted EVERY continuation, destroyed the ~97 %-
+            // complete scratch, and cycled JS retries into give-up skips
+            // (every dump gap was < 524288 B — one delivery rung). The file
+            // can only be REJECTED when it cannot support the offset:
+            // SMALLER (purged/truncated flush, phantom retention — the
+            // splice class the 2026-09-24 trace guarded) or PAST the
+            // announced total (cross-attempt corruption). onDisk > offset
+            // is the NORMAL shape and continues.
+            guard onDisk >= offset, writer.announcedBytes <= 0 || onDisk <= writer.announcedBytes else {
                 try? h.close()
-                event(.danger, "stream: continuation aborted — scratch size \(onDisk)B != offset \(offset)B for \(track.trackId) — scratch destroyed, fresh download")
+                event(.danger, "stream: continuation aborted — scratch \(onDisk)B cannot support offset \(offset)B (announced \(writer.announcedBytes)B) for \(track.trackId) — scratch destroyed, fresh download")
                 // The scratch is UNTRUSTWORTHY (purged or truncated mid-
                 // flush): retaining pendingParts would send the JS retry's
                 // download path Range-continuing from a phantom offset —
@@ -824,7 +847,10 @@ final class TrackFileLoader {
                 abortContinuation(writer: writer, chained: chained)
                 return
             }
+            // Continue from the FILE's end: the Range request re-fetches
+            // from the true delivered mark, not the counter's.
             try h.seekToEndOfFile()
+            continueFrom = onDisk
         } catch {
             // Fallback = the OLD recovery: the JS retry re-engages and its
             // reload's prefetch continues the retained prefix. The reopen
@@ -842,20 +868,20 @@ final class TrackFileLoader {
         guard let handle = reopenedHandle else { return }
         var request = URLRequest(url: track.url)
         request.timeoutInterval = 120
-        request.setValue(DownloadResume.rangeHeader(offset: offset), forHTTPHeaderField: "Range")
+        request.setValue(DownloadResume.rangeHeader(offset: continueFrom), forHTTPHeaderField: "Range")
         let task = streamSession.dataTask(with: request)
         // Reset the delegate's counter: this task delivers the REMAINDER.
         streamWriterDelegate?.attach(handle)
         streamWriterHandle = handle
         streamWriterTask = task
-        // The RESUMED writer: accumulated bytes continue from the prefix so
-        // the verdict/gates/estimate all judge the merged file. The rung
-        // ledger seeds at the offset (the next delivery is the next 512 KB
-        // rung above it), and the attempt counter arms the loop cap.
+        // The RESUMED writer: accumulated bytes continue from the DISK mark
+        // so the verdict/gates/estimate all judge the merged file. The rung
+        // ledger seeds there too (the next delivery is the next 512 KB rung
+        // above it), and the attempt counter arms the loop cap.
         var resumed = writer
-        resumed.resumeOffset = offset
-        resumed.accumulatedBytes = offset
-        resumed.lastDeliveredAt = offset
+        resumed.resumeOffset = continueFrom
+        resumed.accumulatedBytes = continueFrom
+        resumed.lastDeliveredAt = continueFrom
         resumed.continuationAttempt += 1
         streamWriter = resumed
         // Defensive bookkeeping parity with streamLoad: a state key without
