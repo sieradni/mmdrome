@@ -544,7 +544,7 @@ final class TrackFileLoader {
     /// retry — for a file that was already fully downloaded. The handlers
     /// are captured BEFORE any state clears; `clearWriterState` runs after.
     func writerDidComplete(_ error: Error?) {
-        guard let writer = streamWriter else { return }
+        guard var writer = streamWriter else { return }
         // Capture the engine legs up front (F1): the verdict branches below
         // may run async work before delivering; state clears must never
         // precede a delivery that still needs the handler.
@@ -586,6 +586,24 @@ final class TrackFileLoader {
             onFinished?(nil, error)
             onDownloadFinished?(writer.track.trackId, false)
             return
+        }
+        // DISK TRUTH AT THE VERDICT (2026-09-25, the "repeatedly skipping"
+        // dump's phantom): the counter is per-byte now, but this verdict is
+        // where a counter regression does the most damage — the dump's
+        // rung-lagged counter judged COMPLETE files (disk == announced,
+        // exactly, three attempts running) "cut short" and the continuation
+        // guard destroyed them. The disk is the delivered truth: a short
+        // verdict with the announced body already on disk PROMOTES (the
+        // gate chain below re-judges the file — no gate is skipped). Its
+        // danger line is by definition a REGRESSION ALARM — report the
+        // dump. Disk < counter stays untrusted (a file smaller than the
+        // counted bytes is corruption, never promoted on a lie).
+        if writer.announcedBytes > 0, writer.accumulatedBytes < writer.announcedBytes {
+            let onDisk = (try? FileManager.default.attributesOfItem(atPath: writer.part.path)[.size] as? Int64) ?? 0
+            if onDisk >= writer.announcedBytes {
+                event(.danger, "stream: counter \(writer.accumulatedBytes)B trails disk \(onDisk)B (announced \(writer.announcedBytes)B) for \(writer.track.trackId) — DISK TRUTH wins, promoting (counter/verdict divergence is a regression alarm)")
+                writer.accumulatedBytes = onDisk
+            }
         }
         // Clean end: judge completeness against the announced body.
         let verdict = StreamPolicy.writerCompleteVerdict(
@@ -672,8 +690,9 @@ final class TrackFileLoader {
             // removed.
             let chains = streamWriterChains.removeValue(forKey: writer.cacheKey) ?? []
             let err = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(writer.accumulatedBytes) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
+            let diskAtClose = (try? FileManager.default.attributesOfItem(atPath: writer.part.path)[.size] as? Int64) ?? 0
             if writer.accumulatedBytes >= TrackFileLoader.minimumAudioBytes {
-                event(.danger, "stream: clean early close for \(writer.track.trackId) (\(writer.accumulatedBytes) of \(writer.announcedBytes)) — scratch retained, next attempt Range-resumes")
+                event(.danger, "stream: clean early close for \(writer.track.trackId) (counter \(writer.accumulatedBytes)B, disk \(diskAtClose)B of announced \(writer.announcedBytes)B) — scratch retained, next attempt Range-resumes")
                 pendingParts[writer.cacheKey] = DownloadResume.Pending(
                     parts: [writer.accumulatedBytes],
                     announcedTotal: writer.announcedBytes)
