@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.38",
-      "versionDate": "2026-09-25T07:36:09.174Z",
-      "versionDescription": "Disk-truth continuation + verdict for early-closed streams (the repeatedly-skipping dump): the writer's byte counter is per-byte truth, the continuation Range-resumes from the FILE's end, and a complete-on-disk file can never again be destroyed by a counter mismatch; evict teardown close-ownership (BUG G twin)",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.38/mmdrome.ipa",
+      "version": "1.2.39",
+      "versionDate": "2026-09-25T08:16:23.151Z",
+      "versionDescription": "Early-close network fingerprint: every stream early-close log now carries the response status and connection headers (Connection, Content-Length, Content-Range, Accept-Ranges, Content-Type) so the next dump can definitively confirm or rule out Wi-Fi data assist as the close cause",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.39/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.39",
+          "buildVersion": "43",
+          "date": "2026-09-25T08:16:23.151Z",
+          "localizedDescription": "Early-close network fingerprint: every stream early-close log now carries the response status and connection headers (Connection, Content-Length, Content-Range, Accept-Ranges, Content-Type) so the next dump can definitively confirm or rule out Wi-Fi data assist as the close cause",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.39/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.38",
           "buildVersion": "42",
@@ -395,6 +403,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.39",
+      "identifier": "ios-v1.2.39",
+      "appID": "com.mmdrome.player",
+      "caption": "Early-close network fingerprint: every stream early-close log now carries the response status and connection headers (Connection, Content-Le",
+      "date": "2026-09-25T08:16:23.151Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.38",
       "identifier": "ios-v1.2.38",
       "appID": "com.mmdrome.player",
@@ -427,15 +444,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Transcode completeness gate: a socket-cut transcode can no longer enter the cache as complete and kill crossfade standbys (root cause of the",
       "date": "2026-09-23T05:48:58.888Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.34",
-      "identifier": "ios-v1.2.34",
-      "appID": "com.mmdrome.player",
-      "caption": "Dead-air watchdog: crossfade-then-stop wedge fixed — a playing track whose clock runs past its scheduled end now advances instead of sitting",
-      "date": "2026-09-23T02:16:01.185Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
