@@ -27,7 +27,8 @@
           "date": "2026-09-25T03:45:49.853Z",
           "localizedDescription": "In-loader Range continuation for early-closed staged streams (the crossfade stop cycling at 0-1s); native active-load retry with long-haul kick for backgrounded failures (33-min dead air); artwork failure backoff; maturation monotonicity; phantom resume prune; D1 watchdog covers staged-complete tracks",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.37/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5040979
         },
         {
           "version": "1.2.36",
