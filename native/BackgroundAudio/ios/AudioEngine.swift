@@ -692,7 +692,7 @@ final class TrackFileLoader {
                    writer.continuationAttempt < 3 {
                     startWriterContinuation(writer: writer, chained: chains)
                 } else {
-                    event(.info, "stream", "continuation unavailable for \(writer.track.trackId) (range ignored, cap, or no scratch) — handing to the JS retry")
+                    event(.info, "stream: continuation unavailable for \(writer.track.trackId) (range ignored, cap, or no scratch) — handing to the JS retry")
                     for chain in chains { chain(nil, err) }
                     clearWriterState()
                     onFinished?(nil, err)
@@ -792,7 +792,7 @@ final class TrackFileLoader {
     private func startWriterContinuation(writer: StreamWriter, chained: [(URL?, Error?) -> Void]) {
         let offset = writer.accumulatedBytes
         let track = writer.track
-        event(.info, "stream", "writer continuation: Range bytes=\(offset)- for \(track.trackId) — same .part, staged schedule undisturbed")
+        event(.info, "stream: writer continuation Range bytes=\(offset)- for \(track.trackId) — same .part, staged schedule undisturbed")
         // The old handle is ALREADY closed (the delegate closed it at
         // completion). Reopen for append — same permissions the writer had.
         let handle: FileHandle
@@ -4371,7 +4371,7 @@ public final class NativeAudioEngine: NSObject {
         eventAdd(.info, "engine", "stopPlayback position=\(String(format: "%.1f", currentPosition)) row \(activeIndex) (\(currentTrackId))")
         // ACTIVE-LOAD RETRY (2026-09-24 dump-2): any teardown — stop, sleep
         // end, queue end — must also disarm the loader's retry timer.
-        loader.cancelActiveLoadRetries()
+        cancelActiveLoadRetries()
         paramRestartTimer?.invalidate()
         paramRestartTimer = nil
         sleepTimer?.invalidate()
