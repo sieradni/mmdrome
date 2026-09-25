@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import Accelerate
+import UIKit
 import BackgroundAudioCore
 
 // MARK: - Shared models
@@ -117,6 +118,18 @@ final class TrackFileLoader {
     /// server does not support ranges, so retaining prefixes for them would
     /// loop replace→close→retain forever. Sticky until a download succeeds.
     private var rangeUnsupportedKeys: Set<String> = []
+    /// Maturation byte floor (2026-09-24 field dump, the playable→headered
+    /// downgrade): the 1 s maturation tick feeds `received` from the
+    /// in-flight task's counter alone. A resumed attempt (Range-append or
+    /// opaque resumeData) restarts that counter at 0 — the tick saw a
+    /// `playable` entry drop to `headered` with `received=0 announced=?`,
+    /// because the LEDGER key is the cache key (one maturation per track
+    /// across attempts). The floor seeds the tick's effective byte count
+    /// with the bytes ALREADY on disk (the retained prefix the resume
+    /// continues), so stage transitions stay monotonic across attempt
+    /// boundaries. Recorded at the error/early-close retention sites,
+    /// cleared on promote / evict / cleanup / prune.
+    private var maturationByteFloor: [String: Int64] = [:]
     /// Diagnostic sink (2026-09-19): the loader's gate verdicts ride the
     /// engine's structured event log instead of bare prints. Level only —
     /// the domain is fixed ("loader"); set by the engine at init.
@@ -128,11 +141,37 @@ final class TrackFileLoader {
     func stats() -> (cached: Int, inFlight: Int) {
         (state.cache.count, state.inFlight.count)
     }
+    /// True while a staged stream writer owns a key (the engine's retry
+    /// consults it before restarting a staged load).
+    var hasActiveWriter: Bool { streamWriter != nil }
     /// Dump-visible scratch count: keys with a retained clean-close prefix
     /// or an opaque resumeData offer (a stuck resume shows up here as a
     /// nonzero count that never drains).
     var pendingResumeScratchCount: Int {
         pendingParts.count + resumeDataByCacheKey.count
+    }
+
+    /// Scratch offers whose cache entry is gone (Caches purge between
+    /// retain and resume). `evict` drops the maps by key, but a purge
+    /// removes the FILES without touching these maps — the offer then
+    /// points at nothing. Called from `cleanup` (the per-load radius
+    /// sweep): the offer's own destination is the evidence — no file → no
+    /// continuation is possible (planNextAttempt's rangeAppend would
+    /// request from an offset that reads into nothing; the attempt's own
+    /// body-replace fallback recovers, but the phantom inflates the
+    /// dump-visible scratch count and races a concurrent writer's remove)
+    /// — drop the map entries so the next attempt plans FRESH honestly.
+    func prunePhantomResumeState() {
+        // Snapshot the keys: mutating a dictionary while iterating its own
+        // keys view is a Swift hazard (the indices invalidate under us).
+        for key in Array(pendingParts.keys) where destinationByKey[key] == nil {
+            pendingParts[key] = nil
+            maturationByteFloor[key] = nil
+        }
+        for key in Array(resumeDataByCacheKey.keys) where destinationByKey[key] == nil {
+            resumeDataByCacheKey[key] = nil
+        }
+        rangeUnsupportedKeys = rangeUnsupportedKeys.filter { destinationByKey[$0] != nil }
     }
     /// Fired on the MAIN thread the moment a download's bookkeeping settles:
     /// (trackId, succeeded). The engine's 1 s sampler only sees downloads
@@ -212,6 +251,18 @@ final class TrackFileLoader {
         var accumulatedBytes: Int64 = 0
         var lastDeliveredAt: Int64 = 0
         var deliveredPlayable = false
+        /// IN-LOADER CONTINUATION (2026-09-24): bytes already on disk from
+        /// the attempt this writer CONTINUES. `accumulatedBytes` starts here
+        /// and the delegate's per-task counter is ADDED — every byte
+        /// comparison (the verdict, the gates, the schedule estimate, the
+        /// arrival ledger) sees the MERGED file, never the remainder alone.
+        var resumeOffset: Int64 = 0
+        /// How many in-loader continuations this track's writer has already
+        /// used. Caps the recovery loop: a server that accepts the Range and
+        /// closes early at the same offset forever would otherwise cycle a
+        /// request per timeout indefinitely — past the cap the failure
+        /// yields to the JS retry (its own reload ladder terminates).
+        var continuationAttempt: Int = 0
     }
 
     private var streamWriter: StreamWriter? = nil
@@ -369,9 +420,63 @@ final class TrackFileLoader {
     private var streamArrivalHandler: ((Int64) -> Void)? = nil
 
     /// MAIN: the response header landed — the server's own Content-Length
-    /// refines the snapshot's size estimate for the schedule math.
-    func writerDidAnnounce(_ announced: Int64) {
-        guard var writer = streamWriter, announced > 0 else { return }
+    /// refines the snapshot's size estimate for the schedule math, and the
+    /// status code classifies a CONTINUATION's answer (206 = the remainder;
+    /// anything else = the server ignored the range → fresh overwrite).
+    func writerDidReceiveResponse(announced: Int64, statusCode: Int) {
+        guard var writer = streamWriter else { return }
+        if writer.resumeOffset > 0, statusCode != 206 {
+            // The continuation's request was answered with a NON-range body
+            // (a plain 200 = the WHOLE file from byte 0). Appending it
+            // splices prefix+full, and TRUNCATING the live .part races the
+            // delegate queue (bytes already appended before the truncate
+            // both poison the file and overcount the counter past file
+            // truth — the gates would pass on a lie). The only safe
+            // response: ABORT to a fresh download — discard the scratch
+            // (bytes appended from a whole-file body cannot be separated
+            // from the prefix), mark the key Range-unsupported (the
+            // eligibility guard then never continues on this server
+            // again), and hand the row to the retry path, whose prefetch
+            // plans FRESH. The queued cancel-completion is silenced AND
+            // neutralized: handlers nil'd first, the stored writer's
+            // accumulatedBytes zeroed (the error branch's retention guard
+            // is `> 0`), streamWriter nil'd so writerDidComplete early-
+            // returns.
+            event(.danger, "stream: continuation answered \(statusCode) (range ignored) for \(writer.track.trackId) — scratch destroyed, fresh download (no in-writer overwrite)")
+            rangeUnsupportedKeys.insert(writer.cacheKey)
+            let offsetForLog = writer.accumulatedBytes
+            let chains = streamWriterChains.removeValue(forKey: writer.cacheKey) ?? []
+            let engineFinished = streamFinishedHandler
+            streamProgressHandler = nil
+            streamFinishedHandler = nil
+            streamArrivalHandler = nil
+            streamWriterTask?.cancel()
+            pendingParts[writer.cacheKey] = nil
+            maturationByteFloor[writer.cacheKey] = nil
+            try? FileManager.default.removeItem(at: writer.part)
+            // NO main-thread close here: the delegate queue may hold queued
+            // writes for this handle, and FileHandle.write on a closed
+            // handle raises. The delegate closes its own handle in
+            // didCompleteWithError — ordered AFTER every write on the
+            // serial queue — and the queued cancel-completion then hops to
+            // main, where writerDidComplete early-returns (streamWriter is
+            // already nil). The loader's handle copy is dropped WITHOUT
+            // closing (the delegate owns the close).
+            streamWriterHandle = nil
+            streamWriter = nil
+            streamWriterTask = nil
+            claimAt.removeValue(forKey: writer.cacheKey)
+            let fallback = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(offsetForLog) of \(writer.announcedBytes) bytes, range unsupported): \(writer.track.title)"])
+            for chain in chains { chain(nil, fallback) }
+            engineFinished?(nil, fallback)
+            onDownloadFinished?(writer.track.trackId, false)
+            return
+        }
+        guard announced > 0 else { return }
+        // A 206's Content-Length is the REMAINDER — never let it shrink the
+        // announced total (the verdict + gates judge the MERGED bytes against
+        // the ORIGINAL transfer's total).
+        if writer.resumeOffset > 0, announced < writer.announcedBytes { return }
         writer.announcedBytes = announced
         streamWriter = writer
     }
@@ -380,7 +485,10 @@ final class TrackFileLoader {
     /// writer policy says so. Called from the delegate hop.
     func writerDidReceiveBytes(_ received: Int64) {
         guard var writer = streamWriter else { return }
-        writer.accumulatedBytes = received
+        // MERGED math: the task's counter is the remainder only on a
+        // continuation — add the prefix offset so every downstream consumer
+        // (verdict, gates, estimate, arrival ledger) sees whole-file bytes.
+        writer.accumulatedBytes = writer.resumeOffset + received
         let track = writer.track
         let lead = StreamPolicy.effectiveLeadSeconds(trackDuration: track.duration)
         let leadBytes = MaturationStageSupport.bytesForLeadWithFallback(
@@ -390,20 +498,21 @@ final class TrackFileLoader {
         // starved a resuming trickle stream for tens of seconds and let the
         // give-up timer kill streams that WERE making progress. Cheap struct
         // update, before the rung guard below.
-        streamArrivalHandler?(received)
+        streamArrivalHandler?(writer.accumulatedBytes)
+        let merged = writer.accumulatedBytes
         let shouldDeliver = StreamPolicy.writerShouldDeliver(
-            accumulatedBytes: received,
+            accumulatedBytes: merged,
             leadRequiredBytes: leadBytes,
             lastDeliveredAt: writer.lastDeliveredAt)
         guard shouldDeliver else { return }
         writer.deliveredPlayable = true
-        writer.lastDeliveredAt = received
+        writer.lastDeliveredAt = merged
         streamWriter = writer
         streamProgressHandler?(StreamProgress(
             trackId: writer.track.trackId,
             url: writer.part,
             stage: .playable,
-            deliveredBytes: received,
+            deliveredBytes: merged,
             announcedBytes: writer.announcedBytes))
     }
 
@@ -455,6 +564,9 @@ final class TrackFileLoader {
                 pendingParts[writer.cacheKey] = DownloadResume.Pending(
                     parts: [writer.accumulatedBytes],
                     announcedTotal: writer.announcedBytes)
+                // The byte floor seeds the maturation tick across the
+                // upcoming resume attempt (whose task counter restarts at 0).
+                maturationByteFloor[writer.cacheKey] = writer.accumulatedBytes
             }
             flushWriterChains(key: writer.cacheKey, url: nil, error: error)
             clearWriterState()
@@ -504,6 +616,7 @@ final class TrackFileLoader {
                     event(.danger, "stream: promoted body short of announced (\(size) of \(writer.announcedBytes)) for \(writer.track.trackId) — retaining for Range-continue")
                     try? FileManager.default.moveItem(at: writer.destination, to: writer.part)
                     pendingParts[writer.cacheKey] = DownloadResume.Pending(parts: [size], announcedTotal: writer.announcedBytes)
+                    maturationByteFloor[writer.cacheKey] = size
                     let err = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(size) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
                     flushWriterChains(key: writer.cacheKey, url: nil, error: err)
                     clearWriterState()
@@ -517,6 +630,7 @@ final class TrackFileLoader {
                 recentTransferRate = Double(size) / elapsed
                 resumeDataByCacheKey[writer.cacheKey] = nil
                 rangeUnsupportedKeys.remove(writer.cacheKey)
+                maturationByteFloor[writer.cacheKey] = nil
                 dropPending(cacheKey: writer.cacheKey, destination: writer.destination)
                 state.store(writer.destination, for: writer.cacheKey, bytes: Int(size))
                 variantOf[writer.cacheKey] = TrackVariant(url: writer.track.url)
@@ -539,22 +653,61 @@ final class TrackFileLoader {
                 onDownloadFinished?(writer.track.trackId, false)
             }
         case .earlyClose:
+            // The chains ride a LOCAL (2026-09-24): the continuation below
+            // re-attaches them to the new writer; the error branches flush
+            // them directly — a map lookup would miss what this case already
+            // removed.
+            let chains = streamWriterChains.removeValue(forKey: writer.cacheKey) ?? []
+            let err = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(writer.accumulatedBytes) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
             if writer.accumulatedBytes >= TrackFileLoader.minimumAudioBytes {
                 event(.danger, "stream: clean early close for \(writer.track.trackId) (\(writer.accumulatedBytes) of \(writer.announcedBytes)) — scratch retained, next attempt Range-resumes")
                 pendingParts[writer.cacheKey] = DownloadResume.Pending(
                     parts: [writer.accumulatedBytes],
                     announcedTotal: writer.announcedBytes)
+                maturationByteFloor[writer.cacheKey] = writer.accumulatedBytes
+                // IN-LOADER CONTINUATION (2026-09-24 dump-1, the "crossfade
+                // stop, cycles at 0-1 s" report): an ACTIVE track's early
+                // close used to deliver -7004 to the JS retry machine, whose
+                // reload re-engages from 0:00 — each cycle replayed the tiny
+                // staged lead (1.2 s), streamed to the same ~95 % mark, died
+                // again. With a live staged schedule we now OWN the recovery:
+                // re-request the remainder with `Range: bytes=<delivered>-`
+                // and append into the SAME .part the staged schedule reads.
+                // Audio never stops; when the merged bytes pass the promote
+                // gates the normal completion fires and the natural end is
+                // restored. The writer's chains (prefetch claims on this
+                // key) re-attach — they follow the writer's final verdict.
+                // Guarded on Range support (a 200-answering server would
+                // re-deliver the WHOLE body into the append — double bytes).
+                if DownloadResume.writerContinuationEligible(
+                    offset: writer.accumulatedBytes,
+                    hasRetainedPart: FileManager.default.fileExists(atPath: writer.part.path)),
+                   !rangeUnsupportedKeys.contains(writer.cacheKey),
+                   // LOOP CAP (2026-09-24 design review): a server that
+                   // accepts the Range and closes at the same offset forever
+                   // would cycle one request per timeout indefinitely. Past
+                   // the cap the failure yields to the JS retry (its own
+                   // ladder terminates — bounded above, never an infinite
+                   // silent loop).
+                   writer.continuationAttempt < 3 {
+                    startWriterContinuation(writer: writer, chained: chains)
+                } else {
+                    event(.info, "stream", "continuation unavailable for \(writer.track.trackId) (range ignored, cap, or no scratch) — handing to the JS retry")
+                    for chain in chains { chain(nil, err) }
+                    clearWriterState()
+                    onFinished?(nil, err)
+                    onDownloadFinished?(writer.track.trackId, false)
+                }
             } else {
                 // Nothing usable delivered: no scratch to continue (a
                 // zero-byte Range resume would re-download from 0 anyway).
                 event(.danger, "stream: clean early close for \(writer.track.trackId) with only \(writer.accumulatedBytes)B — nothing retained, next attempt starts fresh")
                 try? FileManager.default.removeItem(at: writer.part)
+                for chain in chains { chain(nil, err) }
+                clearWriterState()
+                onFinished?(nil, err)
+                onDownloadFinished?(writer.track.trackId, false)
             }
-            let err = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(writer.accumulatedBytes) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
-            flushWriterChains(key: writer.cacheKey, url: nil, error: err)
-            clearWriterState()
-            onFinished?(nil, err)
-            onDownloadFinished?(writer.track.trackId, false)
         case nil:
             // No announced length: the byte verdict cannot run. Treat the
             // transfer's end as final and judge through the decodability
@@ -624,6 +777,120 @@ final class TrackFileLoader {
         }
     }
 
+    /// IN-LOADER RANGE CONTINUATION for a failed ACTIVE stream (2026-09-24
+    /// dump-1): re-request the remainder (`Range: bytes=<delivered>-`) and
+    /// append into the SAME .part the staged schedule reads. Audio never
+    /// stops, the staged schedule's track-id guards stay valid (same track),
+    /// and no JS retry round trip restarts the track at 0:00. Runs entirely
+    /// on main: the writer verdict was main, and the new task's deliveries
+    /// re-enter the same writerDidReceiveBytes/writerDidComplete hops. The
+    /// resumed writer carries `resumeOffset` so every byte comparison sees
+    /// the MERGED file; a 200 answer is converted to a fresh overwrite by
+    /// writerDidReceiveResponse. Failure (reopen) falls back to the OLD
+    /// recovery — the JS retry's reload prefetch Range-continues the
+    /// retained prefix.
+    private func startWriterContinuation(writer: StreamWriter, chained: [(URL?, Error?) -> Void]) {
+        let offset = writer.accumulatedBytes
+        let track = writer.track
+        event(.info, "stream", "writer continuation: Range bytes=\(offset)- for \(track.trackId) — same .part, staged schedule undisturbed")
+        // The old handle is ALREADY closed (the delegate closed it at
+        // completion). Reopen for append — same permissions the writer had.
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forWritingTo: writer.part)
+            // APPEND SEMANTICS (adversarial trace 2026-09-24): FileHandle
+            // (forWritingTo:) positions at BYTE 0 — writing without seeking
+            // would overwrite the retained prefix from its first byte (the
+            // spliced-file poison class, and the byte COUNTER would still
+            // report the full total, passing the gates on a lie). Verify the
+            // on-disk size matches the offset FIRST (a purge or truncated
+            // flush must not continue from a phantom offset), then seek to
+            // the end. The download path's append does the same seek.
+            let onDisk = (try? FileManager.default.attributesOfItem(atPath: writer.part.path)[.size] as? Int64) ?? 0
+            guard onDisk == offset else {
+                try? handle.close()
+                event(.danger, "stream: continuation aborted — scratch size \(onDisk)B != offset \(offset)B for \(track.trackId) — scratch destroyed, fresh download")
+                // The scratch is UNTRUSTWORTHY (purged or truncated mid-
+                // flush): retaining pendingParts would send the JS retry's
+                // download path Range-continuing from a phantom offset —
+                // the splice again. Destroy the retention so its prefetch
+                // plans FRESH (retainedPartBytes also self-defends by
+                // reading the file, but the map must not outlive the
+                // evidence).
+                pendingParts[writer.cacheKey] = nil
+                maturationByteFloor[writer.cacheKey] = nil
+                try? FileManager.default.removeItem(at: writer.part)
+                abortContinuation(writer: writer, chained: chained)
+                return
+            }
+            try handle.seekToEndOfFile()
+        } catch {
+            // Fallback = the OLD recovery: the JS retry re-engages and its
+            // reload's prefetch continues the retained prefix. The reopen
+            // detail rides the log; the RETRY sees the underlying -7004 (the
+            // failure reason the retry machine is entitled to act on). The
+            // handle may be OPEN here (seek threw after a successful open)
+            // — close it before aborting or the FD leaks.
+            try? handle.close()
+            event(.danger, "stream: continuation reopen failed for \(track.trackId): \(error.localizedDescription) — handing to the JS retry")
+            abortContinuation(writer: writer, chained: chained)
+            return
+        }
+        var request = URLRequest(url: track.url)
+        request.timeoutInterval = 120
+        request.setValue(DownloadResume.rangeHeader(offset: offset), forHTTPHeaderField: "Range")
+        let task = streamSession.dataTask(with: request)
+        // Reset the delegate's counter: this task delivers the REMAINDER.
+        streamWriterDelegate?.attach(handle)
+        streamWriterHandle = handle
+        streamWriterTask = task
+        // The RESUMED writer: accumulated bytes continue from the prefix so
+        // the verdict/gates/estimate all judge the merged file. The rung
+        // ledger seeds at the offset (the next delivery is the next 512 KB
+        // rung above it), and the attempt counter arms the loop cap.
+        var resumed = writer
+        resumed.resumeOffset = offset
+        resumed.accumulatedBytes = offset
+        resumed.lastDeliveredAt = offset
+        resumed.continuationAttempt += 1
+        streamWriter = resumed
+        // Defensive bookkeeping parity with streamLoad: a state key without
+        // a destination would read as a phantom (the prune filter).
+        destinationByKey[writer.cacheKey] = writer.destination
+        // The chains re-attach: they follow THIS writer's final verdict
+        // (promote → destination, or a later error).
+        streamWriterChains[writer.cacheKey] = chained
+        task.resume()
+    }
+
+    /// The -7004 error the early-close verdict built — re-created for the
+    /// reopen-failure fallback so both recoveries report the SAME failure
+    /// shape to the JS retry machine.
+    private func lastContinuationError(_ writer: StreamWriter) -> Error {
+        NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(writer.accumulatedBytes) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
+    }
+
+    /// The continuation-abort fallback (reopen failure, size mismatch): the
+    /// JS retry re-engages and its reload's prefetch Range-continues the
+    /// retained prefix. The engine leg is captured BEFORE the state clears
+    /// (the F1 ordering); the clears are INLINED here because
+    /// `clearWriterState` is a writerDidComplete-local nested func — calling
+    /// it from here would not compile.
+    private func abortContinuation(writer: StreamWriter, chained: [(URL?, Error?) -> Void]) {
+        let fallback = lastContinuationError(writer)
+        let engineFinished = streamFinishedHandler
+        streamWriter = nil
+        streamWriterTask = nil
+        streamProgressHandler = nil
+        streamFinishedHandler = nil
+        streamArrivalHandler = nil
+        claimAt.removeValue(forKey: writer.cacheKey)
+        for chain in chained { chain(nil, fallback) }
+        engineFinished?(nil, fallback)
+        onDownloadFinished?(writer.track.trackId, false)
+    }
+
+
     private func flushWriterChains(key: String, url: URL?, error: Error?) {
         let chains = streamWriterChains.removeValue(forKey: key) ?? []
         for chain in chains { chain(url, error) }
@@ -658,6 +925,13 @@ final class TrackFileLoader {
     func tickMaturation() {
         for (key, trackId, received, expected) in inFlightProgress {
             let previous = maturationStages[key] ?? .empty
+            // RESUMED ATTEMPTS (2026-09-24 dump): a Range/resumeData restart
+            // re-zeroes the task's own byte counter. Seed the tick's effective
+            // byte count with the retained prefix (the floor recorded at the
+            // last retention) so the stage never DOWNgrades mid-track — the
+            // ledger is per cache key, one maturation across attempts.
+            let floor = maturationByteFloor[key] ?? 0
+            let effectiveReceived = max(received, floor)
             // Lead requirement: Phase 1 uses the policy minimum over the
             // track's metadata duration (the conservative default); a real
             // per-track decision arrives with Phase 2 wiring.
@@ -669,8 +943,8 @@ final class TrackFileLoader {
                 leadSeconds: lead)
             let probed: Bool
             let probeSaysAudio: Bool
-            if Maturation.shouldProbeHeader(received: received, lastProbedAt: maturationLastProbeAt[key] ?? 0, leadRequiredBytes: leadBytes) {
-                maturationLastProbeAt[key] = received
+            if Maturation.shouldProbeHeader(received: effectiveReceived, lastProbedAt: maturationLastProbeAt[key] ?? 0, leadRequiredBytes: leadBytes) {
+                maturationLastProbeAt[key] = effectiveReceived
                 // The probe: an AVAudioFile open over the CURRENT cache
                 // destination (the in-flight task is a downloadTask; its
                 // temp file is not readable by us). Only keys with a
@@ -691,13 +965,32 @@ final class TrackFileLoader {
                 probeSaysAudio = false
             }
             let stage = Maturation.stage(
-                received: received,
+                received: effectiveReceived,
                 announced: expected ?? 0,
                 leadRequiredBytes: leadBytes,
                 headerProbeSaysAudio: probed ? probeSaysAudio : (previous == .headered || previous == .playable))
+            // MONOTONIC CLAMP (2026-09-24 dump): the ledger is per cache key
+            // ACROSS attempts, and a resumed attempt (Range or opaque
+            // resumeData) restarts its byte counter at 0 — the tick saw
+            // playable→headered with `received=0`. A legit regression cannot
+            // reach this tick (evict resets the ledger explicitly), so a
+            // downgrade here is always a resume artifact: hold the previous
+            // stage (maturation is diagnostic-only — Phase 1 contract) until
+            // the new attempt re-earns it. Floors above cover the Range
+            // attempts; this clamp covers opaque resumeData, whose delivered
+            // count is unknowable.
             if stage != previous {
+                func rank(_ s: Maturation.Stage) -> Int {
+                    switch s {
+                    case .empty: return 0
+                    case .headered: return 1
+                    case .playable: return 2
+                    case .complete: return 3
+                    }
+                }
+                if rank(stage) < rank(previous) { continue }
                 maturationStages[key] = stage
-                event(.info, "maturation \(previous)→\(stage) track=\(trackId) received=\(received) announced=\(expected.map(String.init) ?? "?")")
+                event(.info, "maturation \(previous)→\(stage) track=\(trackId) received=\(effectiveReceived) announced=\(expected.map(String.init) ?? "?")")
             }
         }
     }
@@ -1245,6 +1538,14 @@ final class TrackFileLoader {
                     }
                     if let retain = retainPending {
                         self.pendingParts[cacheKey] = retain
+                        // Maturation byte floor (2026-09-24): the resumed
+                        // attempt's task counter restarts at 0 — seed the
+                        // tick with the bytes ALREADY on disk so the stage
+                        // cannot downgrade. The clean-close retention knows
+                        // its exact count (retainPending.deliveredBytes).
+                        if retain.deliveredBytes > 0 {
+                            self.maturationByteFloor[cacheKey] = retain.deliveredBytes
+                        }
                     }
                     deliver(nil, err)
                     pendings.forEach { $0(nil, err) }
@@ -1319,6 +1620,7 @@ final class TrackFileLoader {
             rangeUnsupportedKeys.remove(key)
             maturationStages[key] = nil
             maturationLastProbeAt[key] = nil
+            maturationByteFloor[key] = nil
             destinationByKey[key] = nil
             if let url = url {
                 try? FileManager.default.removeItem(at: url)
@@ -1362,6 +1664,12 @@ final class TrackFileLoader {
         for track in tracks where track.index < minIndex || track.index > maxIndex {
             evict(track.trackId)
         }
+        // Phantom resume offers (2026-09-24 dump, loaderPendingResume=3):
+        // offers whose destination file is gone (Caches purge between retain
+        // and resume) can never continue — drop their map entries so the
+        // dump-visible scratch count stays truthful and the next attempt
+        // plans fresh honestly.
+        prunePhantomResumeState()
     }
 
     private static func destinationURL(for track: NativeTrack, variant: TrackVariant) -> URL {
@@ -1410,10 +1718,13 @@ private final class StreamWriterDelegate: NSObject, URLSessionDataDelegate {
         completionHandler(.allow)
         // The server's own announcement (when it sends Content-Length) is
         // more precise than the snapshot's size — update the writer's
-        // announced total on main (the schedule estimate reads it).
+        // announced total on main (the schedule estimate reads it). The
+        // status rides along: a continuation's non-206 answer converts the
+        // writer to a fresh overwrite (writerDidReceiveResponse).
         let announced = Int64(response.expectedContentLength)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         DispatchQueue.main.async { [weak self] in
-            self?.owner?.writerDidAnnounce(announced)
+            self?.owner?.writerDidReceiveResponse(announced: announced, statusCode: status)
         }
     }
 
@@ -2517,18 +2828,245 @@ public final class NativeAudioEngine: NSObject {
         checkDeadAir()
     }
 
+    // MARK: Active-load retry (2026-09-24 dump-2, the 33-minute dead air)
+
+    /// NATIVE-side bounded retry for the ACTIVE track's loader attempts.
+    /// "Stream failed before start" delivers to the JS retry machine — which
+    /// is suspended while the app is backgrounded, so the retry's single
+    /// hung request sat for 33 wall-clock minutes until the user returned
+    /// (the dump: two timeouts 33 min apart, no native attempt between).
+    /// The engine may not self-advance past a dead row, but it CAN re-attempt
+    /// the SAME row: each attempt is bounded (120 s request + 600 s resource
+    /// timeout), so audio recovers by itself when connectivity returns.
+    /// After the consecutive cap the row yields to the JS retry on the
+    /// foreground return — one error, the bounded advance, no dead air.
+    /// KEYED BY CACHE KEY: a user skip changes the active row and the
+    /// natural loader bookkeeping makes the stale entry irrelevant.
+    /// Teardown-owned: `cancelActiveLoadRetries` (stopPlayback) disarms.
+    /// The failure detail the engine's captured closures hand back (kind + description).
+    struct ActiveLoadFailure {
+        enum Kind { case stream, download }
+        let kind: Kind
+        let detail: String
+    }
+    /// Generous for a backgrounded stream: six × (timeout-bounded attempt +
+    /// 3 s spacing) ≈ 12+ minutes of autonomous recovery per phase.
+    private static let activeLoadRetryDelaySeconds: TimeInterval = 3.0
+    private static let activeLoadMaxConsecutiveRetries = 6
+    /// The long-haul backup: a hung request whose timers were frozen by the
+    /// suspension (the dump's 33-minute gap) would wait indefinitely —
+    /// this kick re-attempts AFTER `longHaulKickSeconds` of consecutive
+    /// silence regardless of the cap, so playback resumes unattended even
+    /// if every attempt's error callback was also swallowed.
+    private static let longHaulKickSeconds: TimeInterval = 60.0
+
+    private var activeLoadRetryTimer: Timer? = nil
+    private var activeLoadLongHaulTimer: Timer? = nil
+    private var activeLoadRetryCount: [String: Int] = [:]
+
+    /// The engine calls this at every loadAndStart of a REMOTE track: resets
+    /// the consecutive counter for the row being loaded (the JS retry's own
+    /// re-engage counts as a fresh phase — the give-up ladder still works
+    /// across the native phases, just with native attempts interleaved) and
+    /// cancels any pending retry timer for it (the real load is starting).
+    func noteActiveLoadStart(trackId: String, variant: TrackVariant) {
+        let key = transcodeCacheKey(trackId: trackId, variant: variant)
+        if activeLoadRetryTimer != nil || activeLoadLongHaulTimer != nil {
+            eventAdd(.info, "loader", "active-load retry state cleared by a new load attempt (\(trackId))")
+        }
+        activeLoadRetryTimer?.invalidate()
+        activeLoadRetryTimer = nil
+        activeLoadLongHaulTimer?.invalidate()
+        activeLoadLongHaulTimer = nil
+        activeLoadRetryCount[key] = 0
+    }
+
+    /// Bounded native re-attempt of the SAME active row after a "failed
+    /// before start" loader error. Capped: past the cap, the row yields to
+    /// the JS retry (one foreground error → the bounded advance) instead of
+    /// cycling autonomously forever. Re-arms BOTH timers: the immediate
+    /// schedule and the long-haul kick (either may fire; the other
+    /// invalidates).
+    func scheduleActiveLoadRetry(track: NativeTrack, failure: ActiveLoadFailure) {
+        let requested = TrackVariant(url: track.url)
+        let key = transcodeCacheKey(trackId: track.trackId, variant: requested)
+        let count = (activeLoadRetryCount[key] ?? 0) + 1
+        activeLoadRetryCount[key] = count
+        // FOREGROUND-AWARE CAP (2026-09-24 design review): silent retries
+        // must not out-wait a watching user — in the foreground (2 attempts)
+        // the row yields to the JS retry quickly, where its bounded ladder
+        // can advance past a dead row; backgrounded (6) the recovery owns
+        // the silence the user cannot see.
+        let maxAttempts: Int
+        if NSClassFromString("UIApplication") != nil,
+           UIApplication.shared.applicationState != .background {
+            maxAttempts = 2
+        } else {
+            maxAttempts = Self.activeLoadMaxConsecutiveRetries
+        }
+        guard count <= maxAttempts else {
+            eventAdd(.danger, "loader", "active-load retry exhausted (\(count - 1) native attempts, cap \(maxAttempts)) for \(track.trackId): \(failure.detail) — yielding to the JS retry")
+            // THE YIELD REPORTS: the JS retry machine's bounded ladder owns
+            // the row from here — without this report the cap would end in
+            // an unreported silent stop (the exact dump-2 defect, re-shaped).
+            onError?("Stream failed before start: \(failure.detail)")
+            return
+        }
+        activeLoadRetryTimer?.invalidate()
+        activeLoadLongHaulTimer?.invalidate()
+        let attempt = count
+        activeLoadRetryTimer = Timer(timeInterval: Self.activeLoadRetryDelaySeconds, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.activeLoadRetryTimer = nil
+            self.retryActiveLoad(track: track, attempt: attempt, failure: failure)
+        }
+        RunLoop.main.add(activeLoadRetryTimer!, forMode: .common)
+        activeLoadLongHaulTimer = Timer(timeInterval: Self.longHaulKickSeconds, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.activeLoadLongHaulTimer = nil
+            guard self.activeLoadRetryTimer != nil else { return }
+            // No retry fired for a full minute: the scheduled attempt is
+            // hanging behind frozen timers — fire NOW (the dump's shape).
+            self.activeLoadRetryTimer?.invalidate()
+            self.activeLoadRetryTimer = nil
+            eventAdd(.info, "loader", "long-haul kick: retrying \(track.trackId) after \(Int(Self.longHaulKickSeconds)) s of retry silence")
+            self.retryActiveLoad(track: track, attempt: attempt, failure: failure)
+        }
+        RunLoop.main.add(activeLoadLongHaulTimer!, forMode: .common)
+        eventAdd(.info, "loader", "active-load retry scheduled (\(attempt)/\(Self.activeLoadMaxConsecutiveRetries)) for \(track.trackId) in \(Int(Self.activeLoadRetryDelaySeconds)) s: \(failure.detail)")
+    }
+
+    /// The retry body: re-attempt the SAME row through the same loaders the
+    /// original load used. Streaming stays preferred (scratch state from the
+    /// failed attempt routes the writer's continuation or fresh start);
+    /// otherwise the download task Range-resumes the retained prefix.
+    private func retryActiveLoad(track: NativeTrack, attempt: Int, failure: ActiveLoadFailure) {
+        guard tracks.indices.contains(activeIndex),
+              tracks[activeIndex].trackId == track.trackId else { return }
+        if loader.hasActiveWriter {
+            // A continuation writer is already recovering this key — never
+            // race it with a second attempt.
+            eventAdd(.info, "loader", "active-load retry \(attempt) skipped — the writer is already live for \(track.trackId)")
+            return
+        }
+        eventAdd(.info, "loader", "active-load retry attempt \(attempt) for \(track.trackId) (failed as \(failure.kind == .stream ? "stream" : "download"))")
+        // Route by the SAME gate loadAndStart used: scratch state from the
+        // failed attempt makes streamDecision false, so the retry goes down
+        // the download path and RANGE-CONTINUES the retained prefix. (A
+        // blind re-stream would delete the .part — streamLoad removes any
+        // pre-existing scratch — and re-download the whole track.)
+        if loader.streamDecision(for: track) {
+            startStagedLoadForRetry(track: track, index: activeIndex, autoPlay: true)
+        } else {
+            let generation = scheduleGeneration
+            loader.prefetch(track) { [weak self] url, error in
+                guard let self else { return }
+                guard generation == self.scheduleGeneration else { return }
+                guard self.tracks.indices.contains(self.activeIndex),
+                      self.tracks[self.activeIndex].trackId == track.trackId else { return }
+                if let url {
+                    self.eventAdd(.info, "loader", "active-load retry \(attempt) succeeded for \(track.trackId) — scheduling")
+                    self.scheduleCurrentTrack(from: 0, autoPlay: true)
+                } else {
+                    self.eventAdd(.info, "loader", "active-load retry \(attempt) failed for \(track.trackId): \(error?.localizedDescription ?? "?") — rescheduling")
+                    // NO per-attempt onError: a foreground user watching the
+                    // row fall would see the JS retry aim its ladder at the
+                    // NEXT row (the counter reset bug) — the native retry
+                    // owns the loop until the cap yields (one report there).
+                    self.scheduleActiveLoadRetry(track: track, failure: failure)
+                }
+            }
+        }
+    }
+
+    /// Engine-owned entry so the loader can restart a staged load WITHOUT
+    /// the loadAndStart teardown (which would void the live staged state
+    /// mid-recovery). Mirrors startStagedLoad's writer arm exactly.
+    /// Engine-owned entry so the RETRY can restart a staged load WITHOUT
+    /// the loadAndStart teardown (which would void the live staged state
+    /// mid-recovery). Mirrors startStagedLoad's writer arm exactly.
+    private func startStagedLoadForRetry(track: NativeTrack, index: Int, autoPlay: Bool) {
+        if !loader.hasActiveWriter {
+            stagedAutoPlay = autoPlay
+            eventAdd(.info, "stream", "staged load start row \(index) id=\(track.trackId) autoplay=\(autoPlay) (native retry)")
+            let guardedTrackId = track.trackId
+            loader.streamLoad(track, onProgress: { [weak self] progress in
+                guard let self = self else { return }
+                guard self.tracks.indices.contains(self.activeIndex),
+                      self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+                self.extendStagedSchedule(progress: progress)
+            }, onFinished: { [weak self] progress, error in
+                guard let self = self else { return }
+                guard self.tracks.indices.contains(self.activeIndex),
+                      self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+                if let progress {
+                    self.completeStagedSchedule(progress: progress)
+                } else if let error = error {
+                    // THE RETRY'S OWN attempt failed: silent reschedule (the
+                    // cap yields with the single report). A per-attempt
+                    // onError would start the JS ladder against a row the
+                    // native retry is already recovering — double ownership.
+                    let failure = ActiveLoadFailure(kind: .stream, detail: error.localizedDescription)
+                    self.teardownStagedState()
+                    self.scheduleActiveLoadRetry(track: track, failure: failure)
+                }
+            }, onArrival: { [weak self] deliveredBytes in
+                guard let self = self else { return }
+                guard self.tracks.indices.contains(self.activeIndex),
+                      self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+                self.recordStreamArrival(deliveredBytes: deliveredBytes)
+            })
+        } else {
+            // A writer is already live for this key (e.g. the continuation
+            // path re-armed one): the schedule will grow from its progress.
+            eventAdd(.info, "stream", "retry found the writer already live for \(track.trackId) — letting it run")
+        }
+    }
+
+    /// The failure report is FOREGROUND-GATED (2026-09-24 design review):
+    /// backgrounded, the JS retry machine is suspended — a report queues a
+    /// retry that can't run and (after a give-up) would later misfire at the
+    /// wrong row; the silent native retry owns backgrounded recovery.
+    /// Foreground, the user is watching — report immediately (the JS
+    /// re-engage then resets the native counter via noteActiveLoadStart).
+    /// The cap-yield in scheduleActiveLoadRetry reports UNCONDITIONALLY:
+    /// it is the single bounded resolution when every native attempt failed.
+    private func reportActiveLoadFailure(track: NativeTrack, failure: ActiveLoadFailure) {
+        if NSClassFromString("UIApplication") != nil,
+           UIApplication.shared.applicationState != .background {
+            onError?("Stream failed before start: \(failure.detail)")
+        }
+    }
+
+    /// Cancels pending active-load retries (teardown: stopPlayback, sleep
+    /// end, queue end). The consecutive counter survives — a fresh
+    /// noteActiveLoadStart reset governs it.
+    func cancelActiveLoadRetries() {
+        activeLoadRetryTimer?.invalidate()
+        activeLoadRetryTimer = nil
+        activeLoadLongHaulTimer?.invalidate()
+        activeLoadLongHaulTimer = nil
+    }
+
     /// D1: the wedge verdict + advance. Re-checked at tick time (1 s) — the
     /// state may have moved since the sampler tick began. Only advances when
     /// the pure verdict says every wedge condition holds; logs the evidence
     /// (elapsed vs scheduled end, the abort flag) so the next dump can
     /// verify the advance instead of a silent stop.
     private func checkDeadAir() {
-        guard tracks.indices.contains(activeIndex) else { return }
-        // A staged schedule in flight owns its own end machinery (the
+        // A staged schedule IN FLIGHT owns its own end machinery (the
         // buffering stall / staged advance); its scheduledEndFrames is a
-        // moving estimate, not a wedge reference. The watchdog is for
-        // fixed-schedule playback only.
-        guard stagedSchedule == nil, hasLiveSchedule, scheduledSegmentSeconds > 0 else { return }
+        // moving estimate, not a wedge reference. A COMPLETE staged schedule
+        // is the exception: its scheduledEndFrames is FILE TRUTH
+        // (completeStagedSchedule chains the tail to file.length), so a
+        // clock running past it is the same exhausted-node wedge as any
+        // fixed schedule — notably after an abort-keep-active on a
+        // staged-complete track's mid-fade premature completion (the
+        // 2026-09-21e minimum response leaves ~0 s of tail and NO further
+        // completion; without this the watchdog would stand down exactly
+        // where dead air begins).
+        guard stagedSchedule == nil || stagedSchedule?.isComplete == true,
+              hasLiveSchedule, scheduledSegmentSeconds > 0 else { return }
         guard StreamSchedule.deadAirAdvanceEligible(
             isPlaying: isPlaying,
             timeMeasured: isNodeTimeMeasured,
@@ -2797,6 +3335,13 @@ public final class NativeAudioEngine: NSObject {
         // behavior byte-for-byte. A staged load deliberately does NOT arm
         // prefetchUpcoming here: the writer owns the bandwidth, and the
         // chain arms when the writer completes (completeStagedSchedule).
+        // ACTIVE-LOAD RETRY arm (2026-09-24 dump-2): this row's remote load
+        // starts now — reset its consecutive-retry counter and cancel any
+        // pending retry timer a previous failure scheduled. Covers BOTH the
+        // staged and the download path.
+        if !track.url.isFileURL {
+            noteActiveLoadStart(trackId: track.trackId, variant: TrackVariant(url: track.url))
+        }
         if loader.streamDecision(for: track) {
             startStagedLoad(track: track, index: index, autoPlay: autoPlay)
             return
@@ -2812,7 +3357,13 @@ public final class NativeAudioEngine: NSObject {
                 return
             }
             guard let url = url else {
-                self.onError?(error?.localizedDescription ?? "Failed to load track")
+                // ACTIVE-LOAD RETRY arm (dump-2): the same foreground-gated
+                // report + silent native retry as the stream path.
+                let failure = ActiveLoadFailure(
+                    kind: .download,
+                    detail: error?.localizedDescription ?? "Failed to load track")
+                self.reportActiveLoadFailure(track: track, failure: failure)
+                self.scheduleActiveLoadRetry(track: track, failure: failure)
                 return
             }
             guard self.tracks.indices.contains(self.activeIndex),
@@ -3198,12 +3749,18 @@ public final class NativeAudioEngine: NSObject {
                 // schedule exists there is nothing to keep alive — the retry
                 // simply re-taps and `streamDecision` falls back (scratch
                 // state now present → the resumable download path).
+                // BOTH branches arm the native active-load retry (dump-2:
+                // backgrounded, the JS machine is suspended and the row sat
+                // in dead air for 33 minutes) — foreground-gated reporting
+                // keeps the JS ladder as the foreground's fast path.
+                let failure = ActiveLoadFailure(kind: .stream, detail: error.localizedDescription)
                 if self.stagedSchedule != nil {
                     self.teardownStagedState()
-                    self.onError?("Stream failed: \(error.localizedDescription)")
+                    self.reportActiveLoadFailure(track: track, failure: failure)
                 } else {
-                    self.onError?("Stream failed before start: \(error.localizedDescription)")
+                    self.reportActiveLoadFailure(track: track, failure: failure)
                 }
+                self.scheduleActiveLoadRetry(track: track, failure: failure)
             }
         }, onArrival: { [weak self] deliveredBytes in
             // F2: raw progress ledger — the ONLY keep-alive the stalled
@@ -3812,6 +4369,9 @@ public final class NativeAudioEngine: NSObject {
 
     private func stopPlayback() {
         eventAdd(.info, "engine", "stopPlayback position=\(String(format: "%.1f", currentPosition)) row \(activeIndex) (\(currentTrackId))")
+        // ACTIVE-LOAD RETRY (2026-09-24 dump-2): any teardown — stop, sleep
+        // end, queue end — must also disarm the loader's retry timer.
+        loader.cancelActiveLoadRetries()
         paramRestartTimer?.invalidate()
         paramRestartTimer = nil
         sleepTimer?.invalidate()

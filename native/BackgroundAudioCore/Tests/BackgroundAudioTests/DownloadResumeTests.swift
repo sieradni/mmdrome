@@ -116,4 +116,15 @@ final class DownloadResumeTests: XCTestCase {
         let pending = DownloadResume.Pending(parts: [1_000, 2_000, 3_000], announcedTotal: 10_000)
         XCTAssertEqual(pending.deliveredBytes, 6_000)
     }
+
+    // MARK: - writerContinuationEligible (2026-09-24, the in-loader writer
+    // continuation for an ACTIVE stream's clean early close)
+
+    func testWriterContinuationNeedsPositiveOffsetAndPart() {
+        XCTAssertFalse(DownloadResume.writerContinuationEligible(offset: 0, hasRetainedPart: true),
+                       "a zero offset would re-request the whole body into the append")
+        XCTAssertFalse(DownloadResume.writerContinuationEligible(offset: 3_673_790, hasRetainedPart: false),
+                       "an offset into a missing scratch splices wrong bytes (the misalignment poison class)")
+        XCTAssertTrue(DownloadResume.writerContinuationEligible(offset: 3_673_790, hasRetainedPart: true))
+    }
 }

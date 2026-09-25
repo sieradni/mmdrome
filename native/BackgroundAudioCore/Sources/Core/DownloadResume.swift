@@ -92,6 +92,17 @@ public enum DownloadResume {
     /// the wrong position spliced mid-stream), the exact poison class the
     /// trust boundary exists to stop. Callers treat nil/mismatch as
     /// "prefix replaced", never appended.
+    /// DECISION (2026-09-24, the in-loader writer continuation): may an
+    /// early-closed writer's remainder be re-requested with a Range header?
+    /// The loader must also hold the delivered bytes — an offset into an
+    /// empty/nonexistent scratch would splice WRONG bytes mid-stream (the
+    /// misalignment poison class the 206 validation exists to stop). The
+    /// part cap applies equally: past it, a fresh attempt is the sane move.
+    public static func writerContinuationEligible(offset: Int64, hasRetainedPart: Bool) -> Bool {
+        guard offset > 0, hasRetainedPart else { return false }
+        return true
+    }
+
     public static func parseContentRangeStart(_ text: String?) -> Int64? {
         guard let text, text.hasPrefix("bytes") else { return nil }
         let body = text.dropFirst("bytes".count).trimmingCharacters(in: .whitespaces)

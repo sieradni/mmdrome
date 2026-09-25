@@ -20,6 +20,23 @@ final class NowPlayingController {
     private var cachedArtwork: UIImage?
     private var artworkTrackId: String?
     private var lastInfo: [String: Any] = [:]
+    /// FAILURE BACKOFF (2026-09-24 dump-2, the hundreds-of-entries spam):
+    /// a fetch that produced no decodable image (404, auth-token expiry,
+    /// garbage body) used to return WITHOUT latching any state — the next
+    /// `update` (every 250 ms tick / refreshNowPlaying) saw
+    /// `artworkTrackId != trackId` and refetched, 2-4×/s FOREVER. Now the
+    /// failed id is latched and retried on an exponential backoff (2 s →
+    /// 60 s cap): the request loop stops flooding the network and the ring,
+    /// while a transient server condition still recovers. A successful
+    /// fetch clears the entry. Main-thread-confined like the controller.
+    private var artworkFailureRetryAt: [String: Date] = [:]
+    private var artworkFailureAttempt: [String: Int] = [:]
+    /// De-dupe so a burst of updates before the completion lands fires ONE
+    /// request per id instead of one per update tick (the wake burst logged
+    /// 40 parallel fetches in the same millisecond).
+    private var artworkInFlight: Set<String> = []
+    private static let artworkBackoffBaseSeconds: TimeInterval = 2.0
+    private static let artworkBackoffCapSeconds: TimeInterval = 60.0
     /// Dedupe for guard-drop logging (2026-09-21 ring hygiene): the last
     /// completed trackId whose artwork the guard dropped. A burst of loses
     /// for the same stale fetch logs once; a different id or a fresh apply
@@ -106,20 +123,45 @@ final class NowPlayingController {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
 
         if let coverUrl = track.coverUrl, coverUrl.isFileURL == false, coverUrl.scheme != "blob", artworkTrackId != track.trackId {
+            // Backoff gate: a recently failed id waits out its exponential
+            // window before the next attempt (the spam fix — see the map
+            // comments). Every other path (success, new track, guard) is
+            // unchanged.
+            if let retryAt = artworkFailureRetryAt[track.trackId], Date() < retryAt {
+                return
+            }
+            guard !artworkInFlight.contains(track.trackId) else { return }
             artworkGuard.request(track.trackId)
             fetchArtwork(trackId: track.trackId, url: coverUrl)
         }
     }
 
     private func fetchArtwork(trackId: String, url: URL) {
+        artworkInFlight.insert(trackId)
         self.event(.debug, "artwork fetch start \(trackId)")
         URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
             guard let self = self else { return }
             guard let data = data, let image = UIImage(data: data) else {
-                self.event(.info, "artwork fetch failed (no decodable image) \(trackId)")
+                // Latch the failure on main: backoff schedule + one log per
+                // ATTEMPT CAP (the hundreds-of-entries spam was one log per
+                // 250 ms tick; now one per attempt, attempts spacing out to
+                // 60 s).
+                DispatchQueue.main.async {
+                    self.artworkInFlight.remove(trackId)
+                    let attempt = (self.artworkFailureAttempt[trackId] ?? 0) + 1
+                    self.artworkFailureAttempt[trackId] = attempt
+                    let backoff = min(
+                        Self.artworkBackoffCapSeconds,
+                        Self.artworkBackoffBaseSeconds * pow(2.0, Double(attempt - 1)))
+                    self.artworkFailureRetryAt[trackId] = Date().addingTimeInterval(backoff)
+                    self.event(.info, "artwork fetch failed (no decodable image) \(trackId) attempt \(attempt) — retry in \(Int(backoff)) s")
+                }
                 return
             }
             DispatchQueue.main.async {
+                self.artworkInFlight.remove(trackId)
+                self.artworkFailureRetryAt[trackId] = nil
+                self.artworkFailureAttempt[trackId] = nil
                 // Drop out-of-order completions (older fetch finishing last) and
                 // completions for a track that is no longer current (TODO 4.4).
                 guard let currentTrackId = self.currentTrackId,
