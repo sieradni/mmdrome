@@ -27,7 +27,8 @@
           "date": "2026-09-25T07:36:09.174Z",
           "localizedDescription": "Disk-truth continuation + verdict for early-closed streams (the repeatedly-skipping dump): the writer's byte counter is per-byte truth, the continuation Range-resumes from the FILE's end, and a complete-on-disk file can never again be destroyed by a counter mismatch; evict teardown close-ownership (BUG G twin)",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.38/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5043936
         },
         {
           "version": "1.2.37",
