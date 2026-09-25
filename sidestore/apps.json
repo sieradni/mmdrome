@@ -27,7 +27,8 @@
           "date": "2026-09-25T08:16:23.151Z",
           "localizedDescription": "Early-close network fingerprint: every stream early-close log now carries the response status and connection headers (Connection, Content-Length, Content-Range, Accept-Ranges, Content-Type) so the next dump can definitively confirm or rule out Wi-Fi data assist as the close cause",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.39/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5048601
         },
         {
           "version": "1.2.38",
