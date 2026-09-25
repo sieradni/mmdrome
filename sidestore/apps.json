@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.36",
-      "versionDate": "2026-09-24T01:18:49.507Z",
-      "versionDescription": "Scroll-jank and thumbnail fixes: song rows render ratings conditionally, view-state persistence is debounced off the scroll path, stable queue keys end the DOM churn behind thumbnails-not-loading, blur only where genuinely upscaled, cellular-flap hysteresis, and a COVERS diagnostics section in the debug HUD; LDM thumbnails step down except Now Playing art",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.36/mmdrome.ipa",
+      "version": "1.2.37",
+      "versionDate": "2026-09-25T03:45:49.853Z",
+      "versionDescription": "In-loader Range continuation for early-closed staged streams (the crossfade stop cycling at 0-1s); native active-load retry with long-haul kick for backgrounded failures (33-min dead air); artwork failure backoff; maturation monotonicity; phantom resume prune; D1 watchdog covers staged-complete tracks",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.37/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.37",
+          "buildVersion": "41",
+          "date": "2026-09-25T03:45:49.853Z",
+          "localizedDescription": "In-loader Range continuation for early-closed staged streams (the crossfade stop cycling at 0-1s); native active-load retry with long-haul kick for backgrounded failures (33-min dead air); artwork failure backoff; maturation monotonicity; phantom resume prune; D1 watchdog covers staged-complete tracks",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.37/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.36",
           "buildVersion": "40",
@@ -377,6 +385,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.37",
+      "identifier": "ios-v1.2.37",
+      "appID": "com.mmdrome.player",
+      "caption": "In-loader Range continuation for early-closed staged streams (the crossfade stop cycling at 0-1s); native active-load retry with long-haul k",
+      "date": "2026-09-25T03:45:49.853Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.36",
       "identifier": "ios-v1.2.36",
       "appID": "com.mmdrome.player",
@@ -409,15 +426,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Navidrome 0.64.1 migration readiness: version-gated library cache (one full re-sync after a server upgrade — dead-id protection), required c",
       "date": "2026-09-22T19:31:25.350Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.32",
-      "identifier": "ios-v1.2.32",
-      "appID": "com.mmdrome.player",
-      "caption": "Native streaming: audio starts before the download finishes. Crossfade works on streamed tracks once files complete. Resumable downloads on ",
-      "date": "2026-09-22T03:23:38.123Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
