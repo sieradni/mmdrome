@@ -134,4 +134,52 @@ public enum DownloadResume {
         return combinedBytes < announcedTotal
     }
 
+    // MARK: - Early-close network fingerprint (2026-09-25)
+
+    /// WHY the early close happened (data assist? proxy? origin?) is
+    /// unprovable from a byte count alone — the response's own network
+    /// facts must ride the log verbatim. The 2026-09-25 "repeatedly
+    /// skipping" dump recorded only counter/disk/announced, so the
+    /// data-assist suspicion could not be confirmed or ruled out.
+    /// Immutable snapshot of ONE attempt's response evidence.
+    public struct ResponseFingerprint: Equatable {
+        public let statusCode: Int
+        public let connectionHeader: String?
+        public let contentLengthHeader: String?
+        public let contentRangeHeader: String?
+        public let acceptRangesHeader: String?
+        public let contentTypeHeader: String?
+
+        public init(
+            statusCode: Int,
+            connectionHeader: String?,
+            contentLengthHeader: String?,
+            contentRangeHeader: String?,
+            acceptRangesHeader: String?,
+            contentTypeHeader: String?
+        ) {
+            self.statusCode = statusCode
+            self.connectionHeader = connectionHeader
+            self.contentLengthHeader = contentLengthHeader
+            self.contentRangeHeader = contentRangeHeader
+            self.acceptRangesHeader = acceptRangesHeader
+            self.contentTypeHeader = contentTypeHeader
+        }
+    }
+
+    /// One-line, copy-paste-safe summary for a structured event. Truncates
+    /// long header values (Connection is normally `keep-alive`; a proxy or
+    /// Connection: close verdict is the diagnostic payload).
+    public static func responseFingerprintLine(_ f: ResponseFingerprint) -> String {
+        func short(_ s: String?) -> String {
+            guard let s else { return "-" }
+            return s.count > 48 ? String(s.prefix(45)) + "..." : s
+        }
+        return "status=\(f.statusCode) conn=\(short(f.connectionHeader))"
+            + " clen=\(short(f.contentLengthHeader))"
+            + " crange=\(short(f.contentRangeHeader))"
+            + " aranges=\(short(f.acceptRangesHeader))"
+            + " ctype=\(short(f.contentTypeHeader))"
+    }
+
 }

@@ -127,4 +127,49 @@ final class DownloadResumeTests: XCTestCase {
                        "an offset into a missing scratch splices wrong bytes (the misalignment poison class)")
         XCTAssertTrue(DownloadResume.writerContinuationEligible(offset: 3_673_790, hasRetainedPart: true))
     }
+
+    // MARK: - responseFingerprintLine (2026-09-25, the early-close network
+    // evidence — confirms or rules out Wi-Fi data assist / proxies)
+
+    private func fingerprint(
+        status: Int = 200,
+        connection: String? = "keep-alive",
+        contentLength: String? = "5280591",
+        contentRange: String? = nil,
+        acceptRanges: String? = "bytes",
+        contentType: String? = "audio/ogg"
+    ) -> DownloadResume.ResponseFingerprint {
+        DownloadResume.ResponseFingerprint(
+            statusCode: status,
+            connectionHeader: connection,
+            contentLengthHeader: contentLength,
+            contentRangeHeader: contentRange,
+            acceptRangesHeader: acceptRanges,
+            contentTypeHeader: contentType)
+    }
+
+    func testFingerprintLineCarriesEveryHeaderVerbatim() {
+        let line = DownloadResume.responseFingerprintLine(fingerprint())
+        XCTAssertTrue(line.contains("status=200"), line)
+        XCTAssertTrue(line.contains("conn=keep-alive"), line)
+        XCTAssertTrue(line.contains("clen=5280591"), line)
+        XCTAssertTrue(line.contains("crange=-"), line)
+        XCTAssertTrue(line.contains("aranges=bytes"), line)
+        XCTAssertTrue(line.contains("ctype=audio/ogg"), line)
+    }
+
+    func testFingerprintLineMarksMissingHeadersAndTruncatesLongValues() {
+        // `Connection: close` from a proxy/data-assist path is THE verdict
+        // signal — it must survive verbatim into the dump.
+        let close = DownloadResume.responseFingerprintLine(
+            fingerprint(connection: "close", contentType: nil))
+        XCTAssertTrue(close.contains("conn=close"), close)
+        XCTAssertTrue(close.contains("ctype=-"), close)
+
+        let long = String(repeating: "x", count: 80)
+        let line = DownloadResume.responseFingerprintLine(
+            fingerprint(contentType: long))
+        XCTAssertTrue(line.contains("ctype=xxx..."), line)
+        XCTAssertFalse(line.contains(long), "values over 48 chars must be truncated")
+    }
 }

@@ -263,6 +263,13 @@ final class TrackFileLoader {
         /// request per timeout indefinitely — past the cap the failure
         /// yields to the JS retry (its own reload ladder terminates).
         var continuationAttempt: Int = 0
+        /// NETWORK EVIDENCE (2026-09-25): the attempt's response fingerprint
+        /// (status + Connection/Content-Length/Content-Range/Accept-Ranges/
+        /// Content-Type). Captured per attempt in the delegate's response
+        /// hop; logged verbatim at the early close so a dump can confirm or
+        /// rule out Wi-Fi data assist / proxies (`Connection: close` from a
+        /// path that should keep-alive is the verdict signal).
+        var responseFingerprint: DownloadResume.ResponseFingerprint? = nil
     }
 
     private var streamWriter: StreamWriter? = nil
@@ -529,6 +536,16 @@ final class TrackFileLoader {
             announcedBytes: writer.announcedBytes))
     }
 
+    /// NETWORK EVIDENCE: the attempt's response fingerprint arrived on main
+    /// — store it on the live writer (replaces any prior attempt's; the
+    /// early-close log reports the LAST response, the one that ended the
+    /// transfer).
+    func writerDidReceiveFingerprint(_ fp: DownloadResume.ResponseFingerprint) {
+        guard var writer = streamWriter else { return }
+        writer.responseFingerprint = fp
+        streamWriter = writer
+    }
+
     /// MAIN: the transfer ended (cleanly or with an error). Run the writer's
     /// completion verdict: promote through the SAME gate chain as a download,
     /// or retain the scratch for Range-continue.
@@ -692,7 +709,8 @@ final class TrackFileLoader {
             let err = NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(writer.accumulatedBytes) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
             let diskAtClose = (try? FileManager.default.attributesOfItem(atPath: writer.part.path)[.size] as? Int64) ?? 0
             if writer.accumulatedBytes >= TrackFileLoader.minimumAudioBytes {
-                event(.danger, "stream: clean early close for \(writer.track.trackId) (counter \(writer.accumulatedBytes)B, disk \(diskAtClose)B of announced \(writer.announcedBytes)B) — scratch retained, next attempt Range-resumes")
+                let fpLine = writer.responseFingerprint.map { " [" + DownloadResume.responseFingerprintLine($0) + "]" } ?? ""
+                event(.danger, "stream: clean early close for \(writer.track.trackId) (counter \(writer.accumulatedBytes)B, disk \(diskAtClose)B of announced \(writer.announcedBytes)B)\(fpLine) — scratch retained, next attempt Range-resumes")
                 pendingParts[writer.cacheKey] = DownloadResume.Pending(
                     parts: [writer.accumulatedBytes],
                     announcedTotal: writer.announcedBytes)
@@ -1782,6 +1800,22 @@ private final class StreamWriterDelegate: NSObject, URLSessionDataDelegate {
         // writer to a fresh overwrite (writerDidReceiveResponse).
         let announced = Int64(response.expectedContentLength)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        // NETWORK EVIDENCE: snapshot the response's network facts per
+        // attempt (data-assist/proxy verdicts live in these headers). The
+        // fingerprint rides the writer's state so the completion verdict
+        // logs it verbatim at the early close.
+        if let http = response as? HTTPURLResponse {
+            let fp = DownloadResume.ResponseFingerprint(
+                statusCode: http.statusCode,
+                connectionHeader: http.value(forHTTPHeaderField: "Connection"),
+                contentLengthHeader: http.value(forHTTPHeaderField: "Content-Length"),
+                contentRangeHeader: http.value(forHTTPHeaderField: "Content-Range"),
+                acceptRangesHeader: http.value(forHTTPHeaderField: "Accept-Ranges"),
+                contentTypeHeader: http.value(forHTTPHeaderField: "Content-Type"))
+            DispatchQueue.main.async { [weak self] in
+                self?.owner?.writerDidReceiveFingerprint(fp)
+            }
+        }
         DispatchQueue.main.async { [weak self] in
             self?.owner?.writerDidReceiveResponse(announced: announced, statusCode: status)
         }
