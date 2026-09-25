@@ -1603,14 +1603,24 @@ final class TrackFileLoader {
             // writer down too — no orphaned byte stream appending into a
             // scratch file the cache has disowned.
             if let writer = streamWriter, writer.cacheKey == key {
-                streamWriterTask?.cancel()
-                try? streamWriterHandle?.close()
-                streamWriterHandle = nil
-                streamWriter = nil
-                streamWriterTask = nil
+                // EVICT TWIN OF BUG G (fixed 2026-09-25): NO main-thread
+                // close — the delegate queue may hold queued writes for
+                // this handle, and a close that lands between them raises
+                // on the delegate (or kills a write the counter already
+                // counted). Same contract as the non-206 continuation
+                // abort: silence the legs, cancel the task, drop the
+                // loader's handle copy WITHOUT closing —
+                // didCompleteWithError owns the close, ordered after every
+                // write on the serial queue. The completion's main hop
+                // early-returns (writer nil'd below) and the pre-captured
+                // chains own the delivery.
                 streamProgressHandler = nil
                 streamFinishedHandler = nil
                 streamArrivalHandler = nil
+                streamWriterTask?.cancel()
+                streamWriterHandle = nil
+                streamWriter = nil
+                streamWriterTask = nil
                 claimAt.removeValue(forKey: key)
                 flushWriterChains(key: key, url: nil, error: NSError(domain: "mmdrome.loader", code: -7005, userInfo: [NSLocalizedDescriptionKey: "Streamed load evicted: \(trackId)"]))
                 try? FileManager.default.removeItem(at: writer.part)

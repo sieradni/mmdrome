@@ -1,3 +1,7 @@
+## 2026-09-25 — evict teardown: the BUG G twin (main-thread close of the live writer's handle)
+
+Adversarial follow-up left open after the 1.2.37 fix pass: `TrackFileLoader.evict`'s live-writer teardown called `try? streamWriterHandle?.close()` on MAIN — the same race shape as fixed BUG G (a main-thread close racing the serial delegate queue's queued writes; a write landing after the close raises on the delegate, and a close landing between writes kills bytes the counter already counted). The contract was already written down one function over — the non-206 continuation abort nils the legs, cancels the task, and drops the loader's handle copy WITHOUT closing — but `evict` predated it. The fix copies that contract verbatim: silence the three engine legs first (the completion the cancel() triggers must not double-deliver — the chains are captured by `flushWriterChains` right after), cancel, drop the handle copy, nil the writer (the queued completion's main hop early-returns in `writerDidComplete`). The delegate's `didCompleteWithError` closes its own handle ordered after every write. Audited all six `.close()` sites in the file: only `evict` violated ownership — the other five are post-write (completion path), pre-task (continuation setup), or the delegate's own.
+
 ## 2026-09-24 (later) — the 1.2.35 double dump: in-loader stream continuation, native active-load retry, artwork backoff
 
 Two field dumps on 1.2.35 (same evening, same session — 20:16 and 21:12) exposed four defects, all fixed in one pass:
