@@ -405,17 +405,33 @@ export class PlaybackManager {
     // track-scoped replay-gain apply (no track is loaded yet at subscribe time).
     let prevTranscodeKey = ''
     let prevCrossfade = -1
+    // 2026-09-26 field dump (1.2.41): every settings-store emission re-pushed
+    // ALL of these to the native engine even when nothing changed — dense
+    // 3-punch setMixingMode/setPreloadCount/setCrossfade bursts drowned the
+    // crossfade panel's real signal. Idempotent today, but a latent hazard
+    // for any future non-idempotent handler. Push only on a VALUE change;
+    // the null/-1 sentinels keep the first (subscription-time) fire pushing,
+    // so boot parity is unchanged.
+    let prevMixing: string | null = null
+    let prevPreload: number | null = null
     unsubs.push(settings.subscribe((s) => {
-      // Bridge-trail: every crossfade change with its before/after (the
-      // boot push rides the `params` event in _initNative instead).
-      if ((s.crossfadeDuration ?? 0) !== prevCrossfade && prevCrossfade !== -1) {
-        trailBridge('event', `crossfade → ${s.crossfadeDuration ?? 0}s (was ${prevCrossfade}s)`)
+      const crossfadeVal = s.crossfadeDuration ?? 0
+      const mixingVal = s.iosAudioMixing ?? 'exclusive'
+      if (crossfadeVal !== prevCrossfade) {
+        // Bridge-trail: every crossfade change with its before/after (the
+        // boot push rides the `params` event in _initNative instead).
+        if (prevCrossfade !== -1) {
+          trailBridge('event', `crossfade → ${crossfadeVal}s (was ${prevCrossfade}s)`)
+        }
+        prevCrossfade = crossfadeVal
+        this._engine.setCrossfade(crossfadeVal)
       }
-      prevCrossfade = s.crossfadeDuration ?? 0
-      this._engine.setCrossfade(s.crossfadeDuration ?? 0)
-      // Audio-session sharing applies live (re-setting the category +
-      // re-activating needs no restart or re-engage).
-      this._engine.setAudioMixing(s.iosAudioMixing ?? 'exclusive')
+      if (mixingVal !== prevMixing) {
+        // Audio-session sharing applies live (re-setting the category +
+        // re-activating needs no restart or re-engage).
+        prevMixing = mixingVal
+        this._engine.setAudioMixing(mixingVal)
+      }
       // Transcode-affecting change (mode/format/bitrate/probe verdict): the
       // ARMED crossfade target and the native snapshot hold URLs built with
       // the OLD params. Dropping the web arm lets the next monitor tick re-arm
@@ -438,7 +454,11 @@ export class PlaybackManager {
         }
       }
       if (this.isNative()) {
-        this._syncNativePreload()
+        const preloadVal = this._effectivePreloadCount()
+        if (preloadVal !== prevPreload) {
+          prevPreload = preloadVal
+          this._syncNativePreload()
+        }
         if (s.replayGainMode) {
           BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode }).catch(() => {})
         }
