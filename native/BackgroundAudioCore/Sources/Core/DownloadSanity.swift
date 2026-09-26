@@ -111,4 +111,65 @@ public enum DownloadSanity {
         guard timeMeasured else { return false }
         return remainingSeconds >= 1.0
     }
+
+    /// The action for the ACTIVE node's EOF while a crossfade is in flight
+    /// (2026-09-25, the two "caught a play halfway then restart" dumps).
+    /// The 2026-09-21e abort-keep-active response for a PREMATURE verdict
+    /// rested on the premise that the outgoing tail "plays out its real
+    /// remaining tail and its genuine natural end advances the queue" —
+    /// but a `dataConsumed` completion is ONE-SHOT: once it fires, the node
+    /// has NO future completion, so the premise is impossible by
+    /// construction. Whenever the abort runs on a near-end EOF the queue
+    /// stalls silently until the D1 dead-air watchdog advances ~3 s late
+    /// (elapsed ≈ end = the node is exhausted, not mid-tail).
+    ///
+    /// A NEAR-END EOF within `nearEndFinalizeEpsilonSeconds` of the
+    /// scheduled segment end is measurement slop, not truncation evidence:
+    /// real truncations EOF MINUTES early (the LDM signature), while the
+    /// field's shortest gap is 1.0–1.1 s (202/202.5, 202/201.0) — the node
+    /// is genuinely done, and the byte-complete streams promoted cleanly in
+    /// both dumps (delivered == announced, no early-close, no loader
+    /// failure). Finalizing the switch hands playback to the ALREADY-RAMPED
+    /// standby and keeps `finalizeCrossfadeSwitch`'s own teardown (which
+    /// drains and stops the exhausted outgoing node). The epsilon exceeds
+    /// the whole family: rounding slop, cross-node render latency, and the
+    /// ramp's last steps — and stays far below the 3 s dead-air grace so a
+    /// misjudged finalize still lands INSIDE the watchdog's protection, not
+    /// past it.
+    ///
+    /// - Parameters:
+    ///   - elapsedSeconds: the MEASURED position (only meaningful when
+    ///     `timeMeasured` is true).
+    ///   - totalSeconds: the scheduled segment's length (file truth).
+    ///   - remainingSeconds: totalSeconds − elapsedSeconds (>= 1.0 by the
+    ///     time this is consulted — a verdict inside the 1 s margin already
+    ///     finalized gate-free).
+    ///   - timeMeasured: the §3.4 unmeasurable-clock rule — an unmeasurable
+    ///     clock fell back to the stale `cachedPosition` and is never judged.
+    public static let nearEndFinalizeEpsilonSeconds: Double = 2.0
+
+    public enum MidFadeActiveEofAction: Equatable {
+        /// Real end at the segment boundary: the switch point.
+        case finalize
+        /// NEAR-end (within the epsilon): measurement slop on a genuinely
+        /// finished node — finalize instead of abort (the one-shot
+        /// completion makes abort a dead-air wedge).
+        case finalizeNearEnd
+        /// Far short of the end: truncation evidence — abort-keep-active
+        /// stands (the 2026-09-21e minimum response for genuinely SHORT
+        /// bytes; the D1 watchdog owns the lost end).
+        case abortKeepActive
+    }
+
+    public static func midFadeActiveEofAction(
+        elapsedSeconds: Double,
+        totalSeconds: Double,
+        remainingSeconds: Double,
+        timeMeasured: Bool
+    ) -> MidFadeActiveEofAction {
+        guard timeMeasured, totalSeconds > 0 else { return .finalize }
+        if remainingSeconds < 1.0 { return .finalize }
+        if remainingSeconds <= nearEndFinalizeEpsilonSeconds { return .finalizeNearEnd }
+        return .abortKeepActive
+    }
 }

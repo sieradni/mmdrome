@@ -4293,42 +4293,69 @@ public final class NativeAudioEngine: NSObject {
                 // the state crossing impossible rather than merely unlikely.
                 let elapsed = max(0, currentPosition)
                 let remaining = scheduledSegmentSeconds - elapsed
-                if DownloadSanity.isPrematureCompletion(
-                        elapsedSeconds: elapsed,
-                        totalSeconds: scheduledSegmentSeconds,
-                        timeMeasured: isNodeTimeMeasured,
-                        remainingSeconds: remaining) {
-                    if reentrancyGuard > 0 {
-                        // The completion fired DURING a finalize — the crossed
-                        // half-swapped state, not file evidence (the 09:55 dump
-                        // evicted a healthy file exactly this way: elapsed 0.0
-                        // of 155.2 seconds after a healthy switch). Drop the
-                        // completion WITHOUT the eviction/pause/retry storm;
-                        // the finalize's own teardown handles the nodes.
-                        eventAdd(.info, "engine", "dropped completion during finalize re-entry row \(completedIndex) id=\(currentTrackId) — crossed state, no eviction")
-                        return
-                    }
-                    let elapsedOneDp = String(format: "%.1f", elapsed)
-                    let segmentOneDp = String(format: "%.1f", scheduledSegmentSeconds)
-                    // 2026-09-21e (the 03:59 dump, the "went back to the previous
-                    // song" report): the old response PAUSED + EVICTED + errored.
-                    // The pause silenced the app; the JS retry re-engaged the
-                    // SAME row, whose re-load restarted the fade machinery while
-                    // the queue store was still catching up — the observable
-                    // result was the queue stepping BACKWARD into the row the
-                    // user had just heard. Stopping playback mid-fade was the
-                    // whole failure: the retry machine was invented for DEAD
-                    // bytes, and this file is not dead — the gate proved only
-                    // that it is SHORT. The response is now the minimum: keep
-                    // playing, drop only the crossfade automation. The outgoing
-                    // track plays out its real remaining tail (the scheduled
-                    // segment is file truth) and its genuine natural end
-                    // advances the queue. Nothing evicted, nothing pauses, no
-                    // retry, no storm — the cost is only the missing fade
-                    // overlap at this one boundary.
+                // 2026-09-25 (the two "caught a play halfway then restart" /
+                // "song plays a little and gets skipped" dumps): verdict and
+                // response are now separated. The 2026-09-21e abort premise —
+                // "the outgoing track plays out its real remaining tail and
+                // its genuine natural end advances the queue" — is IMPOSSIBLE
+                // for this completion: `dataConsumed` completions are
+                // ONE-SHOT, so an aborted node has no future end trigger.
+                // Both dumps show the result: abort at 1.0-1.1 s short of the
+                // segment end (on byte-COMPLETE streams — delivered ==
+                // announced, clean promotes, no early closes) → the lost
+                // completion → the D1 dead-air watchdog advancing ~3 s late.
+                // A NEAR-end shortfall (<= DownloadSanity.nearEndFinalize-
+                // EpsilonSeconds) is measurement slop, not truncation evidence
+                // — real truncations EOF minutes early — so it FINALIZES the
+                // switch: the already-ramped standby takes over and
+                // finalizeCrossfadeSwitch's own teardown drains the exhausted
+                // outgoing node. Genuinely SHORT bytes (remaining > epsilon)
+                // keep the 2026-09-21e abort-keep-active, with the D1
+                // watchdog as the KNOWN owner of the lost end trigger.
+                let eofAction = DownloadSanity.midFadeActiveEofAction(
+                    elapsedSeconds: elapsed,
+                    totalSeconds: scheduledSegmentSeconds,
+                    remainingSeconds: remaining,
+                    timeMeasured: isNodeTimeMeasured)
+                if reentrancyGuard > 0, eofAction != .finalize {
+                    // The completion fired DURING a finalize — the crossed
+                    // half-swapped state, not file evidence (the 09:55 dump
+                    // evicted a healthy file exactly this way: elapsed 0.0
+                    // of 155.2 seconds after a healthy switch). Drop the
+                    // completion WITHOUT the eviction/pause/retry storm;
+                    // the finalize's own teardown handles the nodes.
+                    eventAdd(.info, "engine", "dropped completion during finalize re-entry row \(completedIndex) id=\(currentTrackId) — crossed state, no eviction")
+                    return
+                }
+                let elapsedOneDp = String(format: "%.1f", elapsed)
+                let segmentOneDp = String(format: "%.1f", scheduledSegmentSeconds)
+                if eofAction == .abortKeepActive {
+                    // 2026-09-21e (the 03:59 dump, the "went back to the
+                    // previous song" report): the old response PAUSED +
+                    // EVICTED + errored. The pause silenced the app; the JS
+                    // retry re-engaged the SAME row, whose re-load restarted
+                    // the fade machinery while the queue store was still
+                    // catching up — the observable result was the queue
+                    // stepping BACKWARD into the row the user had just heard.
+                    // Stopping playback mid-fade was the whole failure: the
+                    // retry machine was invented for DEAD bytes, and this file
+                    // is not dead — the gate proved only that it is SHORT. The
+                    // response stays the minimum: keep playing, drop only the
+                    // crossfade automation. Nothing evicted, nothing pauses,
+                    // no retry, no storm. (2026-09-25 correction: a one-shot
+                    // completion never refires — the D1 watchdog, not a
+                    // "genuine natural end", owns the advance from here.)
                     eventAdd(.danger, "engine", "dropped premature completion of ACTIVE node mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — fade automation dropped, tail continues unattended (D1 watchdog owns a lost end past \(segmentOneDp)s)")
                     self.abortCrossfadeKeepActive()
                     return
+                }
+                if eofAction == .finalizeNearEnd {
+                    // The node is DONE (its one-shot completion just fired)
+                    // and the shortfall is slop — finalize is what the healthy
+                    // path does, moved ~1 s earlier. The standby is already
+                    // mid-ramp with full audio; a direct advance would race it
+                    // (the 1.2.28 wedge's shape), so finalize is the switch.
+                    eventAdd(.info, "engine", "near-end active EOF mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — within epsilon: finalizing switch (abort would strand the one-shot completion into the D1 dead-air advance)")
                 }
                 self.finalizeCrossfadeSwitch()
                 return

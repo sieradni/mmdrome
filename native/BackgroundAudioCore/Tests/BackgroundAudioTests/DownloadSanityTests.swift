@@ -138,6 +138,64 @@ final class DownloadSanityTests: XCTestCase {
             metadataDuration: 0.5, transcode: true))
     }
 
+    // MARK: - Mid-fade active-EOF adjudication (2026-09-25 dumps)
+
+    func testMidFadeActiveEofNearEndFinalizes() {
+        // THE FIELD SHAPES (both 2026-09-25 dumps: byte-complete streams,
+        // clean promotes, no early closes): the measured position sits
+        // 1.0-1.1 s short of the scheduled segment end when the active
+        // node's one-shot dataConsumed completion fires mid-fade. The old
+        // path called these premature and aborted the fade — stranding the
+        // exhausted node into the D1 dead-air advance (~3 s late). The
+        // near-end verdict is .finalizeNearEnd.
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(
+            elapsedSeconds: 201.4, totalSeconds: 202.5, remainingSeconds: 1.1,
+            timeMeasured: true), .finalizeNearEnd)
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(
+            elapsedSeconds: 201.0, totalSeconds: 202.0, remainingSeconds: 1.0,
+            timeMeasured: true), .finalizeNearEnd)
+        // Just inside the epsilon from the other side (never test AT the
+        // 2.0 boundary): 1.9 s of slop is still the finalize family.
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(
+            elapsedSeconds: 200.1, totalSeconds: 202.0, remainingSeconds: 1.9,
+            timeMeasured: true), .finalizeNearEnd)
+    }
+
+    func testMidFadeActiveEofInsideMarginFinalizes() {
+        // Inside the 1 s premature margin the completion is a plain real
+        // end (the verdict isPrematureCompletion already passes): finalize.
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(
+            elapsedSeconds: 201.9, totalSeconds: 202.0, remainingSeconds: 0.1,
+            timeMeasured: true), .finalize)
+    }
+
+    func testMidFadeActiveEofFarShortAborts() {
+        // Genuine truncation evidence: the LDM signature EOFs MINUTES early.
+        // The 2026-09-21e abort-keep-active stands for SHORT bytes (no
+        // pause, no evict, no retry); the D1 watchdog owns the lost end.
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(
+            elapsedSeconds: 3, totalSeconds: 202.0, remainingSeconds: 199,
+            timeMeasured: true), .abortKeepActive)
+        // Far enough past the epsilon to stay the abort family.
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(
+            elapsedSeconds: 198.0, totalSeconds: 202.0, remainingSeconds: 4.0,
+            timeMeasured: true), .abortKeepActive)
+    }
+
+    func testMidFadeActiveEofDegenerateInputs() {
+        // Unmeasurable clock: the stale cachedPosition is not evidence (the
+        // §3.4 rule) — and the ramp is mid-flight, so the switch point
+        // guard defaults to finalize (the pre-2026-09-25 behavior for this
+        // completion).
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(
+            elapsedSeconds: 0.4, totalSeconds: 180, remainingSeconds: 179,
+            timeMeasured: false), .finalize)
+        // Unknown segment length (0): not judgeable — same default.
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(
+            elapsedSeconds: 3, totalSeconds: 0, remainingSeconds: 0,
+            timeMeasured: true), .finalize)
+    }
+
     // MARK: - LoaderState byte bookkeeping
 
     func testStoredBytesRoundTripAndEvict() {
