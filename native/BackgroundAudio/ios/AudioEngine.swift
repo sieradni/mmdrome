@@ -3788,7 +3788,8 @@ public final class NativeAudioEngine: NSObject {
         // not wait on render tail (the buffering stall and the post-complete
         // re-arm would lag one buffer behind).
         player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(frames), at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            self?.handleSegmentCompletion(index: scheduledIndex, generation: generation, trackId: scheduledTrackId, node: scheduledNode, nodeEvidence: self?.captureNodeElapsed(for: scheduledNode, bias: scheduledBias))
+            let nodeElapsed = self?.captureNodeElapsed(for: scheduledNode, bias: scheduledBias)
+            self?.handleSegmentCompletion(index: scheduledIndex, generation: generation, trackId: scheduledTrackId, node: scheduledNode, nodeEvidence: nodeElapsed.map { NodeEofEvidence(elapsedSeconds: $0) })
         }
 
         hasLiveSchedule = true
@@ -4845,7 +4846,8 @@ public final class NativeAudioEngine: NSObject {
         // (≈ the schedule end, no read-ahead slop) instead of an
         // epsilon-tolerated wall read.
         standbyNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(file.length), at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-            self?.handleSegmentCompletion(index: nextIdx, generation: generation, trackId: nextTrack.trackId, node: standbyPlayer, nodeEvidence: self?.captureNodeElapsed(for: standbyPlayer, bias: fadeBias), standbyGenerationAtStart: standbyGenAtStart)
+            let nodeElapsed = self?.captureNodeElapsed(for: standbyPlayer, bias: fadeBias)
+            self?.handleSegmentCompletion(index: nextIdx, generation: generation, trackId: nextTrack.trackId, node: standbyPlayer, nodeEvidence: nodeElapsed.map { NodeEofEvidence(elapsedSeconds: $0) }, standbyGenerationAtStart: standbyGenAtStart)
         }
         standbyNode.play()
 
