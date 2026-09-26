@@ -137,6 +137,28 @@ export interface PushBreakdownRow extends PushRowSnapshot {
   title?: string
 }
 
+/**
+ * Decorates pending rows with the display names the caller resolved from the
+ * live library (`trackId → "Title — Artist"`, the same format the File
+ * Matching conflict modal uses). Rows carry no title of their own — without
+ * this the dialog falls back to the raw Navidrome id, which is exactly what
+ * happened in the field (2026-09-26).
+ *
+ * Orphaned rows (a pending edit on a track id that left the library — the
+ * Navidrome 0.64 id re-encode being the likely cause) keep their UNTOUCHED
+ * fallback so `buildPushBreakdown`'s `title ?? trackId` still renders the id;
+ * the view marks them separately ("Track not in library"). Returns the same
+ * array when the title map is empty (the common library-missing case is the
+ * caller deciding not to enrich, not a change in classification).
+ */
+export function withLibraryTitles(rows: PushBreakdownRow[], titles: ReadonlyMap<string, string>): PushBreakdownRow[] {
+  if (titles.size === 0) return rows
+  return rows.map((row) => {
+    const name = titles.get(row.trackId)
+    return name === undefined ? row : { ...row, title: name }
+  })
+}
+
 export interface PushBreakdown {
   pushable: number
   noPath: number

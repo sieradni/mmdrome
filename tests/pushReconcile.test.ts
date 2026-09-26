@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { shouldKeepPushPending, shouldSkipBeforePut, classifyRowForPush, buildPushBreakdown, EMPTY_PUSH_BREAKDOWN, type PushRowSnapshot } from '../src/lib/pushReconcile'
+import { shouldKeepPushPending, shouldSkipBeforePut, classifyRowForPush, buildPushBreakdown, withLibraryTitles, EMPTY_PUSH_BREAKDOWN, type PushRowSnapshot, type PushBreakdownRow } from '../src/lib/pushReconcile'
 
 function row(over: Partial<PushRowSnapshot> = {}): PushRowSnapshot {
   return { rating: 70, loved: true, syncStatus: 'pending_sync', webdavPath: '/m/a.mp3', webdavBase: 'u|user', comments: 'c', ...over }
@@ -154,4 +154,46 @@ test('breakdown: missing title falls back to the trackId (never crashes the dial
 
 test('breakdown: empty pending → all zeros, empty list', () => {
   assert.deepEqual(buildPushBreakdown([], BASE_KEY), EMPTY_PUSH_BREAKDOWN)
+})
+
+// withLibraryTitles — the dialog's display-name decorator. Pending rows carry
+// no title of their own; without the library lookup the dialog rendered raw
+// navidrome ids (2026-09-26 field report). The unknown-id case must stay
+// UNTOUCHED so the `title ?? trackId` fallback + the view's orphan hint can
+// do their job — an orphaned row is never renamed to something invented.
+
+test('titles: enriches rows found in the library map (Title — Artist format)', () => {
+  const rows: PushBreakdownRow[] = [
+    { ...row(), trackId: 'navidrome-s1' },
+    { ...row(), trackId: 'navidrome-s2' },
+  ]
+  const titles = new Map([
+    ['navidrome-s1', 'Song One — Artist A'],
+    ['navidrome-s2', 'Song Two — Artist B'],
+  ])
+  assert.deepEqual(
+    withLibraryTitles(rows, titles).map((r) => r.title),
+    ['Song One — Artist A', 'Song Two — Artist B'],
+  )
+})
+
+test('titles: ids missing from the map keep their fallback (orphan rows untouched)', () => {
+  const rows: PushBreakdownRow[] = [{ ...row(), trackId: 'navidrome-orphan' }]
+  const titles = new Map([['navidrome-s1', 'Song One — Artist A']])
+  const out = withLibraryTitles(rows, titles)
+  assert.equal(out[0].title, undefined, 'no invented name for a library-missing id')
+  assert.equal(out[0].trackId, 'navidrome-orphan')
+})
+
+test('titles: an existing stale title never overrides the live library name', () => {
+  // A re-matched row could theoretically carry an old title field; the live
+  // library is the display source of truth.
+  const rows: PushBreakdownRow[] = [{ ...row(), trackId: 'navidrome-s1', title: 'Old Title' }]
+  const titles = new Map([['navidrome-s1', 'Song One — Artist A']])
+  assert.equal(withLibraryTitles(rows, titles)[0].title, 'Song One — Artist A')
+})
+
+test('titles: empty map returns the SAME rows (library missing = no enrichment, no crash)', () => {
+  const rows: PushBreakdownRow[] = [{ ...row(), trackId: 'navidrome-x', title: undefined }]
+  assert.equal(withLibraryTitles(rows, new Map()), rows)
 })

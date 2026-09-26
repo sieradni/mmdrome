@@ -9,7 +9,8 @@
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, testNavidromeConn, loadLibraryFromNavidrome, cancelLongOperation } from '../lib/syncEngine'
   import { webdavBaseKey } from '../lib/webdavUtils'
-  import { buildPushBreakdown, EMPTY_PUSH_BREAKDOWN, type PushBreakdown } from '../lib/pushReconcile'
+  import { buildPushBreakdown, withLibraryTitles, EMPTY_PUSH_BREAKDOWN, type PushBreakdown, type PushableTrackInfo } from '../lib/pushReconcile'
+  import { metadataCache, relinkPendingMetadata } from '../stores/appState'
   import { getPendingSyncMetadata } from '../lib/db'
   import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, refreshIndexAndProbeForced, reprobeFiles, scanAll, resetMetadataAndRelink, cancelScan, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
   import { parseSearchQuery, highlightSegments, type HighlightSegment } from '../lib/searchCore'
@@ -58,6 +59,12 @@
   let confirmPush = $state(false)
   // The dialog's full picture — bucket counts + the pushable track list.
   let pushBreakdown = $state<PushBreakdown>(EMPTY_PUSH_BREAKDOWN)
+  // In-dialog × discard: which row's confirm strip is open + the in-flight
+  // guard. Confirm runs discardLocalEdit (D6-safe: the row keeps its file
+  // link/provenance, only the pending write is abandoned) and rebuilds the
+  // breakdown — the dialog stays truthful about what the run would do.
+  let pushDiscardTarget = $state<string | null>(null)
+  let pushDiscardBusy = $state(false)
   let reconcileResult = $state('')
   let indexing = $state(false)
   // $state: the container is conditionally rendered (hidden on the landing
@@ -523,24 +530,91 @@
 
   async function pushChanges() {
     await commitCredentials()
+    // A mid-session library load (Connect & Load) can orphan pending edits
+    // on re-encoded ids AFTER boot relink already ran — try the same
+    // path/identity re-link here so the dialog names rows instead of
+    // offering raw ids (no-op when nothing is orphaned). AWAITED: the
+    // getPendingSyncMetadata read below must observe the moved rows, not the
+    // pre-relink Dexie state (the migration e2e caught the race).
+    await relinkPendingMetadata(get(library), webdavBaseKey($settings.webdavUrl ?? '', $settings.webdavUser ?? ''))
     const pending = await getPendingSyncMetadata()
     // The same derivation the scan stamp and Push use (webdavBaseKey) — a raw
     // template here would misclassify every row on stray whitespace and could
     // skip the confirmation dialog entirely (TODO 3.5 convention).
     const currentBaseKey = webdavBaseKey($settings.webdavUrl ?? '', $settings.webdavUser ?? '')
-    // The ONE classification (pushReconcile) — the SAME buckets the push loop
-    // applies, so the dialog can never disagree with what the run will do
-    // (D5; TODO 3.8c). The breakdown shows every bucket + the pushable
-    // track list; the dialog opens only when something is actually pushable.
-    const bd = buildPushBreakdown(pending, currentBaseKey)
-    pushBreakdown = bd
-    if (bd.pushable > 0) {
+    // The pending rows carry no title — resolve display names from the live
+    // library (withLibraryTitles) so the dialog shows "Title — Artist"
+    // instead of raw navidrome ids (2026-09-26 field report). Ids with no
+    // library row are orphaned pending edits (kept deliberately so a stale id
+    // can't silently lose the user's rating) and keep the raw-id fallback +
+    // an explicit "Track not in library" hint in the dialog.
+    pushBreakdown = buildPushBreakdown(
+      withLibraryTitles(pending, pendingTitleMap()),
+      currentBaseKey,
+    )
+    if (pushBreakdown.pushable > 0) {
       confirmPush = true
     }
     // if nothing is safely pushable (all skipped/no-path/wrong-server), just run
     // and report the result so the user sees the "N skipped" state.
-    if (bd.pushable === 0) {
+    if (pushBreakdown.pushable === 0) {
       performPush()
+    }
+  }
+
+  /** trackId → "Title — Artist" for the Push dialog (bindTrackToFile's
+   *  conflict modal format). Missing library rows fall back to the row's
+   *  OWN identity snapshot (stamped at commit time) — so an orphaned stale
+   *  id still shows what it was edited as, with a muted "stale" hint
+   *  instead of the not-in-library marker. Truly identity-less rows keep
+   *  the raw-id fallback. */
+  function pendingTitleMap(): Map<string, string> {
+    const titles = new Map<string, string>()
+    for (const t of get(library)) titles.set(t.trackId, `${t.title}${t.artist ? ` — ${t.artist}` : ''}`)
+    for (const row of get(metadataCache).values()) {
+      if (!row.title || titles.has(row.trackId)) continue
+      titles.set(row.trackId, `${row.title}${row.artist ? ` — ${row.artist}` : ''}`)
+    }
+    return titles
+  }
+
+  /** True when the dialog row's name came from a snapshot rather than a live
+   *  library row (the muted "stale id" hint, not the not-in-library one). */
+  function isSnapshotNamed(t: PushableTrackInfo): boolean {
+    if (get(library).some((l) => l.trackId === t.trackId)) return false
+    const row = get(metadataCache).get(t.trackId)
+    return !!row?.title
+  }
+
+  // ── In-dialog × discard (the orphan-row cleanup path too) ───────────────
+
+  function requestDiscardPending(t: PushableTrackInfo) {
+    if (pushDiscardBusy) return
+    pushDiscardTarget = t.trackId
+  }
+
+  function cancelDiscardPending() {
+    pushDiscardTarget = null
+  }
+
+  async function confirmDiscardPending(t: PushableTrackInfo) {
+    pushDiscardBusy = true
+    try {
+      // The one commit-path-adjacent discard (D6's view surface): resets the
+      // row to 'synced' WITHOUT pushing, keeping path/provenance — the rating
+      // is abandoned, never written to the file.
+      await discardLocalEdit(t.trackId)
+      pushDiscardTarget = null
+      const pending = await getPendingSyncMetadata()
+      const bd = buildPushBreakdown(withLibraryTitles(pending, pendingTitleMap()), webdavBaseKey($settings.webdavUrl ?? '', $settings.webdavUser ?? ''))
+      pushBreakdown = bd
+      if (bd.pushable === 0) {
+        // Nothing left to confirm — land in the section with an honest line.
+        confirmPush = false
+        syncResult = 'All pending edits were discarded — nothing to push.'
+      }
+    } finally {
+      pushDiscardBusy = false
     }
   }
 
@@ -647,6 +721,9 @@
   let deferredProbeRefresh = false
   let searchQuery = $state('')
   let searchResults = $state<WebdavFileEntry[]>([])
+  // path → owner name for the CURRENT search results' "Already bound to" line
+  // (recomputed per performSearch — a stale map could mislabel after a bind).
+  let pickerBoundNames = $state<Map<string, string>>(new Map())
   // The query whose (possibly empty) results are on screen — the no-match
   // copy reports THIS, not the live input, so it can never contradict the
   // displayed results while the user keeps typing.
@@ -970,6 +1047,7 @@
     searchQuery = ''
     searchedQuery = ''
     searchResults = []
+    pickerBoundNames = new Map()
     highlightTokens = []
     bindError = null
   }
@@ -991,6 +1069,23 @@
     highlightTokens = parseSearchQuery(searchQuery)
     searchedQuery = searchQuery
     searchResults = searchWebdavFiles(searchQuery, row.fileType)
+    // Search results deliberately include files OTHER rows already target
+    // (suggestions exclude them — the user asked for the file by name, so it
+    // must be selectable). Surface the existing owner so a double-bind is an
+    // informed choice, not a surprise "File already bound" modal.
+    pickerBoundNames = buildPickerBoundNames()
+  }
+
+  /** path → "Title — Artist" for every row with a stamped webdavPath. */
+  function buildPickerBoundNames(): Map<string, string> {
+    const tracks = new Map(get(library).map((t) => [t.trackId, t]))
+    const names = new Map<string, string>()
+    for (const [id, meta] of get(metadataCache)) {
+      if (!meta.webdavPath) continue
+      const t = tracks.get(id)
+      names.set(meta.webdavPath, t ? `${t.title}${t.artist ? ` — ${t.artist}` : ''}` : id)
+    }
+    return names
   }
 
   /**
@@ -1864,8 +1959,44 @@
                 <ul class="ml-4 max-h-40 list-disc space-y-0.5 overflow-y-auto">
                   {#each pushBreakdown.tracks as t (t.trackId)}
                     <li class="text-muted">
-                      {t.title}
-                      <span class="text-xs opacity-60">→ {t.webdavPath}</span>
+                      <div class="flex items-start justify-between gap-2">
+                        <span class="min-w-0 break-words">
+                          {t.title}
+                          {#if !pendingTitleMap().has(t.trackId)}
+                            <span class="text-xs text-amber-300">(Track not in library — no matching song found. Discard with the ×)</span>
+                          {:else if isSnapshotNamed(t)}
+                            <span class="text-xs text-muted/70">(no longer in the library — shown from the edit's saved title)</span>
+                          {/if}
+                          <span class="text-xs opacity-60">→ {t.webdavPath}</span>
+                        </span>
+                        <!-- Drop this pending edit without pushing: × opens an
+                             inline confirm strip (no nested overlay) — the
+                             orphaned-stale-id rows' one-tap cleanup. -->
+                        <button
+                          data-testid={`push-discard-${t.trackId}`}
+                          onclick={() => requestDiscardPending(t)}
+                          disabled={pushDiscardBusy}
+                          class="shrink-0 rounded-full p-1 text-muted transition-colors hover:bg-white/10 hover:text-primary disabled:opacity-50"
+                          aria-label={`Discard pending edit for ${t.title}`}
+                        >
+                          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                        </button>
+                      </div>
+                      {#if pushDiscardTarget === t.trackId}
+                        <div class="mt-1 flex items-center gap-2 rounded-lg bg-surface-hover px-2 py-1.5" data-testid={`push-discard-confirm-${t.trackId}`}>
+                          <span class="min-w-0 flex-1 text-xs">Discard this edit? The rating is never written to the file.</span>
+                          <button
+                            onclick={() => confirmDiscardPending(t)}
+                            disabled={pushDiscardBusy}
+                            class="shrink-0 rounded-lg bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-300 ring-1 ring-red-500/30 transition-opacity hover:opacity-80 disabled:opacity-50"
+                          >{pushDiscardBusy ? 'Discarding…' : 'Discard'}</button>
+                          <button
+                            onclick={cancelDiscardPending}
+                            disabled={pushDiscardBusy}
+                            class="shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium text-muted transition-opacity hover:opacity-80 disabled:opacity-50"
+                          >Keep</button>
+                        </div>
+                      {/if}
                     </li>
                   {/each}
                 </ul>
@@ -2242,6 +2373,14 @@
                             {#if cand.tags?.title}
                               <span class="block truncate px-1 text-[11px] text-muted">
                                 ¶ {cand.tags.title}{cand.tags.artist ? ` — ${cand.tags.artist}` : ''}{cand.tags.album ? ` — ${cand.tags.album}` : ''}
+                              </span>
+                            {/if}
+                            {#if pickerBoundNames.has(cand.path)}
+                              <!-- The file is already claimed: say by WHOM so
+                                   stealing it is an informed choice (the bind
+                                   still goes through the confirm modal). -->
+                              <span class="block truncate px-1 text-[11px] text-amber-300" data-testid="picker-bound">
+                                Already bound to: {pickerBoundNames.get(cand.path)}
                               </span>
                             {/if}
                           </button>

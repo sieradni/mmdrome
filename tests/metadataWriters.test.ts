@@ -59,6 +59,21 @@ test('commitFeedback (webdav) preserves matchSource + ignored on a rating edit',
   assert.equal(meta.ignored, true)
 })
 
+test('commitFeedback stamps the identity snapshot (title + artist) on pending rows', () => {
+  seed(existingRow({ title: undefined, artist: undefined }))
+  putWrites.length = 0
+  commitFeedback(track, 80, true)
+  assert.equal(putWrites[0].title, 'T', 'the snapshot rides the pending row')
+  assert.equal(putWrites[0].artist, 'A')
+  // An existing snapshot is restamped from the live track (it may have been
+  // re-tagged server-side since the last edit).
+  seed(existingRow({ title: 'Old', artist: 'Old A', syncStatus: 'pending_sync' }))
+  putWrites.length = 0
+  commitFeedback(track, 30, false)
+  assert.equal(putWrites[0].title, 'T')
+  assert.equal(putWrites[0].artist, 'A')
+})
+
 test('commitFeedback (navidrome) preserves matchSource + ignored on a rating edit', () => {
   seed(existingRow())
   settings.set({ ratingSource: 'navidrome' })

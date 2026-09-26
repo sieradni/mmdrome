@@ -15,6 +15,14 @@ export const SONGS = [
   { id: 's2', title: 'Song Two', artist: 'Artist B', album: 'Album Y', duration: 240, suffix: 'mp3', starred: false, userRating: 0 },
 ]
 
+/** The SAME two songs after a Navidrome id migration (the 0.64 re-encode
+ *  shape): identical identity fields, re-encoded server ids. The id-migration
+ *  spec flips the mock from SONGS to this set mid-session. */
+export const SONGS_MIGRATED = [
+  { id: 's1n', title: 'Song One', artist: 'Artist A', album: 'Album X', duration: 180, suffix: 'mp3', starred: false, userRating: 0 },
+  { id: 's2n', title: 'Song Two', artist: 'Artist B', album: 'Album Y', duration: 240, suffix: 'mp3', starred: false, userRating: 0 },
+]
+
 /** Per-song fixture bytes: distinct frame counts so the files never size-tie. */
 export function fixtureFiles(): MockedFile[] {
   return [
@@ -27,13 +35,13 @@ export function subsonic(extra: Record<string, unknown>): Record<string, unknown
   return { 'subsonic-response': { status: 'ok', version: '1.16.1', ...extra } }
 }
 
-export async function mockSubsonic(page: Page): Promise<void> {
+export async function mockSubsonic(page: Page, songs: typeof SONGS = SONGS): Promise<void> {
   await page.route('**/rest/**', async (route) => {
     const endpoint = new URL(route.request().url()).pathname.split('/').pop()
     let extra: Record<string, unknown> = {}
     if (endpoint === 'ping.view') extra = { serverVersion: '0.50.0' }
     else if (endpoint === 'getScanStatus.view') extra = { scanStatus: { lastScan: '2026-01-01T00:00:00Z' } }
-    else if (endpoint === 'search3.view') extra = { searchResult3: { song: SONGS } }
+    else if (endpoint === 'search3.view') extra = { searchResult3: { song: songs } }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(subsonic(extra)) })
   })
 }

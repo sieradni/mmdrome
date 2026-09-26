@@ -3,7 +3,7 @@ import { webdavFetch, authHeaders, buildWebdavUrl, webdavBaseKey } from "./webda
 import { webdavPutAtomic, ConflictError } from "./webdavAtomicWrite"
 import { getPendingSyncMetadata, upsertMetadata, getSetting, getSongLibraryCache, saveSongLibraryCache } from "$lib/db"
 import { modifyMetadataBuffer } from "$lib/tagWriter"
-import { metadataCache, settings, library, setLibrary, initMetadataForTracks, seedNavidromeFeedback } from "../stores/appState"
+import { metadataCache, settings, library, setLibrary, initMetadataForTracks, seedNavidromeFeedback, relinkPendingMetadata } from "../stores/appState"
 import { setWebdavCredentials, scanAll, setServerLastScan, cancelScan } from "./metadataScanner"
 import { shouldKeepPushPending, shouldSkipBeforePut, classifyRowForPush } from "./pushReconcile"
 import { cachedLibraryUsable } from "./syncCachePolicy"
@@ -321,6 +321,14 @@ export async function loadLibraryFromNavidrome(forceRefresh = false): Promise<Na
   setLibrary(plan.tracks)
   initMetadataForTracks(plan.tracks)
   if (plan.seedFeedback) seedNavidromeFeedback(plan.tracks)
+  // A full load may have orphaned pending edits (an id migration re-encodes
+  // ids while edits sit keyed by the OLD id). The keep-rule in pruneStaleMetadata
+  // preserved them; re-link them onto the surviving song ids BEFORE anything
+  // can display them as raw-id rows (Push dialog, File Matching).
+  const relink = await relinkPendingMetadata(plan.tracks, webdavBaseKey(s.webdavUrl ?? '', s.webdavUser ?? ''))
+  if (relink.moved > 0 || relink.unmatched > 0) {
+    dbgAlways('sync', `stale-id relink after load: ${relink.moved} edit(s) re-linked, ${relink.unmatched} left as Push-dialog discard candidates`)
+  }
   if (plan.lastScan) setServerLastScan(plan.lastScan)
 
   // A successful connect rotates the Subsonic auth params (fresh salt+token

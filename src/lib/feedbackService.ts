@@ -47,6 +47,11 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
       // the manual-bind marker and let the next scan re-match it (D8).
       matchSource: existing?.matchSource,
       ignored: existing?.ignored,
+      // Identity snapshot (pendingRelink + dialog naming): stamped on EVERY
+      // commit so a later id migration can re-link a path-less orphan by
+      // title+artist evidence and the dialog can name it.
+      title: track.title,
+      artist: track.artist,
     }
     updateMetadata(meta)
     // prevRating lets the mirror clear a prior rating when it's actually being
@@ -73,6 +78,8 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
     // intent (dismissal + manual-bind marker), never drop it on an edit.
     matchSource: existing?.matchSource,
     ignored: existing?.ignored,
+    title: track.title,
+    artist: track.artist,
   }
   updateMetadata(meta)
 

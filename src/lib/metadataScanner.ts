@@ -554,9 +554,15 @@ function maybeAutoBindFromProbe(
 
   // A manual bind or another UI edit may have landed after this probe batch
   // built its initial claim set. Never let the probe steal a path that is now
-  // live-owned by a different row.
+  // live-owned by a different row. ZOMBIE-CLAIM EXEMPTION: a row whose track
+  // left the library (stale-id orphan) is not a live owner — its claim must
+  // not block the re-encoded song's auto-bind (pendingRelink then moves the
+  // orphan's edit onto the new id).
+  const libraryIds = new Set(get(library).map((t) => t.trackId))
   for (const row of get(metadataCache).values()) {
-    if (row.webdavPath === entry.path) return null
+    if (row.webdavPath !== entry.path) continue
+    if (!libraryIds.has(row.trackId)) continue
+    return null
   }
 
   const match = matchFileToTracks(
@@ -950,8 +956,16 @@ async function runTagProbe(gen: number): Promise<Set<string>> {
   const pool: WebdavFileEntry[] = []
   const claimedPaths = new Set<string>()
   let unclaimedAudioFileCount = 0
+  // ZOMBIE-CLAIM EXEMPTION (2026-09-26): rows whose trackId is no longer in
+  // the library (stale-id orphans after an id migration) hold no protectable
+  // claim — they have no File Matching row and no push target of their own,
+  // and counting them here would pin their file away from its re-encoded
+  // song forever (the auto-rebind could never fire; only the manual picker
+  // would work). The pendingRelink pass moves such an orphan's edit onto the
+  // re-encoded id once the file is re-bound to it.
+  const zombieLibraryIds = new Set(tracks.map((t) => t.trackId))
   for (const row of cache.values()) {
-    if (row.webdavPath) claimedPaths.add(row.webdavPath)
+    if (row.webdavPath && zombieLibraryIds.has(row.trackId)) claimedPaths.add(row.webdavPath)
   }
 
   // Revisit fresh cached metadata before selecting new network reads. This is
@@ -1789,11 +1803,18 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
   // Claim guard: one file backs one track. Files already bound to a DIFFERENT
   // row are excluded from this track's scoring so an auto-match can never
   // steal a file (e.g. the same song tagged in two Navidrome entries).
+  // ZOMBIE-CLAIM EXEMPTION (2026-09-26): a row whose trackId is no longer in
+  // the library (a stale-id orphan after an id migration) holds no
+  // protectable claim — it has no File Matching row, no push target of its
+  // own, and letting it block would pin the file away from its re-encoded
+  // song forever. The pendingRelink pass moves such an orphan's edit onto
+  // the re-encoded id once THIS exemption lets the scan re-bind the file.
+  const libraryIds = new Set(tracks.map((t) => t.trackId))
   const excludePaths = new Set<string>()
   for (const [, row] of get(metadataCache)) {
-    if (row.webdavPath && row.webdavPath !== existing?.webdavPath) {
-      excludePaths.add(row.webdavPath)
-    }
+    if (!row.webdavPath || row.webdavPath === existing?.webdavPath) continue
+    if (!libraryIds.has(row.trackId)) continue
+    excludePaths.add(row.webdavPath)
   }
 
   const match = matchTrackToWebdav(track, index, excludePaths)
@@ -2050,14 +2071,17 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
   // Path→entry lookup so auditing every matched row stays O(rows) even for
   // five-figure libraries (no per-row linear scan of the index).
   const entryByPath = new Map(index.map((i) => [i.path, i]))
-  // Every bound path across the library — candidates must never include a
-  // file another row already targets (an unclaimed file scores once).
-  const allBoundPaths = new Set<string>()
-  for (const row of get(metadataCache).values()) {
-    if (row.webdavPath) allBoundPaths.add(row.webdavPath)
-  }
   const tracks = get(library)
   const cache = get(metadataCache)
+  // Every bound path across the library — candidates must never include a
+  // file another row already targets (an unclaimed file scores once).
+  // ZOMBIE-CLAIM EXEMPTION: stale-id orphan rows don't count as holders, or
+  // they would hide their file from the re-encoded song's suggestions.
+  const libraryIds = new Set(tracks.map((t) => t.trackId))
+  const allBoundPaths = new Set<string>()
+  for (const row of cache.values()) {
+    if (row.webdavPath && libraryIds.has(row.trackId)) allBoundPaths.add(row.webdavPath)
+  }
   const rows: UnresolvedTrack[] = []
   // Library-wide effective-title evidence for the auditor's `fixable` flag
   // (does any other track own this file's exact title?) — same single source
@@ -2263,8 +2287,13 @@ export async function bindTrackToFile(
     return { ok: true }
   }
 
+  // A ZOMBIE row (trackId no longer in the library — a stale-id orphan) is
+  // not a hostile holder: the conflict modal would otherwise name a raw id
+  // and block the manual re-link the migration needs. Zombies keep their own
+  // pending edit until pendingRelink moves or the user discards it.
+  const libraryIds = new Set(get(library).map((t) => t.trackId))
   const hostile = Array.from(cache.entries()).filter(
-    ([id, row]) => id !== trackId && row.webdavPath === path,
+    ([id, row]) => id !== trackId && libraryIds.has(id) && row.webdavPath === path,
   )
   if (hostile.length > 0) {
     const [firstId] = hostile[0]

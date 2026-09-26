@@ -4,6 +4,7 @@ import type { NoMatchReason } from '$lib/metadataCore'
 import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
 import { persisted, type PersistedValue } from '$lib/persistedStore'
 import { sanitizeRecent } from '$lib/recentWindow'
+import { planPendingRelink } from '$lib/pendingRelink'
 import { dbgAlways } from '$lib/debugLog'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
@@ -378,10 +379,117 @@ function pruneStaleMetadata(tracks: Track[]): void {
     remaining.delete(id)
     toDelete.push(id)
   }
-  if (toDelete.length === 0) return
-  dbgAlways('sync', `metadata GC: pruned ${toDelete.length} orphaned rows${keptPending > 0 ? `, kept ${keptPending} pending_sync (Push Changes)` : ''}`)
-  metadataCache.set(remaining)
-  void bulkDeleteMetadata(toDelete)
+  if (toDelete.length > 0) {
+    dbgAlways('sync', `metadata GC: pruned ${toDelete.length} orphaned rows${keptPending > 0 ? `, kept ${keptPending} pending_sync (Push Changes)` : ''}`)
+    metadataCache.set(remaining)
+    void bulkDeleteMetadata(toDelete)
+  }
+  // The kept pending orphans' RE-LINK attempt is owned by the full-load
+  // pipeline (loadLibraryFromNavidrome → relinkPendingMetadata, which knows
+  // the CURRENT webdavBaseKey for the path-evidence proof). Kept orphans
+  // survive the prune untouched — they surface in Push Changes either way.
+}
+
+/**
+ * Re-links PENDING orphaned edits onto the track ids the same songs carry
+ * after an id migration (the Navidrome 0.64 re-encode): `pruneStaleMetadata`
+ * deliberately KEEPS pending orphans (an unpushed edit is never silently
+ * destroyed), but a kept orphan is unpushable AND unnameable — the exact
+ * raw-id rows the Push dialog showed. Before they reach the dialog, the pure
+ * `planPendingRelink` tries to move each one onto its surviving song:
+ * PATH evidence first — the orphan's stamped `webdavPath` (the file never
+ * changed, only the id) must name a UNIQUE current-server row binding — then
+ * title+artist fold evidence. The move NEVER demotes the edit (it stays
+ * `pending_sync` — Push still owns it) and never overwrites a live pending
+ * row (that conflict stays as an orphan for the dialog's discard ×).
+ * `currentBaseKey` (the caller's `webdavBaseKey(url, user)`) confines path
+ * evidence to the CURRENT server — stale bindings from an old server can
+ * neither claim nor suppress ownership. The moved rows land in Dexie + the
+ * in-memory map with the old id's deletion, so a crash between the two legs
+ * strands an edit at worst as a pending orphan again (the same state the
+ * keep-rule already covers).
+ */
+export async function relinkPendingMetadata(tracks: Track[], currentBaseKey: string): Promise<{ moved: number; unmatched: number }> {
+  const cache = get(metadataCache)
+  const ids = new Set(tracks.map((t) => t.trackId))
+  const orphanIds = [...cache.keys()].filter((id) => !ids.has(id) && cache.get(id)?.syncStatus === 'pending_sync')
+  if (orphanIds.length === 0) return { moved: 0, unmatched: 0 }
+
+  const liveRows = new Map<string, LocalMetadataStore>()
+  for (const t of tracks) {
+    const row = cache.get(t.trackId)
+    if (row) liveRows.set(t.trackId, row)
+  }
+  const orphanRowsById = new Map(cache)
+  const decision = planPendingRelink(
+    orphanIds,
+    tracks.map((t) => ({ trackId: t.trackId, title: t.title, artist: t.artist, album: t.album })),
+    liveRows,
+    (id) => orphanRowsById.get(id),
+    currentBaseKey,
+  )
+  if (decision.moves.length === 0) {
+    if (decision.unmatchedTrackIds.length > 0) {
+      dbgAlways('sync', `pending relink: ${decision.unmatchedTrackIds.length} orphaned edit(s) could not be re-linked — they surface in Push Changes (discard × available)`)
+    }
+    return { moved: 0, unmatched: decision.unmatchedTrackIds.length }
+  }
+
+  const movedIds: string[] = []
+  const updatedRows: LocalMetadataStore[] = []
+  const next = new Map(cache)
+  for (const move of decision.moves) {
+    const orphan = cache.get(move.fromTrackId)
+    if (!orphan) continue
+    // The target must be a LIVE, synced, non-ignored row. On a FIRST
+    // post-migration load the new-id rows may not exist yet (no scan has run
+    // — but then the orphan's path evidence could not have matched either;
+    // metadata-only evidence can). Such orphans stay residue until the scan
+    // binds their song and pushChanges re-runs this relink.
+    const live = next.get(move.toTrackId)
+    if (!live || live.syncStatus === 'pending_sync' || live.ignored) continue
+    // File evidence carries the binding over: the same file IS the same
+    // song's bytes, so the orphan's path/base/mtime stamps apply to the new
+    // id unchanged (Push will write the tags to exactly that file). The
+    // guard above (a live row must exist and be synced) keeps the edit
+    // pending — the move NEVER demotes or silently merges two edits.
+    updatedRows.push({
+      ...live,
+      rating: orphan.rating,
+      loved: orphan.loved,
+      comments: orphan.comments ?? live.comments,
+      // Path evidence carries the binding over; METADATA evidence must
+      // PRESERVE the live row's binding (a title fold never re-stamps or
+      // clears a path — `??` keeps the live stamps when the orphan has
+      // none; caught by the metadata-lane applier pin).
+      webdavPath: orphan.webdavPath ?? live.webdavPath,
+      webdavBase: orphan.webdavBase ?? live.webdavBase,
+      webdavLastModified: orphan.webdavLastModified ?? live.webdavLastModified,
+      matchSource: orphan.matchSource ?? live.matchSource,
+      // Keep the identity snapshot current: the moved edit was justified by
+      // THIS evidence, so the surviving row carries it forward (the next
+      // commit re-stamps from the live track anyway).
+      title: orphan.title ?? live.title,
+      artist: orphan.artist ?? live.artist,
+      syncStatus: 'pending_sync',
+      lastModifiedLocally: Date.now(),
+    })
+    next.set(move.toTrackId, updatedRows[updatedRows.length - 1])
+    next.delete(move.fromTrackId)
+    movedIds.push(move.fromTrackId)
+  }
+  if (movedIds.length === 0) return { moved: 0, unmatched: decision.unmatchedTrackIds.length }
+
+  metadataCache.set(next)
+  // AWAITED, not fire-and-forget: the pushChanges trigger reads Dexie
+  // (getPendingSyncMetadata) immediately after the relink — a fire-and-forget
+  // write would let that read observe the PRE-relink rows (the race the
+  // migration e2e caught).
+  await bulkUpsertMetadata(updatedRows)
+  await bulkDeleteMetadata(movedIds)
+  const unmatched = decision.unmatchedTrackIds.length
+  dbgAlways('sync', `pending relink: moved ${movedIds.length} orphaned edit(s) onto their re-encoded ids (${movedIds.map((id) => `${id} →`).join(' ')} via path/identity evidence)${unmatched > 0 ? `; ${unmatched} left as discard candidates` : ''}`)
+  return { moved: movedIds.length, unmatched }
 }
 
 let initialized = false
@@ -576,6 +684,10 @@ export function seedNavidromeFeedback(tracks: Track[]): void {
       // manually-bound row would otherwise be re-matched on the next scan, D8).
       matchSource: existing?.matchSource,
       ignored: existing?.ignored,
+      // Identity snapshot: pending rows keep theirs; synced rows restamp so
+      // a later orphan never carries a stale identity.
+      title: existing?.syncStatus === 'pending_sync' ? existing.title : t.title,
+      artist: existing?.syncStatus === 'pending_sync' ? existing.artist : t.artist,
     }
     updates.push(next)
   }

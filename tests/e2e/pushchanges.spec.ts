@@ -76,6 +76,12 @@ test('a rating edit in the UI is pushed to the WebDAV file via PUT-temp + MOVE',
   await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Write ratings to WebDAV files?' })).toBeVisible()
   await expect(page.getByText('1 file will be updated:')).toBeVisible()
+  // Real names, not raw navidrome ids (2026-09-26 field report): the dialog
+  // resolves titles from the live library via withLibraryTitles.
+  const dialogRow = page.locator('[data-testid="push-discard-navidrome-s1"]').locator('xpath=ancestor::li')
+  await expect(dialogRow).toContainText('Song One — Artist A')
+  await expect(dialogRow).not.toContainText('navidrome-')
+  await expect(dialogRow).toContainText('→ Song One.mp3')
   await page.getByRole('button', { name: 'Write to files' }).click()
   await expect(page.getByText(/Pushed 1 track/)).toBeVisible({ timeout: 30_000 })
 
@@ -216,4 +222,55 @@ test('a second pushable row does not start after a mid-run cancel', async ({ pag
   expect(dav.bytesOf('Song Two.mp3')!.indexOf(Buffer.from('POPM'))).toBe(-1)
 
   dav.setGetDelay(0)
+})
+
+test('the dialog × discards one pending edit after confirmation; only the survivor is pushed', async ({ page }) => {
+  await bootApp(page)
+  await mockSubsonic(page)
+  const dav = await installWebdavMock(page, { baseUrl: DAV_BASE, files: fixtureFiles() })
+  await preparePendingRating(page, dav)
+
+  // Make Song Two pending too.
+  await page.getByRole('button', { name: 'Songs', exact: true }).click()
+  const row2 = page.locator('[data-track-id="navidrome-s2"]')
+  await row2.getByRole('button', { name: 'More options' }).click()
+  await row2.getByRole('button', { name: 'Details' }).click()
+  await expect(page.getByRole('button', { name: 'Set rating to 60' })).toBeVisible()
+  await page.getByRole('button', { name: 'Set rating to 60' }).click()
+  await page.getByRole('button', { name: 'Close' }).click()
+  await page.getByRole('button', { name: 'Settings' }).click()
+  await openSettingsSection(page, 'library')
+
+  await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Write ratings to WebDAV files?' })).toBeVisible()
+  await expect(page.getByText('2 files will be updated:')).toBeVisible()
+  // Both rows carry real names.
+  const s1Row = page.locator('[data-testid="push-discard-navidrome-s1"]').locator('xpath=ancestor::li')
+  const s2Row = page.locator('[data-testid="push-discard-navidrome-s2"]').locator('xpath=ancestor::li')
+  await expect(s1Row).toContainText('Song One — Artist A')
+  await expect(s2Row).toContainText('Song Two — Artist B')
+
+  // × opens the inline confirm strip; Keep closes it without discarding.
+  await page.getByTestId('push-discard-navidrome-s1').click()
+  const confirmStrip = page.getByTestId('push-discard-confirm-navidrome-s1')
+  await expect(confirmStrip).toContainText('Discard this edit?')
+  await confirmStrip.getByRole('button', { name: 'Keep' }).click()
+  await expect(page.getByText('2 files will be updated:')).toBeVisible()
+
+  // × again → Discard. The dialog rebuilds: count drops 2 → 1, the discarded
+  // row leaves the list, Song Two survives.
+  await page.getByTestId('push-discard-navidrome-s1').click()
+  await expect(confirmStrip).toBeVisible()
+  await confirmStrip.getByRole('button', { name: 'Discard' }).click()
+  await expect(page.getByText('1 file will be updated:')).toBeVisible()
+  await expect(s1Row).toHaveCount(0)
+  await expect(s2Row).toContainText('Song Two — Artist B')
+
+  // Push proceeds with the survivor only: Song One's file must be untouched
+  // (no POPM), Song Two's carries the write.
+  await page.getByRole('button', { name: 'Write to files' }).click()
+  await expect(page.getByText(/Pushed 1 track/)).toBeVisible({ timeout: 30_000 })
+  expect(dav.getMoveCount(), 'only the surviving row was written').toBe(1)
+  expect(dav.bytesOf('Song One.mp3')!.indexOf(Buffer.from('POPM'))).toBe(-1)
+  expect(dav.bytesOf('Song Two.mp3')!.indexOf(Buffer.from('POPM'))).toBeGreaterThan(-1)
 })

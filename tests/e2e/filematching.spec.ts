@@ -76,6 +76,10 @@ test('File Matching audits real auto-binds; a manual wrong link is protected, th
   // Search-as-you-type: results appear after the 120 ms debounce — no
   // Search button anymore.
   await picker.fill('Two')
+  // The search browser surfaces EXISTING bindings (suggestions exclude bound
+  // paths, search results must not hide them): Song Two's file is claimed by
+  // the Song Two row, and the line names it before the steal even starts.
+  await expect(s1.getByTestId('picker-bound')).toContainText('Already bound to: Song Two — Artist B')
   await s1.getByRole('button', { name: /Song Two\.mp3/ }).click()
   await expect(page.getByText('File already bound')).toBeVisible()
   await page.getByRole('button', { name: 'Bind anyway' }).click()

@@ -20,6 +20,13 @@ export interface LocalMetadataStore {
   matchSource?: 'auto' | 'manual'
   /** User dismissed this track ("not on this server") — scans and push skip it. */
   ignored?: boolean
+  /** Display identity snapshot (2026-09-26): stamped at commit time so a
+   *  pending row that is later ORPHANED by an id migration can still be
+   *  re-linked by title+artist evidence (pendingRelink) and NAMED in the Push
+   *  dialog instead of showing a raw id. Never authoritative — the library
+   *  is — and only carried on pending-edit writes. */
+  title?: string
+  artist?: string
 }
 
 export interface WebdavFileEntry {
