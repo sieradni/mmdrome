@@ -27,7 +27,8 @@
           "date": "2026-09-26T06:25:55.710Z",
           "localizedDescription": "Node-truth completion evidence: the completion gates judge the completing node's own consumed-frame position (.dataPlayedBack + in-callback playerTime capture) instead of the epsilon-tolerated wall clock; the 2.0 s near-end epsilon remains defense-in-depth for the wall fallback only. Danger lines carry nodeElapsed=/evidence= provenance.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.41/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5053834
         },
         {
           "version": "1.2.40",
