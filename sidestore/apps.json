@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.41",
-      "versionDate": "2026-09-26T06:25:55.710Z",
-      "versionDescription": "Node-truth completion evidence: the completion gates judge the completing node's own consumed-frame position (.dataPlayedBack + in-callback playerTime capture) instead of the epsilon-tolerated wall clock; the 2.0 s near-end epsilon remains defense-in-depth for the wall fallback only. Danger lines carry nodeElapsed=/evidence= provenance.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.41/mmdrome.ipa",
+      "version": "1.2.42",
+      "versionDate": "2026-09-26T11:26:55.697Z",
+      "versionDescription": "Relink orphaned pending edits after Navidrome id migrations; Push names every track and can discard edits; smarter file re-binding.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.42/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.42",
+          "buildVersion": "46",
+          "date": "2026-09-26T11:26:55.697Z",
+          "localizedDescription": "Relink orphaned pending edits after Navidrome id migrations; Push names every track and can discard edits; smarter file re-binding.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.42/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5055767
+        },
         {
           "version": "1.2.41",
           "buildVersion": "45",
@@ -422,6 +431,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.42",
+      "identifier": "ios-v1.2.42",
+      "appID": "com.mmdrome.player",
+      "caption": "Relink orphaned pending edits after Navidrome id migrations; Push names every track and can discard edits; smarter file re-binding.",
+      "date": "2026-09-26T11:26:55.697Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.41",
       "identifier": "ios-v1.2.41",
       "appID": "com.mmdrome.player",
@@ -454,15 +472,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Disk-truth continuation + verdict for early-closed streams (the repeatedly-skipping dump): the writer's byte counter is per-byte truth, the ",
       "date": "2026-09-25T07:36:09.174Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.37",
-      "identifier": "ios-v1.2.37",
-      "appID": "com.mmdrome.player",
-      "caption": "In-loader Range continuation for early-closed staged streams (the crossfade stop cycling at 0-1s); native active-load retry with long-haul k",
-      "date": "2026-09-25T03:45:49.853Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
