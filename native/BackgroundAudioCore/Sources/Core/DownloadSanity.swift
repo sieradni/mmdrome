@@ -106,7 +106,18 @@ public enum DownloadSanity {
     /// would, so file truth catches everything metadata would — plus the
     /// mis-tag case metadata would break. Defends the natural-advance path
     /// against fast completions from header-lying truncations (and any other
-    /// poison that slips past the loader) — measured position cannot be faked
+    /// poison that slips past the loader) — a hardware/OS-measured position
+    /// cannot be faked by software.
+    ///
+    /// 2026-09-25 (1.2.41): the caller passes BOTH clocks. `nodeElapsed` —
+    /// the completing node's own player-timeline position, captured inside
+    /// the completion callback BEFORE the main hop — is the preferred
+    /// truth: it is the NODE's own frames-consumed count, immune to the
+    /// active-node read (positionBias, active-vs-completing mixups) and to
+    /// the `cachedPosition` fallback. `elapsedSeconds` (the wall-clock read
+    /// over the container timeline) is the FALLBACK: it keeps the gate
+    /// armed when the node's clock is unreadable at completion time.
+    /// `completionEvidence` resolves the preference ONCE for all gates.
     public static func isPrematureCompletion(elapsedSeconds: Double, totalSeconds: Double, timeMeasured: Bool, remainingSeconds: Double) -> Bool {
         guard timeMeasured else { return false }
         return remainingSeconds >= 1.0
@@ -136,6 +147,14 @@ public enum DownloadSanity {
     /// ramp's last steps — and stays far below the 3 s dead-air grace so a
     /// misjudged finalize still lands INSIDE the watchdog's protection, not
     /// past it.
+    ///
+    /// 2026-09-25 (1.2.41): the measured position is the completing node's
+    /// OWN consumed-frame count when available (`.dataPlayedBack` fires
+    /// after the last frame RENDERS, so node truth reads ≈ the schedule
+    /// end with no buffer-depth slop) — the wall-clock read is the
+    /// fallback. `midFadeActiveEofAction` now takes the resolved
+    /// `CompletionEvidence`; the (elapsedSeconds:…) overload remains for
+    /// the test pins and callers without node evidence.
     ///
     /// - Parameters:
     ///   - elapsedSeconds: the MEASURED position (only meaningful when
@@ -170,6 +189,100 @@ public enum DownloadSanity {
         guard timeMeasured, totalSeconds > 0 else { return .finalize }
         if remainingSeconds < 1.0 { return .finalize }
         if remainingSeconds <= nearEndFinalizeEpsilonSeconds { return .finalizeNearEnd }
+        return .abortKeepActive
+    }
+
+    // MARK: - Node-truth completion evidence (1.2.41, 2026-09-25)
+
+    /// WHERE a completion's elapsed number came from — the discriminating
+    /// fact every future dump needs to adjudicate a residual gate question
+    /// (the 1.2.40 dumps forced a full re-adjudication precisely because
+    /// the wall-clock line carried no source provenance).
+    public enum CompletionEvidenceSource: Equatable {
+        /// The completing node's own player-timeline position, captured
+        /// INSIDE the completion callback before the main hop
+        /// (`node.playerTime(forNodeTime: node.lastRenderTime)` — frames
+        /// the node itself reports consumed). The preferred truth.
+        case nodeTimeline
+        /// The §3.4 wall-clock read (`currentPosition`) taken in the
+        /// completion handler: the ACTIVE node's playerTime + positionBias
+        /// over the container timeline. Fallback only.
+        case wallClock
+        /// No measurable clock anywhere: never judged.
+        case unmeasured
+    }
+
+    /// One completion's elapsed-position evidence, already resolved to its
+    /// best source. Built by `completionEvidence` (pure) from the raw
+    /// readings; consumed by the gates (the premature gate, the mid-fade
+    /// action) and by the danger lines (the source rides every verdict
+    /// line so a dump can tell node truth from a fallback).
+    public struct CompletionEvidence: Equatable {
+        public let source: CompletionEvidenceSource
+        /// Elapsed position in seconds on the schedule's own timeline.
+        /// 0 for `.unmeasured` (the gates must not read it).
+        public let elapsedSeconds: Double
+        public let totalSeconds: Double
+
+        public var remainingSeconds: Double { totalSeconds - elapsedSeconds }
+        public var timeMeasured: Bool { source != .unmeasured }
+    }
+
+    /// Resolves ONE completion's position evidence: the completing node's
+    /// own player-timeline capture wins whenever it is present and
+    /// non-negative (a negative sampleTime is a mis-read — the node had
+    /// rendered nothing measurable); the wall-clock read is the fallback
+    /// ONLY when it is itself measurable (the §3.4 rule — an unmeasurable
+    /// wall read silently fell back to the stale `cachedPosition` and is
+    /// not evidence); otherwise `.unmeasured` — never judged.
+    ///
+    /// The node capture is expected to be `nil` whenever its reader met a
+    /// nil lastRenderTime/playerTime — the exact conditions the old
+    /// `timeMeasured` flag covered, now per-node and per-instant.
+    public static func completionEvidence(
+        nodeElapsedSeconds: Double?,
+        wallElapsedSeconds: Double?,
+        wallTimeMeasured: Bool,
+        totalSeconds: Double
+    ) -> CompletionEvidence {
+        if let node = nodeElapsedSeconds, node >= 0 {
+            return CompletionEvidence(source: .nodeTimeline, elapsedSeconds: node, totalSeconds: totalSeconds)
+        }
+        if wallTimeMeasured, let wall = wallElapsedSeconds, wall >= 0 {
+            return CompletionEvidence(source: .wallClock, elapsedSeconds: wall, totalSeconds: totalSeconds)
+        }
+        return CompletionEvidence(source: .unmeasured, elapsedSeconds: 0, totalSeconds: totalSeconds)
+    }
+
+    /// The premature-completion verdict over RESOLVED evidence (the
+    /// natural path's gate). Same contract as `isPrematureCompletion` —
+    /// drop when a measurable clock places the completion materially short
+    /// of the scheduled segment's end — with two differences:
+    ///  - the node-truth read has NO buffer-depth slop under
+    ///    `.dataPlayedBack` (the completion fires after the last frame
+    ///    RENDERS), so the 1 s `remaining` margin now guards against REAL
+    ///    slop only (rate-map rounding), and stays deliberately
+    ///    conservative;
+    ///  - an `.unmeasured` completion is never dropped (no clock = no
+    ///    evidence = no eviction) — the §3.4 rule, unchanged.
+    public static func isPrematureCompletion(evidence: CompletionEvidence) -> Bool {
+        guard evidence.timeMeasured, evidence.totalSeconds > 0 else { return false }
+        return evidence.remainingSeconds >= 1.0
+    }
+
+    /// The mid-fade ACTIVE-EOF action over RESOLVED evidence. Node truth
+    /// replaces the epsilon's slop-absorption job: a `.dataPlayedBack`
+    /// completion reads ≈ the schedule end by construction, so the field's
+    /// 1.0–1.1 s shapes become `remaining < 1.0` → `.finalize` — the
+    /// healthy path, one branch earlier. The epsilon stays as
+    /// defense-in-depth for WALL-clock fallbacks (and any residual slop),
+    /// which is why `remainingSeconds` (not the action set) is what
+    /// changed. `.unmeasured` defaults to `.finalize` exactly like the
+    /// pre-2026-09-25 behavior for this completion.
+    public static func midFadeActiveEofAction(evidence: CompletionEvidence) -> MidFadeActiveEofAction {
+        guard evidence.timeMeasured, evidence.totalSeconds > 0 else { return .finalize }
+        if evidence.remainingSeconds < 1.0 { return .finalize }
+        if evidence.remainingSeconds <= nearEndFinalizeEpsilonSeconds { return .finalizeNearEnd }
         return .abortKeepActive
     }
 }

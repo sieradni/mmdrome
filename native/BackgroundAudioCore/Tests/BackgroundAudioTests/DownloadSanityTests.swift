@@ -196,6 +196,111 @@ final class DownloadSanityTests: XCTestCase {
             timeMeasured: true), .finalize)
     }
 
+    // MARK: - Node-truth completion evidence (1.2.41, 2026-09-25)
+
+    func testCompletionEvidencePrefersNodeTimeline() {
+        // The node capture wins whenever it exists — even when the wall
+        // read disagrees (the whole point: the wall read mixes the ACTIVE
+        // node's clock with positionBias and can fall back to cachedPosition;
+        // the node capture cannot).
+        let e = DownloadSanity.completionEvidence(
+            nodeElapsedSeconds: 202.4, wallElapsedSeconds: 201.4, wallTimeMeasured: true,
+            totalSeconds: 202.5)
+        XCTAssertEqual(e.source, .nodeTimeline)
+        XCTAssertEqual(e.elapsedSeconds, 202.4)
+        XCTAssertEqual(e.remainingSeconds, 0.1, accuracy: 1e-9)
+    }
+
+    func testCompletionEvidenceWallFallbackRequiresMeasured() {
+        // Node capture nil (its reader hit a nil lastRenderTime/playerTime):
+        // the MEASURED wall read is the fallback.
+        let wall = DownloadSanity.completionEvidence(
+            nodeElapsedSeconds: nil, wallElapsedSeconds: 201.4, wallTimeMeasured: true,
+            totalSeconds: 202.5)
+        XCTAssertEqual(wall.source, .wallClock)
+        XCTAssertEqual(wall.elapsedSeconds, 201.4)
+        // An unmeasurable wall read is NOT a fallback — it silently fell
+        // back to the stale cachedPosition (the §3.4 rule): never judged.
+        let stale = DownloadSanity.completionEvidence(
+            nodeElapsedSeconds: nil, wallElapsedSeconds: 0.4, wallTimeMeasured: false,
+            totalSeconds: 202.5)
+        XCTAssertEqual(stale.source, .unmeasured)
+        XCTAssertFalse(stale.timeMeasured)
+        // Negative readings are mis-reads, never evidence (a position
+        // cannot be negative on this timeline).
+        let negNode = DownloadSanity.completionEvidence(
+            nodeElapsedSeconds: -1.0, wallElapsedSeconds: 201.4, wallTimeMeasured: true,
+            totalSeconds: 202.5)
+        XCTAssertEqual(negNode.source, .wallClock)
+        let negWall = DownloadSanity.completionEvidence(
+            nodeElapsedSeconds: nil, wallElapsedSeconds: -0.5, wallTimeMeasured: true,
+            totalSeconds: 202.5)
+        XCTAssertEqual(negWall.source, .unmeasured)
+    }
+
+    func testMidFadeNodeTruthFinalizesFieldShapes() {
+        // THE FIELD SHAPES re-adjudicated under NODE truth: with
+        // .dataPlayedBack the completing node's own position reads ≈ the
+        // schedule end (no read-ahead buffer slop), so remaining < 1.0 —
+        // the plain .finalize verdict, one branch earlier than the 1.2.40
+        // epsilon family. (The 1.2.40 wall-clock pins below KEEP their
+        // .finalizeNearEnd verdicts — both resolvers are pinned.)
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(evidence:
+            DownloadSanity.completionEvidence(
+                nodeElapsedSeconds: 202.4, wallElapsedSeconds: 201.4, wallTimeMeasured: true,
+                totalSeconds: 202.5)), .finalize)
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(evidence:
+            DownloadSanity.completionEvidence(
+                nodeElapsedSeconds: 202.0, wallElapsedSeconds: 201.0, wallTimeMeasured: true,
+                totalSeconds: 202.0)), .finalize)
+    }
+
+    func testMidFadeNodeTruthStillAbortsFarShort() {
+        // Real truncation evidence under EITHER clock: a node read minutes
+        // short of the schedule end is poison — abort-keep-active stands.
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(evidence:
+            DownloadSanity.completionEvidence(
+                nodeElapsedSeconds: 3.0, wallElapsedSeconds: 3.0, wallTimeMeasured: true,
+                totalSeconds: 202.0)), .abortKeepActive)
+        // Node evidence nil + a MEASURED wall read inside the epsilon: the
+        // 2026-09-25 near-end finalize (the fallback keeps its slop
+        // absorption). Elapsed 201.4 of 202.5 = 1.1 s remaining.
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(evidence:
+            DownloadSanity.completionEvidence(
+                nodeElapsedSeconds: nil, wallElapsedSeconds: 201.4, wallTimeMeasured: true,
+                totalSeconds: 202.5)), .finalizeNearEnd)
+    }
+
+    func testMidFadeUnmeasuredNeverJudged() {
+        // Both clocks unreadable: .finalize — the pre-2026-09-25 default
+        // for this completion (the ramp is mid-flight; an unmeasurable
+        // clock fell back to cachedPosition, which is not evidence).
+        XCTAssertEqual(DownloadSanity.midFadeActiveEofAction(evidence:
+            DownloadSanity.completionEvidence(
+                nodeElapsedSeconds: nil, wallElapsedSeconds: 0.4, wallTimeMeasured: false,
+                totalSeconds: 180.0)), .finalize)
+    }
+
+    func testPrematureGateUnderNodeEvidence() {
+        // Natural path: a node-truth completion minutes short → premature
+        // (the evict/retry response on a genuinely truncated file).
+        let truncated = DownloadSanity.completionEvidence(
+            nodeElapsedSeconds: 3.0, wallElapsedSeconds: nil, wallTimeMeasured: false,
+            totalSeconds: 180.0)
+        XCTAssertTrue(DownloadSanity.isPrematureCompletion(evidence: truncated))
+        // A node-truth completion AT the end (0.1 s of rate-map slop) →
+        // legitimate natural end.
+        let natural = DownloadSanity.completionEvidence(
+            nodeElapsedSeconds: 179.9, wallElapsedSeconds: nil, wallTimeMeasured: false,
+            totalSeconds: 180.0)
+        XCTAssertFalse(DownloadSanity.isPrematureCompletion(evidence: natural))
+        // Unmeasured completions are never dropped — no clock, no eviction.
+        let unmeasured = DownloadSanity.completionEvidence(
+            nodeElapsedSeconds: nil, wallElapsedSeconds: 0.4, wallTimeMeasured: false,
+            totalSeconds: 180.0)
+        XCTAssertFalse(DownloadSanity.isPrematureCompletion(evidence: unmeasured))
+    }
+
     // MARK: - LoaderState byte bookkeeping
 
     func testStoredBytesRoundTripAndEvict() {

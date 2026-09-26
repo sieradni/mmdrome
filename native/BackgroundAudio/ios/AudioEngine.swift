@@ -3358,13 +3358,9 @@ public final class NativeAudioEngine: NSObject {
 
     /// Position within the current track, in seconds.
     public var currentPosition: Double {
-        guard isPlaying,
-              let nodeTime = activeNode.lastRenderTime,
-              let playerTime = activeNode.playerTime(forNodeTime: nodeTime) else {
-            return cachedPosition
-        }
-        let raw = Double(playerTime.sampleTime) / playerTime.sampleRate
-        return max(0, raw + positionBias)
+        let measured = nodeElapsedSeconds(activeNode)
+        if let measured { return max(0, measured + positionBias) }
+        return cachedPosition
     }
 
     /// Whether the active player's clock is currently MEASURABLE. When it is
@@ -3373,12 +3369,40 @@ public final class NativeAudioEngine: NSObject {
     /// value that must never be judged as elapsed audio. The premature-
     /// completion gate in `handleSegmentCompletion` keys on this.
     var isNodeTimeMeasured: Bool {
-        guard isPlaying,
-              let nodeTime = activeNode.lastRenderTime,
-              activeNode.playerTime(forNodeTime: nodeTime) != nil else {
-            return false
-        }
-        return true
+        nodeElapsedSeconds(activeNode) != nil
+    }
+
+    /// The node's OWN consumed-frame position in seconds (1.2.41): the
+    /// player-timeline read (`playerTime(forNodeTime: lastRenderTime)`) —
+    /// the exact read `currentPosition` has always made, refactored so any
+    /// node can be measured. The frame count is what the node itself
+    /// reports; bias/bias-bridging is the CALLER's concern (they know
+    /// which timeline the node is playing). Nil when the clock is
+    /// unreadable at this instant (nil lastRenderTime/playerTime) — the
+    /// per-node form of the §3.4 unmeasurable-clock rule.
+    private func nodeElapsedSeconds(_ node: AVAudioPlayerNode?) -> Double? {
+        guard let node,
+              let nodeTime = node.lastRenderTime,
+              let playerTime = node.playerTime(forNodeTime: nodeTime) else { return nil }
+        return Double(playerTime.sampleTime) / playerTime.sampleRate
+    }
+
+    /// Captures the COMPLETING node's own position INSIDE a segment
+    /// completion callback — on the render thread, BEFORE the main hop.
+    /// By handler time the node may be stopped/retired and its clock gone;
+    /// the capture is the only trustworthy node reading. Nil = no node
+    /// evidence at handler time (the wall read or `.unmeasured` rules).
+    ///
+    /// The raw sampleTime is CONVERTED to the schedule's bias-bridged
+    /// timeline HERE (bias is schedule state — reading it at handler time
+    /// is wrong; `finalizeCrossfadeSwitch` and seeks rewrite it), so the
+    /// value rides the hop self-contained. `guard isPlaying` is
+    /// deliberately ABSENT: a completing node is about to stop the
+    /// engine's playing state, and the point is to read the clock exactly
+    /// once, at completion time.
+    private func captureNodeElapsed(for node: AVAudioPlayerNode?, bias: Double) -> Double? {
+        guard let raw = nodeElapsedSeconds(node) else { return nil }
+        return raw + bias
     }
 
     // MARK: - Scheduling internals
@@ -3559,6 +3583,13 @@ public final class NativeAudioEngine: NSObject {
     /// ESTIMATE (never the header claim) — the schedule contract. Growth is
     /// chained-segment extension; running out of delivered bytes is the
     /// buffering pause, never an advance.
+    ///
+    /// 1.2.41: the NATURAL path's completion rides `.dataPlayedBack` — it
+    /// fires after the last frame RENDERS, so the completion callback can
+    /// capture the node's own consumed-frame position AT (not ~1 s before)
+    /// the schedule end, eliminating the read-ahead slop the premature gate
+    /// previously epsilon-tolerated. The staged path keeps `.dataConsumed`
+    /// (chain bookkeeping must not lag one buffer behind).
     private func scheduleCurrentTrack(from seconds: Double, autoPlay: Bool) {
         // Never-judged until this schedule proves its own length: an early
         // return (not-ready, corrupt, zero-frame) must not leave the previous
@@ -3737,12 +3768,27 @@ public final class NativeAudioEngine: NSObject {
         // abort kept an exhausted node "playing" (silence, clock climbing
         // past the track end — the 1.2.28 wedge).
         let scheduledNode = player
+        // Schedule-timeline bias rides the capture (1.2.41): the node was
+        // stopped (timeline restarts at 0) and plays from `startFrame`, so
+        // the node's raw sampleTime is offset by THIS schedule's start
+        // position — the `from` seconds, which is exactly what positionBias
+        // is set to below. Capture the VALUE, not the variable: reading
+        // positionBias at fire time would race a seek/finalize rewrite.
+        let scheduledBias = seconds
         player.stop()
         // Both nodes are stopped now: apply speed/pitch/tape fields to the
         // units, which are only ever touched while nothing is rendering.
         refreshPlaybackParams()
-        player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(frames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
-            self?.handleSegmentCompletion(index: scheduledIndex, generation: generation, trackId: scheduledTrackId, node: scheduledNode)
+        // 1.2.41: the natural path's completion rides .dataPlayedBack — it
+        // fires after the last frame RENDERS (not when the data has merely
+        // been consumed into the node's read-ahead buffers), so the captured
+        // node position sits AT the schedule end. The premature gate's 1 s
+        // margin now guards real slop only. The staged/chained paths keep
+        // .dataConsumed: their completions are chain bookkeeping and must
+        // not wait on render tail (the buffering stall and the post-complete
+        // re-arm would lag one buffer behind).
+        player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(frames), at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            self?.handleSegmentCompletion(index: scheduledIndex, generation: generation, trackId: scheduledTrackId, node: scheduledNode, nodeEvidence: self?.captureNodeElapsed(for: scheduledNode, bias: scheduledBias))
         }
 
         hasLiveSchedule = true
@@ -4182,7 +4228,37 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
-    private func handleSegmentCompletion(index completedIndex: Int, generation: Int, trackId: String? = nil, node: AVAudioPlayerNode? = nil, standbyGenerationAtStart: Int? = nil, isStagedSegment: Bool = false) {
+    /// Node-truth evidence captured at the completion boundary (1.2.41):
+    /// the completing node's own player-timeline position read INSIDE the
+    /// completion callback, on the render thread, BEFORE the main hop —
+    /// by handler time the node may be stopped/retired and its clock gone.
+    /// This is the "consumed frames" truth: under `.dataPlayedBack` the
+    /// callback fires after the last frame RENDERS, so the reading sits at
+    /// the schedule's true end with no read-ahead-buffer slop (the exact
+    /// 1.0–1.1 s the 2026-09-25 dumps rode). Nil when the node's clock was
+    /// already unreadable at completion time — the wall read then decides.
+    private struct NodeEofEvidence {
+        /// Bias-bridged seconds on the schedule's own timeline
+        /// (sampleTime/sampleRate + the schedule's positionBias, captured
+        /// together so the value rides the hop self-contained).
+        let elapsedSeconds: Double
+    }
+
+    private func handleSegmentCompletion(index completedIndex: Int, generation: Int, trackId: String? = nil, node: AVAudioPlayerNode? = nil, nodeEvidence: NodeEofEvidence? = nil, standbyGenerationAtStart: Int? = nil, isStagedSegment: Bool = false) {
+        // The wall-clock read is taken NOW (main, handler entry): it is the
+        // fallback evidence, valid only while the clock is measurable.
+        let wallEvidence: (elapsed: Double, measured: Bool) = (max(0, currentPosition), isNodeTimeMeasured)
+        // ONE resolution for every gate and danger line below: node truth
+        // first, measured wall read second, .unmeasured otherwise. The
+        // completing node's own capture wins even when the wall read
+        // disagrees — the wall read reads the ACTIVE node (a mid-fade
+        // completing STANDBY is invisible to it) and rides positionBias,
+        // while the node capture is the completing node's own frames.
+        let evidence = DownloadSanity.completionEvidence(
+            nodeElapsedSeconds: nodeEvidence?.elapsedSeconds,
+            wallElapsedSeconds: wallEvidence.measured ? wallEvidence.elapsed : nil,
+            wallTimeMeasured: wallEvidence.measured,
+            totalSeconds: scheduledSegmentSeconds)
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             // STAGED chained-segment completions are classified FIRST (the
@@ -4260,8 +4336,11 @@ public final class NativeAudioEngine: NSObject {
                     let targetTrack = tracks.indices.contains(crossfade.targetIndex) ? tracks[crossfade.targetIndex] : nil
                     // D2: numbers on the standby-death abort (elapsed vs end —
                     // elapsed ≈ end means the active tail was already gone; that
-                    // shape dead-ends in the D1 watchdog, logged there).
-                    eventAdd(.danger, "engine", "abort-keep-active (standby died) current=\(currentTrackId) elapsed=\(String(format: "%.1f", max(0, currentPosition))) of \(String(format: "%.1f", scheduledSegmentSeconds)) target=\(targetTrack?.trackId ?? "-") — fades suppressed for this instance")
+                    // shape dead-ends in the D1 watchdog, logged there). The
+                    // evidence SOURCE rides the line (1.2.41): node truth vs
+                    // the wall fallback is the first thing a residual-gap dump
+                    // must be able to tell apart.
+                    eventAdd(.danger, "engine", "abort-keep-active (standby died) current=\(currentTrackId) elapsed=\(String(format: "%.1f", max(0, currentPosition))) of \(String(format: "%.1f", scheduledSegmentSeconds)) nodeElapsed=\(evidence.source == .nodeTimeline ? String(format: "%.1f", evidence.elapsedSeconds) : "nil") evidence=\(evidence.source) target=\(targetTrack?.trackId ?? "-") — fades suppressed for this instance")
                     self.abortCrossfadeKeepActive()
                     if let targetTrack {
                         loader.evict(targetTrack.trackId, variant: TrackVariant(url: targetTrack.url))
@@ -4292,7 +4371,6 @@ public final class NativeAudioEngine: NSObject {
                 // while a finalize is in progress (reentrancyGuard) to make
                 // the state crossing impossible rather than merely unlikely.
                 let elapsed = max(0, currentPosition)
-                let remaining = scheduledSegmentSeconds - elapsed
                 // 2026-09-25 (the two "caught a play halfway then restart" /
                 // "song plays a little and gets skipped" dumps): verdict and
                 // response are now separated. The 2026-09-21e abort premise —
@@ -4304,19 +4382,18 @@ public final class NativeAudioEngine: NSObject {
                 // segment end (on byte-COMPLETE streams — delivered ==
                 // announced, clean promotes, no early closes) → the lost
                 // completion → the D1 dead-air watchdog advancing ~3 s late.
-                // A NEAR-end shortfall (<= DownloadSanity.nearEndFinalize-
-                // EpsilonSeconds) is measurement slop, not truncation evidence
-                // — real truncations EOF minutes early — so it FINALIZES the
-                // switch: the already-ramped standby takes over and
-                // finalizeCrossfadeSwitch's own teardown drains the exhausted
-                // outgoing node. Genuinely SHORT bytes (remaining > epsilon)
+                // 1.2.41: the slop the epsilon absorbed is GONE — the standby
+                // completion now rides .dataPlayedBack (fires after the last
+                // frame RENDERS, no read-ahead slop) and the verdict judges
+                // the completing node's OWN consumed-frame position (captured
+                // in the callback before the main hop), so a genuine end
+                // reads remaining < 1.0 → the plain .finalize. The epsilon
+                // stays as defense-in-depth for the WALL-CLOCK fallback (node
+                // capture nil — e.g. a retired node), where buffer-depth slop
+                // is still real. Genuinely SHORT bytes (remaining > epsilon)
                 // keep the 2026-09-21e abort-keep-active, with the D1
                 // watchdog as the KNOWN owner of the lost end trigger.
-                let eofAction = DownloadSanity.midFadeActiveEofAction(
-                    elapsedSeconds: elapsed,
-                    totalSeconds: scheduledSegmentSeconds,
-                    remainingSeconds: remaining,
-                    timeMeasured: isNodeTimeMeasured)
+                let eofAction = DownloadSanity.midFadeActiveEofAction(evidence: evidence)
                 if reentrancyGuard > 0, eofAction != .finalize {
                     // The completion fired DURING a finalize — the crossed
                     // half-swapped state, not file evidence (the 09:55 dump
@@ -4329,6 +4406,8 @@ public final class NativeAudioEngine: NSObject {
                 }
                 let elapsedOneDp = String(format: "%.1f", elapsed)
                 let segmentOneDp = String(format: "%.1f", scheduledSegmentSeconds)
+                let evidenceStr = String(describing: evidence.source)
+                let nodeElapsedStr = evidence.source == .nodeTimeline ? String(format: "%.1f", evidence.elapsedSeconds) : "nil"
                 if eofAction == .abortKeepActive {
                     // 2026-09-21e (the 03:59 dump, the "went back to the
                     // previous song" report): the old response PAUSED +
@@ -4345,7 +4424,7 @@ public final class NativeAudioEngine: NSObject {
                     // no retry, no storm. (2026-09-25 correction: a one-shot
                     // completion never refires — the D1 watchdog, not a
                     // "genuine natural end", owns the advance from here.)
-                    eventAdd(.danger, "engine", "dropped premature completion of ACTIVE node mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — fade automation dropped, tail continues unattended (D1 watchdog owns a lost end past \(segmentOneDp)s)")
+                    eventAdd(.danger, "engine", "dropped premature completion of ACTIVE node mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) nodeElapsed=\(nodeElapsedStr) evidence=\(evidenceStr) — fade automation dropped, tail continues unattended (D1 watchdog owns a lost end past \(segmentOneDp)s)")
                     self.abortCrossfadeKeepActive()
                     return
                 }
@@ -4355,7 +4434,7 @@ public final class NativeAudioEngine: NSObject {
                     // path does, moved ~1 s earlier. The standby is already
                     // mid-ramp with full audio; a direct advance would race it
                     // (the 1.2.28 wedge's shape), so finalize is the switch.
-                    eventAdd(.info, "engine", "near-end active EOF mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — within epsilon: finalizing switch (abort would strand the one-shot completion into the D1 dead-air advance)")
+                    eventAdd(.info, "engine", "near-end active EOF mid-fade row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) nodeElapsed=\(nodeElapsedStr) evidence=\(evidenceStr) — within epsilon: finalizing switch (abort would strand the one-shot completion into the D1 dead-air advance)")
                 }
                 self.finalizeCrossfadeSwitch()
                 return
@@ -4385,7 +4464,7 @@ public final class NativeAudioEngine: NSObject {
                 // completion is ever eaten here (the 2026-09-23 wedge: silence
                 // past the end until a manual skip), this line carries the
                 // elapsed evidence that identifies it.
-                eventAdd(.danger, "engine", "dropped stale completion for row \(completedIndex) id=\(trackId ?? "-") (active row \(self.activeIndex) id \(self.currentTrackId)) elapsed=\(String(format: "%.1f", max(0, currentPosition))) of \(String(format: "%.1f", scheduledSegmentSeconds))")
+                eventAdd(.danger, "engine", "dropped stale completion for row \(completedIndex) id=\(trackId ?? "-") (active row \(self.activeIndex) id \(self.currentTrackId)) elapsed=\(String(format: "%.1f", max(0, currentPosition))) of \(String(format: "%.1f", scheduledSegmentSeconds)) nodeElapsed=\(evidence.source == .nodeTimeline ? String(format: "%.1f", evidence.elapsedSeconds) : "nil") evidence=\(evidence.source)")
                 return
             }
 
@@ -4399,22 +4478,20 @@ public final class NativeAudioEngine: NSObject {
             // chain the advance. The
             // reference is the segment the file was scheduled for (file
             // truth), NOT the metadata duration (a mis-tagged track must not
-            // false-drop). Judged only when the player clock is measurable —
-            // an unmeasurable clock means `currentPosition` fell back to the
-            // stale `cachedPosition`, which is not evidence. Drop the
+            // false-drop). Judged only when a clock is measurable (1.2.41:
+            // the completing node's OWN consumed-frame capture first — under
+            // .dataPlayedBack it reads AT the schedule end with no buffer
+            // slop; the §3.4 wall read second) — an unmeasurable wall read
+            // fell back to the stale `cachedPosition`, which is not evidence.
+            // Drop the
             // completion, report the error so JS's bounded retry re-fetches,
             // and silence the dead node (loop-one restarts otherwise loop a
             // half-audible file).
             let elapsed = max(0, currentPosition)
-            let remaining = scheduledSegmentSeconds - elapsed
-            if DownloadSanity.isPrematureCompletion(
-                    elapsedSeconds: elapsed,
-                    totalSeconds: scheduledSegmentSeconds,
-                    timeMeasured: isNodeTimeMeasured,
-                    remainingSeconds: remaining) {
+            if DownloadSanity.isPrematureCompletion(evidence: evidence) {
                 let elapsedOneDp = String(format: "%.1f", elapsed)
                 let segmentOneDp = String(format: "%.1f", scheduledSegmentSeconds)
-                eventAdd(.danger, "engine", "dropped premature completion for row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) — evicted for re-fetch")
+                eventAdd(.danger, "engine", "dropped premature completion for row \(completedIndex) id=\(currentTrackId) elapsed=\(elapsedOneDp) of \(segmentOneDp) nodeElapsed=\(evidence.source == .nodeTimeline ? String(format: "%.1f", evidence.elapsedSeconds) : "nil") evidence=\(evidence.source) — evicted for re-fetch")
                 // The gate required a measurable clock, so the pause is safe.
                 activeNode.pause()
                 setPlaying(false)
@@ -4611,6 +4688,11 @@ public final class NativeAudioEngine: NSObject {
     private func setupCrossfadeMonitor() {
         stopCrossfadeMonitor()
         guard crossfadeDuration > 0, isPlaying, loopMode != .one, !sleepAtTrackEnd, tracks.indices.contains(activeIndex) else { return }
+        // 1.2.41: the standby's end-of-fade completion rides .dataPlayedBack
+        // and the node's own captured position — the mid-fade gate's evidence
+        // is the completing node's consumed-frame truth, not the epsilon-
+        // tolerated wall read. A staged schedule's own chained completions
+        // stay .dataConsumed (chain bookkeeping, not gate evidence).
         // A15: a STAGED schedule's fade automation keys on its COMPLETENESS
         // (Phase 3 — `StreamSchedule.fadeEligibility`): while streaming, the
         // estimate under-promises (the fade window cannot cover the ramp and
@@ -4751,8 +4833,19 @@ public final class NativeAudioEngine: NSObject {
         // post-finalize natural end survives a mid-track index re-anchor.
         let standbyPlayer = standbyNode
         let standbyGenAtStart = standbyScheduleGeneration
-        standbyNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(file.length), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
-            self?.handleSegmentCompletion(index: nextIdx, generation: generation, trackId: nextTrack.trackId, node: standbyPlayer, standbyGenerationAtStart: standbyGenAtStart)
+        // Bias rides the capture (1.2.41): the standby was stopped (its
+        // timeline restarts at 0) and plays the TARGET from frame 0, so the
+        // node's raw sampleTime IS the target-timeline position — bias 0.
+        // `positionBias` describes the OUTGOING track's timeline (and is
+        // zeroed by finalize); using it would corrupt the conversion and
+        // could false-finalize a truncated target.
+        let fadeBias = 0.0
+        // 1.2.41: .dataPlayedBack + the node's own captured position — the
+        // mid-fade gate judges the completing node's consumed-frame truth
+        // (≈ the schedule end, no read-ahead slop) instead of an
+        // epsilon-tolerated wall read.
+        standbyNode.scheduleSegment(file, startingFrame: 0, frameCount: AVAudioFrameCount(file.length), at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            self?.handleSegmentCompletion(index: nextIdx, generation: generation, trackId: nextTrack.trackId, node: standbyPlayer, nodeEvidence: self?.captureNodeElapsed(for: standbyPlayer, bias: fadeBias), standbyGenerationAtStart: standbyGenAtStart)
         }
         standbyNode.play()
 
@@ -4864,7 +4957,9 @@ public final class NativeAudioEngine: NSObject {
 
         activeIndex = targetIndex
         // The former standby's completion is this track's natural-end trigger
-        // and flows through the premature-completion gate — recompute the
+        // and flows through the premature-completion gate (1.2.41: judged on
+        // the .dataPlayedBack node capture this finalize itself is riding) —
+        // recompute the
         // segment reference for the NEW track (scheduleCurrentTrack never ran
         // for it; the outgoing track's value would misjudge the end).
         if let url = loader.localURL(for: tracks[activeIndex]),
