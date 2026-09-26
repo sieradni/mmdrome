@@ -27,7 +27,8 @@
           "date": "2026-09-26T11:26:55.697Z",
           "localizedDescription": "Relink orphaned pending edits after Navidrome id migrations; Push names every track and can discard edits; smarter file re-binding.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.42/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5055767
         },
         {
           "version": "1.2.41",
