@@ -207,6 +207,7 @@ test('tier 1: fresh tracks fill first; the user-queued track is excluded', () =>
   assert.deepEqual(plan.pool.map((t) => t.trackId), ['t2', 't3', 't4', 't5', 't6'], 'user-queued t1 excluded (activeId + tier 1)')
   assert.equal(plan.shuffle, true)
   assert.equal(plan.wrapNotice, false)
+  assert.deepEqual(plan.tiers, { 1: ['t2', 't3', 't4', 't5', 't6'], 2: [], 3: [] }, 'all fresh admits are tier 1')
 })
 
 test('tier 2 admits cooling-down tracks when the fresh pool is short', () => {
@@ -214,6 +215,7 @@ test('tier 2 admits cooling-down tracks when the fresh pool is short', () => {
   const plan = planAutoQueueFill(state({ library: ts, recentTrackIds: ['t4', 't5'], shuffle: true }), 50, { keepAuto: true })
   // tier1 = t1,t2,t3,t6 (t4,t5 cooling); tier2 appends t4,t5 in library order.
   assert.deepEqual(plan.pool.map((t) => t.trackId), ['t1', 't2', 't3', 't6', 't4', 't5'])
+  assert.deepEqual(plan.tiers, { 1: ['t1', 't2', 't3', 't6'], 2: ['t4', 't5'], 3: [] })
 })
 
 test('tier 3 recycles user-queued + recent tracks and excludes the active id (B4)', () => {
@@ -231,6 +233,7 @@ test('tier 3 recycles user-queued + recent tracks and excludes the active id (B4
   // tier2 = t3,t4; tier3 = t1 (user-queued recycling); t2 (activeId) never re-enters.
   assert.deepEqual(plan.kept, ['t2'])
   assert.deepEqual(plan.pool.map((t) => t.trackId), ['t5', 't6', 't3', 't4', 't1'])
+  assert.deepEqual(plan.tiers, { 1: ['t5', 't6'], 2: ['t3', 't4'], 3: ['t1'] })
 })
 
 test('kept is pruned when filters tighten, and the queue-full early return skips the pool', () => {
@@ -240,6 +243,7 @@ test('kept is pruned when filters tighten, and the queue-full early return skips
   // the playing track — activeId excludes it from the rotation tier).
   const loose = planAutoQueueFill(state({ library: ts, userQueue: ['t1'], meta, activeId: 't1' }), 50, { keepAuto: true })
   assert.deepEqual(loose.pool.map((t) => t.trackId), ['t2', 't3', 't4', 't5', 't6'])
+  assert.deepEqual(loose.tiers[1], ['t2', 't3', 't4', 't5', 't6'], 'default filters: everything fresh is tier 1')
   // Tighten to minRating 50: only t2 (rating 80) matches — kept = [t2], pool empty.
   const tight = planAutoQueueFill(state({ library: ts, userQueue: ['t1'], autoQueue: ['t2', 't3', 't4', 't5', 't6'], meta, activeId: 't1', filters: filters({ minRating: 50 }) }), 50, { keepAuto: true })
   assert.deepEqual(tight.kept, ['t2'])

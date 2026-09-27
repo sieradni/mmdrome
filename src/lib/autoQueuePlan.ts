@@ -43,6 +43,15 @@ export interface AutoQueueFillPlan {
   shuffle: boolean
   /** The non-shuffle rotation wrapped back to the top of the sort order (queueWrapNotice). */
   wrapNotice: boolean
+  /**
+   * Per-TIER membership at pool-build time (2026-09-27): which stage admitted
+   * each candidate — tier 1 fresh / tier 2 cool-down / tier 3 rotation.
+   * Diagnostic only: the manager mirrors it into `queueProvenance` for the
+   * HUD Copy dump (a tier-3-heavy dump is the exhausted-pool signature).
+   * Stage arrays are DISJOINT; the anchor rotation reorders but never moves
+   * rows between stages, so the tiering stays valid for the sliced fill.
+   */
+  tiers: { 1: string[]; 2: string[]; 3: string[] }
 }
 
 /**
@@ -198,32 +207,39 @@ export function planAutoQueueFill(
     if (kept.length >= needed) {
       // Queue already full of matching tracks — nothing to fill, and an empty
       // pool means wrapNotice stays false (parity with the old early return).
-      return { kept, pool: [], shuffle: false, wrapNotice: false }
+      return { kept, pool: [], shuffle: false, wrapNotice: false, tiers: { 1: [], 2: [], 3: [] } }
     }
   }
 
   // Tier 1: fresh — matching, not queued anywhere, not cooling down.
   let pool = lib.filter((t) => matches(t) && !inUser.has(t.trackId) && !inAuto.has(t.trackId) && !recent.has(t.trackId))
+  const tier1 = pool.map((t) => t.trackId)
   // Tier 2: top-up — cooling-down tracks, admitted when the fresh pool is short.
+  let tier2: string[] = []
   if (pool.length < needed) {
-    pool = pool.concat(lib.filter((t) => matches(t) && !inUser.has(t.trackId) && !inAuto.has(t.trackId) && recent.has(t.trackId)))
+    const tier2Rows = lib.filter((t) => matches(t) && !inUser.has(t.trackId) && !inAuto.has(t.trackId) && recent.has(t.trackId))
+    tier2 = tier2Rows.map((t) => t.trackId)
+    pool = pool.concat(tier2Rows)
   }
   // Tier 3: rotation — every matching track not already sitting in the auto
   // queue and not the actively playing one. Deliberately admits user-queued
   // and recent tracks (B4): the session recycles instead of the queue dying.
+  let tier3: string[] = []
   if (pool.length < needed) {
     const poolIds = new Set(pool.map((t) => t.trackId))
-    pool = pool.concat(lib.filter((t) => matches(t) && !inAuto.has(t.trackId) && t.trackId !== activeId && !poolIds.has(t.trackId)))
+    const tier3Rows = lib.filter((t) => matches(t) && !inAuto.has(t.trackId) && t.trackId !== activeId && !poolIds.has(t.trackId))
+    tier3 = tier3Rows.map((t) => t.trackId)
+    pool = pool.concat(tier3Rows)
   }
 
   if (pool.length > 0) {
     if (shuffle) {
-      return { kept, pool, shuffle: true, wrapNotice: false }
+      return { kept, pool, shuffle: true, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
     }
     const orderRank = buildOrderRank(lib, sort, meta)
     pool.sort((a, b) => (orderRank.get(a.trackId) ?? 0) - (orderRank.get(b.trackId) ?? 0))
     const rotated = rotateAfterAnchor(pool, orderRank, userQueue[userQueue.length - 1])
-    return { kept, pool: rotated.pool, shuffle: false, wrapNotice: rotated.wrapNotice }
+    return { kept, pool: rotated.pool, shuffle: false, wrapNotice: rotated.wrapNotice, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
   }
-  return { kept, pool, shuffle: false, wrapNotice: false }
+  return { kept, pool, shuffle: false, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
 }

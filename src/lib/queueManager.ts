@@ -3,6 +3,7 @@ import { saveQueue } from './db'
 import { libraryFilters } from './libraryFilters'
 import { planAutoQueueFill, type AutoQueuePlanState } from './autoQueuePlan'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
+import { syncFillProvenance } from './queueProvenance'
 import * as queueMutation from './queueMutation'
 import {
   queue,
@@ -341,6 +342,12 @@ class QueueManager {
     const fillIds = fill.map((t) => t.trackId)
     queue.update((q) => {
       const updated = { ...q, autoQueue: [...plan.kept, ...fillIds] }
+      // Fill provenance (2026-09-27): mirror the plan's tier membership for
+      // the HUD Copy dump. Inside the store update so the map always matches
+      // the WRITTEN queue, never a racy pre-update snapshot. The plan's tier
+      // arrays cover every candidate; only the SLICED fillIds land here, and
+      // syncFillProvenance keeps kept-prefix rows on their older tier.
+      syncFillProvenance(updated.autoQueue, plan.tiers)
       saveQueue(updated)
       return updated
     })
@@ -357,6 +364,7 @@ class QueueManager {
 
     queue.update((q) => {
       const updated = { ...q, autoQueue: fillIds }
+      syncFillProvenance(updated.autoQueue, plan.tiers)
       saveQueue(updated)
       return updated
     })

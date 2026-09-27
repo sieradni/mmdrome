@@ -140,6 +140,118 @@ test('promoteActiveTrack works in the transition window (active row deep in auto
   assert.equal(r.activeIndex, 1)
 })
 
+// --- repeat-collapse forward re-anchor (2026-09-27) --------------------------
+// A tier-3 duplicate of an already-played row collapses on promote: the auto
+// copy is consumed and NO new user append happens (the id already has a pile
+// slot). The old id-based re-anchor then found the OLD pile copy and the
+// playhead teleported mid-queue — the next advance replayed the pile in
+// first-play order (the "queue goes back and plays in the same order" bug).
+// The re-anchor must land FORWARD on the surviving auto continuation.
+
+test('promoteActiveTrack repeat-collapse re-anchors FORWARD to the auto continuation (history-replay regression)', () => {
+  // Pile [a,b,c,d,e] (played earlier); auto [b-copy, x, y]; b-copy plays.
+  // Old behavior: anchor teleported to pile slot 1 (b) → advance replayed
+  // c,d,e in first-play order. New: anchor = x (the auto continuation).
+  const s = q(['a', 'b', 'c', 'd', 'e'], ['b', 'x', 'y'], 5)
+  const r = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
+  assert.deepEqual(r.userQueue, ['a', 'b', 'c', 'd', 'e'], 'pile untouched')
+  assert.deepEqual(r.autoQueue, ['x', 'y'], 'consumed prefix gone, tail intact')
+  assert.equal(r.activeIndex, 5, 'anchor = the continuation row x (combined index 5), not pile slot 1')
+  assert.equal(combined(r)[r.activeIndex], 'x')
+})
+
+test('promoteActiveTrack repeat-collapse with no surviving tail anchors past the end (refill path)', () => {
+  // Pile [a,b,c]; auto [c-copy]; c-copy plays → nothing survives after it.
+  // Anchor lands one past the end (the removeFromUserQueue active-last
+  // semantics): the next advance falls into the end-of-queue refill path.
+  const s = q(['a', 'b', 'c'], ['c'], 3)
+  const r = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
+  assert.deepEqual(r.userQueue, ['a', 'b', 'c'])
+  assert.deepEqual(r.autoQueue, [])
+  assert.equal(r.activeIndex, 3, 'one past the combined end')
+  assert.ok(r.activeIndex >= combined(r).length)
+})
+
+test('a repeat play never rewinds: chained auto plays with a collapsed duplicate keep moving forward', () => {
+  // The end-to-end shape from the field dump: steady auto playback, a tier-3
+  // duplicate fires mid-tail, then playback continues — the anchor must never
+  // point at (or behind) any already-played row. Full cycle per track:
+  // advance (advanceTargetIndex) → load/play → promote.
+  let s = q(['a', 'b', 'c'], ['d', 'b', 'e', 'f'], 3) // d playing (auto[0]), anchor on d
+  // d promotes (normal): pile tail append:
+  s = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
+  assert.deepEqual(s.userQueue, ['a', 'b', 'c', 'd'])
+  assert.deepEqual(s.autoQueue, ['b', 'e', 'f'])
+  assert.equal(combined(s)[s.activeIndex], 'd')
+  // d ends → advance lands on b-copy (combined[4]); it loads + plays, then
+  // promotes → COLLAPSE: anchor must be e (the continuation), never pile b.
+  s = { ...s, activeIndex: advanceTargetIndex(s, combined(s), 'd') }
+  s = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
+  assert.deepEqual(s.userQueue, ['a', 'b', 'c', 'd'], 'pile untouched by the collapse')
+  assert.deepEqual(s.autoQueue, ['e', 'f'])
+  assert.equal(combined(s)[s.activeIndex], 'e', 'anchor is the continuation, never pile b')
+  // b ends → advance: the playing row (b) is gone from the queue, so
+  // advanceTargetIndex returns activeIndex itself — e IS the next row, no
+  // skip, no rewind. e loads + promotes normally:
+  s = { ...s, activeIndex: advanceTargetIndex(s, combined(s), 'b') }
+  s = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
+  assert.equal(combined(s)[s.activeIndex], 'e')
+  assert.deepEqual(s.autoQueue, ['f'])
+  // e ends → advance +1 → f loads + promotes:
+  s = { ...s, activeIndex: advanceTargetIndex(s, combined(s), 'e') }
+  s = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
+  assert.equal(combined(s)[s.activeIndex], 'f')
+  assert.deepEqual(s.autoQueue, [])
+})
+
+/** Simulates a long hands-off auto-queue session over `auto` (which may
+ *  contain tier-3 duplicates of `pile`): per track it runs the real sequence
+ *  — advanceQueue's `advanceTo(activeIndex+1)`, then the post-load
+ *  `promoteActiveTrack`. Asserts the played sequence equals the AUTO ORDER
+ *  exactly (no pile row is ever replayed — the history-replay bug) and that
+ *  the anchor after every promote sits on the just-appended pile tail (normal
+ *  promote) or on the surviving auto continuation (collapse) — never on an
+ *  old pile row. Duplicates collapse; `dupCount` is asserted at the end. */
+function simulateAutoSession(pile: string[], auto: string[]): { played: string[]; dupCount: number } {
+  const pileSet = new Set(pile)
+  let s = q(pile, auto, pile.length - 1) // anchor on the last pile row (playing)
+  const played: string[] = []
+  let dupCount = 0
+  let playingId: string | undefined = pile[pile.length - 1]
+  for (let i = 0; i < auto.length; i++) {
+    // advanceQueue: the playing-track-aware target — after a collapse the
+    // vanished playing row makes advanceTargetIndex return activeIndex
+    // itself (the continuation plays next); otherwise +1.
+    const target = advanceTargetIndex(s, combined(s), playingId)
+    s = { ...s, activeIndex: target }
+    const id = combined(s)[s.activeIndex]
+    if (id === undefined) break // queue exhausted (anchor past the end)
+    played.push(id)
+    const wasDup = pileSet.has(id)
+    if (wasDup) dupCount++
+    const next = applyQueueMutation(s, (x) => promoteActiveTrack(x))
+    assert.ok(next, `promote returned null at step ${i} (playing ${id})`)
+    s = next
+    playingId = id
+    if (wasDup && auto[i + 1] !== undefined) {
+      assert.equal(combined(s)[s.activeIndex], auto[i + 1], `collapse anchor should be the continuation ${auto[i + 1]} (step ${i})`)
+    }
+  }
+  return { played, dupCount }
+}
+
+test('long hands-off auto session with interleaved duplicates never replays history', () => {
+  // Pile a–j played earlier. Auto: 8 rows with 3 tier-3 duplicates (c, f, a).
+  const auto = ['k', 'c', 'l', 'm', 'f', 'n', 'a', 'o']
+  const pile = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j']
+  const { played, dupCount } = simulateAutoSession(pile, auto)
+  assert.equal(dupCount, 3, 'the three duplicates collapsed')
+  // THE invariant: what played = the auto order, verbatim — the pile (a–j)
+  // is never re-entered, and no auto row repeats. The old bug would have
+  // replayed c,d,e,... (first-play order) after the first collapse.
+  assert.deepEqual(played, auto)
+})
+
 test('promoteActiveTrack is a no-op when the active row is not in auto', () => {
   const s = q(['a', 'b'], ['c'], 1)
   assert.equal(applyQueueMutation(s, (x) => promoteActiveTrack(x)), null)

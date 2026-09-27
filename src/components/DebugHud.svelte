@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { Capacitor } from '@capacitor/core'
   import { get } from 'svelte/store'
-  import { currentTrack, playbackState, queue, currentTime, effectiveDuration, settings, library } from '../stores/appState'
+  import { currentTrack, playbackState, queue, currentTime, effectiveDuration, settings, library, loopMode, shuffleEnabled } from '../stores/appState'
   import { effectiveLowData, networkStatusStore } from '../lib/networkMode'
   import { transcodeParams } from '../lib/transcodePolicy'
   import { getCachedConfig } from '../lib/navidromeApi'
@@ -20,6 +20,7 @@
     setEnabledDomains,
   } from '../lib/debugLog'
   import { thumbLoaderDebugSnapshot } from '../lib/thumbLoader'
+  import { fillProvenanceGroups } from '../lib/queueProvenance'
   import { coverStatsSummary } from '../lib/coverStats'
   import { audioManager } from '../lib/audioManager'
 
@@ -209,6 +210,17 @@
         combinedLen: [...q.userQueue, ...q.autoQueue].length,
         userQueueLen: q.userQueue.length,
         autoQueueLen: q.autoQueue.length,
+        // Queue-model decision flags (2026-09-27): the first thing any
+        // queue-replay report needs — loop-all wrap vs teleport vs fill
+        // exhaustion are indistinguishable in a dump without these.
+        loopMode: get(loopMode),
+        shuffleEnabled: get(shuffleEnabled),
+        // Fill tier provenance (2026-09-27): which auto-queue tier (1 fresh /
+        // 2 cool-down / 3 rotation) admitted each current auto row at its most
+        // recent fill, in queue order; `unknown` = entered the auto section
+        // without a fill (Dexie restore, drag-convert). A tier-3-heavy dump is
+        // the exhausted-pool signature. Read-only diagnostic mirror.
+        queueProvenance: fillProvenanceGroups(q.autoQueue),
         activeId: q.activeIndex >=0 ? [...q.userQueue, ...q.autoQueue][q.activeIndex] : null,
         librarySize: lib.length,
         isNative: Capacitor.isNativePlatform(),
