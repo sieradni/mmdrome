@@ -27,7 +27,8 @@
           "date": "2026-09-29T07:53:45.264Z",
           "localizedDescription": "Thumbnail fast paths: covers snap in instantly with no fade, cached regions load at decode speed, and every virtualized surface now keeps two screens of off-screen buffer so slow scrolls find covers already loaded.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.44/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5058233
         },
         {
           "version": "1.2.43",
