@@ -27,7 +27,8 @@
           "date": "2026-09-29T09:08:25.557Z",
           "localizedDescription": "Queue fixes: row taps play the right song again, the now-playing indicator is back, drag to reorder works, scrolling no longer slides, and jump-to-current works from anywhere in the queue. The empty now-playing island opens the player too.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.45/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5056804
         },
         {
           "version": "1.2.44",
