@@ -27,7 +27,8 @@
           "date": "2026-09-29T05:41:52.673Z",
           "localizedDescription": "Virtualized scrolling across every library surface: Songs, the Albums and Artists grids with their detail lists, and the Queue now render fixed windows, which fixes scroll jank and makes covers load instantly on large libraries. Also smoother queue re-anchoring on repeat plays.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.43/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5058166
         },
         {
           "version": "1.2.42",
