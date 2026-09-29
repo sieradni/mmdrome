@@ -29,9 +29,13 @@
  */
 
 /** Rows rendered beyond each viewport edge. Absorbs momentum travel and
- *  covers IO pre-roll duty (the old 2000 px margin ≈ 36 rows at 56 px —
- *  8 full rows bounds the same purpose without invisible waste). */
-export const OVERSCAN_ROWS = 8
+ *  covers pre-roll duty for the loader's band lane. Widened 8 → 20
+ *  (2026-09-29, the "more buffer off-screen" request): ~2 viewports of
+ *  mounted lead on a phone, so the paced band lane has real depth to fill
+ *  and a slow scroll finds covers already armed. Cost is bounded: ~50 rows
+ *  mounted (viewport + 2×20) against a MAX_WINDOW_ROWS of 120, and the
+ *  loader lanes — not the window — still own the fetch rate. */
+export const OVERSCAN_ROWS = 20
 
 /** Hard cap on rendered rows. Only engages when the viewport is enormous
  *  relative to the row estimate (e.g. the mean collapsed to MIN_ROW_H on a

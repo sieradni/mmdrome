@@ -82,10 +82,12 @@ test('albums grid mounts a bounded window at the top', async ({ page }) => {
   await page.getByRole('button', { name: 'Albums', exact: true }).click()
   const header = page.locator('h2', { hasText: 'Albums · ' })
   await expect(header).toHaveText(`Albums · ${ALBUMS}`, { timeout: 20_000 })
-  // Bounded: 2–5 columns × a handful of rows, never the whole 210.
+  // Bounded: 2–5 columns × a handful of rows, never the whole 210. The
+  // FIXED-K window grew with the 2026-09-29 overscan widening (4 → 6 rows):
+  // K = viewport rows + 2×6 ≈ 16 rows × 5 cols ≈ 80 cells.
   const cells = await mountedCells(page, 'data-album')
   expect(cells).toBeGreaterThan(4)
-  expect(cells).toBeLessThanOrEqual(60)
+  expect(cells).toBeLessThanOrEqual(90)
 })
 
 test('albums grid teleport lands the last album with a bounded window', async ({ page }) => {
@@ -99,7 +101,7 @@ test('albums grid teleport lands the last album with a bounded window', async ({
   const last = page.locator('[data-album]').last()
   await expect(last).toHaveAttribute('data-album', /Album 0209/)
   const cells = await mountedCells(page, 'data-album')
-  expect(cells).toBeLessThanOrEqual(60)
+  expect(cells).toBeLessThanOrEqual(90)
 })
 
 test('artists grid windows the same way', async ({ page }) => {
@@ -109,7 +111,7 @@ test('artists grid windows the same way', async ({ page }) => {
   await expect(header).toHaveText(`Artists · ${ALBUMS}`, { timeout: 20_000 })
   const cells = await mountedCells(page, 'data-artist')
   expect(cells).toBeGreaterThan(4)
-  expect(cells).toBeLessThanOrEqual(60)
+  expect(cells).toBeLessThanOrEqual(90)
   await scrollToGridBottom(page)
   await page.waitForTimeout(400)
   // Artists sort alphabetically — the last cell is the alphabetically last

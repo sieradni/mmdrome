@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { coverLadderUrls, microCoverUrl } from '../lib/coverArtCache'
+  import { coverLadderUrls, microCoverUrl, hasCoverBeenLoaded, noteCoverLoaded } from '../lib/coverArtCache'
   import { coverConfig } from '../lib/navidromeApi'
   import { requestThumb, cancelThumb } from '../lib/thumbLoader'
   import { effectiveLowData } from '../lib/networkMode'
@@ -20,17 +20,19 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
   let blurMicro = $derived(size >= 256)
 
   let visible = $state(false)
-  /** The loader's cached-lane claim at arm time (the revisit-after-unlatch
-   *  case: the cover is an immutable HTTP-cache hit, near-instant). Cached
-   *  arms skip the micro placeholder entirely AND mount the main img at full
-   *  opacity — a 300 ms fade-in on an instantly-available cover was a tax on
-   *  exactly the scroll-back scenario the cached lane exists to make instant. */
+  /** The loader's cached-lane claim at arm time: the cover URL already loaded
+   *  successfully this SESSION (coverArtCache's loaded-URL memory — component
+   *  lifetime ended at the last virtual-window unmount, so component-lifetime
+   *  memory could never claim a remounted row). Cached arms skip the micro
+   *  wash REQUEST entirely and reveal on the main's own onload — on a fast
+   *  connection that is decode-latency only. */
   let armedCached = $state(false)
-  /** Fast-reveal (flow review): a main cover that loads within FAST_REVEAL_MS
-   *  of arming (HTTP-cache hit after an app restart — lastLoadedUrl is
-   *  component-lifetime, so such revisits arm as "fresh") skips the crossfade
-   *  and appears instantly. Slow network loads keep the wash + fade. */
-  let fastLoaded = $state(false)
+  /** Reveal gate for the MAIN cover, flipped by the main img's OWN onload —
+   *  never by the micro's. (The micro usually arrives first; the old shared
+   *  flag started the crossfade before the main existed, washing out to a
+   *  blank row — the "blurry for the last 0.05 s" report.) The wash persists
+   *  statically under the pending main; the swap is instant. */
+  let mainLoaded = $state(false)
   let container: HTMLDivElement
 
   // Far-window unlatch (2026-09-17j, the "scrollbar-style jump broke covers"
@@ -69,21 +71,7 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
     cancelThumb(container)
   }
 
-  /** The URL whose <img> last fired a successful LOAD. The loader's cached
-   *  lane claim is derived from it (currentUrl === lastLoadedUrl): a revisit
-   *  after unlatch re-requests the SAME URL — an immutable-cover HTTP-cache
-   *  hit, no network — so the loader arms it at frame cadence instead of
-   *  pacing it behind fresh rows (paced free operations were the pop-in).
-   *  Any identity change (track, config, LDM size) produces a different
-   *  currentUrl, which invalidates the claim with zero bookkeeping; a FAILED
-   *  url never sets it (onload only), so an error retry re-arms as fresh. */
-  let lastLoadedUrl: string | null = null
-
   const fallbackIcon = `${import.meta.env.BASE_URL}icon-192.png`
-
-  /** A main cover that onloads this soon after arming reveals instantly (no
-   *  300 ms fade) — the post-restart HTTP-cache-hit case. */
-  const FAST_REVEAL_MS = 150
 
   /** Cover-stats feed (P6): every LazyThumb is a cover render point, so it
    *  records outcomes into the pure ring (tests/coverStats.test.ts) — the
@@ -135,10 +123,10 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
   // Blurred micro-rendition placeholder: a ~1–2 KB `size=32` rendition painted
   // blurred+enlarged UNDER the real image, so an armed row shows the cover's
   // color wash immediately instead of a flat surface while the real rendition
-  // downloads (slow LAN / cold server resize cache). Hidden once the real
-  // image fires onload — a failed micro is simply not shown (the failure
-  // ladder below still governs the real attempts).
-  let microLoaded = $state(false)
+  // downloads (slow LAN / cold server resize cache). The wash renders at a
+  // STATIC opacity while the main img is pending and unmounts the moment the
+  // main's own onload flips `mainLoaded` — a failed micro is simply not shown
+  // (the failure ladder below still governs the real attempts).
   let microFailed = $state(false)
   let microUrl = $derived.by(() => {
     if (!track || !coverCfg) return null
@@ -160,20 +148,40 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
     // Record exactly the size the ladder was built with: on a deferred
     // downgrade that is the OLD size (a no-op — the defer holds); on an
     // upsize/first-load it is the new wanted size.
+    // READS ONLY ladder/renderTarget: this effect must NEVER read currentUrl —
+    // reading it re-runs the wipe on every failure step-down (currentUrl is
+    // derived from attemptIndex/failedUrls, which this effect writes), and the
+    // wipe re-opens the step the error just closed — an infinite refetch loop
+    // (2650 cover requests in 8 s against a failing-cover mock, 2026-09-29).
     void ladder
     renderedSize = renderTarget
     failedUrls = new Set()
     attemptIndex = 0
-    // The placeholder underlay belongs to the SAME identity — a new track's
-    // micro rendition (or a failed one) must never bleed into the next row.
-    microLoaded = false
-    microFailed = false
-    armedCached = false
-    fastLoaded = false
   })
 
-  /** Arm timestamp for the fast-reveal window (set by the request observer's
-   *  arm callback — NOT component init, or pre-roll time would count). */
+  // The REVEAL state resets only on a genuine URL change, in its OWN effect:
+  // the micro carries no onload of its own anymore (it is never the reveal
+  // trigger), so a same-URL re-run — a config-store identity churn, a ladder
+  // array rebuild — that wiped `mainLoaded` would leave a LOADED cover washed
+  // forever (nothing would re-fire onload to re-reveal it). A URL change
+  // (identity, LDM, or a failure step-down) re-arms the wash and the reveal
+  // gate legitimately: the new src fires its own onload.
+  $effect(() => {
+    if (currentUrl !== lastRevealUrl) {
+      lastRevealUrl = currentUrl
+      microFailed = false
+      armedCached = false
+      mainLoaded = false
+    }
+  })
+
+  /** The URL the reveal state was last reset for — the change-detector that
+   *  keeps same-URL effect re-runs from washing a loaded cover. */
+  let lastRevealUrl: string | null = null
+
+  /** Arm timestamp for the cover-stats loadMs (set by EVERY arm callback —
+   *  the IO path and the windowed loader path alike; NOT component init, or
+   *  pre-roll time would count). */
   let armedAt = 0
 
   // Gesture-time DOM freeze (2026-09-28, the "songs tab lags when scrolling"
@@ -215,13 +223,23 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
     // bounds stray entries. Covers arm on mount, re-arm on any identity
     // change via the reset effect, and cancel on unmount below.
     if (windowed) {
-      visible = true
+      // Route the arm through the loader LANES (2026-09-28 ship review): the
+      // parent window owns VISIBILITY (a mounted row is by definition in the
+      // window), but the loader owns PACING — tier priority, the band
+      // trickle, and the mid-gesture stability gate. The direct
+      // `visible = true` arm bypassed all of it: every window mount fired its
+      // requests immediately, mid-fling included, re-creating the landing
+      // firehose one layer down (the >3 s cached-landing report). Cached
+      // claims (session memory) ride the frame-cadence cached lane.
+      const cached = hasCoverBeenLoaded(currentUrl)
+      armedCached = cached
+      requestThumb(container, () => { visible = true; armedAt = performance.now() }, cached)
       return () => cancelThumb(container)
     }
     const req = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && !visible) {
-          const cached = currentUrl !== null && currentUrl === lastLoadedUrl
+          const cached = hasCoverBeenLoaded(currentUrl)
           armedCached = cached
           requestThumb(container, () => { visible = true; armedAt = performance.now() }, cached)
         }
@@ -308,35 +326,36 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
 
 <div bind:this={container} class="{wrapperClass} relative overflow-hidden bg-surface-hover">
   {#if visible}
-    <!-- Micro-rendition underlay: sits BEHIND the real image and fades OUT
-         over the same 300 ms the real image fades IN — a crossfade, not a
-         pop. Stays mounted for the identity's lifetime (removal would churn
-         the DOM and cut the fade short). -->
-    {#if microUrl && !microFailed && !armedCached}
+    {#if currentUrl && microUrl && !microFailed && !armedCached && !mainLoaded}
+      <!-- Micro-rendition wash: sits BEHIND the pending main at a STATIC
+           opacity — no fade either direction (the user's explicit call: the
+           cover snaps in the moment its pixels exist; the wash IS the loading
+           progression). Unmounts in the same frame the main's own onload
+           flips mainLoaded — no crossfade, no blank gap between the two. -->
       <img
         src={microUrl}
         alt=""
-        class="absolute inset-0 h-full w-full object-cover transition-opacity duration-300 {microLoaded ? 'opacity-0' : 'opacity-60'} {blurMicro ? 'scale-110 blur-xl' : ''}"
+        class="absolute inset-0 h-full w-full object-cover opacity-60 {blurMicro ? 'scale-110 blur-xl' : ''}"
         decoding="async"
         onerror={() => { microFailed = true; coverStatsRecord({ role: 'micro', size: 0, ladderStep: 0, loadMs: null, outcome: 'micro-failed' }) }}
-        onload={() => { microLoaded = true }}
       />
     {/if}
     {#if currentUrl}
-      <!-- No loading="lazy": scheduling is OWNED by the IO pre-roll + thumbLoader
-           queue, and the browser's own lazy threshold (small on iOS Safari) would
-           re-defer cells armed early — fighting the pre-roll. -->
+      <!-- No loading="lazy": scheduling is OWNED by the thumbLoader lanes,
+           and the browser's own lazy threshold (small on iOS Safari) would
+           re-defer cells armed early — fighting the lane plan. NO opacity
+           transition (2026-09-29 user call — do NOT reintroduce one): the
+           reveal gate below IS the loading state. -->
       <img
         src={currentUrl}
         alt=""
-        class="h-full w-full object-cover {fastLoaded ? '' : 'transition-opacity duration-300'} {microUrl && !microLoaded && !armedCached ? 'opacity-0' : 'opacity-100'}"
+        class="h-full w-full object-cover {mainLoaded ? 'opacity-100' : 'opacity-0'}"
         decoding="async"
         onerror={handleImgError}
         onload={() => {
-          lastLoadedUrl = currentUrl
-          microLoaded = true
+          noteCoverLoaded(currentUrl)
+          mainLoaded = true
           const loadMs = performance.now() - armedAt
-          if (loadMs < FAST_REVEAL_MS) fastLoaded = true
           // armedAt is set in the SAME arm callback that flips `visible`, so
           // a pre-arm load is impossible; the floor guards a reset-order edge.
           if (loadMs >= 0) noteMainCover(attemptIndex, loadMs, 'ok')

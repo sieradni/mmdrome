@@ -8,7 +8,7 @@
 
 import { test, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { coverLadderUrls, COVER_FALLBACK_SIZES, getCoverUrl } from '../src/lib/coverArtCache'
+import { coverLadderUrls, COVER_FALLBACK_SIZES, getCoverUrl, noteCoverLoaded, hasCoverBeenLoaded, LOADED_URL_MEMORY_CAP } from '../src/lib/coverArtCache'
 import type { Track } from '../src/stores/appState'
 import type { NavidromeConfig } from '../src/lib/navidromeApi'
 
@@ -68,4 +68,48 @@ test('a re-sync that changes the art hash produces a DIFFERENT URL (stale-key fi
   const before = getCoverUrl(hashTrack('0123456789abcdef'), cfg, 128)
   const after = getCoverUrl(hashTrack('fedcba9876543210'), cfg, 128)
   assert.notEqual(before, after, 'the hash suffix is part of the URL — a re-tagged cover cannot serve the stale pre-change URL')
+})
+
+// --- Session loaded-URL memory (the windowed cached-lane claim) -------------
+
+test('a noted cover URL reports as loaded for the rest of the session', () => {
+  const u = getCoverUrl(track('mem-1'), cfg, 128)
+  assert.equal(hasCoverBeenLoaded(u), false, 'unknown URLs are never claimed cached')
+  noteCoverLoaded(u)
+  assert.equal(hasCoverBeenLoaded(u), true, 'a noted URL is a cached revisit')
+})
+
+test('null/empty URLs never claim cached', () => {
+  assert.equal(hasCoverBeenLoaded(null), false)
+  assert.equal(hasCoverBeenLoaded(''), false)
+})
+
+test('a FAILED url is never recorded — error retries re-arm as fresh', () => {
+  // The contract is onload-only: LazyThumb calls noteCoverLoaded ONLY from
+  // the main img's onload, so this pin is the shape of the API (no
+  // noteCoverFailed exists) plus the unknown-URL answer above.
+  const u = getCoverUrl(track('mem-2'), cfg, 128)
+  assert.equal(hasCoverBeenLoaded(u), false)
+})
+
+test('a hit REFRESHES recency (a claimed URL is a wanted URL)', () => {
+  const a = getCoverUrl(track('mem-3'), cfg, 128)
+  const b = getCoverUrl(track('mem-4'), cfg, 128)
+  noteCoverLoaded(a)
+  noteCoverLoaded(b)
+  // cap−1 more distinct inserts: `a` (oldest) is evicted, `b` survives.
+  for (let i = 0; i < LOADED_URL_MEMORY_CAP - 1; i++) noteCoverLoaded(`https://srv.example/getCoverArt.view?id=fill-${i}&size=128`)
+  assert.equal(hasCoverBeenLoaded(a), false, 'an untouched entry ages out')
+  // Re-claiming `a` inserts it at the back of the LRU — the eviction that
+  // overflow takes the OLDEST entry (`b`), never the just-claimed one.
+  noteCoverLoaded(a)
+  assert.equal(hasCoverBeenLoaded(b), false, 'the unrefreshed neighbor was evicted by the re-claim')
+  assert.equal(hasCoverBeenLoaded(a), true, 'the refreshed entry survived')
+})
+
+test('the memory evicts LRU beyond the cap', () => {
+  const evicted = `https://srv.example/getCoverArt.view?id=lru-old&size=128`
+  noteCoverLoaded(evicted)
+  for (let i = 0; i < LOADED_URL_MEMORY_CAP; i++) noteCoverLoaded(`https://srv.example/getCoverArt.view?id=lru-${i}&size=128`)
+  assert.equal(hasCoverBeenLoaded(evicted), false, 'the oldest entry was evicted once the cap overflowed')
 })

@@ -27,8 +27,14 @@
 
 import { computeWindow } from './virtualWindow'
 
-/** Grid rows rendered beyond each viewport edge (rows, not cells). */
-export const GRID_OVERSCAN_ROWS = 4
+/** Grid rows rendered beyond each viewport edge (rows, not cells). Widened
+ *  4 → 6 (2026-09-29, the "more buffer off-screen" request): a grid row is
+ *  ~130–260 px, so 6 rows ≈ 800–1600 px of mounted lead per side — roughly a
+ *  viewport of cover buffer for a slow scroll, and the paced band lane has
+ *  real depth to fill. The FIXED-K rule is untouched (K = viewport rows +
+ *  2×overscan, start-clamped only), so the position-invariant scrollHeight
+ *  property that killed the grid oscillator still holds exactly. */
+export const GRID_OVERSCAN_ROWS = 6
 
 /** Grid-row height bounds (px). A grid ROW is an aspect-square cell (viewport
  *  dependent, ~130–260 px) + caption lines + row gap — much taller than a

@@ -16,8 +16,9 @@ import {
  *  count) and the mounted set stayed window-sized. The grids are VIRTUAL
  *  (2026-09-28, gridWindow.ts): every mounted cell arms immediately (windowed
  *  LazyThumbs), so the mid-fling bound IS the fixed window — 2 viewport rows
- *  + 2×GRID_OVERSCAN_ROWS rows of cells (a 720px viewport at 5 cols ≈ 50
- *  cells; the 470px-tall e2e scroller renders ~8 rows). */
+ *  + 2×GRID_OVERSCAN_ROWS rows of cells (a 720px viewport at 5 cols ≈ 66
+ *  cells after the 2026-09-29 buffer widening to 6 overscan rows; the
+ *  470px-tall e2e scroller renders ~10 rows of cells). */
 async function runGridViewStress(page: Page, open: (page: Page) => Promise<void>): Promise<void> {
   await bootBigLibrary(page)
   await open(page)
@@ -29,8 +30,10 @@ async function runGridViewStress(page: Page, open: (page: Page) => Promise<void>
   const midFling = await coverImgsIn(page, LIST_SCROLLER)
   console.log(`[thumbflow-views] mid-fling imgs: ${midFling}`)
   // The fixed window bounds the mount set: rows within ±GRID_OVERSCAN_ROWS
-  // of the viewport, regardless of library size or fling distance.
-  expect(midFling).toBeLessThanOrEqual(100)
+  // of the viewport, regardless of library size or fling distance (6 rows
+  // after the 2026-09-29 widening — the bound is the K-window's cell count,
+  // not the old 8-row-window number).
+  expect(midFling).toBeLessThanOrEqual(140)
 
   await page.waitForTimeout(2500) // the landing window's fetches land
   const band = await nearBandLoad(page, LIST_SCROLLER, 1.0)
@@ -41,8 +44,9 @@ async function runGridViewStress(page: Page, open: (page: Page) => Promise<void>
   expect(band.near).toBeGreaterThanOrEqual(4)
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
   // The mounted set stayed window-sized — the whole 220-group library no
-  // longer exists in the DOM, even after the fling.
-  expect(total).toBeLessThanOrEqual(100)
+  // longer exists in the DOM, even after the fling (the bound grew with the
+  // 2026-09-29 overscan widening: 6 grid rows ≈ 66 cells).
+  expect(total).toBeLessThanOrEqual(140)
 }
 
 test('Albums grid: a scrollbar fling stays bounded and the landing screen loads', async ({ page }) => {
@@ -142,11 +146,12 @@ test('switching views after flings leaves no pile-up behind', async ({ page }) =
   const total = await coverImgsIn(page, LIST_SCROLLER)
   const band = await nearBandLoad(page, LIST_SCROLLER, 1.0)
   console.log(`[thumbflow-views] after view-switching: total ${total}, band ${JSON.stringify(band)}`)
-  // The remount restored the mid-list scroll position, so the ~3vh far
-  // window legitimately re-arms on mount (IO reports its initial state) —
-  // the bound is the unlatch window (~55 rows) plus the landing, not the
-  // whole 440-row list.
-  expect(total).toBeLessThan(120)
+  // The remount restored the mid-list scroll position, so the restored
+  // window legitimately arms on mount (the loader arms what the parent
+  // window mounts) — the bound is the ±20-row window plus the landing
+  // (2026-09-29 overscan widening: 20+20 ≈ 40 + the landing screen), not
+  // the whole 440-row list.
+  expect(total).toBeLessThan(140)
   expect(band.near).toBeGreaterThanOrEqual(4)
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
 })

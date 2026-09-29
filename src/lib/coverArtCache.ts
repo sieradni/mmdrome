@@ -63,3 +63,47 @@ export function coverLadderUrls(
   }
   return attempts
 }
+
+// --- Session loaded-URL memory (2026-09-28 ship review) ---------------------
+//
+// Virtual windows destroy and recreate row components on every scroll hop,
+// and LazyThumb's loaded-URL memory was component-lifetime — a remounted row
+// could NEVER claim the cached lane, so every revisit after a teleport
+// re-requested at fresh pace and re-ran the placeholder choreography, even
+// though the cover was an immutable HTTP-cache hit away. This module-level
+// LRU gives the claim a SESSION lifetime: `noteCoverLoaded` records every
+// successful main-cover onload, and a remounted row whose URL appears here
+// arms through the loader's cached lane (frame cadence, no micro wash
+// request). Two tracks of one album share the art URL, so the memory also
+// dedupes same-album rows for free.
+
+/** Entries kept. ~2000 covers is far beyond any browsing window; eviction
+ *  is LRU, so the scroll-back warm set survives while once-seen distant
+ *  regions age out. */
+export const LOADED_URL_MEMORY_CAP = 2000
+const loadedUrlMemory = new Map<string, true>()
+
+/** Record a successful main-cover load (LazyThumb's main-img onload). */
+export function noteCoverLoaded(url: string): void {
+  if (!url) return
+  loadedUrlMemory.delete(url)
+  loadedUrlMemory.set(url, true)
+  if (loadedUrlMemory.size > LOADED_URL_MEMORY_CAP) {
+    const oldest = loadedUrlMemory.keys().next().value
+    if (oldest !== undefined) loadedUrlMemory.delete(oldest)
+  }
+}
+
+/** Whether this cover URL loaded successfully earlier this session. A `true`
+ *  answer refreshes the entry's recency — a claimed URL is a wanted URL.
+ *  Failed URLs are never recorded (LazyThumb's onload-only contract), so an
+ *  error retry re-arms as fresh, exactly as before. */
+export function hasCoverBeenLoaded(url: string | null): boolean {
+  if (!url) return false
+  const hit = loadedUrlMemory.has(url)
+  if (hit) {
+    loadedUrlMemory.delete(url)
+    loadedUrlMemory.set(url, true)
+  }
+  return hit
+}

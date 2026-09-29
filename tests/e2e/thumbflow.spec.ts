@@ -146,7 +146,11 @@ test('a scrollbar-style fling does not launch a fetch for every screen it passes
   // whole gesture (140+ on a slow network, all stale); the 2026-09-28 bare-
   // compare regression armed ~8 per 50 ms hop gap. Both are gone: the fling
   // itself adds almost nothing.
-  expect(midFling).toBeLessThan(preFling + 24)
+  // 2026-09-29 overscan widening (8 → 20 rows): each window hop remounts a
+  // wider ±20-row window and the settled landing arms through the lanes —
+  // the tail sample can catch the start of that settle arming, so the
+  // relative bound grows accordingly (24 → 72).
+  expect(midFling).toBeLessThan(preFling + 72)
 
   // After settling, the landing screen loads (the gate opens, nearest first).
   // POLLED, not a fixed wait: the arm moment depends on where the last pace
@@ -224,7 +228,10 @@ test('covers unmount when their row leaves the far window (fetch abort, no pile-
   // The unlatch means the mounted-img set tracks the viewport window instead
   // of growing with every screen the session ever visited. Everything still
   // mounted must be near the current position (±5.5 vh covers the ±4000px
-  // pre-roll box + armed stragglers).
-  expect(total).toBeLessThan(80)
+  // pre-roll box + armed stragglers). 2026-09-29: the ±20-row list window
+  // (1120 px ≈ 2.4 vh per side on the 470px e2e viewport) sits well inside
+  // the 5.5 vh near radius, so total===near still holds — the absolute cap
+  // grows with the widened window (51 rows + landing headroom).
+  expect(total).toBeLessThan(140)
   expect(total).toBe(near)
 })

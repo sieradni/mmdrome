@@ -29,7 +29,7 @@
   import { queueManager } from '../lib/queueManager'
   import { distinctGenres } from '../lib/libraryFilters'
   import { restoreViewState } from '../lib/viewState'
-  import { ESTIMATED_ROW_H, endOffsetPx, startOffsetPx } from '../lib/virtualWindow'
+  import { ESTIMATED_ROW_H, OVERSCAN_ROWS, endOffsetPx, startOffsetPx } from '../lib/virtualWindow'
   import { createScrollWindow, firstRowMeasure } from '../lib/scrollWindow'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
@@ -284,20 +284,22 @@
       const autoTop = autoGroup ? autoGroup.offsetTop : userTop + previewUserItems.length * rowH + 44
       const U = previewUserItems.length
       const A = previewAutoItems.length
-      // USER window: rows overlap [scrollTop − 8 rows, scrollBottom + 8 rows].
-      // The START is upper-clamped to the section length (the grids' tail-clamp
-      // rule): scrolled PAST the section, the window is EMPTY and the pad is
-      // the full section height — never an inverted window (start > U) whose
-      // start-pad claims rows that do not exist. The unclamped cut made
-      // scrollHeight grow with scroll depth; with scroll anchoring now really
-      // off (app.css), a clamped fling landing could point at the phantom
-      // empty space with nothing left to re-pin it (2026-09-28 adversarial
-      // review, the near=0 queue-band failure).
-      const uStart = Math.min(Math.max(0, Math.floor(Math.max(0, scrollTop - userTop) / rowH) - 8), U)
-      const uEnd = U === 0 ? 0 : Math.max(uStart, Math.min(U, Math.ceil((scrollBottom - userTop) / rowH) + 8))
+      // USER window: rows overlap [scrollTop − OVERSCAN_ROWS, scrollBottom
+      // + OVERSCAN_ROWS] (the shared constant — the 2026-09-29 buffer
+      // widening applies to the queue too). The START is upper-clamped to
+      // the section length (the grids' tail-clamp rule): scrolled PAST the
+      // section, the window is EMPTY and the pad is the full section height
+      // — never an inverted window (start > U) whose start-pad claims rows
+      // that do not exist. The unclamped cut made scrollHeight grow with
+      // scroll depth; with scroll anchoring now really off (app.css), a
+      // clamped fling landing could point at the phantom empty space with
+      // nothing left to re-pin it (2026-09-28 adversarial review, the
+      // near=0 queue-band failure).
+      const uStart = Math.min(Math.max(0, Math.floor(Math.max(0, scrollTop - userTop) / rowH) - OVERSCAN_ROWS), U)
+      const uEnd = U === 0 ? 0 : Math.max(uStart, Math.min(U, Math.ceil((scrollBottom - userTop) / rowH) + OVERSCAN_ROWS))
       // AUTO window: same cut against the auto group's offset (same clamp).
-      const aStart = Math.min(Math.max(0, Math.floor(Math.max(0, scrollTop - autoTop) / rowH) - 8), A)
-      const aEnd = A === 0 ? 0 : Math.max(aStart, Math.min(A, Math.ceil((scrollBottom - autoTop) / rowH) + 8))
+      const aStart = Math.min(Math.max(0, Math.floor(Math.max(0, scrollTop - autoTop) / rowH) - OVERSCAN_ROWS), A)
+      const aEnd = A === 0 ? 0 : Math.max(aStart, Math.min(A, Math.ceil((scrollBottom - autoTop) / rowH) + OVERSCAN_ROWS))
       return { user: { start: uStart, end: uEnd }, auto: { start: aStart, end: aEnd } }
     },
     measure: firstRowMeasure('.queue-track-item'),
