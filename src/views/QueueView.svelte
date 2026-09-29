@@ -71,12 +71,11 @@
     return v === '' ? '' : Number(v)
   }
 
-  /** Auto-queue sort editor (the settings modal's Sort section). Same pick /
+  /** Auto-queue sort editor (the filter modal's Sort section). Same pick /
    *  flip / clear contract as the library sort menu: picking the active key
    *  flips direction, picking a new key sets its default direction, null
-   *  clears. The editor renders ALWAYS — while shuffle is on a caveat line
-   *  stands in for the hidden order and the edits persist for when it turns
-   *  off (the old display-only gate made the sort undiscoverable). */
+   *  clears. Writes the PERSISTED setting even while shuffle hides this
+   *  editor (the section is display-gated, not write-gated). */
   function setAutoSort(key: LibrarySortKey | null): void {
     autoQueueSort.update((s) => {
       if (key === null) return { ...s, sortBy: null }
@@ -1034,7 +1033,7 @@
       <button
         onclick={() => filterOpen = !filterOpen}
         class={"flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 transition-colors hover:bg-accent-soft hover:text-accent " + (filterOpen ? 'chip-on' : 'text-muted ring-1 ring-white/10')}
-        aria-label="Auto queue settings"
+        aria-label="Auto queue filters"
         aria-expanded={filterOpen}
       >
         <svg class="h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="currentColor"><path d="M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"/></svg>
@@ -1062,9 +1061,8 @@
   </div>
 </div>
 
-<!-- Auto-queue settings popup (filters + the always-editable sort): a
-     centered modal (TrackDetailsModal idiom) — closes via Esc, backdrop, X,
-     or Done; never demands a precise click. -->
+<!-- Auto-queue filter popup: a centered modal (TrackDetailsModal idiom) —
+     closes via Esc, backdrop, X, or Done; never demands a precise click. -->
 {#if filterOpen}
   <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
   <div
@@ -1076,27 +1074,24 @@
       class="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-xl border border-white/10 bg-surface shadow-2xl"
       onclick={(e) => e.stopPropagation()}
       role="dialog"
-      aria-label="Auto queue settings"
+      aria-label="Auto queue filters"
       tabindex="-1"
     >
       <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
-        <span class="text-base font-bold text-primary">Auto queue settings</span>
+        <span class="text-base font-bold text-primary">Auto queue filters</span>
         <button onclick={() => filterOpen = false} class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Close filters">
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
         </button>
       </div>
       <div class="space-y-4 px-5 py-4">
-        <!-- Auto-queue SORT (2026-09-29): the fill follows its own sort now;
-             edited here like the library sort menu. Rendered ALWAYS — hiding
-             it while shuffle was on left the sort undiscoverable (the user
-             could not find ANY manual sort). While shuffle overrides the
-             order, a caveat line says so and edits still persist. -->
-        <div>
-          <span class="text-sm font-medium text-muted">Sort order</span>
-          {#if $shuffleEnabled}
-            <p class="mt-0.5 text-[11px] text-yellow-500/80">Shuffle is on — tracks are shuffled, not sorted. Your choice applies when shuffle is off.</p>
-          {/if}
-          <div class="mt-1 space-y-1">
+        {#if !$shuffleEnabled}
+          <!-- Auto-queue SORT (2026-09-29): the fill follows its own sort now;
+               edited here like the library sort menu. HIDDEN while shuffle is
+               on (shuffle permutes the pool) but the setting keeps persisting
+               underneath — no writes are gated, only this editor is rendered. -->
+          <div>
+            <span class="text-sm font-medium text-muted">Sort order</span>
+            <div class="mt-1 space-y-1">
               {#each ['rating', 'loved', 'year', 'length'] as key (key)}
                 {@const k = key as LibrarySortKey}
                 <button
@@ -1127,6 +1122,7 @@
               {/if}
             </div>
           </div>
+        {/if}
         <div>
           <span class="text-sm font-medium text-muted">Search Query</span>
           <div class="mt-1">

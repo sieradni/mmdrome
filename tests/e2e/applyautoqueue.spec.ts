@@ -5,12 +5,10 @@ import { installNavidromeMock, seedMockCredentials } from './navidromeMock'
 // Pins the apply-to-auto-queue affordance (2026-09-29 decoupling): the button
 // appears only while the library filter/sort differs from the auto queue's
 // own settings, its confirm popup explains and asks, and Apply refills the
-// queue; plus the auto-queue sort editor in the queue settings panel —
-// ALWAYS visible now (the same-day follow-up: hiding it under shuffle made
-// the manual sort undiscoverable), with a caveat line while shuffle
-// overrides the order. The shuffle half runs against the Navidrome mock
-// because the toggle needs an ACTIVE track (the same constraint as the
-// shuffle round-trip spec).
+// queue; plus the auto-queue sort editor in the queue filter panel — hidden
+// while shuffle is on, persisted underneath. The shuffle half runs against
+// the Navidrome mock because the toggle needs an ACTIVE track (the same
+// constraint as the shuffle round-trip spec).
 
 async function openQueueFilter(page: Page, activeTrack = false): Promise<void> {
   // Idle boot: the empty mini-bar opens Now Playing, whose button opens the
@@ -25,7 +23,7 @@ async function openQueueFilter(page: Page, activeTrack = false): Promise<void> {
   }
   await page.getByRole('button', { name: 'Open queue' }).click()
   await page.getByRole('button', { name: 'Close queue' }).waitFor({ state: 'visible' })
-  await page.getByRole('button', { name: 'Auto queue settings' }).click()
+  await page.getByRole('button', { name: 'Auto queue filters' }).click()
 }
 
 const applyButton = (page: Page) =>
@@ -68,7 +66,7 @@ test('confirm popup explains, applies on confirm, and the button then hides', as
   await expect(page.getByLabel('Loved tracks only')).toBeChecked()
 })
 
-test('the auto-queue sort editor is always available (caveat while shuffle overrides)', async ({ page }) => {
+test('the auto-queue sort editor follows the shuffle state (editor hidden, setting kept)', async ({ page }) => {
   await installNavidromeMock(page)
   await bootApp(page)
   await seedMockCredentials(page)
@@ -84,7 +82,7 @@ test('the auto-queue sort editor is always available (caveat while shuffle overr
   // arrow once selected ("Rating ↑"), so the arrow is asserted via the
   // modal body, not the button name.
   await openQueueFilter(page, true)
-  const filterDialog = page.getByRole('dialog', { name: 'Auto queue settings' })
+  const filterDialog = page.getByRole('dialog', { name: 'Auto queue filters' })
   await expect(page.getByText('Sort order')).toBeVisible()
   await page.getByRole('button', { name: 'Rating', exact: true }).click()
   // Rating arms DESCENDING by default (the library sort menu's convention:
@@ -93,13 +91,9 @@ test('the auto-queue sort editor is always available (caveat while shuffle overr
   await expect(filterDialog.getByRole('button', { name: 'Rating ↓' })).toBeVisible()
   await page.keyboard.press('Escape')
 
-  // Shuffle ON: the editor STAYS — the old display gate hid the whole Sort
-  // section under shuffle and left the manual sort undiscoverable. A caveat
-  // line stands in for the hidden order, and the pick made a moment ago is
-  // still active (persisted underneath the override).
+  // Shuffle ON: the editor hides (shuffle permutes the pool), but the
+  // setting was already persisted — the Node persistence suite pins the row.
   await page.getByRole('button', { name: 'Toggle shuffle', exact: true }).click()
-  await page.getByRole('button', { name: 'Auto queue settings' }).click()
-  await expect(page.getByText('Sort order')).toBeVisible()
-  await expect(filterDialog.getByText(/Shuffle is on/)).toBeVisible()
-  await expect(filterDialog.getByRole('button', { name: 'Rating ↓' })).toBeVisible()
+  await page.getByRole('button', { name: 'Auto queue filters' }).click()
+  await expect(page.getByText('Sort order')).toHaveCount(0)
 })

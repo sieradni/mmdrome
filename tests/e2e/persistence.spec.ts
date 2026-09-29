@@ -25,7 +25,7 @@ async function openQueue(page: Page): Promise<void> {
 
 async function openQueueFilter(page: Page): Promise<void> {
   await openQueue(page)
-  await page.getByRole('button', { name: 'Auto queue settings' }).click()
+  await page.getByRole('button', { name: 'Auto queue filters' }).click()
 }
 
 test('queue filter rating inputs snap cleared fields to their boundary and persist', async ({ page }) => {
