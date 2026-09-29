@@ -9,7 +9,7 @@
   import LazyThumb from './LazyThumb.svelte'
   import TrackOptionsDropdown from './TrackOptionsDropdown.svelte'
 
-  let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, dataTrackId, ondetails, onplay, highlightTokens = [], playing = false }: {
+  let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, dataTrackId, ondetails, onplay, highlightTokens = [], playing = false, windowed = false }: {
     track: Track
     showAlbum?: boolean
     showDuration?: boolean
@@ -22,6 +22,9 @@
     /** This row is the CURRENT track (any playback state) — whole-row accent
      *  element (solid wash + left edge). */
     playing?: boolean
+    /** The parent renders a virtual window (SongsView): LazyThumb skips its
+     *  own IntersectionObservers because visibility is derived by the parent. */
+    windowed?: boolean
   } = $props()
 
   /**
@@ -92,7 +95,7 @@
   onclick={() => handlePlay(track.trackId)}
   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handlePlay(track.trackId) }}
 >
-  <LazyThumb {track} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
+  <LazyThumb {track} {windowed} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
   <div class="min-w-0 flex-1">
     <p class="truncate text-sm text-primary">
       {#if highlightTokens.length > 0}

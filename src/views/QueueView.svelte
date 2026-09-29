@@ -28,7 +28,9 @@
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
   import { distinctGenres } from '../lib/libraryFilters'
-  import { saveViewState, restoreViewState } from '../lib/viewState'
+  import { restoreViewState } from '../lib/viewState'
+  import { ESTIMATED_ROW_H, endOffsetPx, startOffsetPx } from '../lib/virtualWindow'
+  import { createScrollWindow, firstRowMeasure } from '../lib/scrollWindow'
   import LazyThumb from '../components/LazyThumb.svelte'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import SeekBar from '../components/SeekBar.svelte'
@@ -68,12 +70,9 @@
     return v === '' ? '' : Number(v)
   }
 
-  onMount(async () => {
+  onMount(() => {
     const savedScroll = restoreViewState<{ scrollTop: number }>('queue')
-    if (savedScroll && listContainerEl) {
-      await tick()
-      listContainerEl.scrollTop = savedScroll.scrollTop
-    }
+    if (savedScroll?.scrollTop) queueMachine.armRestore(savedScroll.scrollTop)
   })
 
   // Underlying track arrays
@@ -233,6 +232,87 @@
 
   let draggedTrack = $derived(draggedTrackId ? trackMap.get(draggedTrackId) ?? null : null)
 
+  // ── Virtual windows (2026-09-28; the SongsView model, per section) ──
+  // The queue can flood to 500+ rows (Play All); each section renders a
+  // ~30-row window between row spacers, so the flood costs a bounded DOM.
+  // DRAG-SAFETY: the drag engine never depends on what is MOUNTED — the
+  // drop target is a section-space INDEX resolved from the pointer (see
+  // updateTargetFromPointer), and `applyDragDrop` plans against the
+  // drag-time ID snapshot, so rows outside the window behave exactly like
+  // rows the user cannot see: real, ordered, droppable-onto.
+  //
+  // ONE shared machine drives BOTH sections (single throttle/save/derive per
+  // scroll event): the window state is the PAIR, the compute closure is the
+  // existing two-section cut over the DOM-measured group offsets, and the
+  // row-height EMA folds one `.queue-track-item` per derive (shared holder —
+  // both sections read the same queueRowH).
+  let userWin = $state({ start: 0, end: 0 })
+  let autoWin = $state({ start: 0, end: 0 })
+  let queueRowH = $state(ESTIMATED_ROW_H)
+
+  let mountedUserItems = $derived(previewUserItems.slice(userWin.start, userWin.end))
+  let mountedAutoItems = $derived(previewAutoItems.slice(autoWin.start, autoWin.end))
+  let userTopPad = $derived(startOffsetPx(userWin.start, queueRowH))
+  let userBottomPad = $derived(endOffsetPx(previewUserItems.length, userWin.end, queueRowH))
+  let autoTopPad = $derived(startOffsetPx(autoWin.start, queueRowH))
+  let autoBottomPad = $derived(endOffsetPx(previewAutoItems.length, autoWin.end, queueRowH))
+
+  const queueMachine = createScrollWindow<{ user: { start: number; end: number }; auto: { start: number; end: number } }>({
+    // The restore gate keys on ANY content (either section rendering).
+    getTotal: () => previewUserItems.length + previewAutoItems.length,
+    getViewport: () => listContainerEl,
+    getWindow: () => ({ user: userWin, auto: autoWin }),
+    setWindow: (w) => {
+      userWin = w.user
+      autoWin = w.auto
+    },
+    getRowH: () => queueRowH,
+    setRowH: (h) => {
+      queueRowH = h
+    },
+    compute: ({ scrollTop, viewportH, rowH }) => {
+      const el = listContainerEl
+      if (!el) return { user: userWin, auto: autoWin }
+      const scrollBottom = scrollTop + viewportH
+      // Section offsets in the scroll coordinate space: user header (~30px)
+      // + user list, then wrap notice + auto header. Measured live from the
+      // section groups when mounted; estimated while the other section is
+      // empty/collapsed.
+      const userGroup = el.querySelector<HTMLElement>('[aria-label="User queue"]')
+      const autoGroup = el.querySelector<HTMLElement>('[aria-label="Auto queue"]')
+      const userTop = userGroup ? userGroup.offsetTop : 44
+      const autoTop = autoGroup ? autoGroup.offsetTop : userTop + previewUserItems.length * rowH + 44
+      const U = previewUserItems.length
+      const A = previewAutoItems.length
+      // USER window: rows overlap [scrollTop − 8 rows, scrollBottom + 8 rows].
+      // The START is upper-clamped to the section length (the grids' tail-clamp
+      // rule): scrolled PAST the section, the window is EMPTY and the pad is
+      // the full section height — never an inverted window (start > U) whose
+      // start-pad claims rows that do not exist. The unclamped cut made
+      // scrollHeight grow with scroll depth; with scroll anchoring now really
+      // off (app.css), a clamped fling landing could point at the phantom
+      // empty space with nothing left to re-pin it (2026-09-28 adversarial
+      // review, the near=0 queue-band failure).
+      const uStart = Math.min(Math.max(0, Math.floor(Math.max(0, scrollTop - userTop) / rowH) - 8), U)
+      const uEnd = U === 0 ? 0 : Math.max(uStart, Math.min(U, Math.ceil((scrollBottom - userTop) / rowH) + 8))
+      // AUTO window: same cut against the auto group's offset (same clamp).
+      const aStart = Math.min(Math.max(0, Math.floor(Math.max(0, scrollTop - autoTop) / rowH) - 8), A)
+      const aEnd = A === 0 ? 0 : Math.max(aStart, Math.min(A, Math.ceil((scrollBottom - autoTop) / rowH) + 8))
+      return { user: { start: uStart, end: uEnd }, auto: { start: aStart, end: aEnd } }
+    },
+    measure: firstRowMeasure('.queue-track-item'),
+    viewKey: 'queue',
+    scrollTopField: 'scrollTop',
+  })
+
+  $effect(() => {
+    void previewUserItems
+    void previewAutoItems
+    void listContainerEl
+    queueMachine.deriveNow()
+    queueMachine.restoreIfReady()
+  })
+
   let isConvertingUserToAuto = $derived(
     isDragging &&
     draggedCombinedIdxLive >= 0 &&
@@ -290,12 +370,22 @@
     const items = Array.from(listContainerEl.querySelectorAll<HTMLElement>('.queue-track-item'))
     if (items.length === 0) return
 
-    let target = items.length
-    for (let i = 0; i < items.length; i++) {
-      const rect = items[i].getBoundingClientRect()
+    // The drop target is the rows' TRUE combined index, read from
+    // `data-combined-index` — NEVER the positional loop index. Under the
+    // virtual windows the mounted set is a ~13-row slice: at rest the first
+    // mounted row is userWin.start, mid-drag it is the plan preview's row 0
+    // (the template computes the attribute the same way the preview does),
+    // so positional indexing dropped rows windowStart slots too high (the
+    // 2026-09-28 adversarial review catch). "Past the last mounted row"
+    // defaults to the end of the PREVIEW space (the plan preserves the total
+    // count, so preview-end == combined-end in both spaces).
+    let target = previewUserItems.length + previewAutoItems.length
+    for (const item of items) {
+      const rect = item.getBoundingClientRect()
       const midY = rect.top + rect.height / 2
       if (y < midY) {
-        target = i
+        const idx = Number(item.dataset.combinedIndex)
+        target = Number.isFinite(idx) ? idx : target
         break
       }
     }
@@ -599,7 +689,7 @@
   </div>
 
   <!-- Queue List Scroll Container -->
-  <div bind:this={listContainerEl} class="min-h-0 flex-1 overflow-y-auto pb-2 touch-pan-y" onscroll={() => { if (listContainerEl) saveViewState('queue', { scrollTop: listContainerEl.scrollTop }) }}>
+  <div bind:this={listContainerEl} class="min-h-0 flex-1 overflow-y-auto overflow-anchor-none pb-2 touch-pan-y" onscroll={queueMachine.onScroll}>
     <!-- bottom-24 against the ROOT (this container isn't relative): the
          island stack on iOS = safe-area inset (~34) + wrapper pad + island
          (~54) ≈ 92px — bottom-16 (64px) landed INSIDE it, which is exactly
@@ -622,7 +712,9 @@
       </div>
 
       <div class="mx-2 space-y-0.5" role="group" aria-label="User queue">
-        {#each previewUserItems as item, itemIndex (item.key)}
+        <div style="height:{userTopPad}px" aria-hidden="true"></div>
+        {#each mountedUserItems as item (item.key)}
+          {@const itemIndex = userWin.start + item.originalCombinedIdx}
           <div
             animate:flip={{ duration: 150 }}
             onclick={() => playQueueItem(item.track.trackId, itemIndex)}
@@ -643,7 +735,7 @@
               class="drag-handle touch-none flex-shrink-0 cursor-grab active:cursor-grabbing rounded py-1 pl-1 pr-0.5 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover"
               aria-label="Drag to reorder"
               onclick={(e) => e.stopPropagation()}
-              onpointerdown={(e) => startPointerDrag(e, item.originalCombinedIdx)}
+              onpointerdown={(e) => startPointerDrag(e, itemIndex)}
               role="presentation"
             >
               <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
@@ -651,7 +743,7 @@
               </svg>
             </div>
 
-            <LazyThumb track={item.track} size={128} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
+            <LazyThumb track={item.track} size={128} windowed wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
 
             <!-- Minimal: current row is the plain white/10 fill — no EQ-bar
                  glyph (de-cluttered 2026-09-10 review). -->
@@ -704,6 +796,7 @@
             </div>
           </div>
         {/each}
+        <div style="height:{userBottomPad}px" aria-hidden="true"></div>
       </div>
     {/if}
 
@@ -744,8 +837,9 @@
         {/if}
       </div>
       <div class="mx-2 space-y-0.5" role="group" aria-label="Auto queue">
-        {#each previewAutoItems as item, idx (item.key)}
-          {@const itemCombinedIndex = previewUserItems.length + idx}
+        <div style="height:{autoTopPad}px" aria-hidden="true"></div>
+        {#each mountedAutoItems as item (item.key)}
+          {@const itemCombinedIndex = previewUserItems.length + autoWin.start + item.originalCombinedIdx}
           <div
             animate:flip={{ duration: 150 }}
             onclick={() => playQueueItem(item.track.trackId, itemCombinedIndex)}
@@ -766,7 +860,7 @@
               class="drag-handle touch-none flex-shrink-0 cursor-grab active:cursor-grabbing rounded py-1 pl-1 pr-0.5 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover"
               aria-label="Drag to reorder"
               onclick={(e) => e.stopPropagation()}
-              onpointerdown={(e) => startPointerDrag(e, item.originalCombinedIdx)}
+              onpointerdown={(e) => startPointerDrag(e, itemCombinedIndex)}
               role="presentation"
             >
               <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
@@ -774,7 +868,7 @@
               </svg>
             </div>
 
-            <LazyThumb track={item.track} size={128} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
+            <LazyThumb track={item.track} size={128} windowed wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
 
             <!-- Minimal: current row is the plain white/10 fill — no EQ-bar
                  glyph (de-cluttered 2026-09-10 review). -->
@@ -826,6 +920,7 @@
             </div>
           </div>
         {/each}
+        <div style="height:{autoBottomPad}px" aria-hidden="true"></div>
       </div>
     {:else if previewUserItems.length > 0}
       <p class="px-6 py-4 text-center text-sm text-muted/50">Auto queue is empty</p>

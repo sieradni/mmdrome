@@ -6,29 +6,33 @@ import {
 
 // Per-view matrix for the thumbnail pipeline (thumbflowHelpers owns the
 // mock/counting rules; thumbflow-stress.spec owns the compounding/race
-// cases): proves the SAME contract on every long-list surface — the chunked
-// Albums/Artists grids, the deliberately UNCHUNKED Queue view (its drag
-// reactivity needs the full list), and across view switches, whose
-// conditional mounts destroy and rebuild the whole surface mid-session.
+// cases): proves the SAME contract on every long-list surface — the VIRTUAL
+// Albums/Artists grids (gridWindow.ts), the VIRTUAL two-section Queue view
+// (two list windows), and across view switches, whose conditional mounts
+// destroy and rebuild the whole surface mid-session.
 
-/** Shared per-view stress body: fling the view hard, prove mid-gesture arming
- *  stayed bounded, then prove the landing screen LOADED (ratio, not count)
- *  and the mounted-img set stayed viewport-sized (the unlatch). */
+/** Shared per-view stress body: fling the view hard, prove the mid-gesture
+ *  mount set stayed bounded, then prove the landing screen LOADED (ratio, not
+ *  count) and the mounted set stayed window-sized. The grids are VIRTUAL
+ *  (2026-09-28, gridWindow.ts): every mounted cell arms immediately (windowed
+ *  LazyThumbs), so the mid-fling bound IS the fixed window — 2 viewport rows
+ *  + 2×GRID_OVERSCAN_ROWS rows of cells (a 720px viewport at 5 cols ≈ 50
+ *  cells; the 470px-tall e2e scroller renders ~8 rows). */
 async function runGridViewStress(page: Page, open: (page: Page) => Promise<void>): Promise<void> {
   await bootBigLibrary(page)
   await open(page)
   await expect(page.locator(`${LIST_SCROLLER}`).first()).toBeVisible()
-  await page.waitForTimeout(900) // first chunk arms + settles
+  await page.waitForTimeout(900) // the landing window arms + settles
 
   await fling(page, LIST_SCROLLER, 8, 50)
   await page.waitForTimeout(250) // sample the mid-gesture tail
   const midFling = await coverImgsIn(page, LIST_SCROLLER)
   console.log(`[thumbflow-views] mid-fling imgs: ${midFling}`)
-  // Gesture-paced: one 4-row batch per 250 ms hold window (~2 batches here),
-  // even though the chunked grid kept GROWING under the fling.
-  expect(midFling).toBeLessThan(40)
+  // The fixed window bounds the mount set: rows within ±GRID_OVERSCAN_ROWS
+  // of the viewport, regardless of library size or fling distance.
+  expect(midFling).toBeLessThanOrEqual(100)
 
-  await page.waitForTimeout(2500) // gate opens; landing screen loads
+  await page.waitForTimeout(2500) // the landing window's fetches land
   const band = await nearBandLoad(page, LIST_SCROLLER, 1.0)
   const total = await coverImgsIn(page, LIST_SCROLLER)
   console.log(`[thumbflow-views] landed band: ${JSON.stringify(band)}, total: ${total}`)
@@ -36,9 +40,9 @@ async function runGridViewStress(page: Page, open: (page: Page) => Promise<void>
   // where the near band is small — assert it LOADED, not its size).
   expect(band.near).toBeGreaterThanOrEqual(4)
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
-  // The mounted set stayed viewport-sized even though the fling mounted the
-  // whole 220-group library (chunk sentinel runs to terminal under the fling).
-  expect(total).toBeLessThan(200)
+  // The mounted set stayed window-sized — the whole 220-group library no
+  // longer exists in the DOM, even after the fling.
+  expect(total).toBeLessThanOrEqual(100)
 }
 
 test('Albums grid: a scrollbar fling stays bounded and the landing screen loads', async ({ page }) => {
@@ -53,12 +57,14 @@ test('Artists grid: a scrollbar fling stays bounded and the landing screen loads
   })
 })
 
-test('grids: scrolled-past covers unlatch and re-arm on the way back', async ({ page }) => {
+test('grids: scrolled-past covers re-arm instantly on the way back', async ({ page }) => {
   await bootBigLibrary(page)
   await page.getByRole('button', { name: 'Albums', exact: true }).click()
   await page.waitForTimeout(900)
 
   // Jump to the bottom of the library, let it load, jump back to the top.
+  // VIRTUAL windows re-arm by DERIVATION now (no unlatch cycle): the teleport
+  // just renders a new window, and its cells arm through the loader lanes.
   await fling(page, LIST_SCROLLER, 6, 50)
   await page.waitForTimeout(2200)
   await page.evaluate((sel) => {
@@ -72,12 +78,10 @@ test('grids: scrolled-past covers unlatch and re-arm on the way back', async ({ 
   const band = await nearBandLoad(page, LIST_SCROLLER, 1.0)
   const total = await coverImgsIn(page, LIST_SCROLLER)
   console.log(`[thumbflow-views] back-at-top band: ${JSON.stringify(band)}, total: ${total}`)
-  // Re-entry re-armed the top of the grid (the unlatch must never strand a
-  // row: the request observer re-fires on every crossing, and the stable
-  // salt makes the re-request an HTTP-cache hit).
+  // The return teleport rendered the top window and its covers loaded.
   expect(band.near).toBeGreaterThanOrEqual(4)
   expect(band.ratio).toBeGreaterThanOrEqual(0.8)
-  expect(total).toBeLessThan(200)
+  expect(total).toBeLessThanOrEqual(100)
 })
 
 test('Queue view: a long queue scrolls with bounded arming and loads where it lands', async ({ page }) => {
@@ -89,7 +93,9 @@ test('Queue view: a long queue scrolls with bounded arming and loads where it la
   // also trigger the rows' own play action.
   const addButtons = page.getByRole('button', { name: 'Add to queue' })
   const n = Math.min(await addButtons.count(), 50)
-  expect(n).toBeGreaterThanOrEqual(40)
+  // The Songs list is VIRTUALIZED (2026-09-28): ~29 rows exist in the DOM,
+  // not the old 50-row chunk — 25+ mounted rows is a full viewport.
+  expect(n).toBeGreaterThanOrEqual(25)
   for (let i = 0; i < n; i++) await addButtons.nth(i).click()
 
   // 'Open queue' lives in the Now Playing overlay — the path is mini player

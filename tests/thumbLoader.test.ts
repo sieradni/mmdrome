@@ -1,12 +1,15 @@
 // Pins the pure thumb-flow policy (`src/lib/thumbFlow.ts`) — the velocity
 // gate behind the 2026-09-16 "quickly scrolling" rework, the 2026-09-17j
-// gesture pace, and the 2026-09-17 two-lane fresh arming. The invariants:
+// gesture pace, the 2026-09-17 two-lane fresh arming, and the 2026-09-28
+// cached-lane stability gate. The invariants:
 // - the loader's distance sort keeps the queue current every frame, but ARMING
-//   is lane-based: cached rows (revisits) are free and arm at frame cadence;
-//   fresh rows split into an on-screen TIER lane (fast cadence) and a BAND
-//   lane (a deliberate trickle that never floods a self-hosted server);
-// - mid-gesture, fresh arming requires the nearest row's identity to be
-//   STABLE — a glide charges nothing, so its landing starts at full speed;
+//   is lane-based: cached rows (revisits) arm at frame cadence while the view
+//   is resting or settled; fresh rows split into an on-screen TIER lane (fast
+//   cadence) and a BAND lane (a deliberate trickle that never floods a
+//   self-hosted server);
+// - mid-gesture, arming (fresh AND cached) requires the nearest row's identity
+//   to be STABLE — a glide charges nothing, so its landing starts at full speed
+//   and its DOM never churns;
 // - arming is TIMING-only policy — it never changes which covers download,
 //   only their order.
 
@@ -19,9 +22,13 @@ import {
   RETRY_FRAMES,
   OPEN_FRESH_BATCH,
   OPEN_FRESH_INTERVAL_MS,
+  STABLE_MIN_MS,
   TIER_BATCH,
+  CACHED_TIER_BATCH,
+  CACHED_BAND_BATCH,
   thumbFlowSignal,
   planFreshArming,
+  planCachedArming,
   shouldHoldZeroSize,
 } from '../src/lib/thumbFlow'
 
@@ -267,14 +274,17 @@ test('tap-stopped flick: the landing arms at full speed on the next frame', () =
   assert.equal(landing.blocked, true, 'the hold window still runs — the gesture only just stopped')
   assert.equal(landing.visible, true, 'the landing row is on screen')
   assert.equal(landing.nearestStable, false, 'first landing verdict — baseline was row-x')
-  // The NEXT tick (~16 ms later): same row → stable. The landing screen arms
-  // DESPITE the still-running hold window — the whole point of the stability
-  // gate. Full TIER_BATCH, immediately (clock 0 — never charged mid-flight).
-  const settled = signalWithId({ now: t0 + 176, id: 'row-y', nearestRatio: 0.1, lastScrollAt: t0 + 119 })
-  assert.equal(settled.blocked, true)
+  // The landing screen arms DESPITE the still-running hold window — the whole
+  // point of the stability gate. The identity must persist STABLE_MIN_MS
+  // (2026-09-28: a bare two-tick compare armed every 50 ms fling hop gap —
+  // the firehose returned un-masked once the unlatch freeze shipped), so the
+  // landing arms at the first verdict ≥100 ms after the identity settled.
+  // Full TIER_BATCH, immediately (clock 0 — never charged mid-flight).
+  const settled = signalWithId({ now: t0 + 270, id: 'row-y', nearestRatio: 0.1, lastScrollAt: t0 + 119 })
+  assert.equal(settled.blocked, true, 'the hold window still runs — the gesture only just stopped')
   assert.equal(settled.visible, true)
-  assert.equal(settled.nearestStable, true)
-  const plan = planFreshArming({ blocked: settled.blocked, visible: settled.visible, nearestStable: settled.nearestStable, tierCount: 12, bandCount: 78, now: t0 + 176, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(settled.nearestStable, true, '110 ms of stable identity clears STABLE_MIN_MS')
+  const plan = planFreshArming({ blocked: settled.blocked, visible: settled.visible, nearestStable: settled.nearestStable, tierCount: 12, bandCount: 78, now: t0 + 270, lastTierArmAt: 0, lastBandArmAt: 0 })
   assert.equal(plan.tierArmed, true, 'the landing screen arms while the hold window still runs')
   assert.equal(plan.count, TIER_BATCH)
   // The band lane waits — the screen empties first.
@@ -283,13 +293,13 @@ test('tap-stopped flick: the landing arms at full speed on the next frame', () =
 
 test('a mid-gesture slow drag still arms its reading position (stable identity)', () => {
   const t0 = 500_000
-  // A slow touch drag: rows move gradually, the nearest row is stable between
-  // hops, and the tier is open. The reading position loads at the gesture
-  // pace — all later, never never.
+  // A slow touch drag: rows move gradually, the nearest row is stable for
+  // well over STABLE_MIN_MS between hops, and the tier is open. The reading
+  // position loads at the gesture pace — all later, never never.
   signalWithId({ now: t0, id: 'row-a', nearestRatio: 0.2, lastScrollAt: t0 - 1 })
-  const stable = signalWithId({ now: t0 + 50, id: 'row-a', nearestRatio: 0.15, lastScrollAt: t0 + 49 })
-  assert.equal(stable.nearestStable, true)
-  const plan = planFreshArming({ blocked: stable.blocked, visible: stable.visible, nearestStable: stable.nearestStable, tierCount: 5, bandCount: 40, now: t0 + 50, lastTierArmAt: 0, lastBandArmAt: 0 })
+  const stable = signalWithId({ now: t0 + 150, id: 'row-a', nearestRatio: 0.15, lastScrollAt: t0 + 149 })
+  assert.equal(stable.nearestStable, true, '150 ms of one row is a reading position, not churn')
+  const plan = planFreshArming({ blocked: stable.blocked, visible: stable.visible, nearestStable: stable.nearestStable, tierCount: 5, bandCount: 40, now: t0 + 150, lastTierArmAt: 0, lastBandArmAt: 0 })
   assert.equal(plan.tierArmed, true)
   assert.equal(plan.count, 5, 'capped by availability — 5 tier rows, not the full batch')
 })
@@ -302,4 +312,124 @@ test('the lane constants keep the screen strictly ahead of the band', () => {
   assert.equal(TIER_BATCH, 8)
   assert.equal(OPEN_FRESH_BATCH, 8)
   assert.ok(OPEN_FRESH_INTERVAL_MS > MIN_ARM_INTERVAL_MS * 4, 'the band trickle must be strictly slower than the tier cadence')
+  assert.equal(CACHED_TIER_BATCH, 8)
+  assert.equal(CACHED_BAND_BATCH, 8)
+})
+
+// --- The cached-lane planner (2026-09-28, the scroll-churn fix) --------------
+// The cached lanes armed at the RAW frame cadence in ANY flow state, and
+// during a fling the nearest row is ALWAYS inside the viewport — so the
+// tier-cached lane armed 8 imgs per frame mid-glide while the unlatch
+// observer unmounted the ones flying past. The 4× CPU A/B e2e measured p50
+// frame 177 ms with ~68 img flips per 6 s sweep, and p50 17 ms (worst 20)
+// with the cover observers disabled: the MOUNT/UNMOUNT churn was the jank,
+// not the row paint. The cached lanes now key on the SAME identity-stability
+// signal as the fresh lanes: a resting/settled/stable view arms at frame
+// cadence; a glide arms nothing. A cached cover is free to load; mounting its
+// <img> mid-flight is not free to render.
+
+test('cached tier arms at the fast cadence while the view is resting (open gate)', () => {
+  const t0 = 40_000
+  const plan = planCachedArming({ blocked: false, nearestStable: false, tierCount: 30, bandCount: 0, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.tierArmed, true)
+  assert.equal(plan.count, CACHED_TIER_BATCH)
+  assert.equal(plan.bandArmed, false, 'the band lane does not run on a tier tick')
+})
+
+test('cached tier arm is paced by MIN_ARM_INTERVAL_MS', () => {
+  const t0 = 40_000
+  const held = planCachedArming({ blocked: false, nearestStable: false, tierCount: 30, bandCount: 0, now: t0 + MIN_ARM_INTERVAL_MS - 1, lastTierArmAt: t0, lastBandArmAt: 0 })
+  assert.equal(held.tierArmed, false)
+  const ready = planCachedArming({ blocked: false, nearestStable: false, tierCount: 30, bandCount: 0, now: t0 + MIN_ARM_INTERVAL_MS, lastTierArmAt: t0, lastBandArmAt: 0 })
+  assert.equal(ready.tierArmed, true)
+  assert.equal(ready.count, CACHED_TIER_BATCH)
+})
+
+test('mid-gesture churning identity arms NOTHING cached (the pump is closed)', () => {
+  // The regression pin: the old lane armed here because the cached rows were
+  // 'free' — but each arm mounts an <img>, and the unlatch unmounts it a
+  // frame later. The churn is the cost the free-ness ignored.
+  const t0 = 50_000
+  const plan = planCachedArming({ blocked: true, nearestStable: false, tierCount: 20, bandCount: 40, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.tierArmed, false)
+  assert.equal(plan.bandArmed, false)
+  assert.equal(plan.count, 0)
+})
+
+test('mid-gesture STABLE view arms cached revisits (tap-stop landing stays instant)', () => {
+  const t0 = 50_000
+  const plan = planCachedArming({ blocked: true, nearestStable: true, tierCount: 12, bandCount: 40, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.tierArmed, true)
+  assert.equal(plan.count, Math.min(12, CACHED_TIER_BATCH))
+  assert.equal(plan.bandArmed, false, 'the pre-warm band never arms mid-gesture')
+})
+
+test('the cached pre-warm band arms only when the gate is open and the tier lane is quiet', () => {
+  const t0 = 60_000
+  const plan = planCachedArming({ blocked: false, nearestStable: false, tierCount: 0, bandCount: 25, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.bandArmed, true)
+  assert.equal(plan.count, CACHED_BAND_BATCH)
+  const heldMidGesture = planCachedArming({ blocked: true, nearestStable: true, tierCount: 0, bandCount: 25, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(heldMidGesture.bandArmed, false)
+})
+
+test('a cached tier arm does not charge the band clock (independent lanes)', () => {
+  const t0 = 60_000
+  const plan = planCachedArming({ blocked: false, nearestStable: false, tierCount: 4, bandCount: 25, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(plan.tierArmed, true)
+  assert.equal(plan.bandArmAt, 0, 'the band clock is untouched')
+})
+
+test('the cached planner is capped by availability', () => {
+  const t0 = 70_000
+  const tier = planCachedArming({ blocked: false, nearestStable: false, tierCount: 3, bandCount: 0, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(tier.count, 3)
+  const none = planCachedArming({ blocked: true, nearestStable: false, tierCount: 0, bandCount: 0, now: t0, lastTierArmAt: 0, lastBandArmAt: 0 })
+  assert.equal(none.count, 0)
+  assert.equal(none.tierArmed, false)
+  assert.equal(none.bandArmed, false)
+})
+
+// --- STABLE_MIN_MS: the teleport-with-gaps hole (2026-09-28) ----------------
+// A scrollbar/fling profile hops ~12 screens every ~50 ms. Between hops the
+// view is genuinely stationary for 2–3 rAF frames — the bare two-tick
+// identity compare read each gap as a landing and armed a fresh batch there
+// (~8 stale fetches per hop). The original unlatch teardown MASKED this by
+// unmounting the stale covers mid-flight; the gesture-time DOM freeze removed
+// the mask, the queueflood/thumbflow e2e caught the regression, and the
+// duration floor is the honest fix.
+
+test('a 50 ms fling hop gap never reaches stability (the firehose stays closed)', () => {
+  const t0 = 800_000
+  // Hop 1: identity appears.
+  signalWithId({ now: t0, id: 'row-1', nearestRatio: 0.2, lastScrollAt: t0 - 1 })
+  // 50 ms later the next hop replaces it.
+  signalWithId({ now: t0 + 50, id: 'row-2', nearestRatio: 0.2, lastScrollAt: t0 + 49 })
+  // Hop 3 lands on row-3 and sits for the full between-hop gap... then flies
+  // on. Even two consecutive verdicts 60 ms apart must NOT read stable.
+  signalWithId({ now: t0 + 100, id: 'row-3', nearestRatio: 0.2, lastScrollAt: t0 + 99 })
+  const gap = signalWithId({ now: t0 + 160, id: 'row-3', nearestRatio: 0.2, lastScrollAt: t0 + 99 })
+  assert.equal(gap.nearestStable, false, '60 ms of stability is a hop gap, not a reading position')
+  // The same row 100+ ms after first appearance IS stable.
+  const settled = signalWithId({ now: t0 + 210, id: 'row-3', nearestRatio: 0.2, lastScrollAt: t0 + 99 })
+  assert.equal(settled.nearestStable, true)
+  assert.equal(settled.stableMs >= 100, true)
+})
+
+test('the stability clock restarts on every identity change', () => {
+  const t0 = 810_000
+  signalWithId({ now: t0, id: 'row-a', nearestRatio: 0.1, lastScrollAt: t0 - 1 })
+  const grown = signalWithId({ now: t0 + 200, id: 'row-a', nearestRatio: 0.1, lastScrollAt: t0 - 1 })
+  assert.equal(grown.nearestStable, true)
+  // A new identity restarts the clock from zero.
+  const moved = signalWithId({ now: t0 + 210, id: 'row-b', nearestRatio: 0.1, lastScrollAt: t0 + 209 })
+  assert.equal(moved.nearestStable, false)
+  assert.equal(moved.stableMs, 0)
+})
+
+test('STABLE_MIN_MS stays far below the perceived-instant budget', () => {
+  // The gate this floor serves was written against a 200–300 ms delay report;
+  // the floor must never approach that, and no 50 ms hop gap may survive it.
+  assert.equal(STABLE_MIN_MS, 100)
+  assert.ok(STABLE_MIN_MS < 200)
 })

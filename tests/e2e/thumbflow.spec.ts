@@ -126,17 +126,27 @@ test('a scrollbar-style fling does not launch a fetch for every screen it passes
   await expect(page.locator('div.flex-1.overflow-y-auto').first()).toBeVisible()
   await page.waitForTimeout(800)
 
+  // The pre-fling landing screen's imgs are RETAINED mid-fling by the
+  // gesture-time DOM freeze (2026-09-28: the unlatch teardown is deferred to
+  // settle) — they are not new fetches, so the bound is RELATIVE to the
+  // pre-fling count, not absolute.
+  const preFling = await page.evaluate(() => document.querySelectorAll('img[src*="getCoverArt"]').length)
+
   // ~700 ms of continuous stamped scrolling across ~12-screen hops.
   await fling(page, 14, 50)
   await page.waitForTimeout(200) // still inside the hold window: sample mid-gesture tail
 
   const midFling = await page.evaluate(() => document.querySelectorAll('img[src*="getCoverArt"]').length)
-  console.log(`[thumbflow] imgs latched during fling: ${midFling}`)
+  console.log(`[thumbflow] imgs pre-fling ${preFling}, latched during fling: ${midFling}`)
 
-  // Old behavior armed 8 rows/33 ms of continuously-replaced "visible" rows
-  // for the whole gesture (140+ on a slow network, all stale). The throttle
-  // bounds it to one 4-row batch per 250 ms hold window (~2 batches here).
-  expect(midFling).toBeLessThan(40)
+  // The firehose pin: the fling may add at most ~2 settle batches' worth of
+  // mounts (STABLE_MIN_MS arms the landing ~100 ms after the last hop, so the
+  // +200 ms tail sample can catch the start of legitimate settle arming).
+  // The OLD bug armed 8 rows/33 ms of continuously-replaced rows for the
+  // whole gesture (140+ on a slow network, all stale); the 2026-09-28 bare-
+  // compare regression armed ~8 per 50 ms hop gap. Both are gone: the fling
+  // itself adds almost nothing.
+  expect(midFling).toBeLessThan(preFling + 24)
 
   // After settling, the landing screen loads (the gate opens, nearest first).
   // POLLED, not a fixed wait: the arm moment depends on where the last pace

@@ -1,9 +1,17 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
   import { library, metadataCache, currentTrack } from '../stores/appState'
-  import { saveViewState, restoreViewState } from '../lib/viewState'
+  import { restoreViewState } from '../lib/viewState'
   import { libraryFilters, trackMatchesGenre } from '../lib/libraryFilters'
   import { parseSearchQuery, rankTrackMatch } from '../lib/searchCore'
+  import {
+    ESTIMATED_ROW_H,
+    computeWindow,
+    endOffsetPx,
+    scrollTopForIndex,
+    startOffsetPx,
+  } from '../lib/virtualWindow'
+  import { createScrollWindow, firstRowMeasure } from '../lib/scrollWindow'
   import type { Track } from '../stores/appState'
   import TrackDetailsModal from '../components/TrackDetailsModal.svelte'
   import TrackRow from '../components/TrackRow.svelte'
@@ -15,75 +23,11 @@
 
   const viewName = 'songs'
 
-  const CHUNK = 50
-  let limit = $state(CHUNK)
-
   let detailsTrack: Track | null = $state(null)
 
   let listContainer = $state<HTMLDivElement | null>(null)
-  // $state so the sentinel $effect below re-arms on rebinding — the same
-  // one-mechanism pattern the Albums/Artists grids use (a plain var is not
-  // tracked by effects, which is why the old code needed a second fallback).
-  let sentinelEl = $state<HTMLDivElement>()
 
-  let ready = $state(false)
-
-  $effect(() => {
-    if (!ready) return
-    saveViewState(viewName, {
-      limit
-    })
-  })
-
-  let scrollRestorePending = $state(false)
-
-  $effect(() => {
-    if (!scrollRestorePending || !listContainer) return
-    const count = visible.length
-    if (count > 0 && listContainer.scrollHeight > listContainer.clientHeight) {
-      const saved = restoreViewState<{ scrollTop: number }>(viewName)
-      if (saved?.scrollTop) {
-        listContainer.scrollTop = saved.scrollTop
-      }
-      scrollRestorePending = false
-    }
-  })
-
-  onMount(() => {
-    const saved = restoreViewState<{
-      scrollTop: number
-      limit: number
-    }>(viewName)
-    if (saved) {
-      limit = saved.limit
-    }
-    ready = true
-    if (saved?.scrollTop) scrollRestorePending = true
-  })
-
-  // Growth is ONE mechanism, identical in all three library views: an IO
-  // observer owned by an $effect over the (tracked) container + sentinel
-  // bindings. The old dual mechanism (onMount observer + a
-  // getBoundingClientRect fallback $effect with an untracked plain sentinel
-  // var) existed because the var wasn't tracked — the fallback is redundant
-  // (IO always reports its initial intersection state on observe) and the
-  // onMount observer would freeze if the view ever gained a remounting branch
-  // (the exact bug the grids' detail toggles hit — see the 2026-09-17h/i
-  // DEVLOG entries). $effect re-runs on every rebinding: disconnect +
-  // re-observe is the re-arm.
-  $effect(() => {
-    const lc = listContainer
-    const se = sentinelEl
-    if (!lc || !se) return
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting && lc.offsetHeight > 0) limit += CHUNK
-      },
-      { root: lc, rootMargin: '200px' }
-    )
-    observer.observe(se)
-    return () => observer.disconnect()
-  })
+  // ── Filter / sort / search (unchanged semantics) ────────────────────
 
   function getMeta(trackId: string) {
     return $metadataCache.get(trackId)
@@ -151,23 +95,88 @@
     }
     return list
   })
-let visible = $derived(processed.slice(0, limit))
-  let hasMore = $derived(limit < processed.length)
 
   let currentIndex = $derived(
     $currentTrack ? processed.findIndex((t) => t.trackId === $currentTrack.trackId) : -1
   )
   let canJumpToCurrent = $derived(currentIndex >= 0)
 
-  let jumpScrollPending = $state(false)
+  // ── Virtual window (2026-09-28) ─────────────────────────────────────
+  // Replaces the grow-only CHUNK/limit + IntersectionObserver sentinel: a row
+  // exists in the DOM if and only if its index is inside `win`. The window is
+  // re-derived on every throttled scroll frame and on content/viewport
+  // changes; the spacers keep the scroll height at the FULL list height at
+  // all times, so restore is a plain scrollTop write and there is no
+  // restore-before-sentinel ordering problem. The pure math lives in
+  // virtualWindow.ts (unit-pinned); this view is the thin adapter.
+  let win = $state<{ start: number; end: number }>({ start: 0, end: 0 })
+  let rowH = $state(ESTIMATED_ROW_H)
 
+  let visibleRows = $derived(processed.slice(win.start, win.end))
+  let topPad = $derived(startOffsetPx(win.start, rowH))
+  let bottomPad = $derived(endOffsetPx(processed.length, win.end, rowH))
+
+  // The engine (throttled scroll + trailing derive, view-state save,
+  // consume-once restore, ResizeObserver re-derive) lives in the shared
+  // `scrollWindow.ts`; this view keeps the reactive holders, the derived
+  // slice/pads, and the pure compute. The accessor arrows hand the machine
+  // REAL signal access — reads/writes compile at THIS call site — so no
+  // runes are imported in the machine or here.
+  const machine = createScrollWindow<{ start: number; end: number }>({
+    getTotal: () => processed.length,
+    getViewport: () => listContainer,
+    getWindow: () => win,
+    setWindow: (w) => {
+      win = w
+    },
+    getRowH: () => rowH,
+    setRowH: (h) => {
+      rowH = h
+    },
+    compute: ({ total, scrollTop, viewportH, rowH: h }) => computeWindow({ total, scrollTop, viewportH, rowH: h }),
+    measure: firstRowMeasure('[data-track-id]'),
+    viewKey: viewName,
+    scrollTopField: 'scrollTop',
+  })
+
+  // Re-derive on content changes (library load, filter/sort/search edits —
+  // the list identity changes with none of the scroll signals), consume the
+  // restore once the list has content, and own the ResizeObserver lifecycle
+  // (rotation, keyboard). Reads only `processed` + `listContainer`; the
+  // writes (win/rowH) are not read here, so the effect cannot self-trigger.
+  $effect(() => {
+    void processed
+    void listContainer
+    machine.deriveNow()
+    machine.restoreIfReady()
+    return machine.observeResize()
+  })
+
+  // Restore arm: the saved scrollTop lands exactly because the scroll height
+  // is ALWAYS the full list (spacers sized for every row) — set once real
+  // content exists. The legacy `limit` field in old persisted state is
+  // simply ignored.
+  onMount(() => {
+    const saved = restoreViewState<{ scrollTop: number }>(viewName)
+    if (saved?.scrollTop) machine.armRestore(saved.scrollTop)
+  })
+
+  // ── Jump-to-current ──────────────────────────────────────────────────
+  // Under the window model the jump IS a scrollTop write (scrollTopForIndex
+  // centers the row; the scroll event derives the window around it). The
+  // pending effect then smooth-centers the now-rendered row — the same
+  // polish as before, minus the limit-growth pre-step (there is no limit;
+  // the row renders by derivation).
   function jumpToCurrent() {
     if (currentIndex < 0) return
-    if (currentIndex >= limit) {
-      limit = currentIndex + CHUNK
-    }
+    const el = listContainer
+    if (!el) return
+    el.scrollTop = scrollTopForIndex(currentIndex, el.clientHeight, rowH)
+    machine.deriveNow()
     jumpScrollPending = true
   }
+
+  let jumpScrollPending = $state(false)
 
   $effect(() => {
     if (!jumpScrollPending) return
@@ -187,24 +196,26 @@ let visible = $derived(processed.slice(0, limit))
 </script>
 
 <div class="relative flex h-full flex-col">
-  <FilterSortBar onopen={() => { limit = CHUNK }} />
+  <FilterSortBar />
   <JumpToCurrentButton show={canJumpToCurrent} onclick={jumpToCurrent} />
   <ScrollTopButton target={listContainer} posClass={canJumpToCurrent ? 'bottom-20 right-4' : 'bottom-5 right-4'} />
 
-  <div bind:this={listContainer} class="flex-1 overflow-y-auto pb-24"
-       onscroll={() => { if (listContainer) saveViewState(viewName, { scrollTop: listContainer.scrollTop }) }}>
+  <div bind:this={listContainer} class="flex-1 overflow-y-auto overflow-anchor-none pb-24" onscroll={machine.onScroll}>
     <div class="px-4 pt-2 pb-1">
-      {#each visible as track (track.trackId)}
-        <TrackRow {track} showAlbum={false} playing={track.trackId === $currentTrack?.trackId} ondetails={() => detailsTrack = track} highlightTokens={searchTokens} />
+      <!-- Virtual window: two estimated spacers + the rendered slice. The
+           spacer sum is always ≈ full-list height, so the scrollbar is
+           honest at every position and restore is a plain scrollTop write. -->
+      <div style="height:{topPad}px" aria-hidden="true"></div>
+      {#each visibleRows as track (track.trackId)}
+        <TrackRow {track} showAlbum={false} windowed playing={track.trackId === $currentTrack?.trackId} ondetails={() => detailsTrack = track} highlightTokens={searchTokens} />
       {/each}
+      <div style="height:{bottomPad}px" aria-hidden="true"></div>
 
-      <div bind:this={sentinelEl} class="py-6 text-center">
+      <div class="py-6 text-center">
         {#if $library.length === 0}
           <p class="text-sm text-muted">Your library is empty. Scan your music to get started.</p>
-        {:else if hasMore}
-          <p class="text-sm text-muted">Loading more...</p>
         {:else}
-          <p class="text-sm text-muted">All {processed.length} tracks loaded</p>
+          <p class="text-sm text-muted">{processed.length} tracks</p>
         {/if}
       </div>
     </div>

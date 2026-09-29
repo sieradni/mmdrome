@@ -99,20 +99,31 @@ test('album play-through: 40 advances grow the queue and the queue view stays bo
 
   // A 60-track library supports one auto fill; after 40 played, the user
   // queue carries the promotion history (played rows stay above current).
+  // VIRTUALIZED (2026-09-28): the mounted count is the WINDOW (~14 rows), not
+  // the history — the real count is the store's userQueue length, read via
+  // the section header badge ("Up next <n>").
   const userCount = await page.evaluate(() => {
     const group = document.querySelector('[aria-label="User queue"]')
-    return group ? group.querySelectorAll('[data-track-id]').length : 0
+    const mounted = group ? group.querySelectorAll('[data-track-id]').length : 0
+    const header = [...document.querySelectorAll('[role="heading"]')].find((h) => (h.textContent ?? '').startsWith('Up next'))
+    const badge = header ? parseInt((header.textContent ?? '').replace(/\D+/g, ''), 10) : 0
+    return { mounted, total: Number.isFinite(badge) ? badge : 0 }
   })
-  console.log(`[queue-stress] user-queue rows after 40 advances: ${userCount}`)
-  expect(userCount).toBeGreaterThan(20)
+  console.log(`[queue-stress] user queue after 40 advances: ${JSON.stringify(userCount)}`)
+  expect(userCount.total).toBeGreaterThan(20)
+  expect(userCount.mounted, 'the user window must stay bounded').toBeLessThanOrEqual(40)
 
   // Fling DOWN through the auto side, then back UP through the history —
   // the accumulation side is above current, so the up-leg is the stress.
+  // Gesture-time DOM freeze (2026-09-28): the pre-fling imgs are RETAINED
+  // mid-fling (the unlatch teardown defers to settle), so the firehose bound
+  // is RELATIVE to the pre-fling count, not absolute.
+  const preFling1 = await coverImgsIn(page, QUEUE_SCROLLER)
   await fling(page, QUEUE_SCROLLER, 3, 60)
   await page.waitForTimeout(250)
   const midFling = await coverImgsIn(page, QUEUE_SCROLLER)
-  console.log(`[queue-stress] mid-fling imgs: ${midFling}`)
-  expect(midFling).toBeLessThan(40)
+  console.log(`[queue-stress] mid-fling imgs: pre=${preFling1} mid=${midFling}`)
+  expect(midFling).toBeLessThan(preFling1 + 24)
 
   await page.evaluate((sel) => {
     const scroller = document.querySelector<HTMLElement>(sel)
@@ -144,20 +155,26 @@ test('mega-album flood: a 500-song queue scrolls bounded and its landing screen 
 
   // Sanity: Play All replaced the queue with the whole album (scoped to the
   // queue scroller — the library below carries [data-track-id] rows too).
+  // VIRTUALIZED (2026-09-28): the queue renders a ~30-row window, not all
+  // 500 — the SANITY is the queue STATE (headers report 500), not mounts.
   await openQueue(page)
   const rows = await page.evaluate((sel) => {
     const root = document.querySelector(sel)
     return root ? root.querySelectorAll('[data-track-id]').length : 0
   }, QUEUE_SCROLLER)
-  console.log(`[queue-stress] rendered queue rows: ${rows}`)
-  expect(rows).toBeGreaterThanOrEqual(500)
+  console.log(`[queue-stress] rendered queue rows (window): ${rows}`)
+  expect(rows).toBeGreaterThanOrEqual(10)
+  expect(rows).toBeLessThanOrEqual(60)
 
   // Down through 500 rows, then the up-leg through the whole list.
+  // Same relative bound (2026-09-28 freeze): pre-fling retained imgs are not
+  // new fetches — only the DELTA counts against the firehose.
+  const preFling2 = await coverImgsIn(page, QUEUE_SCROLLER)
   await fling(page, QUEUE_SCROLLER, 4, 60)
   await page.waitForTimeout(250)
   const midFling = await coverImgsIn(page, QUEUE_SCROLLER)
-  console.log(`[queue-stress] flood mid-fling imgs: ${midFling}`)
-  expect(midFling).toBeLessThan(40)
+  console.log(`[queue-stress] flood mid-fling imgs: pre=${preFling2} mid=${midFling}`)
+  expect(midFling).toBeLessThan(preFling2 + 24)
 
   await page.evaluate((sel) => {
     const scroller = document.querySelector<HTMLElement>(sel)

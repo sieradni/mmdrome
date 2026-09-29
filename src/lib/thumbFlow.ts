@@ -65,11 +65,13 @@ export interface ThumbFlowState {
    *  holdout radius). When true, the adapter may arm the nearest batch even
    *  while `blocked`. */
   visible: boolean
-  /** The nearest queued row is the SAME row as the previous verdict tick —
-   *  the viewport has stopped moving relative to the queue even though the
-   *  hold window may not have decayed yet (a tap/hold stopping a flick).
-   *  Drives the adapter's settle-expiry (see isNearestStable). Only computed
-   *  when the deps carry a `lastNearestId`. */
+  /** How long the nearest queued row's identity has been UNCHANGED (ms; 0
+   *  when nothing is queued or the identity just changed). The mid-gesture
+   *  arming gate compares this against STABLE_MIN_MS — see the constant's
+   *  comment for why a bare identity compare is not enough. */
+  stableMs: number
+  /** Convenience: stableMs >= STABLE_MIN_MS. Kept alongside the raw value so
+   *  the debug snapshot can show both. */
   nearestStable: boolean
 }
 
@@ -86,32 +88,56 @@ export interface ThumbFlowDeps {
   /** Identity of the nearest queued row (the adapter's element). Changes
    *  whenever the viewport flies past rows — the sole input that separates a
    *  scrollbar-style teleport (identity churns every hop) from a resting view
-   *  (identity stays put). Absent → `isNearestStable` is always false. */
+   *  (identity stays put). Absent → `nearestStable` is always false and
+   *  `stableMs` is 0. */
   lastNearestId?(): unknown
 }
 
 /**
- * Whether the nearest queued row is the same row as the previous verdict —
- * the load-bearing signal of the settle-expiry (2026-09-17, the "0.2–0.3 s
- * before the first 4 center thumbnails" report): after a flick stopped by a
- * tap, the nearest row sits PUT (its identity stops changing) while the
- * SCROLL_HOLD_MS window still runs — a window consumed mid-gesture by batches
- * the flick immediately flew past. Waiting out that stale window delays the
- * landing screen for nothing. This predicate distinguishes exactly that case
- * from the scrollbar-firehose the 2026-09-17j pace exists for: a scrollbar
- * drag continuously REPLACES the rows in the holdout tier, so the nearest
- * identity churns every hop and the window never waives. Pure identity
- * comparison — no wall-clock tuning, no epsilon to get wrong.
+ * Whether a scroll gesture is ACTIVE right now (a scroll event within the
+ * last `SCROLL_HOLD_MS`) — the gesture-time DOM freeze's signal, exported for
+ * LazyThumb's unlatch deferral. Reads wall clock against the last activity
+ * timestamp; the loader owns the listener and stamps it.
  */
-export function isNearestStable(deps: ThumbFlowDeps): boolean {
-  const id = deps.lastNearestId?.()
-  return id !== undefined && id === lastSeenNearestId
+export function thumbFlowGestureActive(): boolean {
+  if (lastScrollStamp <= 0) return false
+  return Date.now() - lastScrollStamp < SCROLL_HOLD_MS
 }
+
+/** The single shared scroll stamp (stamped by the loader's scroll listener;
+ *  thumbFlow.ts itself stays DOM-free). */
+let lastScrollStamp = 0
+
+/** Called by the loader's scroll listener — the one writer of the stamp. */
+export function noteScrollActivity(): void {
+  lastScrollStamp = Date.now()
+}
+
+/**
+ * How long the nearest row's identity must stay UNCHANGED before a
+ * mid-gesture view counts as a stationary reading position (the
+ * `nearestStable` verdict). A bare two-tick identity compare (the original
+ * 2026-09-17 settle-expiry form) is too weak for TELEPORT-WITH-GAPS: a
+ * scrollbar/fling profile hops ~12 screens every ~50 ms, and between hops the
+ * view is genuinely stationary for 2–3 rAF frames — the bare compare read
+ * each gap as a "landing" and armed a fresh batch there (~8 stale fetches
+ * per hop; measured 2026-09-28 once the unlatch teardown stopped masking
+ * it). A real reading position — a slow drag's pauses, a tap-stopped flick's
+ * landing — persists for hundreds of ms, and the original complaint this
+ * gate serves was a 200–300 ms delay, so 100 ms stays far inside the
+ * perceived-instant budget while no momentum hop gap survives it.
+ */
+export const STABLE_MIN_MS = 100
 
 /** The identity the previous verdict saw. INTERNAL: `thumbFlowSignal` updates
  *  it after every verdict (the compare-then-record order makes consecutive
  *  signal calls a proper two-tap comparison); pure callers never touch it. */
 let lastSeenNearestId: unknown
+
+/** Wall-clock instant the current nearest identity FIRST appeared (the
+ *  stability clock). INTERNAL to `thumbFlowSignal`, same contract as
+ *  `lastSeenNearestId`. */
+let identityStableSince = 0
 
 /**
  * The verdict for one tick. `blocked` = (now − lastScrollAt) < SCROLL_HOLD_MS;
@@ -125,13 +151,20 @@ export function thumbFlowSignal(deps: ThumbFlowDeps): ThumbFlowState {
   const now = deps.now()
   const blocked = deps.lastScrollAt() > 0 && now - deps.lastScrollAt() < SCROLL_HOLD_MS
   const visible = deps.nearestRatio() <= VISIBLE_HOLDOUT_RATIO
-  const nearestStable = isNearestStable(deps)
+  const id = deps.lastNearestId?.()
+  // Duration-carrying stability: when the identity CHANGES (or first
+  // appears), restart the stability clock. A repeated id accumulates stableMs
+  // — two consecutive verdicts with the same id are only "stable" once the
+  // clock exceeds STABLE_MIN_MS.
+  if (id === undefined || id !== lastSeenNearestId) identityStableSince = now
+  const stableMs = id !== undefined && identityStableSince > 0 ? now - identityStableSince : 0
+  const nearestStable = stableMs >= STABLE_MIN_MS
   // Record THIS verdict's identity as the next call's baseline (compare-
   // then-record: consecutive calls form the two-tap comparison). An extra
   // signal call with the same deps (the debug snapshot re-derives the verdict)
   // is idempotent — same id in, same baseline out.
-  lastSeenNearestId = deps.lastNearestId?.()
-  return { blocked, visible, nearestStable }
+  lastSeenNearestId = id
+  return { blocked, visible, stableMs, nearestStable }
 }
 
 export interface ArmPlan {
@@ -140,7 +173,6 @@ export interface ArmPlan {
   /** Whether the batch bookkeeping should remember this tick as armed. */
   markArmed: boolean
 }
-
 /** Fresh-arming pace while the gate is OPEN: rows per batch / ms between
  *  batches. 8 per 250 ms — a TRICKLE, deliberately slower than the old full
  *  cadence (8 per 33 ms). The resource-timing diagnostic measured why: after
@@ -157,6 +189,87 @@ export const OPEN_FRESH_INTERVAL_MS = 250
  *  priority over the band lane, so the screen is never queued behind the
  *  pre-roll trickle. */
 export const TIER_BATCH = 8
+
+/** Cached-lane pace (2026-09-28, the "songs tab lags when scrolling" field
+ *  report): the cached lanes previously armed at the raw frame cadence in ANY
+ *  flow state — and during a fling the nearest row is ALWAYS inside the
+ *  viewport, so the tier-cached lane armed 8 imgs per frame mid-glide while
+ *  the unlatch observer unmounted the ones flying past. The A/B e2e measured
+ *  the result on a 2,400-row list at 4× CPU: p50 frame 177 ms with ~68 img
+ *  mount/unmount flips per 6 s sweep — and p50 17 ms (60 fps, worst 20) with
+ *  the cover observers disabled. Same list, same scroll. The churn, not the
+ *  row paint, WAS the jank. The gate below applies the SAME identity-stability
+ *  rule the fresh lane already uses: a resting or settled view arms its
+ *  cached revisits at frame cadence (the pop-in fix keeps working — a tap-
+ *  stopped flick's nearest row is stable), but a glide arms nothing until the
+ *  gesture settles. A cached cover is free to LOAD; mounting its <img> mid-
+ *  flight is not free to RENDER. */
+export const CACHED_TIER_BATCH = 8
+export const CACHED_BAND_BATCH = 8
+
+export interface CachedArmingInputs {
+  /** The flow verdict for this tick (the scroll-activity gate). */
+  blocked: boolean
+  /** The nearest queued row's identity is stable (view is stationary
+   *  relative to the queue — resting, landed, or a slow drag's reading
+   *  position). Same signal the fresh tier lane gates on. */
+  nearestStable: boolean
+  /** Cached rows waiting INSIDE the tier (on-screen holdout). */
+  tierCount: number
+  /** Cached rows waiting OUTSIDE the tier (pre-warm band). */
+  bandCount: number
+  /** Wall clock now / last cached tier-lane arm / last cached band-lane arm
+   *  (0 = never). */
+  now: number
+  lastTierArmAt: number
+  lastBandArmAt: number
+}
+
+export interface CachedArmingPlan {
+  count: number
+  tierArmed: boolean
+  bandArmed: boolean
+  tierArmAt: number
+  bandArmAt: number
+}
+
+/**
+ * The cached-lane planner: on-screen cached revisits arm at the frame cadence
+ * (MIN_ARM_INTERVAL_MS batches) whenever the view is resting, settled, or a
+ * stable reading position — mid-gesture arming requires `nearestStable`, so a
+ * fling's churn arms nothing and the mount/unmount pump stops. The band lane
+ * (scroll-back pre-warm) stays a not-blocked-only lane: it is the lowest
+ * priority, runs after the fresh lanes, and never arms mid-gesture.
+ */
+export function planCachedArming(inputs: CachedArmingInputs): CachedArmingPlan {
+  const plan: CachedArmingPlan = {
+    count: 0,
+    tierArmed: false,
+    bandArmed: false,
+    tierArmAt: inputs.lastTierArmAt,
+    bandArmAt: inputs.lastBandArmAt,
+  }
+  const tierReady =
+    inputs.tierCount > 0 &&
+    (inputs.lastTierArmAt === 0 || inputs.now - inputs.lastTierArmAt >= MIN_ARM_INTERVAL_MS)
+  const bandReady =
+    inputs.bandCount > 0 &&
+    (inputs.lastBandArmAt === 0 || inputs.now - inputs.lastBandArmAt >= MIN_ARM_INTERVAL_MS)
+
+  if (tierReady && (!inputs.blocked || inputs.nearestStable)) {
+    plan.count = Math.min(inputs.tierCount, CACHED_TIER_BATCH)
+    plan.tierArmed = true
+    plan.tierArmAt = inputs.now
+    return plan
+  }
+  if (bandReady && !inputs.blocked) {
+    plan.count = Math.min(inputs.bandCount, CACHED_BAND_BATCH)
+    plan.bandArmed = true
+    plan.bandArmAt = inputs.now
+    return plan
+  }
+  return plan
+}
 
 export interface FreshArmingInputs {
   /** The flow verdict for this tick. */

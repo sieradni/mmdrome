@@ -1,6 +1,8 @@
 import {
   RETRY_FRAMES,
   VISIBLE_HOLDOUT_RATIO,
+  noteScrollActivity,
+  planCachedArming,
   planFreshArming,
   shouldHoldZeroSize,
   thumbFlowSignal,
@@ -20,8 +22,8 @@ interface PendingThumb {
   cached: boolean
 }
 
-/** Cached-lane cap per tick (rows armed per frame — the decode cost bound). */
-const CACHED_PER_TICK = 8
+/** Cached-lane batch caps live in the pure planner (`CACHED_TIER_BATCH` /
+ *  `CACHED_BAND_BATCH` in thumbFlow.ts) alongside the cadence policy. */
 
 let pending: PendingThumb[] = []
 let running = false
@@ -32,6 +34,10 @@ let lastScrollAt = 0
  *  trickle and vice versa). `lastArmedAt` (debug) is the latest of the two. */
 let lastTierArmAt = 0
 let lastBandArmAt = 0
+/** Cached-lane arm clocks (separate from the fresh lanes so a cached batch
+ *  never delays a fresh one — same independence rule as the fresh pair). */
+let lastCachedTierArmAt = 0
+let lastCachedBandArmAt = 0
 let flowInstalled = false
 let armedTotal = 0
 let cachedTotal = 0
@@ -54,7 +60,10 @@ function ensureFlowListener(): void {
   flowInstalled = true
   document.addEventListener(
     'scroll',
-    () => { lastScrollAt = Date.now() },
+    () => {
+      lastScrollAt = Date.now()
+      noteScrollActivity()
+    },
     { capture: true, passive: true },
   )
 }
@@ -189,9 +198,25 @@ function tick(): void {
   }
 
   // LANE 0 — cached tier: rows the user can SEE whose cover is already in the
-  // HTTP cache. No network, no server load — arm at the frame cadence, in any
-  // flow state (visible pop-in is exactly this lane; pacing it was pure loss).
-  if (flow.visible || !flow.blocked) armBatch(tierCached, CACHED_PER_TICK)
+  // HTTP cache. No network, no server load — arm at the frame cadence while
+  // the view is resting or settled. Mid-gesture the SAME nearest-stability
+  // rule as the fresh lane applies: a glide's churning identity arms nothing.
+  // Arming IS the visible change here (the <img> mounts on arm), so pacing
+  // this lane by identity churn is what stops the gesture-time mount/unmount
+  // pump (2026-09-28: p50 frame 177 ms → 17 ms in the 4× CPU A/B).
+  const cachedPlan = planCachedArming({
+    blocked: flow.blocked,
+    nearestStable: flow.nearestStable,
+    tierCount: tierCached.length,
+    bandCount: bandCached.length,
+    now,
+    lastTierArmAt: lastCachedTierArmAt,
+    lastBandArmAt: lastCachedBandArmAt,
+  })
+  if (cachedPlan.tierArmed) armBatch(tierCached, cachedPlan.count)
+  else if (cachedPlan.bandArmed) armBatch(bandCached, cachedPlan.count)
+  lastCachedTierArmAt = cachedPlan.tierArmAt
+  lastCachedBandArmAt = cachedPlan.bandArmAt
 
   // LANES 1+2 — fresh rows, planned by the pure two-lane policy: the tier
   // (on-screen) at the fast cadence, the band (pre-roll) as a trickle that
@@ -214,7 +239,7 @@ function tick(): void {
 
   // LANE 3 — cached band (off-screen, cached): pre-warms scroll-back for free
   // while the gate is open. Runs LAST — the screen has absolute priority.
-  if (!flow.blocked) armBatch(bandCached, CACHED_PER_TICK)
+  // (Its cadence decision is made inside cachedPlan above; nothing extra here.)
 
   if (armedThisTick > 0) {
     pending = pending.filter((p) => !armedEls.has(p.el))

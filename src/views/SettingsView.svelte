@@ -59,6 +59,12 @@
   let confirmPush = $state(false)
   // The dialog's full picture — bucket counts + the pushable track list.
   let pushBreakdown = $state<PushBreakdown>(EMPTY_PUSH_BREAKDOWN)
+
+  /** Confirm-dialog list slice (2026-09-28 long-list sweep): the breakdown's
+   *  `tracks` is deliberately uncapped (the count must reflect the real run),
+   *  but the dialog's ROWS render the first slice only — a 1,000-file push
+   *  no longer lays out 1,000 two-line rows + buttons in the modal. */
+  const PUSH_DIALOG_LIST_CAP = 50
   // In-dialog × discard: which row's confirm strip is open + the in-flight
   // guard. Confirm runs discardLocalEdit (D6-safe: the row keeps its file
   // link/provenance, only the pending write is abandoned) and rebuilds the
@@ -1956,8 +1962,18 @@
                    picture cannot disagree with what Push will actually do. -->
               <div class="mb-3 space-y-1 text-sm">
                 <p class="font-medium text-primary">{pushBreakdown.pushable} file{pushBreakdown.pushable === 1 ? '' : 's'} will be updated:</p>
+                <!-- WINDOWED SLICE (2026-09-28 sweep): the breakdown's `tracks`
+                     array is deliberately UNCAPPED (the count must reflect the
+                     real run — pushReconcile.ts), but rendering every row made
+                     the confirm modal grow unbounded (a 1,000-file rating push
+                     laid out 1,000 two-line <li>s + discard buttons). The list
+                     renders the first slice + an explicit "and N more" line;
+                     the count above stays the source of truth. The idmigration
+                     /pushchanges e2e specs target discard buttons inside these
+                     rows — those dialogs are small (<10 rows), so the cap
+                     never hides a spec'd row. -->
                 <ul class="ml-4 max-h-40 list-disc space-y-0.5 overflow-y-auto">
-                  {#each pushBreakdown.tracks as t (t.trackId)}
+                  {#each pushBreakdown.tracks.slice(0, PUSH_DIALOG_LIST_CAP) as t (t.trackId)}
                     <li class="text-muted">
                       <div class="flex items-start justify-between gap-2">
                         <span class="min-w-0 break-words">
@@ -2000,6 +2016,9 @@
                     </li>
                   {/each}
                 </ul>
+                {#if pushBreakdown.tracks.length > PUSH_DIALOG_LIST_CAP}
+                  <p class="text-xs text-muted">… and {pushBreakdown.tracks.length - PUSH_DIALOG_LIST_CAP} more (the count above is the full list).</p>
+                {/if}
                 {#if pushBreakdown.wrongServer > 0}
                   <p class="text-amber-300">{pushBreakdown.wrongServer} skipped — matched on a different server.</p>
                 {/if}

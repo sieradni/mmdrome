@@ -5,10 +5,11 @@
   import { requestThumb, cancelThumb } from '../lib/thumbLoader'
   import { effectiveLowData } from '../lib/networkMode'
   import { effectiveThumbSize, shouldSwapThumbSize } from '../lib/transcodePolicy'
+import { thumbFlowGestureActive } from '../lib/thumbFlow'
   import { coverStatsRecord } from '../lib/coverStats'
   import type { Track } from '../stores/appState'
 
-  let { track, wrapperClass = '', size = 128 }: { track: Track; wrapperClass?: string; size?: 96 | 128 | 256 | 512 } = $props()
+  let { track, wrapperClass = '', size = 128, windowed = false }: { track: Track; wrapperClass?: string; size?: 96 | 128 | 256 | 512; windowed?: boolean } = $props()
 
   /** Blur the micro only when its 32 px source is genuinely UPSCALED into the
    *  target (grid cells 256/512 — the wash is the point there, and the upscale
@@ -52,6 +53,21 @@
   // the ladder wraps), while a track/config change starts the ladder fresh.
   let failedUrls = $state<ReadonlySet<string>>(new Set())
   let attemptIndex = $state(0)
+
+  /** The gesture-time DOM freeze: drop the mounted img + reset the render
+   *  identity. Invoked by the unlatch observer when the row leaves the far
+   *  window OUTSIDE a gesture — mid-gesture the observer only sets
+   *  `gesturePendingUnlatch` and this runs on the next settle re-check
+   *  instead. The img unmounts — nothing is displayed anymore, so the render
+   *  identity resets; the next arm re-derives the ladder at the wanted size
+   *  (a deferred LDM downgrade lands here, costing nothing extra: the row was
+   *  going to re-request anyway). */
+  function unlatch(): void {
+    visible = false
+    renderedSize = 0
+    gesturePendingUnlatch = false
+    cancelThumb(container)
+  }
 
   /** The URL whose <img> last fired a successful LOAD. The loader's cached
    *  lane claim is derived from it (currentUrl === lastLoadedUrl): a revisit
@@ -160,6 +176,18 @@
    *  arm callback — NOT component init, or pre-roll time would count). */
   let armedAt = 0
 
+  // Gesture-time DOM freeze (2026-09-28, the "songs tab lags when scrolling"
+  // report): mid-gesture the unlatch observer used to unmount covers the
+  // flick flew past and the loader re-armed them as fresh, so every glide
+  // traded one DOM remove + one insert per row crossed — traced as 62 Paint
+  // chunks/frame on a phone-class CPU (4× throttle), p50 frame ~150–190 ms.
+  // Deferring the unmount until the gesture settles changes NOTHING about
+  // what is fetched (the cached lane already arms at frame cadence when
+  // settled) — it only stops the churn DURING the gesture, when frames are
+  // most precious. The pooled imgs stay pooled; the pre-roll still prefetches
+  // (fetching is network work, not main-thread work).
+  let gesturePendingUnlatch = false
+
   function handleImgError(): void {
     const url = currentUrl
     if (!url) return
@@ -178,6 +206,18 @@
   }
 
   onMount(() => {
+    // WINDOWED mode (2026-09-28): the parent renders a virtual window (only
+    // SongsView today), so visibility is DERIVED — a mounted row is by
+    // definition near the viewport and an unmounted row cannot fire anything
+    // (its component, observers, img and loader entry all cease to exist
+    // together). No request/unlatch observers here; the thumbLoader's lane
+    // pacing remains the fetch throttle, and its 6-vh rect drop zone still
+    // bounds stray entries. Covers arm on mount, re-arm on any identity
+    // change via the reset effect, and cancel on unmount below.
+    if (windowed) {
+      visible = true
+      return () => cancelThumb(container)
+    }
     const req = new IntersectionObserver(
       ([entry]) => {
         if (entry.isIntersecting && !visible) {
@@ -207,23 +247,61 @@
     const far = new IntersectionObserver(
       ([entry]) => {
         if (!entry.isIntersecting && visible) {
-          visible = false
-          // The img unmounts — nothing is displayed anymore, so the render
-          // identity resets. The next arm re-derives the ladder at the wanted
-          // size (a deferred LDM downgrade lands here, costing nothing extra:
-          // the row was going to re-request anyway).
-          renderedSize = 0
-          cancelThumb(container)
+          if (thumbFlowGestureActive()) {
+            // Mid-gesture: DEFER the unmount. The arm request observer below
+            // still runs, so a true re-entry (scrolled back within 2000 px)
+            // re-arms normally; this flag only stops the pooled img from
+            // being torn down while the user is moving.
+            gesturePendingUnlatch = true
+            return
+          }
+          unlatch()
         }
       },
       { rootMargin: '4000px' }
     )
     far.observe(container)
 
+    // Settle re-check: a gesture deferred a pending unlatch; run it the
+    // moment the gesture ends (the first rAF with no recent scroll event).
+    // One rAF loop ONLY while a deferral is pending — this is not a polling
+    // loop (the arm request observer below remains the arm driver).
+    let settleRaf = 0
+    const settleCheck = () => {
+      settleRaf = 0
+      if (!gesturePendingUnlatch) return
+      if (thumbFlowGestureActive()) {
+        settleRaf = requestAnimationFrame(settleCheck)
+        return
+      }
+      if (!container.isConnected) return
+      const r = container.getBoundingClientRect()
+      // Same geometry as the unlatch observer's ±4000px box: if the row has
+      // COME BACK (user reversed mid-gesture), the deferral is moot.
+      if (r.top < window.innerHeight + 4000 && r.bottom > -4000) {
+        gesturePendingUnlatch = false
+        return
+      }
+      unlatch()
+    }
+    const armSettleCheck = () => {
+      if (settleRaf === 0) settleRaf = requestAnimationFrame(settleCheck)
+    }
+    const stopSettleCheck = () => {
+      if (settleRaf !== 0) {
+        cancelAnimationFrame(settleRaf)
+        settleRaf = 0
+      }
+    }
+    const onScrollForSettle = () => armSettleCheck()
+    document.addEventListener('scroll', onScrollForSettle, { capture: true, passive: true })
+
     return () => {
       req.disconnect()
       far.disconnect()
       cancelThumb(container)
+      document.removeEventListener('scroll', onScrollForSettle, { capture: true } as EventListenerOptions)
+      stopSettleCheck()
     }
   })
 </script>

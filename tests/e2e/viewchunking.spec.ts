@@ -2,27 +2,23 @@ import { test, expect, type Page } from '@playwright/test'
 import { bootApp } from './boot'
 import { installNavidromeMock, seedMockCredentials } from './navidromeMock'
 
-// Pins the Albums/Artists grid chunking (the SongsView CHUNK pattern extended
-// to the grids): a large library mounts the FIRST CHUNK of cells, the grid
-// grows by a chunk as the sentinel scrolls near, the header shows the honest
-// count, and the sentinel flips to terminal copy when done. The Navidrome
-// mock's static 3-song catalog is overridden per-request below to emit a
-// 210-album library — enough for several chunks — without touching the
-// shared mock's other consumers.
-//
-// Mock contract (from navidromeMock's own docs): first boot creates the Dexie
-// schema, THEN credentials are seeded, THEN a reload re-boots the pipeline
-// against the mock — a fresh profile cannot be seeded before the stores
-// exist. Every test follows that sequence.
+// Pins the Albums/Artists VIRTUAL GRID WINDOWS (2026-09-28; replaces the
+// chunking spec — the grids now render a window of cells between row
+// spacers, exactly the SongsView model). The invariants:
+// - a large library mounts a BOUNDED cell count (never the whole grid), and
+//   the count stays bounded deep in the list (no grow-only memory);
+// - a scrollbar teleport lands the CORRECT content (the window derives from
+//   scrollTop — no whole-gap mount, no stall);
+// - the header count is the honest FULL filtered count;
+// - the album/artist detail track lists window the same way.
 
-const ALBUMS = 210 // 50-cell chunks
+const ALBUMS = 210 // 445 tracks (2 per album) — several windows deep
 
 type SongRow = Record<string, unknown>
 
 function makeLibrary(): SongRow[] {
   const songs: SongRow[] = []
   for (let a = 0; a < ALBUMS; a++) {
-    // 2 tracks per album, distinct ids/albums/artists, deterministic names.
     for (let t = 0; t < 2; t++) {
       songs.push({
         id: `tr-${a}-${t}`,
@@ -46,9 +42,6 @@ function makeLibrary(): SongRow[] {
   return songs
 }
 
-/** Registers the standard Navidrome mock, then re-registers ONLY search3
- *  (Playwright routes are last-registered-first-matched) to answer with the
- *  large catalog. The cover-art catch-all answers 1×1 PNGs for every cell. */
 async function installLargeLibraryMock(page: Page): Promise<void> {
   await installNavidromeMock(page)
   await page.route('**/search3.view*', (route) =>
@@ -63,26 +56,20 @@ async function installLargeLibraryMock(page: Page): Promise<void> {
   )
 }
 
-/** One boot/seed/reload cycle so the pipeline connects against the mock with
- *  the large catalog. */
 async function bootWithLargeLibrary(page: Page): Promise<void> {
   await installLargeLibraryMock(page)
-  await bootApp(page) // first boot: creates the Dexie schema
+  await bootApp(page)
   await seedMockCredentials(page)
   await page.reload({ waitUntil: 'networkidle' })
   await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })
 }
 
-async function openAlbums(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Albums', exact: true }).click()
+function mountedCells(page: Page, attr: string): Promise<number> {
+  return page.evaluate((a) => document.querySelectorAll(`[${a}]`).length, attr)
 }
 
-async function openArtists(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Artists', exact: true }).click()
-}
-
-function scrollToGridBottom(page: Page): Promise<void> {
-  return page.evaluate(() => {
+async function scrollToGridBottom(page: Page): Promise<void> {
+  await page.evaluate(() => {
     const scroller = document.querySelector<HTMLElement>('div.flex-1.overflow-y-auto')
     if (!scroller) throw new Error('grid scroll container not found')
     scroller.scrollTop = scroller.scrollHeight
@@ -90,46 +77,53 @@ function scrollToGridBottom(page: Page): Promise<void> {
   })
 }
 
-test('albums grid mounts the first chunk and grows on scroll', async ({ page }) => {
+test('albums grid mounts a bounded window at the top', async ({ page }) => {
   await bootWithLargeLibrary(page)
-  await openAlbums(page)
-
+  await page.getByRole('button', { name: 'Albums', exact: true }).click()
   const header = page.locator('h2', { hasText: 'Albums · ' })
-  // The library load lands after data-app-ready — retry through the window.
-  await expect(header).toHaveText(/Albums · 210 \(50 shown\)/, { timeout: 20_000 })
+  await expect(header).toHaveText(`Albums · ${ALBUMS}`, { timeout: 20_000 })
+  // Bounded: 2–5 columns × a handful of rows, never the whole 210.
+  const cells = await mountedCells(page, 'data-album')
+  expect(cells).toBeGreaterThan(4)
+  expect(cells).toBeLessThanOrEqual(60)
+})
 
-  // Growth happens on scroll proximity (IO rootMargin 200px): one scroll to
-  // the bottom is enough to arm the sentinel.
+test('albums grid teleport lands the last album with a bounded window', async ({ page }) => {
+  await bootWithLargeLibrary(page)
+  await page.getByRole('button', { name: 'Albums', exact: true }).click()
+  await expect(page.locator('h2', { hasText: 'Albums · ' })).toHaveText(`Albums · ${ALBUMS}`, { timeout: 20_000 })
   await scrollToGridBottom(page)
-  await expect(header).toHaveText(/Albums · 210 \((100|150|200) shown\)/, { timeout: 10_000 })
-  await expect(page.getByText('Loading more…')).toBeVisible()
+  await page.waitForTimeout(400)
+  // The teleport renders the END of the list (a chunk grid would need to
+  // grow through every sentinel; the window derives straight from scrollTop).
+  const last = page.locator('[data-album]').last()
+  await expect(last).toHaveAttribute('data-album', /Album 0209/)
+  const cells = await mountedCells(page, 'data-album')
+  expect(cells).toBeLessThanOrEqual(60)
 })
 
-test('albums grid sentinel reports completion and stops growing', async ({ page }) => {
+test('artists grid windows the same way', async ({ page }) => {
   await bootWithLargeLibrary(page)
-  await openAlbums(page)
-
-  const header = page.locator('h2', { hasText: 'Albums · ' })
-  await expect(header).toHaveText(/Albums · 210 \(50 shown\)/, { timeout: 20_000 })
-
-  // Scroll repeatedly until the header reports every group rendered.
-  for (let i = 0; i < 15; i++) {
-    await scrollToGridBottom(page)
-    const txt = (await header.textContent()) ?? ''
-    if (txt.includes('(210 shown)')) break
-    await page.waitForTimeout(80)
-  }
-  await expect(page.getByText(`All ${ALBUMS} albums loaded`)).toBeVisible()
-  await expect(page.getByText('Loading more…')).toHaveCount(0)
-})
-
-test('artists grid chunks the same way', async ({ page }) => {
-  await bootWithLargeLibrary(page)
-  await openArtists(page)
-
+  await page.getByRole('button', { name: 'Artists', exact: true }).click()
   const header = page.locator('h2', { hasText: 'Artists · ' })
-  await expect(header).toHaveText(/Artists · 210 \(50 shown\)/, { timeout: 20_000 })
-
+  await expect(header).toHaveText(`Artists · ${ALBUMS}`, { timeout: 20_000 })
+  const cells = await mountedCells(page, 'data-artist')
+  expect(cells).toBeGreaterThan(4)
+  expect(cells).toBeLessThanOrEqual(60)
   await scrollToGridBottom(page)
-  await expect(header).toHaveText(/Artists · 210 \((100|150|200) shown\)/, { timeout: 10_000 })
+  await page.waitForTimeout(400)
+  // Artists sort alphabetically — the last cell is the alphabetically last
+  // artist ("Artist 99"), NOT the highest index.
+  await expect(page.locator('[data-artist]').last()).toHaveAttribute('data-artist', 'Artist 99')
+})
+
+test('album detail track list windows its rows', async ({ page }) => {
+  await bootWithLargeLibrary(page)
+  await page.getByRole('button', { name: 'Albums', exact: true }).click()
+  await page.locator('[data-album]').first().click()
+  await page.waitForTimeout(400)
+  // An album holds 2 tracks here — both mounted; the window machinery must
+  // not break the small case. The rows carry the shared [data-track-id].
+  const rows = await page.evaluate(() => document.querySelectorAll('[data-track-id]').length)
+  expect(rows).toBe(2)
 })

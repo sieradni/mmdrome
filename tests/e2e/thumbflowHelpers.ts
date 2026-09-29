@@ -140,7 +140,11 @@ export function coverImgsIn(page: Page, scope: string): Promise<number> {
   return page.evaluate((scope) => {
     const root = document.querySelector(scope)
     if (!root) throw new Error(`scope not found: ${scope}`)
-    return root.querySelectorAll('img[src*="getCoverArt"]').length
+    // MAIN covers only — the 32px micro-rendition UNDERLAY inside every armed
+    // LazyThumb is not a mounted cover (2026-09-28: windowed grids arm every
+    // cell of the fixed window, so the old getCoverArt-wide selector counted
+    // 2 imgs per cell and lied about the mount set).
+    return root.querySelectorAll('img[src*="getCoverArt"]:not([src*="size=32"])').length
   }, scope)
 }
 
@@ -159,7 +163,7 @@ export function nearBandLoad(page: Page, scope: string, radiusVh: number): Promi
     const mid = vh / 2
     let near = 0
     let loaded = 0
-    for (const img of root.querySelectorAll<HTMLImageElement>('img[src*="getCoverArt"]')) {
+    for (const img of root.querySelectorAll<HTMLImageElement>('img[src*="getCoverArt"]:not([src*="size=32"])')) {
       const r = img.getBoundingClientRect()
       if (Math.abs(r.top + r.height / 2 - mid) <= vh * radiusVh) {
         near++

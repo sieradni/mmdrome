@@ -2,6 +2,9 @@
   import { onMount, tick } from 'svelte'
   import { library, metadataCache, autoQueueScope, currentTrack } from '../stores/appState'
   import { saveViewState, restoreViewState } from '../lib/viewState'
+  import { ESTIMATED_ROW_H, computeWindow, endOffsetPx, scrollTopForIndex, startOffsetPx } from '../lib/virtualWindow'
+  import { computeGridWindow, endGapPx, measureGridRowPx, scrollTopForCell, startGapPx, syncGridCols } from '../lib/gridWindow'
+  import { createScrollWindow, firstRowMeasure } from '../lib/scrollWindow'
   import { libraryFilters, applyFilterSort, makeGroupAggregates } from '../lib/libraryFilters'
   import { parseSearchQuery, fieldsMatchQuery, trackMatchesQuery, highlightSegments, type HighlightSegment } from '../lib/searchCore'
   import { foldMapForSearch } from '../lib/matchNormalize'
@@ -88,20 +91,61 @@
 
   let visibleGroups = $derived(applyFilterSort(albumGroups, $libraryFilters, getRating))
 
-  // Incremental render (the SongsView CHUNK pattern): the grid grows by
-  // GRID_CHUNK cells as the sentinel nears the viewport bottom, so a large
-  // library mounts 50 cells, not 5,000 — `.cv-cell` mitigates the paint cost
-  // of what IS mounted, this bounds the mount itself. The limit persists in
-  // view state alongside the scroll position so a restored session re-renders
-  // the grown chunk BEFORE restoring scrollTop (a 50-cell grid cannot
-  // scroll to row 400). Deliberately NO reset when FilterSortBar opens
-  // (SongsView resets): collapsing the grid under a scrolled user yanks the
-  // scroll position; the limit is honest "how deep they went".
-  const GRID_CHUNK = 50
-  let gridLimit = $state(GRID_CHUNK)
-  let gridSentinelEl = $state<HTMLDivElement>()
-  let renderedGroups = $derived(visibleGroups.slice(0, gridLimit))
-  let gridHasMore = $derived(gridLimit < visibleGroups.length)
+  // Virtual grid window (2026-09-28; the SongsView model applied to the grid):
+  // a CELL exists iff its index is inside `gridWin` — no growth sentinel, no
+  // grow-only memory. Cuts are ROW-exact (gridWindow.ts) so the model agrees
+  // with the CSS grid; row spacers keep the scroll height at the full grid
+  // height, so restore is a plain scrollTop write and the old
+  // restore-before-sentinel ordering is structurally gone.
+  let gridWin = $state({ startCell: 0, endCell: 0, startRow: 0, endRow: 0 })
+  let gridRowPx = $state(260)
+  let gridCols = $state(2)
+  let renderedGroups = $derived(visibleGroups.slice(gridWin.startCell, gridWin.endCell))
+  let gridTopGap = $derived(startGapPx(gridWin, { totalCells: visibleGroups.length, cols: gridCols, rowPx: gridRowPx, gridPadTop: 0 }))
+  let gridBottomGap = $derived(endGapPx(gridWin, { totalCells: visibleGroups.length, cols: gridCols, rowPx: gridRowPx, gridPadTop: 0 }))
+
+  // The shared scroll-window machine (see SongsView): one engine for the
+  // throttled scroll + trailing derive, view-state save, consume-once
+  // restore, and ResizeObserver re-derive. The measure closure syncs the
+  // column count and measures rowPx from a FULLY-VISIBLE cell only (the
+  // 2026-09-28 oscillator contract, now living in gridWindow.ts).
+  const gridMachine = createScrollWindow<{ startCell: number; endCell: number; startRow: number; endRow: number }>({
+    getTotal: () => visibleGroups.length,
+    getViewport: () => scrollContainer,
+    getWindow: () => gridWin,
+    setWindow: (w) => {
+      gridWin = w
+    },
+    getRowH: () => gridRowPx,
+    setRowH: (h) => {
+      gridRowPx = h
+    },
+    compute: ({ total, scrollTop, viewportH, rowH }) =>
+      computeGridWindow({
+        totalCells: total,
+        cols: gridCols,
+        scrollTop,
+        viewportH,
+        rowPx: rowH,
+        gridPadTop: 16,
+      }),
+    measure: (el, currentRowPx) => {
+      const grid = el.querySelector<HTMLElement>('.grid')
+      if (!grid) return currentRowPx
+      const cols = syncGridCols(grid)
+      if (cols !== null) gridCols = cols
+      return measureGridRowPx(el, grid, '[data-album]', currentRowPx)
+    },
+    viewKey: viewName,
+    scrollTopField: 'listScrollTop',
+  })
+
+  $effect(() => {
+    void visibleGroups
+    void scrollContainer
+    gridMachine.deriveNow()
+    return gridMachine.observeResize()
+  })
 
   let selectedTracks = $derived(
     selectedAlbum ? albumGroups.find(g => g.album === selectedAlbum)?.tracks ?? [] : []
@@ -119,10 +163,22 @@
   let jumpScrollPending = $state(false)
 
   function jumpToCurrent() {
-    // Grow the grid first if the target album is past the rendered chunk —
-    // the scroll-into-view below can only find a mounted cell.
-    const idx = currentAlbum ? visibleGroups.findIndex((g) => g.album === currentAlbum) : -1
-    if (idx >= gridLimit) gridLimit = idx + GRID_CHUNK
+    // The grid jump IS a scrollTop write (the window derives around it); the
+    // smooth-center pass below is polish. No limit-growth pre-step — the
+    // target cell renders by derivation.
+    if (selectedAlbum) {
+      const idx = selectedTracks.findIndex((t) => t.trackId === $currentTrack?.trackId)
+      if (idx >= 0 && detailScrollContainer) {
+        detailScrollContainer.scrollTop = scrollTopForIndex(idx, detailScrollContainer.clientHeight, detailRowH)
+        detailMachine.deriveNow()
+      }
+    } else {
+      const idx = currentAlbum ? visibleGroups.findIndex((g) => g.album === currentAlbum) : -1
+      if (idx >= 0 && scrollContainer) {
+        scrollContainer.scrollTop = scrollTopForCell(idx, scrollContainer.clientHeight, { totalCells: visibleGroups.length, cols: gridCols, rowPx: gridRowPx, gridPadTop: 16 })
+        gridMachine.deriveNow()
+      }
+    }
     jumpScrollPending = true
   }
 
@@ -144,14 +200,42 @@
     })
   })
 
+  // ── Detail view (album track list) window: same model as SongsView ──
+  let detailWin = $state({ start: 0, end: 0 })
+  let detailRowH = $state(ESTIMATED_ROW_H)
+  let detailRows = $derived(selectedTracks.slice(detailWin.start, detailWin.end))
+  let detailTopPad = $derived(startOffsetPx(detailWin.start, detailRowH))
+  let detailBottomPad = $derived(endOffsetPx(selectedTracks.length, detailWin.end, detailRowH))
+
+  // Detail list rides the SAME machine (list compute + first-row measure).
+  const detailMachine = createScrollWindow<{ start: number; end: number }>({
+    getTotal: () => selectedTracks.length,
+    getViewport: () => detailScrollContainer,
+    getWindow: () => detailWin,
+    setWindow: (w) => {
+      detailWin = w
+    },
+    getRowH: () => detailRowH,
+    setRowH: (h) => {
+      detailRowH = h
+    },
+    compute: ({ total, scrollTop, viewportH, rowH }) => computeWindow({ total, scrollTop, viewportH, rowH }),
+    measure: firstRowMeasure('[data-track-id]'),
+    viewKey: viewName,
+    scrollTopField: 'detailScrollTop',
+  })
+
+  $effect(() => {
+    void selectedTracks
+    void detailScrollContainer
+    detailMachine.deriveNow()
+  })
+
   let ready = $state(false)
 
   $effect(() => {
     if (!ready) return
-    saveViewState(viewName, {
-      selectedAlbum,
-      ...(selectedAlbum ? {} : { listGridLimit: gridLimit }),
-    })
+    saveViewState(viewName, { selectedAlbum })
   })
 
   let scrollRestorePending = $state(false)
@@ -168,40 +252,25 @@
     }
   })
 
-  $effect(() => {
-    const lc = scrollContainer
-    const se = gridSentinelEl
-    if (!lc || !se) return
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry.isIntersecting && lc.offsetHeight > 0) gridLimit += GRID_CHUNK
-      },
-      { root: lc, rootMargin: '200px' }
-    )
-    observer.observe(se)
-    return () => observer.disconnect()
-  })
-
+  // Restore: the scroll height is ALWAYS the full list/grid (windowed
+  // spacers), so both surfaces restore as a plain scrollTop write through the
+  // machines' consume-once restore. The legacy `listGridLimit` field in old
+  // persisted state is ignored — the window derives from the restored
+  // scrollTop.
   $effect(() => {
     if (!scrollRestorePending) return
     if (selectedAlbum) {
-      if (!detailScrollContainer) return
-      if (detailScrollContainer.scrollHeight > detailScrollContainer.clientHeight) {
-        const saved = restoreViewState<{ detailScrollTop: number }>(viewName)
-        if (saved?.detailScrollTop) {
-          detailScrollContainer.scrollTop = saved.detailScrollTop
-        }
-        scrollRestorePending = false
-      }
+      if (!detailScrollContainer || selectedTracks.length === 0) return
+      const saved = restoreViewState<{ detailScrollTop: number }>(viewName)
+      if (saved?.detailScrollTop) detailMachine.armRestore(saved.detailScrollTop)
+      detailMachine.restoreIfReady()
+      scrollRestorePending = false
     } else {
-      if (!scrollContainer) return
-      if (scrollContainer.scrollHeight > scrollContainer.clientHeight) {
-        const saved = restoreViewState<{ listScrollTop: number }>(viewName)
-        if (saved?.listScrollTop) {
-          scrollContainer.scrollTop = saved.listScrollTop
-        }
-        scrollRestorePending = false
-      }
+      if (!scrollContainer || visibleGroups.length === 0) return
+      const saved = restoreViewState<{ listScrollTop: number }>(viewName)
+      if (saved?.listScrollTop) gridMachine.armRestore(saved.listScrollTop)
+      gridMachine.restoreIfReady()
+      scrollRestorePending = false
     }
   })
 
@@ -220,19 +289,13 @@
   }
 
   onMount(() => {
-    const saved = restoreViewState<{ listScrollTop: number; detailScrollTop: number; selectedAlbum: string | null; listGridLimit?: number }>(viewName)
+    const saved = restoreViewState<{ selectedAlbum: string | null }>(viewName)
     if (saved) {
       selectedAlbum = saved.selectedAlbum
-      if (typeof saved.listGridLimit === 'number') gridLimit = Math.max(GRID_CHUNK, saved.listGridLimit)
     }
     ready = true
     if (saved) scrollRestorePending = true
   })
-
-  // Sentinel observer as an $effect (not onMount): it re-arms whenever the
-  // list branch binds — including returning from a restored detail view, where
-  // an onMount observer would have bailed on a null container and never
-  // re-registered (the grid would freeze at its first chunk).
 
 </script>
 
@@ -248,11 +311,13 @@
         Play All
       </button>
     </div>
-    <div bind:this={detailScrollContainer} class="flex-1 overflow-y-auto pb-24"
-         onscroll={() => { if (detailScrollContainer) saveViewState(viewName, { detailScrollTop: detailScrollContainer.scrollTop }) }}>    <div class="px-4 pt-2 pb-1">
-        {#each selectedTracks as track (track.trackId)}
-          <TrackRow {track} playing={track.trackId === $currentTrack?.trackId} ondetails={() => detailsTrack = track} showAlbumArtist onplay={handlePlayFromAlbum} highlightTokens={searchTokens} />
+    <div bind:this={detailScrollContainer} class="flex-1 overflow-y-auto overflow-anchor-none pb-24"
+         onscroll={detailMachine.onScroll}>    <div class="px-4 pt-2 pb-1">
+        <div style="height:{detailTopPad}px" aria-hidden="true"></div>
+        {#each detailRows as track (track.trackId)}
+          <TrackRow {track} windowed playing={track.trackId === $currentTrack?.trackId} ondetails={() => detailsTrack = track} showAlbumArtist onplay={handlePlayFromAlbum} highlightTokens={searchTokens} />
         {/each}
+        <div style="height:{detailBottomPad}px" aria-hidden="true"></div>
       </div>
     </div>
     <JumpToCurrentButton show={canJumpDetail} onclick={jumpToCurrent} />
@@ -266,14 +331,15 @@
   <div class="relative flex h-full flex-col">
     <FilterSortBar />
     <div class="border-b border-white/10 px-4 py-3">
-      <h2 class="text-xs font-medium uppercase tracking-wider text-muted">Albums · {visibleGroups.length}{#if gridHasMore}{' '}({renderedGroups.length} shown){/if}</h2>
+      <h2 class="text-xs font-medium uppercase tracking-wider text-muted">Albums · {visibleGroups.length}</h2>
     </div>
-    <div bind:this={scrollContainer} class="flex-1 overflow-y-auto pb-24"
-         onscroll={() => { if (scrollContainer) saveViewState(viewName, { listScrollTop: scrollContainer.scrollTop }) }}>
+    <div bind:this={scrollContainer} class="flex-1 overflow-y-auto overflow-anchor-none pb-24"
+         onscroll={gridMachine.onScroll}>
+      <div style="height:{gridTopGap}px" aria-hidden="true"></div>
       <div class="grid grid-cols-2 gap-4 px-4 py-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
         {#each renderedGroups as group (group.album)}
-          <button onclick={() => selectedAlbum = group.album} data-album={group.album} class="cv-cell group text-left transition-transform hover:scale-[1.02]">
-            <LazyThumb track={group.tracks.find(t => t.trackId === group.thumbnailTrackId) || group.tracks[0]} size={256} wrapperClass="mb-2 aspect-square w-full rounded-lg" />
+          <button onclick={() => selectedAlbum = group.album} data-album={group.album} class="group text-left transition-transform hover:scale-[1.02]">
+            <LazyThumb track={group.tracks.find(t => t.trackId === group.thumbnailTrackId) || group.tracks[0]} size={256} windowed wrapperClass="mb-2 aspect-square w-full rounded-lg" />
             <p class="truncate text-sm font-bold text-primary">
               {#if searchTokens.length > 0}
                 {#each fieldSegs(group.album) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
@@ -292,17 +358,9 @@
           </button>
         {/each}
       </div>
+      <div style="height:{gridBottomGap}px" aria-hidden="true"></div>
       {#if visibleGroups.length === 0}
         <p class="px-4 py-12 text-center text-xs text-muted">No albums found</p>
-      {/if}
-      {#if renderedGroups.length > 0}
-        <div bind:this={gridSentinelEl} class="py-6 text-center">
-          {#if gridHasMore}
-            <p class="text-sm text-muted">Loading more…</p>
-          {:else}
-            <p class="text-sm text-muted">All {visibleGroups.length} albums loaded</p>
-          {/if}
-        </div>
       {/if}
     </div>
     <JumpToCurrentButton show={canJumpList} onclick={jumpToCurrent} />
