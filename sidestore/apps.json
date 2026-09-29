@@ -27,7 +27,8 @@
           "date": "2026-09-29T17:30:55.209Z",
           "localizedDescription": "The auto queue keeps its own persisted sort (hidden while shuffle is on), and the FilterSortBar gains an apply-to-auto-queue button - visible only when settings differ - behind a confirm popup.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.46/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5058276
         },
         {
           "version": "1.2.45",
