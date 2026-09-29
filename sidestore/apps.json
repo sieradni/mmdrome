@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.42",
-      "versionDate": "2026-09-26T11:26:55.697Z",
-      "versionDescription": "Relink orphaned pending edits after Navidrome id migrations; Push names every track and can discard edits; smarter file re-binding.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.42/mmdrome.ipa",
+      "version": "1.2.43",
+      "versionDate": "2026-09-29T05:41:52.673Z",
+      "versionDescription": "Virtualized scrolling across every library surface: Songs, the Albums and Artists grids with their detail lists, and the Queue now render fixed windows, which fixes scroll jank and makes covers load instantly on large libraries. Also smoother queue re-anchoring on repeat plays.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.43/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.43",
+          "buildVersion": "47",
+          "date": "2026-09-29T05:41:52.673Z",
+          "localizedDescription": "Virtualized scrolling across every library surface: Songs, the Albums and Artists grids with their detail lists, and the Queue now render fixed windows, which fixes scroll jank and makes covers load instantly on large libraries. Also smoother queue re-anchoring on repeat plays.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.43/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.42",
           "buildVersion": "46",
@@ -431,6 +439,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.43",
+      "identifier": "ios-v1.2.43",
+      "appID": "com.mmdrome.player",
+      "caption": "Virtualized scrolling across every library surface: Songs, the Albums and Artists grids with their detail lists, and the Queue now render fi",
+      "date": "2026-09-29T05:41:52.673Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.42",
       "identifier": "ios-v1.2.42",
       "appID": "com.mmdrome.player",
@@ -463,15 +480,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Early-close network fingerprint: every stream early-close log now carries the response status and connection headers (Connection, Content-Le",
       "date": "2026-09-25T08:16:23.151Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.38",
-      "identifier": "ios-v1.2.38",
-      "appID": "com.mmdrome.player",
-      "caption": "Disk-truth continuation + verdict for early-closed streams (the repeatedly-skipping dump): the writer's byte counter is per-byte truth, the ",
-      "date": "2026-09-25T07:36:09.174Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
