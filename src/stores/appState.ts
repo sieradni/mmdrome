@@ -4,6 +4,7 @@ import type { NoMatchReason } from '$lib/metadataCore'
 import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
 import { persisted, type PersistedValue } from '$lib/persistedStore'
 import { sanitizeRecent } from '$lib/recentWindow'
+import type { LibrarySortKey } from '$lib/libraryFilters'
 import { planPendingRelink } from '$lib/pendingRelink'
 import { dbgAlways } from '$lib/debugLog'
 
@@ -209,6 +210,45 @@ export interface AutoQueueScope {
   artistScope?: string
 }
 
+/**
+ * The auto-queue SORT setting: which shared sort key the auto-queue fill
+ * follows and in which direction. Persisted via the `persisted()` layer
+ * (Dexie userSettings row `autoQueueSort`, restored in initStores).
+ *
+ * 2026-09-29 decoupling: the fill previously read the SHARED library sort
+ * (`libraryFilters.sortBy/sortAsc`) directly — the Songs view's sort silently
+ * re-ranked the auto queue. Now the auto queue carries its OWN sort; the
+ * library sort is purely a view concern. No migration seeds it from the
+ * library sort: existing installs start at library order (user decision), so
+ * the apply button appears the moment the two diverge.
+ */
+export interface AutoQueueSort {
+  /** Which sort key the fill follows. `null` = library order (the default). */
+  sortBy: LibrarySortKey | null
+  /** Sort direction. Only meaningful when `sortBy` is set; kept (not reset)
+   *  when the key clears so re-picking a key restores the prior direction. */
+  sortAsc: boolean
+}
+
+/** Dexie-legal initial value: library order, ascending. */
+export const AUTO_QUEUE_SORT_DEFAULT: AutoQueueSort = { sortBy: null, sortAsc: true }
+
+/**
+ * Shape-validating decode for the persisted `autoQueueSort` row (same seam
+ * as `decodeAutoQueueFilters` — corrupt/partial rows fall back to the
+ * default instead of spreading junk into the fill planner).
+ */
+export function decodeAutoQueueSort(raw: unknown): AutoQueueSort | undefined {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const p = raw as Partial<AutoQueueSort>
+  const validKeys: LibrarySortKey[] = ['rating', 'loved', 'year', 'length']
+  if (p.sortBy !== null && p.sortBy !== undefined && !validKeys.includes(p.sortBy)) return undefined
+  return {
+    sortBy: p.sortBy ?? null,
+    sortAsc: typeof p.sortAsc === 'boolean' ? p.sortAsc : true,
+  }
+}
+
 export type AutoQueueFilters = AutoQueueFilterFields & AutoQueueScope
 
 export type LoopMode = 'none' | 'one' | 'all'
@@ -300,6 +340,16 @@ const _autoQueueFilterFields = persisted<AutoQueueFilterFields>('autoQueueFilter
 })
 
 export const autoQueueFilterFields = _autoQueueFilterFields.store
+
+/** The auto queue's OWN sort (2026-09-29 decoupling): the fill no longer
+ *  follows the shared library sort. Persisted, restored in initStores. The
+ *  UI hides the sort editor while shuffle is on (shuffle permutes the pool
+ *  anyway), but the setting keeps persisting underneath. */
+const _autoQueueSort = persisted<AutoQueueSort>('autoQueueSort', AUTO_QUEUE_SORT_DEFAULT, {
+  decode: decodeAutoQueueSort,
+})
+
+export const autoQueueSort = _autoQueueSort.store
 
 /** Session-only auto-queue scoping (B5): set on play from album/artist views,
  *  cleared on shuffle toggle / plain TrackRow play. By construction the scopes
@@ -547,6 +597,7 @@ export async function initStores(): Promise<void> {
     _shuffleEnabled.restore(),
     _loopMode.restore(),
     _autoQueueFilterFields.restore(),
+    _autoQueueSort.restore(),
   ])
 
   initialized = true

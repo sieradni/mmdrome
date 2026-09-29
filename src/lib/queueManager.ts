@@ -1,6 +1,5 @@
 import { get } from 'svelte/store'
 import { saveQueue } from './db'
-import { libraryFilters } from './libraryFilters'
 import { planAutoQueueFill, type AutoQueuePlanState } from './autoQueuePlan'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import { syncFillProvenance } from './queueProvenance'
@@ -10,6 +9,7 @@ import {
   library,
   shuffleEnabled,
   autoQueueFilters,
+  autoQueueSort,
   metadataCache,
   queueWrapNotice,
   autoQueueEmptyNotice,
@@ -49,7 +49,9 @@ class QueueManager {
       recentTrackIds: q.recentTrackIds,
       activeId: combined[q.activeIndex],
       shuffle: get(shuffleEnabled),
-      sort: get(libraryFilters),
+      // The auto queue follows its OWN sort (2026-09-29 decoupling) — the
+      // shared library sort is a view concern and never re-ranks the fill.
+      sort: get(autoQueueSort),
       filters: get(autoQueueFilters),
       meta: get(metadataCache),
     }

@@ -1,6 +1,6 @@
 import { trackMatchesGenre, type LibraryFilterState } from './libraryFilters'
 import { parseSearchQuery, trackMatchesQuery } from './searchCore'
-import type { Track, AutoQueueFilters, AutoQueueFilterFields } from '../stores/appState'
+import type { Track, AutoQueueFilters, AutoQueueFilterFields, AutoQueueSort } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
 
 /**
@@ -29,7 +29,9 @@ export interface AutoQueuePlanState {
   /** The currently playing track id (combined[activeIndex]) — rotation-tier exclusion. */
   activeId: string | undefined
   shuffle: boolean
-  sort: Pick<LibraryFilterState, 'sortBy' | 'sortAsc'>
+  /** The fill's own sort order — the persisted `autoQueueSort` setting
+   *  (structurally the shared `{sortBy, sortAsc}` pair). */
+  sort: AutoQueueSort
   filters: AutoQueueFilters
   meta: Map<string, LocalMetadataStore>
 }
@@ -52,6 +54,86 @@ export interface AutoQueueFillPlan {
    * rows between stages, so the tiering stays valid for the sliced fill.
    */
   tiers: { 1: string[]; 2: string[]; 3: string[] }
+}
+
+/** A shared-semantics bound arrives as `number | ''` on BOTH models; coerce
+ *  both sides through the same `'' ⇔ null` fold so `0` is preserved but empty
+ *  and null compare equal (the auto fields may hold null from older rows). */
+function boundVal(v: number | '' | null | undefined): number | '' {
+  if (v === '' || v === null || v === undefined) return ''
+  return Number(v)
+}
+
+/**
+ * Compare a `LibraryFilterState` with the auto-queue's filter/sort settings
+ * over the shared-semantics fields. Returns true when an apply would change
+ * anything — the visibility predicate for the apply button.
+ *
+ * Defined AS the plan's non-emptiness (single comparison source — the two
+ * predicates can never disagree about whether an apply does something).
+ *
+ * Deliberately ignored: UI flags (filterOpen/sortOpen) and auto-only fields
+ * (searchQuery, session scope). `sortAsc` is only compared when a sort key is
+ * active (with no key, direction is meaningless).
+ */
+export function autoQueueSettingsDiffer(
+  lib: LibraryFilterState,
+  autoFilters: AutoQueueFilterFields,
+  autoSort: AutoQueueSort,
+): boolean {
+  const plan = planApplyLibraryToAutoQueue(lib, autoFilters, autoSort)
+  return plan.filters !== undefined || plan.sort !== undefined
+}
+
+/**
+ * The apply plan: which store writes the confirm modal's Apply performs.
+ * `filters` is present when the library filter fields differ from the auto
+ * filter fields (auto-only fields preserved), `sort` when the shared sort
+ * differs. Both absent = nothing to do (the button is hidden in that case).
+ */
+export interface ApplyLibraryPlan {
+  filters?: Omit<AutoQueueFilterFields, 'searchQuery'>
+  sort?: AutoQueueSort
+}
+
+/**
+ * Pure half of the apply button: copy the library filter/sort into the
+ * auto-queue settings. Returns ONLY the stores whose values actually differ,
+ * so the manager's existing reaction layer picks the right refill semantics
+ * for free (filters-only apply → replenish; any sort change → rebuild).
+ */
+export function planApplyLibraryToAutoQueue(
+  lib: LibraryFilterState,
+  autoFilters: AutoQueueFilterFields,
+  autoSort: AutoQueueSort,
+): ApplyLibraryPlan {
+  const plan: ApplyLibraryPlan = {}
+  const filtersDiffer =
+    lib.minRating !== autoFilters.minRating ||
+    lib.maxRating !== autoFilters.maxRating ||
+    lib.lovedOnly !== autoFilters.lovedOnly ||
+    (lib.genre ?? '') !== (autoFilters.genre ?? '') ||
+    boundVal(lib.fromYear) !== boundVal(autoFilters.fromYear) ||
+    boundVal(lib.toYear) !== boundVal(autoFilters.toYear) ||
+    boundVal(lib.minLength) !== boundVal(autoFilters.minLength) ||
+    boundVal(lib.maxLength) !== boundVal(autoFilters.maxLength)
+  if (filtersDiffer) {
+    plan.filters = {
+      minRating: lib.minRating,
+      maxRating: lib.maxRating,
+      lovedOnly: lib.lovedOnly,
+      genre: lib.genre,
+      fromYear: lib.fromYear,
+      toYear: lib.toYear,
+      minLength: lib.minLength,
+      maxLength: lib.maxLength,
+    }
+  }
+  const sortDiffers = lib.sortBy !== autoSort.sortBy || (lib.sortBy !== null && lib.sortAsc !== autoSort.sortAsc)
+  if (sortDiffers) {
+    plan.sort = { sortBy: lib.sortBy, sortAsc: lib.sortAsc }
+  }
+  return plan
 }
 
 /**

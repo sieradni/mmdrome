@@ -9,10 +9,11 @@
     effectiveDuration,
     playbackState,
     autoQueueFilterFields,
-    autoQueueScope,
+    autoQueueSort,
     ratingBound,
     queueWrapNotice,
     autoQueueEmptyNotice,
+    autoQueueScope,
     type Track,
     type AutoQueueFilterFields,
   } from '../stores/appState'
@@ -28,6 +29,7 @@
   import { queueManager } from '../lib/queueManager'
   import { distinctGenres } from '../lib/libraryFilters'
   import { restoreViewState } from '../lib/viewState'
+  import { sortLabels, type LibrarySortKey } from '../lib/libraryFilters'
   import { ESTIMATED_ROW_H, OVERSCAN_ROWS, endOffsetPx, startOffsetPx } from '../lib/virtualWindow'
   import { createScrollWindow, firstRowMeasure } from '../lib/scrollWindow'
   import LazyThumb from '../components/LazyThumb.svelte'
@@ -67,6 +69,19 @@
 
   function numFilterField(v: string): number | '' {
     return v === '' ? '' : Number(v)
+  }
+
+  /** Auto-queue sort editor (the filter modal's Sort section). Same pick /
+   *  flip / clear contract as the library sort menu: picking the active key
+   *  flips direction, picking a new key sets its default direction, null
+   *  clears. Writes the PERSISTED setting even while shuffle hides this
+   *  editor (the section is display-gated, not write-gated). */
+  function setAutoSort(key: LibrarySortKey | null): void {
+    autoQueueSort.update((s) => {
+      if (key === null) return { ...s, sortBy: null }
+      if (s.sortBy === key) return { ...s, sortAsc: !s.sortAsc }
+      return { sortBy: key, sortAsc: key === 'length' || key === 'year' }
+    })
   }
 
   onMount(() => {
@@ -1069,6 +1084,45 @@
         </button>
       </div>
       <div class="space-y-4 px-5 py-4">
+        {#if !$shuffleEnabled}
+          <!-- Auto-queue SORT (2026-09-29): the fill follows its own sort now;
+               edited here like the library sort menu. HIDDEN while shuffle is
+               on (shuffle permutes the pool) but the setting keeps persisting
+               underneath — no writes are gated, only this editor is rendered. -->
+          <div>
+            <span class="text-sm font-medium text-muted">Sort order</span>
+            <div class="mt-1 space-y-1">
+              {#each ['rating', 'loved', 'year', 'length'] as key (key)}
+                {@const k = key as LibrarySortKey}
+                <button
+                  onclick={() => setAutoSort(k)}
+                  class="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm transition-colors"
+                  class:bg-surface-hover={$autoQueueSort.sortBy === k}
+                  class:text-primary={$autoQueueSort.sortBy === k}
+                  class:text-muted={$autoQueueSort.sortBy !== k}
+                >
+                  <span>{sortLabels[k]}</span>
+                  {#if $autoQueueSort.sortBy === k}
+                    <span class="text-accent">{$autoQueueSort.sortAsc ? '↑' : '↓'}</span>
+                  {/if}
+                </button>
+              {/each}
+              {#if $autoQueueSort.sortBy}
+                <button
+                  onclick={() => setAutoSort(null)}
+                  class="mt-2 w-full rounded px-2 py-1 text-sm text-muted transition-colors hover:text-primary"
+                >Clear sort</button>
+                <!-- A direction toggle only makes sense over an active key;
+                     rendered while a key is active so the user can flip
+                     without re-picking the same key (a second tap flips). -->
+                <button
+                  onclick={() => autoQueueSort.update((s) => ({ ...s, sortAsc: !s.sortAsc }))}
+                  class="w-full rounded px-2 py-1 text-sm text-muted transition-colors hover:text-primary"
+                >Reverse direction</button>
+              {/if}
+            </div>
+          </div>
+        {/if}
         <div>
           <span class="text-sm font-medium text-muted">Search Query</span>
           <div class="mt-1">

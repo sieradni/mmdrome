@@ -17,6 +17,7 @@ import {
   metadataCache,
   queueWrapNotice,
   autoQueueFilterFields,
+  autoQueueSort,
   autoQueueScope,
   autoQueueEmptyNotice,
 } from '../src/stores/appState'
@@ -67,6 +68,7 @@ function reset(): void {
   shuffleEnabled.set(false)
   metadataCache.set(new Map())
   autoQueueFilterFields.set({ ...FIELDS })
+  autoQueueSort.set({ sortBy: null, sortAsc: true })
   autoQueueScope.set({})
   libraryFilters.set({
     filterOpen: false, sortOpen: false, minRating: 0, maxRating: 100, lovedOnly: false,
@@ -146,13 +148,13 @@ test('a queue already full of matching tracks takes the first no-op guard (neede
   assert.equal(get(queue).autoQueue.length, 50)
 })
 
-test('a sort change rebuilds the whole auto queue in the shared-sort order (B7)', () => {
+test('a sort change rebuilds the whole auto queue in the auto-sort order (B7)', () => {
   reset()
   // Library order scrambled vs. rating order, so the B7 fix is observable.
   library.set(['c', 'e', 'a', 'f', 'b', 'd'].map((id) => track(id)))
   metadataCache.set(metaOf([['a', 10], ['b', 20], ['c', 30], ['d', 40], ['e', 50], ['f', 100]]))
   setQueue({ userQueue: ['f'], activeIndex: 0 })
-  libraryFilters.update((lf) => ({ ...lf, sortBy: 'rating', sortAsc: true }))
+  autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
 
   queueManager.rebuildAutoQueue()
 
@@ -161,6 +163,28 @@ test('a sort change rebuilds the whole auto queue in the shared-sort order (B7)'
   // so the rotation wrapped from the top (wrapNotice).
   assert.deepEqual(get(queue).autoQueue, ['a', 'b', 'c', 'd', 'e'], 'rating-sorted fill (active f excluded)')
   assert.equal(get(queueWrapNotice), true, 'nothing ranks after the anchor f → wrapped')
+})
+
+test('the auto queue follows its OWN sort, never the library sort (2026-09-29 decoupling)', () => {
+  reset()
+  library.set(['c', 'e', 'a', 'f', 'b', 'd'].map((id) => track(id)))
+  metadataCache.set(metaOf([['a', 10], ['b', 20], ['c', 30], ['d', 40], ['e', 50], ['f', 100]]))
+  setQueue({ userQueue: ['f'], activeIndex: 0 })
+  // Library sort active; auto sort at its library-order default.
+  libraryFilters.update((lf) => ({ ...lf, sortBy: 'rating', sortAsc: true }))
+
+  queueManager.rebuildAutoQueue()
+
+  // The fill stays in LIBRARY ORDER (c,e,a,b,d minus user-queued f) — the
+  // library sort must NOT re-rank it — then rotates after the anchor f
+  // (library position 3): b,d wrap ahead, c,e,a follow (the anchor rule).
+  // Pre-decoupling, the active library sort would have re-ranked this a..f.
+  assert.deepEqual(get(queue).autoQueue, ['b', 'd', 'c', 'e', 'a'], 'library-order fill (anchor-rotated) despite an active library sort')
+
+  // The AUTO sort is what re-ranks.
+  autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
+  queueManager.rebuildAutoQueue()
+  assert.deepEqual(get(queue).autoQueue, ['a', 'b', 'c', 'd', 'e'], 'the auto sort re-ranks the fill')
 })
 
 test('shuffle mode permutes the pool (set-preserving) and clears the wrap notice', () => {

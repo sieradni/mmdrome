@@ -12,9 +12,11 @@ import { db } from '../src/lib/db'
 import {
   initStores,
   autoQueueFilterFields,
+  autoQueueSort,
   autoQueueScope,
   autoQueueFilters,
   decodeAutoQueueFilters,
+  decodeAutoQueueSort,
   ratingBound,
 } from '../src/stores/appState'
 
@@ -111,4 +113,37 @@ test('scope set without a filter write persists nothing (row untouched)', () => 
     before,
     'a scope-only change must not create, mutate, or persist the row',
   )
+})
+
+// ── autoQueueSort persistence (2026-09-29 decoupling) ──────────────────
+
+test('autoQueueSort: a write persists to its own Dexie row and round-trips the shape', async () => {
+  autoQueueSort.set({ sortBy: 'year', sortAsc: false })
+  // The persisted-store layer writes asynchronously after the set; give the
+  // microtask queue a turn before reading the fake table.
+  await new Promise((r) => setTimeout(r, 0))
+  assert.deepEqual(rows.get('autoQueueSort'), { sortBy: 'year', sortAsc: false })
+
+  // The decode accepts the written shape verbatim.
+  assert.deepEqual(decodeAutoQueueSort({ sortBy: 'year', sortAsc: false }), { sortBy: 'year', sortAsc: false })
+  assert.deepEqual(decodeAutoQueueSort({ sortBy: null }), { sortBy: null, sortAsc: true }, 'missing sortAsc defaults true')
+  assert.deepEqual(decodeAutoQueueSort({ sortBy: 'length', sortAsc: false }), { sortBy: 'length', sortAsc: false })
+})
+
+test('decodeAutoQueueSort: corrupt rows fall back to the default', () => {
+  assert.equal(decodeAutoQueueSort(undefined), undefined, 'absent row keeps initial')
+  assert.equal(decodeAutoQueueSort(null), undefined)
+  assert.equal(decodeAutoQueueSort('not an object'), undefined)
+  assert.equal(decodeAutoQueueSort(42), undefined)
+  assert.equal(decodeAutoQueueSort(['rating']), undefined, 'array row keeps initial')
+  assert.equal(decodeAutoQueueSort({ sortBy: 'bogus' }), undefined, 'unknown key rejected outright')
+  // A partial object converges to the default (sortBy missing = no sort key);
+  // decode returning the default and returning undefined (keep initial) are
+  // behaviorally identical here because the initial IS the default.
+  assert.deepEqual(decodeAutoQueueSort({}), { sortBy: null, sortAsc: true })
+})
+
+test('decodeAutoQueueSort: unknown extra keys are tolerated (forward-compat)', () => {
+  const decoded = decodeAutoQueueSort({ sortBy: 'rating', sortAsc: true, futureField: 1 })
+  assert.deepEqual(decoded, { sortBy: 'rating', sortAsc: true })
 })

@@ -12,9 +12,12 @@ import {
   rotateAfterAnchor,
   planAutoQueueFill,
   filterRangesValid,
+  autoQueueSettingsDiffer,
+  planApplyLibraryToAutoQueue,
   type AutoQueuePlanState,
 } from '../src/lib/autoQueuePlan'
 import type { AutoQueueFilters, AutoQueueFilterFields, Track } from '../src/stores/appState'
+import type { LibraryFilterState, LibrarySortKey } from '../src/lib/libraryFilters'
 import type { LocalMetadataStore } from '../src/lib/db'
 
 const track = (id: string, over: Partial<Track> = {}): Track => ({
@@ -299,4 +302,82 @@ test('rebuild (keepAuto false) admits the old auto tracks as ordinary pool membe
   const plan = planAutoQueueFill(state({ library: ts, autoQueue: ['t1', 't2'] }), 50, { keepAuto: false })
   assert.deepEqual(plan.kept, [])
   assert.deepEqual(plan.pool.map((t) => t.trackId), ['t1', 't2', 't3', 't4'], 'old auto tracks re-enter on a rebuild')
+})
+
+// ── apply-to-auto-queue plan (2026-09-29 decoupling) ───────────────────
+
+const libFilters = (over: Partial<LibraryFilterState> = {}): LibraryFilterState => ({
+  filterOpen: false, sortOpen: false,
+  minRating: 0, maxRating: 100, lovedOnly: false, genre: '',
+  fromYear: '', toYear: '', minLength: '', maxLength: '',
+  sortBy: null, sortAsc: true,
+  ...over,
+})
+
+const autoFields = (over: Partial<AutoQueueFilterFields> = {}): AutoQueueFilterFields => ({
+  minRating: 0, maxRating: 100, lovedOnly: false,
+  fromYear: '', toYear: '', minLength: '', maxLength: '',
+  ...over,
+})
+
+const autoSortOf = (sortBy: LibrarySortKey | null, sortAsc = true) => ({ sortBy, sortAsc })
+
+test('differ: identical settings → false; any shared field drift → true', () => {
+  const f = autoFields()
+  const s = autoSortOf(null)
+  assert.equal(autoQueueSettingsDiffer(libFilters(), f, s), false, 'defaults agree')
+  assert.equal(autoQueueSettingsDiffer(libFilters({ minRating: 40 }), f, s), true)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ maxRating: 60 }), f, s), true)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ lovedOnly: true }), f, s), true)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ genre: 'Rock' }), f, s), true)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ fromYear: 1990 }), f, s), true)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ minLength: 90 }), f, s), true)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ sortBy: 'year' }), f, s), true)
+  // Direction with NO active key is meaningless — not a difference.
+  assert.equal(autoQueueSettingsDiffer(libFilters({ sortAsc: false }), f, s), false, 'sortAsc ignored without a key')
+})
+
+test('differ: UI flags, searchQuery and scope are never compared', () => {
+  const f = autoFields({ searchQuery: 'beatles' })
+  const s = autoSortOf(null)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ filterOpen: true, sortOpen: true }), f, s), false, 'panel flags ignored')
+  // Auto-only state (searchQuery here; the session scope never reaches the
+  // fields row) must not make the button appear.
+  assert.equal(autoQueueSettingsDiffer(libFilters(), f, s), false)
+})
+
+test('apply plan: copies only the store that differs; searchQuery preserved', () => {
+  const f = autoFields({ searchQuery: 'beatles', minLength: 60 })
+  const s = autoSortOf(null)
+  const plan = planApplyLibraryToAutoQueue(libFilters({ minLength: 120 }), f, s)
+  assert.ok(plan.filters, 'filter drift → filters planned')
+  assert.equal(plan.filters?.minLength, 120, 'the library value wins')
+  assert.equal('searchQuery' in (plan.filters ?? {}), false, 'searchQuery is NOT part of the plan shape')
+  assert.equal(plan.sort, undefined, 'no sort drift → no sort write')
+
+  const sortOnly = planApplyLibraryToAutoQueue(libFilters({ sortBy: 'year', sortAsc: false }), autoFields(), s)
+  assert.equal(sortOnly.filters, undefined, 'no filter drift → no filter write')
+  assert.deepEqual(sortOnly.sort, { sortBy: 'year', sortAsc: false })
+})
+
+test('apply plan: identical settings plan nothing (the button is hidden)', () => {
+  const plan = planApplyLibraryToAutoQueue(libFilters({ sortBy: 'rating' }), autoFields(), autoSortOf('rating', true))
+  assert.equal(plan.filters, undefined)
+  assert.equal(plan.sort, undefined)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ sortBy: 'rating' }), autoFields(), autoSortOf('rating', true)), false)
+})
+
+test('apply plan: direction-only drift under an active key plans a sort write', () => {
+  const plan = planApplyLibraryToAutoQueue(libFilters({ sortBy: 'rating', sortAsc: false }), autoFields(), autoSortOf('rating', true))
+  assert.deepEqual(plan.sort, { sortBy: 'rating', sortAsc: false })
+})
+
+test('apply plan: empty and null bounds compare equal through the bound fold', () => {
+  // The auto fields may hold null from older persisted rows; the library side
+  // holds '' for empty. Both mean "no bound" and must not trip the button.
+  assert.equal(
+    autoQueueSettingsDiffer(libFilters(), autoFields({ fromYear: null as never, maxLength: null as never }), autoSortOf(null)),
+    false,
+    'null bounds == empty bounds',
+  )
 })

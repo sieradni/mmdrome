@@ -2,6 +2,8 @@
   import { libraryFilters, sortLabels, distinctGenres } from '../lib/libraryFilters'
   import type { LibrarySortKey } from '../lib/libraryFilters'
   import { library } from '../stores/appState'
+  import { autoQueueFilterFields, autoQueueSort, shuffleEnabled } from '../stores/appState'
+  import { autoQueueSettingsDiffer, planApplyLibraryToAutoQueue } from '../lib/autoQueuePlan'
   import AppSlider from './AppSlider.svelte'
 
   let { onopen }: { onopen?: () => void } = $props()
@@ -74,9 +76,37 @@
   // it works no matter where focus sits (inputs, selects, nowhere).
   function onKeydown(e: KeyboardEvent) {
     if (e.key !== 'Escape') return
+    if (applyOpen) return // the confirm modal owns Escape while open
     if ($libraryFilters.filterOpen || $libraryFilters.sortOpen) {
       libraryFilters.update((f) => ({ ...f, filterOpen: false, sortOpen: false }))
     }
+  }
+
+  // ── Apply-to-auto-queue (2026-09-29) ─────────────────────────────────
+  // The auto queue carries its OWN filter/sort settings; the library sort no
+  // longer silently re-ranks it. When the two settings diverge, this afford-
+  // ance offers the copy. The visibility and the plan are ONE pure predicate
+  // (autoQueuePlan) so the button can never offer an empty apply, and the
+  // popup can never describe a change the plan will not make.
+  let applyOpen = $state(false)
+
+  let applyPlan = $derived(
+    planApplyLibraryToAutoQueue($libraryFilters, $autoQueueFilterFields, $autoQueueSort),
+  )
+
+  let showApplyButton = $derived(
+    autoQueueSettingsDiffer($libraryFilters, $autoQueueFilterFields, $autoQueueSort),
+  )
+
+  function confirmApply() {
+    const plan = planApplyLibraryToAutoQueue($libraryFilters, $autoQueueFilterFields, $autoQueueSort)
+    if (plan.filters) {
+      autoQueueFilterFields.update((f) => ({ ...f, ...plan.filters }))
+    }
+    if (plan.sort) {
+      autoQueueSort.set(plan.sort)
+    }
+    applyOpen = false
   }
 </script>
 
@@ -294,4 +324,79 @@
     aria-expanded={$libraryFilters.sortOpen}
     class={"rounded-full px-5 py-2.5 text-sm font-medium transition-colors ring-1 " + ($libraryFilters.sortOpen ? 'text-primary bg-[#191919] ring-white/15' : 'text-muted bg-[#0f0f0f] ring-white/10 hover:text-primary hover:ring-white/20')}
   >Sort{$libraryFilters.sortBy ? `: ${sortLabels[$libraryFilters.sortBy]} ${$libraryFilters.sortAsc ? '↑' : '↓'}` : ''}</button>
+  {#if showApplyButton}
+    <!-- Apply-library-filter/sort-to-auto-queue: appears ONLY when the two
+         settings differ (the pure diff predicate). Icon-only round button,
+         same silhouette as the pills. -->
+    <button
+      onclick={() => (applyOpen = true)}
+      class="flex h-10 w-10 items-center justify-center rounded-full text-muted bg-[#0f0f0f] ring-1 ring-white/10 transition-colors hover:text-primary hover:ring-white/20"
+      aria-label="Apply the library filter and sort to the auto queue"
+      title="Apply to auto queue"
+    >
+      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <!-- Two stacked list rows flowing down onto one row: the shared
+             filter/sort flowing into the queue -->
+        <path d="M4 5h10M4 9h7" />
+        <path d="M17 3v10m0 0 3-3m-3 3-3-3" />
+        <path d="M4 15h16M4 19h16" />
+      </svg>
+      <span class="sr-only">Apply filter and sort to auto queue</span>
+    </button>
+  {/if}
 </div>
+
+{#if applyOpen}
+  <!-- Apply confirm: centered modal (the app idiom), Esc + backdrop close;
+       Escape routing above defers to THIS dialog while it is open. -->
+  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+    onclick={() => (applyOpen = false)}
+    role="presentation"
+  >
+    <div
+      class="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-xl border border-white/10 bg-surface shadow-2xl"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-label="Apply to auto queue"
+      tabindex="-1"
+    >
+      <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
+        <span class="text-base font-bold text-primary">Apply to auto queue</span>
+        <button
+          onclick={() => (applyOpen = false)}
+          class="rounded-full p-1.5 text-muted transition-colors hover:text-primary"
+          aria-label="Close"
+        >
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </div>
+      <div class="space-y-4 px-5 py-4">
+        <p class="text-sm text-muted">Copy the library filter and sort into the auto queue's settings? The auto queue will refill to match.</p>
+        <div class="flex flex-wrap gap-2">
+          {#if applyPlan.filters}
+            <span class="rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-primary">Filters</span>
+          {/if}
+          {#if applyPlan.sort}
+            <span class="rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-primary">Sort{applyPlan.sort.sortBy ? `: ${sortLabels[applyPlan.sort.sortBy]} ${applyPlan.sort.sortAsc ? '↑' : '↓'}` : ''}</span>
+          {/if}
+        </div>
+        {#if $shuffleEnabled}
+          <p class="text-xs text-muted/70">Shuffle is on — the sort is saved but the order applies when shuffle is off.</p>
+        {/if}
+        <p class="text-xs text-muted/70">Only the auto queue's settings change; your search filter and any album/artist scope stay as they are.</p>
+        <div class="flex justify-end gap-2 pt-1">
+          <button
+            onclick={() => (applyOpen = false)}
+            class="rounded-lg px-4 py-2 text-sm font-medium text-muted transition-colors hover:text-primary"
+          >Cancel</button>
+          <button
+            onclick={confirmApply}
+            class="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-black transition-opacity hover:opacity-90"
+          >Apply</button>
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}

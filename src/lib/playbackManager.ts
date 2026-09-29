@@ -2,7 +2,6 @@ import { get } from 'svelte/store'
 import { Capacitor } from '@capacitor/core'
 import { audioManager } from './audioManager'
 import { engine } from './engineFacade'
-import { libraryFilters } from './libraryFilters'
 import { nativeEngine, BackgroundAudio, type NativeTrackSnapshot } from './nativePlugin'
 import { queueManager } from './queueManager'
 import { advanceTargetIndex } from './queueMutation'
@@ -47,6 +46,7 @@ import {
   setPlaybackState,
   setActiveQueueIndex,
   autoQueueFilters,
+  autoQueueSort,
 } from '../stores/appState'
 import { saveQueue } from './db'
 import { currentEqState, eqBypassed } from './eq/eqStore'
@@ -498,9 +498,9 @@ export class PlaybackManager {
     unsubs.push(metadataScanState.subscribe((st) => {
       if (!this._initialized) return
       if (st.status !== 'complete') return
-      const f = get(libraryFilters)
+      const sort = get(autoQueueSort)
       if (get(shuffleEnabled)) return
-      if (f.sortBy !== 'rating' && f.sortBy !== 'loved') return
+      if (sort.sortBy !== 'rating' && sort.sortBy !== 'loved') return
       this._qm.replenishAutoQueue()
     }))
 
@@ -535,15 +535,18 @@ export class PlaybackManager {
       }, 250)
     }))
 
-    // Rebuild the auto queue when the shared sort changes so it follows the
-    // Songs-view ordering while shuffle is off. Only sortBy/sortAsc matter here
-    // (the rank map in queueManager ignores the filter ranges), so skip no-op
-    // subscription fires and opening/closing the filter panel.
-    this._lastSortKey = `${get(libraryFilters).sortBy}|${get(libraryFilters).sortAsc}`
-    unsubs.push(libraryFilters.subscribe((f) => {
+    // The auto queue follows its OWN persisted sort (2026-09-29 decoupling):
+    // a change to it rebuilds the fill order while shuffle is off. The shared
+    // library sort (libraryFilters) is a VIEW concern and never re-ranks the
+    // queue — the Songs-view sort applying to the queue happens only through
+    // the FilterSortBar apply button (which writes THIS store).
+    // Only sortBy/sortAsc matter here (the rank map in queueManager ignores
+    // the filter ranges), so skip no-op subscription fires.
+    this._lastSortKey = `${get(autoQueueSort).sortBy}|${get(autoQueueSort).sortAsc}`
+    unsubs.push(autoQueueSort.subscribe((sort) => {
       if (!this._initialized) return
       if (get(shuffleEnabled)) return
-      const key = `${f.sortBy}|${String(f.sortAsc)}`
+      const key = `${sort.sortBy}|${String(sort.sortAsc)}`
       if (key === this._lastSortKey) return
       this._lastSortKey = key
       this._qm.rebuildAutoQueue()
