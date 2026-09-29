@@ -209,7 +209,11 @@ export function buildOrderRank(
           break
       }
       if (cmp !== 0) return cmp * (sort.sortAsc ? 1 : -1)
-      return a[1] - b[1]
+      // Ties MIRROR the arrow (2026-09-29, the "arrow flips but the queue
+      // doesn't change" report): an unrated/unloved library ties on every
+      // comparison, and the old fixed library-index tie-break made the
+      // direction a no-op — the whole order must answer the arrow.
+      return sort.sortAsc ? a[1] - b[1] : b[1] - a[1]
     })
   }
   // The rank value is the SORTED POSITION, not the pre-sort index: the old
@@ -268,7 +272,7 @@ export function filterRangesValid(f: Pick<AutoQueueFilterFields, 'minRating' | '
 export function planAutoQueueFill(
   state: AutoQueuePlanState,
   needed: number,
-  opts: { keepAuto: boolean },
+  opts: { keepAuto: boolean; fromTop?: boolean },
 ): AutoQueueFillPlan {
   const { library: lib, userQueue, autoQueue, recentTrackIds, activeId, shuffle, sort, filters, meta } = state
   const inUser = new Set(userQueue)
@@ -320,6 +324,14 @@ export function planAutoQueueFill(
     }
     const orderRank = buildOrderRank(lib, sort, meta)
     pool.sort((a, b) => (orderRank.get(a.trackId) ?? 0) - (orderRank.get(b.trackId) ?? 0))
+    // An explicit sort change passes fromTop: the sorted order shows FROM
+    // THE TOP — rotating after the anchor would land the head on whatever
+    // follows the playing track (often the same row in both directions,
+    // which read as "the sort does nothing"). Background rebuilds keep the
+    // anchor rotation.
+    if (opts.fromTop) {
+      return { kept, pool, shuffle: false, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
+    }
     const rotated = rotateAfterAnchor(pool, orderRank, userQueue[userQueue.length - 1])
     return { kept, pool: rotated.pool, shuffle: false, wrapNotice: rotated.wrapNotice, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
   }

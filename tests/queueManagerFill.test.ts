@@ -185,6 +185,14 @@ test('the auto queue follows its OWN sort, never the library sort (2026-09-29 de
   autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
   queueManager.rebuildAutoQueue()
   assert.deepEqual(get(queue).autoQueue, ['a', 'b', 'c', 'd', 'e'], 'the auto sort re-ranks the fill')
+
+  // An EXPLICIT sort flip (the manager passes fromTop) shows the sorted
+  // order FROM THE TOP — no anchor rotation, so the arrow's effect lands at
+  // the visible queue head (the 2026-09-29 "flip does nothing" report).
+  autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
+  queueManager.rebuildAutoQueue(true)
+  assert.deepEqual(get(queue).autoQueue, ['e', 'd', 'c', 'b', 'a'], 'fromTop rebuild: rating-sorted DESC from the top (playing f still excluded)')
+  assert.equal(get(queueWrapNotice), false, 'fromTop never wraps')
 })
 
 test('shuffle mode permutes the pool (set-preserving) and clears the wrap notice', () => {

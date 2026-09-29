@@ -549,7 +549,9 @@ export class PlaybackManager {
       const key = `${sort.sortBy}|${String(sort.sortAsc)}`
       if (key === this._lastSortKey) return
       this._lastSortKey = key
-      this._qm.rebuildAutoQueue()
+      // fromTop: the user just picked/flipped a sort — show the sorted order
+      // from the top (the anchor rotation would hide the arrow's effect).
+      this._qm.rebuildAutoQueue(true)
     }))
 
     // Keep the native engine's queue snapshot in step with ANY queue mutation

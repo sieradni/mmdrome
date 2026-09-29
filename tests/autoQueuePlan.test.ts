@@ -161,9 +161,19 @@ test('buildOrderRank: no sort keeps library order; ranks are SORTED POSITIONS (t
   const asc = buildOrderRank(ts, { sortBy: 'rating', sortAsc: true }, meta)
   assert.deepEqual([...asc.entries()], [['a', 0], ['c', 1], ['b', 2]], 'rating asc ranks by sorted position (a,c tie broken by index)')
   const desc = buildOrderRank(ts, { sortBy: 'rating', sortAsc: false }, meta)
-  assert.deepEqual([...desc.entries()], [['b', 0], ['a', 1], ['c', 2]], 'rating desc ranks by sorted position')
+  assert.deepEqual([...desc.entries()], [['b', 0], ['c', 1], ['a', 2]], 'rating desc ranks by sorted position; TIES MIRROR THE ARROW (c before a)')
   const year = buildOrderRank(ts, { sortBy: 'year', sortAsc: true }, meta)
   assert.deepEqual([...year.entries()], [['a', 0], ['b', 1], ['c', 2]], 'missing years tie → library order')
+})
+
+test('buildOrderRank: a fully-tied library mirrors the arrow (the "flip does nothing" fix)', () => {
+  // Unrated library: every comparison ties, so the tie-break IS the order.
+  const ts = [track('a'), track('b'), track('c'), track('d')]
+  const meta = metaOf([])
+  const asc = buildOrderRank(ts, { sortBy: 'rating', sortAsc: true }, meta)
+  const desc = buildOrderRank(ts, { sortBy: 'rating', sortAsc: false }, meta)
+  assert.deepEqual([...asc.keys()], ['a', 'b', 'c', 'd'], 'asc = library order')
+  assert.deepEqual([...desc.keys()], ['d', 'c', 'b', 'a'], 'desc = REVERSED library order — the arrow must always answer')
 })
 
 // ── rotateAfterAnchor ──────────────────────────────────────────────────

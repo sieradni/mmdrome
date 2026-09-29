@@ -355,10 +355,15 @@ class QueueManager {
     })
   }
 
-  /** Rebuilds the whole auto queue (keepAuto: false — shuffle/sort flips). */
-  rebuildAutoQueue(): void {
+  /** Rebuilds the whole auto queue (keepAuto: false — shuffle/sort flips).
+   *  `fromTop`: an EXPLICIT sort change shows the sorted order from the top
+   *  — the anchor rotation is skipped so the arrow's effect is visible at
+   *  the queue head (the anchor lands the head on a direction-invariant
+   *  neighbor row, which read as "the sort does nothing"). Background
+   *  rebuilds (shuffle toggle) keep the anchor rotation. */
+  rebuildAutoQueue(fromTop = false): void {
     const state = this._planState()
-    const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
+    const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false, fromTop })
     queueWrapNotice.set(plan.wrapNotice)
     autoQueueEmptyNotice.set(plan.pool.length === 0)
     const ordered = plan.shuffle ? shuffleInPlace(plan.pool) : plan.pool
