@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.45",
-      "versionDate": "2026-09-29T09:08:25.557Z",
-      "versionDescription": "Queue fixes: row taps play the right song again, the now-playing indicator is back, drag to reorder works, scrolling no longer slides, and jump-to-current works from anywhere in the queue. The empty now-playing island opens the player too.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.45/mmdrome.ipa",
+      "version": "1.2.46",
+      "versionDate": "2026-09-29T17:30:55.209Z",
+      "versionDescription": "The auto queue keeps its own persisted sort (hidden while shuffle is on), and the FilterSortBar gains an apply-to-auto-queue button - visible only when settings differ - behind a confirm popup.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.46/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.46",
+          "buildVersion": "50",
+          "date": "2026-09-29T17:30:55.209Z",
+          "localizedDescription": "The auto queue keeps its own persisted sort (hidden while shuffle is on), and the FilterSortBar gains an apply-to-auto-queue button - visible only when settings differ - behind a confirm popup.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.46/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.45",
           "buildVersion": "49",
@@ -458,6 +466,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.46",
+      "identifier": "ios-v1.2.46",
+      "appID": "com.mmdrome.player",
+      "caption": "The auto queue keeps its own persisted sort (hidden while shuffle is on), and the FilterSortBar gains an apply-to-auto-queue button - visibl",
+      "date": "2026-09-29T17:30:55.209Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.45",
       "identifier": "ios-v1.2.45",
       "appID": "com.mmdrome.player",
@@ -490,15 +507,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Relink orphaned pending edits after Navidrome id migrations; Push names every track and can discard edits; smarter file re-binding.",
       "date": "2026-09-26T11:26:55.697Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.41",
-      "identifier": "ios-v1.2.41",
-      "appID": "com.mmdrome.player",
-      "caption": "Node-truth completion evidence: the completion gates judge the completing node's own consumed-frame position (.dataPlayedBack + in-callback ",
-      "date": "2026-09-26T06:25:55.710Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
