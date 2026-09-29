@@ -38,11 +38,11 @@
     onopen?.()
   }
 
-  // Picking a sort option applies it AND closes — the common case is
-  // pick-one-and-go, so the menu never traps the user.
+  // Picking a sort option applies it and KEEPS the menu open (user request:
+  // flip through directions and compare the list without re-opening). Closes
+  // stay on X / backdrop / Esc / re-tapping the Sort pill.
   function applySort(key: LibrarySortKey) {
     setSort(key)
-    closeSort()
   }
 
   function clearFilters() {
@@ -299,7 +299,7 @@
       {/each}
       {#if $libraryFilters.sortBy}
         <button
-          onclick={() => { libraryFilters.update((f) => ({ ...f, sortBy: null })); closeSort() }}
+          onclick={() => libraryFilters.update((f) => ({ ...f, sortBy: null }))}
           class="mt-2 w-full rounded px-2 py-1 text-sm text-muted transition-colors hover:text-primary"
         >Clear sort</button>
       {/if}
