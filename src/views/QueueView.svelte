@@ -24,7 +24,6 @@
   import { derived } from 'svelte/store'
   import AppSlider from '../components/AppSlider.svelte'
   import ClearableSearch from '../components/ClearableSearch.svelte'
-  import { flip } from 'svelte/animate'
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
   import { distinctGenres } from '../lib/libraryFilters'
@@ -99,6 +98,30 @@
   let jumpBoundaryPending = $state(false)
 
   function jumpToCurrent() {
+    // Under the virtual windows the current row may be OUTSIDE the mounted
+    // set — the old querySelector-only jump silently did nothing (pre-window
+    // every row existed). Two steps, the SongsView pattern: write the
+    // section-offset scrollTop so the row mounts by derivation, then let
+    // the pending effect smooth-center it. The section geometry reads are
+    // the SAME group-offset queries the window compute uses.
+    const el = listContainerEl
+    const idx = $queue.activeIndex
+    const id = $currentTrack?.trackId
+    if (!el || idx < 0 || !id) {
+      jumpScrollPending = true
+      return
+    }
+    if (el.querySelector(`[data-track-id="${CSS.escape(id)}"]`)) {
+      jumpScrollPending = true
+      return
+    }
+    const U = previewUserItems.length
+    const inUser = idx < U
+    const group = el.querySelector<HTMLElement>(inUser ? '[aria-label="User queue"]' : '[aria-label="Auto queue"]')
+    const groupTop = group ? group.offsetTop : 44
+    const sectionIdx = inUser ? idx : idx - U
+    el.scrollTop = Math.max(0, groupTop + sectionIdx * queueRowH + queueRowH / 2 - el.clientHeight / 2)
+    queueMachine.deriveNow()
     jumpScrollPending = true
   }
 
@@ -134,7 +157,6 @@
       })
     })
   })
-
   let isDragging = $state(false)
   // Drag identity is the TRACK ID, not an index (2026-09-12): an advance,
   // promotion, or fill re-rank landing mid-drag reindexes the combined list,
@@ -677,8 +699,18 @@
       </div>
     {:else}
       <!-- Empty island: same silhouette as the home mini-player's empty
-           state so the two surfaces read as one design. -->
-      <div class="ui-island flex items-center gap-3 px-3 py-2.5">
+           state so the two surfaces read as one design. Tappable like the
+           active island — closing lands on the expanded Now Playing view
+           (closeQueue opens it whenever a current track exists, even
+           stopped after a play-out). -->
+      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+      <div
+        class="ui-island flex cursor-pointer items-center gap-3 px-3 py-2.5"
+        role="button"
+        tabindex="0"
+        onclick={onclose}
+        onkeydown={(e) => { if (e.key === 'Enter') onclose() }}
+      >
         <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-white/5">
           <svg class="h-5 w-5 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
         </div>
@@ -716,9 +748,15 @@
       <div class="mx-2 space-y-0.5" role="group" aria-label="User queue">
         <div style="height:{userTopPad}px" aria-hidden="true"></div>
         {#each mountedUserItems as item (item.key)}
-          {@const itemIndex = userWin.start + item.originalCombinedIdx}
+          <!-- The combined index is a property of the item's DATA (stamped
+               when the preview arrays are built, preserved through slice)
+               — never of its mount position. The old `userWin.start + …`
+               double-counted the window offset and corrupted EVERY
+               consumer at once: play (taps hit playTrackAt's bounds guard
+               or played the wrong row), the now-playing indicator, the
+               drag drop-target, and the drag identity. -->
+          {@const itemIndex = item.originalCombinedIdx}
           <div
-            animate:flip={{ duration: 150 }}
             onclick={() => playQueueItem(item.track.trackId, itemIndex)}
             role="button"
             tabindex="0"
@@ -841,9 +879,10 @@
       <div class="mx-2 space-y-0.5" role="group" aria-label="Auto queue">
         <div style="height:{autoTopPad}px" aria-hidden="true"></div>
         {#each mountedAutoItems as item (item.key)}
-          {@const itemCombinedIndex = previewUserItems.length + autoWin.start + item.originalCombinedIdx}
+          <!-- Same data-stamped index as the user section (it already
+               includes the user length); no window offset may be added. -->
+          {@const itemCombinedIndex = item.originalCombinedIdx}
           <div
-            animate:flip={{ duration: 150 }}
             onclick={() => playQueueItem(item.track.trackId, itemCombinedIndex)}
             role="button"
             tabindex="0"
