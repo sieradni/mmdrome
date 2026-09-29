@@ -1085,13 +1085,18 @@
       </div>
       <div class="space-y-4 px-5 py-4">
         {#if !$shuffleEnabled}
-          <!-- Auto-queue SORT (2026-09-29): the fill follows its own sort now;
-               edited here like the library sort menu. HIDDEN while shuffle is
-               on (shuffle permutes the pool) but the setting keeps persisting
-               underneath — no writes are gated, only this editor is rendered. -->
-          <div>
+          <!-- Auto-queue SORT (2026-09-29, restyled same day after user
+               feedback): the fill follows its own sort now; edited here like
+               the library sort menu. A bordered card so the section reads as
+               its own control, not one more filter blob; re-tapping the
+               active key flips direction (the library menu's contract — the
+               separate Reverse-direction button was clutter and is gone).
+               HIDDEN while shuffle is on (shuffle permutes the pool) but the
+               setting keeps persisting underneath — no writes are gated,
+               only this editor is rendered. -->
+          <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
             <span class="text-sm font-medium text-muted">Sort order</span>
-            <div class="mt-1 space-y-1">
+            <div class="mt-1.5 space-y-0.5">
               {#each ['rating', 'loved', 'year', 'length'] as key (key)}
                 {@const k = key as LibrarySortKey}
                 <button
@@ -1110,15 +1115,8 @@
               {#if $autoQueueSort.sortBy}
                 <button
                   onclick={() => setAutoSort(null)}
-                  class="mt-2 w-full rounded px-2 py-1 text-sm text-muted transition-colors hover:text-primary"
+                  class="mt-1 w-full rounded-t-none border-t border-white/5 px-2 py-1.5 text-xs text-muted transition-colors hover:text-primary"
                 >Clear sort</button>
-                <!-- A direction toggle only makes sense over an active key;
-                     rendered while a key is active so the user can flip
-                     without re-picking the same key (a second tap flips). -->
-                <button
-                  onclick={() => autoQueueSort.update((s) => ({ ...s, sortAsc: !s.sortAsc }))}
-                  class="w-full rounded px-2 py-1 text-sm text-muted transition-colors hover:text-primary"
-                >Reverse direction</button>
               {/if}
             </div>
           </div>
