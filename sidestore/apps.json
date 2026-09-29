@@ -27,7 +27,8 @@
           "date": "2026-09-29T19:42:21.859Z",
           "localizedDescription": "Queue sort fixes: flipping the sort direction now visibly re-ranks the auto queue, an explicit sort change shows the new order from the top, the queue's sort editor is a distinct card, and the library sort menu stays open so you can flip directions live.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.47/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5058319
         },
         {
           "version": "1.2.46",
