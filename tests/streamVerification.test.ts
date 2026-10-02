@@ -12,6 +12,7 @@ import {
   parseNativeStreamTranscript,
   evaluateStreamVerification,
   formatStreamVerifyReport,
+  formatStreamVerifyBundle,
   emptyNativeStreamFacts,
   type HttpProbeFacts,
 } from '../src/lib/streamVerification'
@@ -189,6 +190,28 @@ test('evaluate: a probe that could not run is unknown, never a false pass', () =
     http: null, native: emptyNativeStreamFacts(),
   })
   assert.equal(report.checks.find((c) => c.id === 'server-total')?.status, 'unknown')
+})
+
+test('formatStreamVerifyBundle is a paste-ready block carrying the raw evidence', () => {
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,
+    http: httpProbe(), native: null,
+  })
+  const text = formatStreamVerifyBundle({
+    report,
+    context: { platform: 'ios-native', appVersion: '1.2.47', trackTitle: 'A Song', lowData: 'on', network: 'native metered=false' },
+    http: httpProbe(),
+    native: null,
+    stateSample: null,
+    rawLines: ['+0.000s info    stream  staged load start row 4 id=abc'],
+  })
+  assert.match(text, /MMDROME STREAM SELF-TEST/)
+  assert.match(text, /HTTP PROBE/)
+  assert.match(text, /STATE SAMPLE/)
+  assert.match(text, /VERDICTS \(/)
+  assert.match(text, /RAW EVENTS \(1\)/)
+  assert.match(text, /staged load start row 4/)
+  assert.ok(text.length > 300, 'a usable bundle is substantial')
 })
 
 test('formatStreamVerifyReport renders one line per check with its status', () => {

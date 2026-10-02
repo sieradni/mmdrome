@@ -19,8 +19,7 @@
     enabledDomainsList,
     setEnabledDomains,
   } from '../lib/debugLog'
-  import { runStreamSelfTest, getLastStreamVerifyReport } from '../lib/streamVerifyRunner'
-  import { formatStreamVerifyReport } from '../lib/streamVerification'
+  import { runStreamSelfTest, getLastStreamVerifyBundle } from '../lib/streamVerifyRunner'
   import { thumbLoaderDebugSnapshot } from '../lib/thumbLoader'
   import { fillProvenanceGroups } from '../lib/queueProvenance'
   import { coverStatsSummary } from '../lib/coverStats'
@@ -69,20 +68,30 @@
     if (verifyBusy) return
     verifyBusy = true
     verifyText = verifyArmed
-      ? 'probing server + capturing 30s of native stream events (play a transcoded track now)…'
+      ? 'probing server + watching the event ring for 25s (play a transcoded track now)…'
       : 'probing server…'
     try {
-      const report = await runStreamSelfTest({
-        captureMs: verifyArmed ? 30_000 : 0,
-        sinceSeq: nativeEventsSeq,
-      })
-      verifyText = formatStreamVerifyReport(report)
-      pushError(`self-test: ${report.summary}`)
+      const bundle = await runStreamSelfTest({ captureMs: verifyArmed ? 25_000 : 0 })
+      verifyText = bundle.text
+      // Auto-copy: the whole point is paste-ready output.
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(bundle.text)
+        ;(window as any).__streamSelfTestText = bundle.text
+      } catch {}
+      pushError(`self-test: ${bundle.report.summary} — report copied`)
     } catch (e: any) {
       verifyText = `self-test failed: ${String(e?.message ?? e)}`
     } finally {
       verifyBusy = false
     }
+  }
+
+  async function copyVerify() {
+    try {
+      if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(verifyText)
+      ;(window as any).__streamSelfTestText = verifyText
+      pushError('self-test report copied')
+    } catch {}
   }
 
   /**
@@ -278,7 +287,7 @@
       // Streaming self-test: the last run's report (pure evaluation of the
       // HTTP probe + native transcript) so a dump carries the verdict, not
       // just the raw events it was derived from.
-      streamVerify: getLastStreamVerifyReport(),
+      streamVerify: getLastStreamVerifyBundle(),
       // Web-only (null on native): the engine's decision inputs — ctx state,
       // element error, crossfade/fade state, EQ branch — the getDebugState
       // parity so a web dump verifies the same assumptions a native one does.
@@ -559,17 +568,22 @@
         {#if openSections.verify}
           <div class="mb-1 flex items-center gap-2">
             <button onclick={runVerify} disabled={verifyBusy} class="rounded bg-cyan-500/30 px-2 py-0.5 hover:bg-cyan-500/50 disabled:opacity-40">
-              {verifyBusy ? 'running…' : 'Run probe'}
+              {verifyBusy ? 'running…' : 'Run test'}
             </button>
+            <button onclick={copyVerify} disabled={!verifyText} class="rounded bg-white/10 px-2 py-0.5 hover:bg-white/20 disabled:opacity-30">Copy</button>
             <label class="flex items-center gap-1 text-[10px] text-white/60">
               <input type="checkbox" checked={verifyArmed} onchange={(e) => (verifyArmed = (e.currentTarget as HTMLInputElement).checked)} />
-              + capture 30s (play a transcoded track)
+              + watch 25s
             </label>
           </div>
           {#if verifyText}
-            <pre class="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[10px]">{verifyText}</pre>
+            <pre class="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[9px]">{verifyText}</pre>
           {:else}
-            <div class="text-[10px] text-white/30">Not run. Probe checks the server total, range support and container magic; capture adds the runtime verdicts.</div>
+            <div class="text-[10px] text-white/30">
+              Press Run test: probes the real transcode URL now and, with “watch 25s” ticked,
+              captures the native stream events (a track already playing is still picked up).
+              The report is copied to the clipboard automatically.
+            </div>
           {/if}
         {/if}
       </div>

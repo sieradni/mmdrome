@@ -1,37 +1,37 @@
 /**
  * Adapter half of the Streaming Self-Test (2026-10-02): probes the REAL
- * transcode URL over HTTP and captures the native `stream` event transcript,
- * then hands both to the pure evaluator in `streamVerification.ts`.
+ * transcode URL over HTTP and captures the native `stream` transcript, then
+ * hands both to the pure evaluator in `streamVerification.ts`.
  *
- * Two evidence legs, both automatic:
- *  - HTTP probe (no audio, no queue disturbance): rebuilds the exact URL the
- *    manager would use, issues a bounded Range GET, and reads Content-Length /
- *    Accept-Ranges / Content-Type plus the container magic at byte 0. This
- *    settles the server-total, range-support and progressive-container
- *    assumptions WITHOUT touching the engine.
- *  - Native capture (armed, passive): folds `getDebugEvents` + a mid-stream
- *    `getDebugState` sample while the user plays normally. Nothing here drives
- *    playback or mutates the queue.
- *
- * Everything the evaluator needs is collected by this file so the judgment
- * stays pure and testable.
+ * Designed for ONE PRESS with a paste-ready result:
+ *  - the HTTP probe rebuilds the exact URL the manager would use and reads
+ *    Content-Length / Accept-Ranges / Content-Type / container magic with no
+ *    audio at all;
+ *  - the native capture mines a LOOK-BACK window out of the event ring first
+ *    (a track already playing when the button was pressed is still captured),
+ *    then keeps polling forward. It is read-only: it never plays, seeks or
+ *    mutates the queue;
+ *  - the assembled bundle (header, HTTP facts, state sample, verdict table,
+ *    raw event lines) is returned as text and auto-copied by the caller.
  */
 import { Capacitor } from '@capacitor/core'
 import { get } from 'svelte/store'
-import { settings, currentTrack } from '../stores/appState'
-import { effectiveLowData } from './networkMode'
+import { settings, currentTrack, playbackState } from '../stores/appState'
+import { effectiveLowData, networkStatusStore, networkStabilitySnapshot } from './networkMode'
 import { getCachedConfig, buildStreamUrl } from './navidromeApi'
 import { transcodeParams } from './transcodePolicy'
 import { nativeEngine, BackgroundAudio } from './nativePlugin'
+import { appVersion } from './version'
 import {
   type HttpProbeFacts,
   type NativeStreamFacts,
   type StreamVerifyReport,
+  type NativeEventLike,
   emptyNativeStreamFacts,
   foldStreamEvent,
   evaluateStreamVerification,
   sniffContainer,
-  formatStreamVerifyReport,
+  formatStreamVerifyBundle,
 } from './streamVerification'
 
 /** The exact transcode decision the manager uses (mirrors
@@ -99,7 +99,7 @@ async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array>
 /**
  * Probe the transcode URL. Uses a Range GET; on any failure (CORS preflight on
  * the custom header, network) retries a plain GET, then gives up with a note.
- * Never throws — the report carries the reason.
+ * Never throws — the bundle carries the reason.
  */
 export async function probeTranscodeHttp(url: string): Promise<HttpProbeFacts | null> {
   const attempt = async (withRange: boolean): Promise<HttpProbeFacts> => {
@@ -124,89 +124,104 @@ export async function probeTranscodeHttp(url: string): Promise<HttpProbeFacts | 
     try {
       return await attempt(false)
     } catch (e) {
-      return { status: 0, contentLength: null, acceptRanges: null, contentType: null, contentRange: null, bytesRead: 0, sniffed: 'other', note: String((e as Error)?.message ?? e) }
+      return {
+        status: 0,
+        contentLength: null,
+        acceptRanges: null,
+        contentType: null,
+        contentRange: null,
+        bytesRead: 0,
+        sniffed: 'other',
+        note: String((e as Error)?.message ?? e),
+      }
     }
   }
 }
 
-export interface NativeCaptureResult {
-  facts: NativeStreamFacts
-  stateSample: { deliveredBytes: number; announcedBytes: number; headerClaimFrames: number; metadataFrames: number } | null
-  events: number
+type StateSample = {
+  deliveredBytes: number
+  announcedBytes: number
+  headerClaimFrames: number
+  metadataFrames: number
+  scheduledEndFrames?: number
+  stalled?: boolean
+  recentRate?: number
 }
 
-/**
- * Poll the native debug surfaces for `maxMs`, folding `stream` events and
- * taking the FIRST mid-stream state sample (delivered > 0). Stops early on a
- * terminal verdict. Read-only: it never issues a play/seek/queue command.
- */
-export async function captureNativeStream(opts: { maxMs: number; pollMs?: number; sinceSeq: number }): Promise<NativeCaptureResult> {
-  const pollMs = opts.pollMs ?? 500
-  const deadline = Date.now() + opts.maxMs
-  let facts = emptyNativeStreamFacts()
-  let sample: NativeCaptureResult['stateSample'] = null
-  let seq = opts.sinceSeq
-  let events = 0
+interface RawEvent extends NativeEventLike {
+  seq?: number
+  t?: number
+}
 
-  while (Date.now() < deadline) {
-    try {
-      const page = await nativeEngine.getDebugEvents(seq)
-      seq = page.nextSeq
-      for (const ev of page.events as Array<{ domain?: string; msg?: string; level?: string }>) {
-        facts = foldStreamEvent(facts, { domain: ev.domain, level: ev.level, msg: ev.msg ?? '' })
-        events += 1
-      }
-    } catch {
-      /* bridge unavailable — keep polling until the deadline */
+/** Domains worth keeping verbatim in the bundle — the streaming story plus
+ *  the surrounding context a reader needs to adjudicate it. */
+const RAW_DOMAINS = new Set(['stream', 'loader', 'preload', 'network', 'engine'])
+
+function fmtRawEv(ev: RawEvent, t0: number): string {
+  const rel = typeof ev.t === 'number' ? `+${((ev.t - t0) / 1000).toFixed(3)}s` : '     ?'
+  return `${rel} ${(ev.level ?? 'info').padEnd(6)} ${(ev.domain ?? '?').padEnd(7)} ${ev.msg}`
+}
+
+async function readStateSample(): Promise<StateSample | null> {
+  try {
+    const d = await (BackgroundAudio as unknown as { getDebugState?: () => Promise<Record<string, unknown>> }).getDebugState?.()
+    if (!d) return null
+    const sample: StateSample = {
+      deliveredBytes: Number(d.streamDeliveredBytes ?? 0),
+      announcedBytes: Number(d.streamAnnouncedBytes ?? 0),
+      headerClaimFrames: Number(d.streamHeaderClaimedFrames ?? 0),
+      metadataFrames: Number(d.streamMetadataFrames ?? 0),
+      scheduledEndFrames: Number(d.streamScheduledEndFrames ?? 0),
+      stalled: d.streamStalled === true,
+      recentRate: Number(d.streamRecentRate ?? 0),
     }
-    if (!sample) {
-      try {
-        const d = await (BackgroundAudio as unknown as { getDebugState?: () => Promise<Record<string, unknown>> }).getDebugState?.()
-        if (d && d.streamActive === true && Number(d.streamDeliveredBytes ?? 0) > 0) {
-          sample = {
-            deliveredBytes: Number(d.streamDeliveredBytes ?? 0),
-            announcedBytes: Number(d.streamAnnouncedBytes ?? 0),
-            headerClaimFrames: Number(d.streamHeaderClaimFrames ?? 0),
-            metadataFrames: Number(d.streamMetadataFrames ?? 0),
-          }
-        }
-      } catch {
-        /* state read is best-effort */
-      }
-    }
-    const terminal =
-      facts.promoted || facts.completedWhole || facts.rejectedTranscodeShort || facts.writerFailed || facts.stallGiveUpCount > 0
-    if (terminal && sample) break
-    await new Promise((r) => setTimeout(r, pollMs))
+    return d.streamActive === true && sample.deliveredBytes > 0 ? sample : null
+  } catch {
+    return null
   }
-  return { facts, stateSample: sample, events }
 }
 
-let lastReport: StreamVerifyReport | null = null
-let lastReportText = ''
+export interface StreamSelfTestBundle {
+  report: StreamVerifyReport
+  text: string
+  http: HttpProbeFacts | null
+  native: NativeStreamFacts | null
+  stateSample: StateSample | null
+  rawLines: string[]
+}
 
-export function getLastStreamVerifyReport(): { report: StreamVerifyReport | null; text: string } {
-  return { report: lastReport, text: lastReportText }
+let lastBundle: StreamSelfTestBundle | null = null
+
+export function getLastStreamVerifyBundle(): StreamSelfTestBundle | null {
+  return lastBundle
 }
 
 export function clearStreamVerifyReport(): void {
-  lastReport = null
-  lastReportText = ''
+  lastBundle = null
 }
 
 export interface RunStreamSelfTestOptions {
-  /** How long to watch the native transcript (default 30 s; 0 = HTTP only). */
+  /** How long to keep polling forward after the look-back (default 25 s;
+   *  0 = HTTP probe only). */
   captureMs?: number
-  /** Pre-arm capture watermark (the HUD's own seq). */
-  sinceSeq?: number
+  /** How far back into the event ring to mine (default 20 s). */
+  lookbackMs?: number
+  pollMs?: number
 }
 
 /**
- * Run the self-test. Always does the HTTP probe; on native it also captures
- * the transcript for `captureMs` (0 skips). Returns the report; callers read it
- * from `getLastStreamVerifyReport()` for the Copy dump.
+ * Run the self-test and return the paste-ready bundle.
+ *
+ * Sequence: probe the URL → read the whole event ring and fold the LAST
+ * `lookbackMs` of it (catches a stream already in progress) → poll forward for
+ * `captureMs`, folding new events and taking a mid-stream state sample → stop
+ * early on a terminal verdict → evaluate → format.
  */
-export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Promise<StreamVerifyReport> {
+export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Promise<StreamSelfTestBundle> {
+  const captureMs = opts.captureMs ?? 25_000
+  const lookbackMs = opts.lookbackMs ?? 20_000
+  const pollMs = opts.pollMs ?? 500
+
   const probe = currentStreamProbeUrl()
   const track = get(currentTrack)
   const variant = probe?.variant ?? 'raw'
@@ -214,13 +229,48 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
 
   const http = probe ? await probeTranscodeHttp(probe.url) : null
 
-  let native: NativeStreamFacts | null = null
-  let stateSample: NativeCaptureResult['stateSample'] = null
-  const captureMs = opts.captureMs ?? 30_000
-  if (Capacitor.isNativePlatform() && captureMs > 0) {
-    const cap = await captureNativeStream({ maxMs: captureMs, sinceSeq: opts.sinceSeq ?? 0 })
-    native = cap.facts
-    stateSample = cap.stateSample
+  const t0 = Date.now()
+  let facts = emptyNativeStreamFacts()
+  const raw: RawEvent[] = []
+  let stateSample: StateSample | null = null
+
+  if (Capacitor.isNativePlatform()) {
+    // 1. Look-back: read the ring, keep only the recent window so events from
+    //    an earlier track are not folded into this run's facts.
+    const foldFrom = t0 - lookbackMs
+    let seq = 0
+    try {
+      const page = await nativeEngine.getDebugEvents(0)
+      seq = page.nextSeq
+      for (const ev of page.events as RawEvent[]) {
+        if (typeof ev.t === 'number' && ev.t < foldFrom) continue
+        if (ev.domain && RAW_DOMAINS.has(ev.domain)) raw.push(ev)
+        facts = foldStreamEvent(facts, ev)
+      }
+    } catch {
+      /* bridge unavailable */
+    }
+    stateSample = await readStateSample()
+
+    // 2. Forward poll until terminal, the deadline, or captureMs == 0.
+    const deadline = Date.now() + captureMs
+    while (captureMs > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, pollMs))
+      try {
+        const page = await nativeEngine.getDebugEvents(seq)
+        seq = page.nextSeq
+        for (const ev of page.events as RawEvent[]) {
+          if (ev.domain && RAW_DOMAINS.has(ev.domain)) raw.push(ev)
+          facts = foldStreamEvent(facts, ev)
+        }
+      } catch {
+        /* keep polling */
+      }
+      if (!stateSample) stateSample = await readStateSample()
+      const terminal =
+        facts.promoted || facts.completedWhole || facts.rejectedTranscodeShort || facts.writerFailed || facts.stallGiveUpCount > 0
+      if (terminal && stateSample) break
+    }
   }
 
   const report = evaluateStreamVerification({
@@ -230,10 +280,28 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
     metadataDuration: (track as unknown as { duration?: number } | null)?.duration ?? 0,
     snapshotSize: (track as unknown as { size?: number } | null)?.size ?? 0,
     http,
-    native,
+    native: Capacitor.isNativePlatform() ? facts : null,
     stateSample,
   })
-  lastReport = report
-  lastReportText = formatStreamVerifyReport(report)
-  return report
+
+  const st = get(playbackState)
+  const net = get(networkStatusStore)
+  const stab = networkStabilitySnapshot()
+  const text = formatStreamVerifyBundle({
+    report,
+    context: {
+      platform: Capacitor.isNativePlatform() ? 'ios-native' : 'web',
+      appVersion,
+      trackTitle: (track as unknown as { title?: string } | null)?.title ?? '',
+      lowData: get(effectiveLowData) ? 'on' : 'off',
+      network: `${net.source} cellular=${net.isCellular} osLowData=${net.osLowData} metered=${stab.metered} latched=${stab.latched} sup=${stab.suppressed} playing=${st}`,
+    },
+    http,
+    native: Capacitor.isNativePlatform() ? facts : null,
+    stateSample,
+    rawLines: raw.map((ev) => fmtRawEv(ev, t0)),
+  })
+
+  lastBundle = { report, text, http, native: Capacitor.isNativePlatform() ? facts : null, stateSample, rawLines: raw.map((ev) => fmtRawEv(ev, t0)) }
+  return lastBundle
 }

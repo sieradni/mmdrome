@@ -390,3 +390,70 @@ export function formatStreamVerifyReport(report: StreamVerifyReport): string {
     ...lines,
   ].join('\n')
 }
+
+// MARK: - The paste-ready bundle
+
+export interface StreamVerifyContext {
+  platform: string
+  appVersion: string
+  trackTitle: string
+  lowData: string
+  network: string
+}
+
+export interface StreamVerifyBundleInput {
+  report: StreamVerifyReport
+  context: StreamVerifyContext
+  http: HttpProbeFacts | null
+  native: NativeStreamFacts | null
+  stateSample?: {
+    deliveredBytes: number
+    announcedBytes: number
+    headerClaimFrames: number
+    metadataFrames: number
+    scheduledEndFrames?: number
+    stalled?: boolean
+    recentRate?: number
+  } | null
+  /** Raw engine event lines captured in the window, oldest first. */
+  rawLines: string[]
+}
+
+/**
+ * One self-contained text block for a paste — header, HTTP facts, the state
+ * sample, the verdict table, then the raw events they were derived from. The
+ * raw tail matters: a verdict can be wrong, and the lines let a reader
+ * re-adjudicate rather than trust the summary.
+ */
+export function formatStreamVerifyBundle(input: StreamVerifyBundleInput): string {
+  const { report, context, http, native, stateSample, rawLines } = input
+  const rows: string[] = []
+  rows.push('=== MMDROME STREAM SELF-TEST ========================================')
+  rows.push(`when: ${report.at}   platform: ${context.platform}   app: ${context.appVersion}`)
+  rows.push(`track: ${report.trackId} "${context.trackTitle}"   variant: ${report.variant}${report.isTranscode ? ' (transcode)' : ' (raw)'}`)
+  rows.push(`ldm: ${context.lowData}   network: ${context.network}`)
+  rows.push('--- HTTP PROBE ------------------------------------------------------')
+  if (http) {
+    rows.push(`  status: ${http.status}  content-length: ${http.contentLength ?? 'absent'}  accept-ranges: ${http.acceptRanges ?? 'absent'}`)
+    rows.push(`  content-type: ${http.contentType ?? '?'}  content-range: ${http.contentRange ?? 'absent'}`)
+    rows.push(`  read: ${http.bytesRead} B   container magic: ${http.sniffed}${http.note ? `   note: ${http.note}` : ''}`)
+  } else {
+    rows.push('  (probe did not run)')
+  }
+  rows.push('--- STATE SAMPLE (mid-stream) --------------------------------------')
+  if (stateSample) {
+    rows.push(`  delivered: ${stateSample.deliveredBytes} / announced: ${stateSample.announcedBytes}`)
+    rows.push(`  headerClaimFrames: ${stateSample.headerClaimFrames}  metadataFrames: ${stateSample.metadataFrames}  scheduledEndFrames: ${stateSample.scheduledEndFrames ?? '?'}`)
+    rows.push(`  stalled: ${stateSample.stalled ?? '?'}  recentRate: ${stateSample.recentRate ?? '?'}`)
+  } else {
+    rows.push('  (no sample taken — no staged stream was active)')
+  }
+  rows.push(`--- VERDICTS (${report.summary}) ---`)
+  for (const c of report.checks) rows.push(`  [${c.status.toUpperCase().padEnd(7)}] ${c.label} — ${c.evidence}`)
+  rows.push('--- PARSED FACTS ---------------------------------------------------')
+  rows.push(`  ${JSON.stringify(native ?? {}, null, 0)}`)
+  rows.push(`--- RAW EVENTS (${rawLines.length}) ----------------------------------------`)
+  rows.push(...rawLines.map((l) => `  ${l}`))
+  rows.push('====================================================================')
+  return rows.join('\n')
+}
