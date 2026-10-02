@@ -27,7 +27,8 @@
           "date": "2026-10-02T21:31:28.875Z",
           "localizedDescription": "The stream self-test now folds the promote verdict (it is logged on the loader domain) and treats a 206 as Range proof, so its checks populate instead of reading unknown.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.50/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5074307
         },
         {
           "version": "1.2.49",
