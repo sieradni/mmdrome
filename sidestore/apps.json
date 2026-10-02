@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.48",
-      "versionDate": "2026-10-02T20:39:08.114Z",
-      "versionDescription": "Transcode playback now streams while downloading instead of waiting for the full file, with a one-button in-app stream self-test; native prefetch retry recovery, park-and-drain, and a network-churn latch that stops metered flapping.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.48/mmdrome.ipa",
+      "version": "1.2.49",
+      "versionDate": "2026-10-02T21:12:42.252Z",
+      "versionDescription": "The stream self-test now captures a running stream's events (its look-back was reading the wrong clock), so its verdicts populate instead of all reading unknown.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.49/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.49",
+          "buildVersion": "53",
+          "date": "2026-10-02T21:12:42.252Z",
+          "localizedDescription": "The stream self-test now captures a running stream's events (its look-back was reading the wrong clock), so its verdicts populate instead of all reading unknown.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.49/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.48",
           "buildVersion": "52",
@@ -485,6 +493,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.49",
+      "identifier": "ios-v1.2.49",
+      "appID": "com.mmdrome.player",
+      "caption": "The stream self-test now captures a running stream's events (its look-back was reading the wrong clock), so its verdicts populate instead of",
+      "date": "2026-10-02T21:12:42.252Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.48",
       "identifier": "ios-v1.2.48",
       "appID": "com.mmdrome.player",
@@ -517,15 +534,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Queue fixes: row taps play the right song again, the now-playing indicator is back, drag to reorder works, scrolling no longer slides, and j",
       "date": "2026-09-29T09:08:25.557Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.44",
-      "identifier": "ios-v1.2.44",
-      "appID": "com.mmdrome.player",
-      "caption": "Thumbnail fast paths: covers snap in instantly with no fade, cached regions load at decode speed, and every virtualized surface now keeps tw",
-      "date": "2026-09-29T07:53:45.264Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
