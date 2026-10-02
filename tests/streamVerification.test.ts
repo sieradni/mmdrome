@@ -10,6 +10,7 @@ import {
   isProgressiveContainer,
   classifyContainerShape,
   parseNativeStreamTranscript,
+  selectStreamWindow,
   evaluateStreamVerification,
   formatStreamVerifyReport,
   formatStreamVerifyBundle,
@@ -110,6 +111,53 @@ test('classifyContainerShape: unknown without enough evidence', () => {
   assert.equal(classifyContainerShape({ headerClaimFrames: null, metadataFrames: 10_000_000, deliveredBytes: 5, announcedBytes: 10 }), 'unknown')
   assert.equal(classifyContainerShape({ headerClaimFrames: 100, metadataFrames: null, deliveredBytes: 5, announcedBytes: 10 }), 'unknown')
   assert.equal(classifyContainerShape({ headerClaimFrames: 100, metadataFrames: 200, deliveredBytes: 0, announcedBytes: 10 }), 'unknown')
+})
+
+test('selectStreamWindow: the monotonic window never uses a wall clock (the 1.2.48 regression)', () => {
+  // Native `t` is SECONDS since process start (~1e3), never epoch ms (~1.7e12).
+  // An epoch-based cut matched nothing; a monotonic window keeps every recent
+  // event. This is the exact shape of the field report's "RAW EVENTS (0)".
+  const events = [
+    { domain: 'stream', msg: 'old', t: 3_580 },
+    { domain: 'stream', msg: 'recent', t: 3_604 },
+    { domain: 'stream', msg: 'now', t: 3_605 },
+  ]
+  const kept = selectStreamWindow(events, { trackId: 'never-matches', nowSeconds: 3_605, lookbackSeconds: 20 })
+  assert.deepEqual(kept.map((e) => e.msg), ['recent', 'now'])
+  // With no explicit now, the newest event's own `t` is the base — still correct.
+  const kept2 = selectStreamWindow(events, { trackId: 'never-matches', lookbackSeconds: 20 })
+  assert.deepEqual(kept2.map((e) => e.msg), ['recent', 'now'])
+})
+
+test('selectStreamWindow: the current track\'s stream session wins even if older than the window', () => {
+  const events = [
+    { domain: 'stream', msg: 'staged load start row 1 id=OTHER autoplay=true', t: 100 },
+    { domain: 'loader', msg: 'noise', t: 101 },
+    { domain: 'stream', msg: 'staged load start row 7 id=abc autoplay=true', t: 200 },
+    { domain: 'stream', msg: 'first staged schedule id=abc endable=3969000 frames (90.0s of header claim 3969000)', t: 260 },
+  ]
+  const kept = selectStreamWindow(events, { trackId: 'abc', nowSeconds: 500, lookbackSeconds: 20 })
+  assert.equal(kept.length, 2, 'from the current track\'s start marker onward')
+  assert.match(kept[0].msg, /staged load start row 7 id=abc/)
+  const facts = parseNativeStreamTranscript(kept)
+  assert.equal(facts.sawStagedLoadStart, true)
+  assert.equal(facts.sawFirstStagedSchedule, true)
+})
+
+test('selectStreamWindow: another track\'s marker does not masquerade as the current session', () => {
+  const events = [
+    { domain: 'stream', msg: 'staged load start row 1 id=OTHER autoplay=true', t: 100 },
+    { domain: 'stream', msg: 'first staged schedule id=OTHER endable=100 frames (1.0s of header claim 100)', t: 160 },
+  ]
+  // Current track is cached (no stream events of its own): the window applies,
+  // and the OLD other-track session is excluded.
+  const kept = selectStreamWindow(events, { trackId: 'abc', nowSeconds: 500, lookbackSeconds: 20 })
+  assert.equal(kept.length, 0)
+})
+
+test('selectStreamWindow: timestamp-less events are kept, never silently dropped', () => {
+  const kept = selectStreamWindow([{ domain: 'stream', msg: 'no stamp' }], { trackId: 'abc', nowSeconds: 500 })
+  assert.equal(kept.length, 1)
 })
 
 test('evaluate: a healthy transcode streams, classifies honest and promotes', () => {

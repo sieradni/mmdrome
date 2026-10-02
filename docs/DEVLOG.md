@@ -1,3 +1,11 @@
+## 2026-10-02b (self-test look-back timebase) — the epoch-vs-monotonic bug the first field report exposed
+
+The first real 1.2.48 report came back with `RAW EVENTS (0)` and three crucial checks UNKNOWN (`native staged stream engaged`, `completion judged by duration`, `container length honest vs lying`) while the HTTP leg passed cleanly. The empty event tail was the tell: the look-back filtered ring entries with `ev.t < Date.now() - lookbackMs` — and native `EventLog.t` is MONOTONIC SECONDS since process start (`ProcessInfo.processInfo.systemUptime`, ~1e3), not epoch milliseconds (~1.7e12). Every event failed the comparison, so BOTH the raw tail and the fact fold were empty no matter what played. The forward poll (which has no `t` filter) was fine, but it only sees events that fire AFTER the button — for a stream already running or just finished, that is nothing, so the look-back is exactly the path the button depends on.
+
+The fix keeps every clock out of the selection: `getDebugEvents` now returns the engine's own `now` (same uptime base as `t`), and the new pure `selectStreamWindow` (1) prefers the current track's last `staged load start` anywhere in the ring — a session already running is captured WHOLE regardless of age — and (2) otherwise uses the monotonic window `[now - lookback, now]`, falling back to the newest event's `t` when the bridge `now` is absent (a web-only deploy paired with an older native build). `fmtRawEv` reads forward from the oldest captured event's own `t` (no more `/1000`). Pinned by `tests/streamVerification.test.ts` (5 new cases, including the exact epoch-shape regression and the cross-track mis-attribution guard).
+
+Lesson for the anti-rot contract: any JS that windows the native ring must compare against the bridge's `now`, never `Date.now()` — the two clocks are not the same timeline.
+
 ## 2026-10-02 (stream self-test) — a button runs the transcode verification instead of a manual tap-wait-copy loop
 
 Verifying transcode streaming used to mean: force LDM, tap a track, wait, copy the dump, and eyeball ~8 signals across the event ring — and the same labor for every follow-up question. The two decisive unknowns are separable and mostly do not need audio at all, so they are now automated behind one HUD button.

@@ -146,6 +146,10 @@ export interface NativeEventsPage {
   events: NativeEventEntry[]
   nextSeq: number
   dropped: number
+  /** The engine's monotonic clock (SECONDS since process start) at read time
+   *  — the SAME base as each event's `t`. A caller that wants to window the
+   *  ring must compare against this, never `Date.now()` (the 1.2.48 bug). */
+  now: number
 }
 
 export interface NativeEngineCallbacks {
@@ -179,11 +183,11 @@ export class NativeAudioEngineApp {
    *  Used by the Debug HUD (incremental poll while open; full pull at Copy
    *  time). No-ops to an empty page off-native or on failure. */
   async getDebugEvents(sinceSeq: number): Promise<NativeEventsPage> {
-    if (!this.isNative()) return { events: [], nextSeq: sinceSeq, dropped: 0 }
+    if (!this.isNative()) return { events: [], nextSeq: sinceSeq, dropped: 0, now: 0 }
     try {
       return await BackgroundAudio.getDebugEvents({ sinceSeq })
     } catch {
-      return { events: [], nextSeq: sinceSeq, dropped: 0 }
+      return { events: [], nextSeq: sinceSeq, dropped: 0, now: 0 }
     }
   }
 

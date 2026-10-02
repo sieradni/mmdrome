@@ -29,6 +29,7 @@ import {
   type NativeEventLike,
   emptyNativeStreamFacts,
   foldStreamEvent,
+  selectStreamWindow,
   evaluateStreamVerification,
   sniffContainer,
   formatStreamVerifyBundle,
@@ -157,8 +158,11 @@ interface RawEvent extends NativeEventLike {
  *  the surrounding context a reader needs to adjudicate it. */
 const RAW_DOMAINS = new Set(['stream', 'loader', 'preload', 'network', 'engine'])
 
-function fmtRawEv(ev: RawEvent, t0: number): string {
-  const rel = typeof ev.t === 'number' ? `+${((ev.t - t0) / 1000).toFixed(3)}s` : '     ?'
+/** `base` is the OLDEST captured event's `t` in MONOTONIC SECONDS (native
+ *  `EventLog` timestamps are seconds since process start, never epoch ms — the
+ *  1.2.48 look-back bug). */
+function fmtRawEv(ev: RawEvent, base: number): string {
+  const rel = typeof ev.t === 'number' ? `+${(ev.t - base).toFixed(3)}s` : '     ?'
   return `${rel} ${(ev.level ?? 'info').padEnd(6)} ${(ev.domain ?? '?').padEnd(7)} ${ev.msg}`
 }
 
@@ -229,21 +233,27 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
 
   const http = probe ? await probeTranscodeHttp(probe.url) : null
 
-  const t0 = Date.now()
   let facts = emptyNativeStreamFacts()
   const raw: RawEvent[] = []
   let stateSample: StateSample | null = null
 
   if (Capacitor.isNativePlatform()) {
-    // 1. Look-back: read the ring, keep only the recent window so events from
-    //    an earlier track are not folded into this run's facts.
-    const foldFrom = t0 - lookbackMs
+    // 1. Look-back: read the ring and keep the CURRENT stream's events so a
+    //    track already playing (or one that just finished) is still captured.
+    //    The window is chosen on the NATIVE MONOTONIC clock — `EventLog.t` is
+    //    seconds since process start, so the old `Date.now() - lookbackMs` cut
+    //    matched nothing and every runtime check read UNKNOWN (1.2.48 bug).
+    const currentTrackId = track?.trackId ?? ''
     let seq = 0
     try {
       const page = await nativeEngine.getDebugEvents(0)
       seq = page.nextSeq
-      for (const ev of page.events as RawEvent[]) {
-        if (typeof ev.t === 'number' && ev.t < foldFrom) continue
+      const selected = selectStreamWindow(page.events as RawEvent[], {
+        trackId: currentTrackId,
+        nowSeconds: Number(page.now) || 0,
+        lookbackSeconds: Math.max(1, Math.round(lookbackMs / 1000)),
+      })
+      for (const ev of selected) {
         if (ev.domain && RAW_DOMAINS.has(ev.domain)) raw.push(ev)
         facts = foldStreamEvent(facts, ev)
       }
@@ -284,6 +294,14 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
     stateSample,
   })
 
+  // Raw lines read forward from the oldest captured event (a compact timeline
+  // the reader can scan), on that event's own monotonic `t` base.
+  let rawBase = 0
+  for (const ev of raw) {
+    if (typeof ev.t === 'number' && (rawBase === 0 || ev.t < rawBase)) rawBase = ev.t
+  }
+  const rawLines = raw.map((ev) => fmtRawEv(ev, rawBase))
+
   const st = get(playbackState)
   const net = get(networkStatusStore)
   const stab = networkStabilitySnapshot()
@@ -299,9 +317,9 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
     http,
     native: Capacitor.isNativePlatform() ? facts : null,
     stateSample,
-    rawLines: raw.map((ev) => fmtRawEv(ev, t0)),
+    rawLines,
   })
 
-  lastBundle = { report, text, http, native: Capacitor.isNativePlatform() ? facts : null, stateSample, rawLines: raw.map((ev) => fmtRawEv(ev, t0)) }
+  lastBundle = { report, text, http, native: Capacitor.isNativePlatform() ? facts : null, stateSample, rawLines }
   return lastBundle
 }

@@ -1957,6 +1957,11 @@ public final class NativeAudioEngine: NSObject {
             "events": events.map { ["seq": $0.seq, "t": $0.t, "domain": $0.domain, "level": $0.level.rawValue, "msg": $0.message] },
             "nextSeq": eventLog.nextSeq,
             "dropped": eventLog.droppedCount,
+            // The SAME monotonic base the event `t` values use (seconds since
+            // process start). JS cannot derive this from a wall clock — the
+            // 1.2.48 self-test cut its look-back at Date.now() and matched
+            // nothing. A reader can now window the ring on a consistent clock.
+            "now": ProcessInfo.processInfo.systemUptime,
         ]
     }
     /// Instant completion announcements (no tick wait): the loader fires this

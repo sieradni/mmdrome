@@ -130,6 +130,53 @@ export function parseNativeStreamTranscript(events: NativeEventLike[]): NativeSt
   return events.reduce(foldStreamEvent, emptyNativeStreamFacts())
 }
 
+/** A native ring entry with its timestamp. `t` is MONOTONIC SECONDS since
+ *  process start (see `EventLog.swift`), NOT epoch milliseconds. */
+export interface TimedEventLike extends NativeEventLike {
+  seq?: number
+  t?: number
+}
+
+/**
+ * Choose the ring events that belong to the CURRENT stream session.
+ *
+ * WHY this is not a wall-clock window: native event `t` is monotonic seconds
+ * since process start, so the natural-looking `Date.now() - lookbackMs` cut
+ * compared ~1.7e12 to ~1e3 and matched NOTHING — the 1.2.48 field report's
+ * "RAW EVENTS (0)" and all-UNKNOWN verdicts. Selection therefore never reads
+ * a wall clock:
+ *
+ *  1. Prefer the last `staged load start` for the current track ANYWHERE in
+ *     the ring — a stream already running (or one that finished moments
+ *     earlier) is captured WHOLE, regardless of how long ago it began.
+ *  2. Otherwise fall back to the monotonic window `[now - lookback, now]`,
+ *     where `now` is the caller's fresh native uptime (or, absent that, the
+ *     newest event's own `t` — conservative, never the wrong timebase).
+ */
+export function selectStreamWindow(
+  events: TimedEventLike[],
+  opts: { trackId?: string; nowSeconds?: number | null; lookbackSeconds?: number } = {},
+): TimedEventLike[] {
+  const trackId = opts.trackId ?? ''
+  for (let i = events.length - 1; i >= 0; i--) {
+    const ev = events[i]
+    const msg = ev.msg ?? ''
+    if (ev.domain === 'stream' && /staged load start row/.test(msg) && (trackId === '' || msg.includes(trackId))) {
+      return events.slice(i)
+    }
+  }
+  const lookback = opts.lookbackSeconds ?? 20
+  const now =
+    opts.nowSeconds && opts.nowSeconds > 0
+      ? opts.nowSeconds
+      : events.reduce((m, e) => (typeof e.t === 'number' && e.t > m ? e.t : m), 0)
+  if (!(now > 0)) return events
+  const from = now - lookback
+  // An event with no timestamp is kept: it cannot be placed, and dropping it
+  // would hide evidence on a malformed ring rather than at worst add noise.
+  return events.filter((e) => typeof e.t !== 'number' || e.t >= from)
+}
+
 /**
  * Sniff the container from the first bytes of the body. Only the front-of-file
  * magic is needed: a progressive container has its header at byte 0, which is
