@@ -12,13 +12,13 @@ matrix + the poisoning-row scenario; Swift compile/tests run in CI per E5).
 `BackgroundAudioCore` + `NetworkRearmDebounceTests`; the plugin's
 `NetworkMonitor.onNetworkChanged` handler debounces and calls the new
 `NativeAudioEngine.rearmPrefetchAfterNetworkChange()`, which skips while a staged stream
-owns the bandwidth; `jsEvents`/native log carry `network re-arm:` lines).
-
-**Scope**: bug fixes only. Explicitly OUT of scope: progressive playback for transcoded
-variants (the "a song won't play until it's fully downloaded" hunch). That is real and
-correct — `TrackFileLoader.streamDecision` requires `requested == .raw`, so under
-LDM/transcode every tap is a full download by design. It is a capability backlog item
-(extends A15), not a defect, and this plan deliberately does not touch it.
+owns the bandwidth; `jsEvents`/native log carry `network re-arm:` lines).**Scope**: bug fixes only. Explicitly OUT of scope at the time: progressive playback for
+transcoded variants (the "a song won't play until it's fully downloaded" hunch). That is
+real and correct at the time — `TrackFileLoader.streamDecision` required
+`requested == .raw`, so under LDM/transcode every tap was a full download by design. It is a
+capability backlog item (extends A15), not a defect, and this plan deliberately did not
+touch it. **FOLLOW-UP LANDED (2026-10-02, same session):** transcode streaming — see
+`docs/plans/2026-09-21-native-streaming.md` for the design and the new anchors.
 
 **Field evidence**: the 2026-10-02 HUD dump (`Aiyru - So Starry`, iOS, cellular +
 `lowDataOnCellular` → `opus@128`). Preload stopped after rows 1–2; `prefetch FAILED row 3
@@ -77,10 +77,11 @@ classification instead of flipping back instantly.**
 | Loader recovers on failure (in-flight cleared, error delivered) | `TrackFileLoader.prefetch` completion hop (~1600) |
 | Staged streams own the bandwidth; a staged load deliberately skips the chain arm | `loadAndStart` staged note (~3508) |
 | Raw network signal + no-op dedupe | `NetworkMonitor.swift`; `BackgroundAudioPlugin.swift::load` (~88) |
-| Filtered classification + store-write gate | `networkHysteresis.ts::decideCellularFlap`; `networkMode.ts::wireNative` (~92) |
+| Filtered classification + store-write gate | `networkHysteresis.ts::decideNetworkStability` (was `decideCellularFlap`; renamed in Phase 2); `networkMode.ts::wireNative` |
 | `effectiveLowData` composition | `networkMode.ts` (~64) |
 | LDM transition side-effects | `playbackManager.ts::_subscribeShared` (~584) |
 | `osLowData` must ride live, never filtered | `networkMode.ts` comment; `tests/networkHysteresis.test.ts` |
+| Prefetch re-arm follows the PATH bit only | `BackgroundAudioPlugin.swift` (`pathChanged` guard, 2026-10-02 review) |
 
 ---
 
@@ -236,6 +237,15 @@ Verification item (not a change): confirm the resumable path actually fires on t
 `-1010`/`network lost` shape and that stale `resumeData` from a previous interface does
 not loop. If dumps show a loop, clear `resumeDataByCacheKey` for the key on a network
 change; record the finding either way.
+
+**Adversarial review (2026-10-02, post-landing).** Findings: (a) the prefetch re-arm
+fired on ANY deduped tuple change, including an `osLowData`-only toggle — an explicit
+user setting is not a network change, so the plugin now gates the re-arm on the
+`isExpensive` (path) bit alone; (b) the plan's own anchor table still named the removed
+`decideCellularFlap` — fixed here per the anti-rot contract. No functional defects were
+found in the pure cores or the engine wiring (the park-and-drain planner, the
+generation-superseding re-arm, and the classifier state machine all hold under the
+test matrix). Swift compile/run remains CI-only (E5).
 
 ---
 

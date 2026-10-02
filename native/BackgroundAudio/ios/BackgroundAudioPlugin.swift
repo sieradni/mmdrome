@@ -123,6 +123,12 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                lastExpensive == isExpensive, lastConstrained == isConstrained {
                 return // no-op re-evaluation — do not flood the event ring
             }
+            // The prefetch re-arm follows the PATH bit only. `isConstrained`
+            // is the OS Low Data Mode toggle — a user setting, not a network
+            // change — and a toggle does not justify restarting the download
+            // walk (review finding, 2026-10-02). Captured before the state
+            // overwrite; the boot snapshot (nil) counts as a path change.
+            let pathChanged = self.lastNetworkState?.0 != isExpensive
             self.lastNetworkState = (isExpensive, isConstrained)
             self.engineEvent(.info, "network", "changed isExpensive=\(isExpensive) isConstrained=\(isConstrained)")
             self.notifyListeners("networkStateChanged", data: [
@@ -130,7 +136,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 "isConstrained": isConstrained
             ])
             // Phase 4: debounced native prefetch re-arm (churn burst → one).
-            self.noteNetworkChangeForRearm()
+            if pathChanged { self.noteNetworkChangeForRearm() }
         }
         NetworkMonitor.shared.startIfNeeded()
 
