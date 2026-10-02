@@ -3,7 +3,7 @@
   import { Capacitor } from '@capacitor/core'
   import { get } from 'svelte/store'
   import { currentTrack, playbackState, queue, currentTime, effectiveDuration, settings, library, loopMode, shuffleEnabled } from '../stores/appState'
-  import { effectiveLowData, networkStatusStore } from '../lib/networkMode'
+  import { effectiveLowData, networkStatusStore, networkStabilitySnapshot } from '../lib/networkMode'
   import { transcodeParams } from '../lib/transcodePolicy'
   import { getCachedConfig } from '../lib/navidromeApi'
   import { getCachedLfmSession } from '../lib/lastfmAuth'
@@ -226,7 +226,7 @@
         isNative: Capacitor.isNativePlatform(),
         isIOS: audioManager.isIOS,
         engineWidth: typeof (audioManager as any).webAudioReady !== 'undefined' ? (audioManager as any).webAudioReady : null,
-        lowData: { effective: get(effectiveLowData), network: get(networkStatusStore) },
+        lowData: { effective: get(effectiveLowData), network: get(networkStatusStore), stability: networkStabilitySnapshot() },
         transcode: tp ?? 'original',
       },
       osMajor,
@@ -303,6 +303,11 @@
     if (n.osLowData) return 'os'
     return n.source === 'native' ? 'cell' : 'hint'
   })
+  // Network-stability classifier readout (2026-10-02): the filtered metered
+  // bit, whether the churn latch is pinning it, and the suppressed-flip
+  // count — the field surface for tuning the constants and proving a churn
+  // burst is being held instead of surfacing.
+  let netStability = $derived.by(() => { void jsTick; return networkStabilitySnapshot() })
   let streamVariant = $derived.by(() => {
     void jsTick
     const s = get(settings)
@@ -425,6 +430,7 @@
         <div>activeIndex: {q.activeIndex} / {combined.length} (u:{q.userQueue.length} a:{q.autoQueue.length})</div>
         <div>activeId: {(combined[q.activeIndex] ?? '—')}</div>
         <div>ldm: {ldm ? `on-${ldmWhy}` : 'off'} stream: {streamVariant}</div>
+        <div>net: {netStability.metered === null ? 'unknown' : netStability.metered ? 'metered' : 'open'}{netStability.latched ? ` LATCHED(${Math.ceil(netStability.latchedRemainingMs / 1000)}s)` : ''} sup: {netStability.suppressed} flips: {netStability.transitions}</div>
         {#if lastTrackChanged}<div class="text-green-300">{lastTrackChanged}</div>{/if}
       </div>
 

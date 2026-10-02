@@ -51,6 +51,10 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private let nowPlaying = NowPlayingController()
     private var nowPlayingTimer: Timer?
     private var lastNetworkState: (Bool, Bool)?
+    /// Phase 4 (2026-10-02): trailing debounce for the network-change prefetch
+    /// re-arm. Main-thread-only — the monitor callback hops to main and the
+    /// scheduled fire runs on main.
+    private var networkRearm = NetworkRearmDebounce()
 
     /// Capacitor invokes plugin methods on its serial bridge queue. The native
     /// audio graph, loader, timers, and engine state are main-thread-owned, so
@@ -67,6 +71,34 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private func performOnMainSync<T>(_ work: () -> T) -> T {
         if Thread.isMainThread { return work() }
         return DispatchQueue.main.sync(execute: work)
+    }
+
+    /// Phase 4 (2026-10-02, the network-churn plan): collapse a burst of path
+    /// updates into ONE native prefetch re-arm. Classification-free and
+    /// JS-independent (works backgrounded): the engine retries because the
+    /// network changed, not because of a metered judgement. A staged stream
+    /// owns the bandwidth and is skipped engine-side; no generation bump, so
+    /// in-flight rows chain onto their existing task.
+    private func noteNetworkChangeForRearm() {
+        networkRearm.noteChange(at: Self.uptimeMs())
+        scheduleNetworkRearm()
+    }
+
+    private func scheduleNetworkRearm() {
+        guard let remaining = networkRearm.millisUntilEligible(at: Self.uptimeMs()) else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(Int(remaining))) { [weak self] in
+            guard let self else { return }
+            if self.networkRearm.shouldFire(at: Self.uptimeMs()) {
+                self.performOnMain { self.engine.rearmPrefetchAfterNetworkChange() }
+            } else {
+                self.scheduleNetworkRearm()
+            }
+        }
+    }
+
+    /// Monotonic milliseconds — the debounce clock (wall time can jump).
+    private static func uptimeMs() -> Int64 {
+        Int64(ProcessInfo.processInfo.systemUptime * 1000)
     }
 
     /// Any controller's diagnostic rides the engine's structured event log
@@ -97,6 +129,8 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 "isExpensive": isExpensive,
                 "isConstrained": isConstrained
             ])
+            // Phase 4: debounced native prefetch re-arm (churn burst → one).
+            self.noteNetworkChangeForRearm()
         }
         NetworkMonitor.shared.startIfNeeded()
 

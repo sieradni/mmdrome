@@ -3517,63 +3517,144 @@ public final class NativeAudioEngine: NSObject {
     /// downloads first and COMPLETES before the row behind it starts, so a
     /// slow link never leaves the next track waiting behind track 5. The old
     /// all-at-once loop made every download share bandwidth (the user report:
-    /// "tracks are preloaded in parallel instead of sequentially"). A failure
-    /// logs, clears the row's tint ("gone") and CONTINUES the chain; the row
-    /// stays uncached and is re-attempted by the next natural advance's
-    /// prefetchUpcoming (continuation, not a strand). Crossfade keeps
-    /// reserving the immediate successor even at preloadCount 0. Each
+    /// "tracks are preloaded in parallel instead of sequentially"). Crossfade
+    /// keeps reserving the immediate successor even at preloadCount 0. Each
     /// completion re-checks the crossfade monitor so a target that becomes
     /// ready inside the fade window does not wait for the next 100 ms tick.
     /// A chain is generation-guarded: a queue replacement (setQueue/refresh)
     /// bumps `prefetchGeneration` and the surviving completions drop the rest.
-    /// Bounded per-row prefetch retries (2026-09-21, the "preload shows nothing"
-    /// report): the old chain MOVED PAST a failed row and never came back — on
-    /// a flaky cellular link every re-arm died at the same row N+1
-    /// (`cannot parse response`, URLSession's response-parse failure), so the
-    /// loader stayed at cache=1 with preload=5 for whole sessions. The chain
-    /// now re-attempts the failed row up to `prefetchMaxAttempts` times with a
-    /// short backoff before moving past it. Generation-guarded throughout:
-    /// a queue/track change kills pending backoffs with the rest of the chain.
+    ///
+    /// PARK-AND-DRAIN (2026-10-02 Phase 3, the plan in
+    /// docs/plans/2026-10-02-network-churn-and-prefetch-resilience.md): a row
+    /// failure no longer sleeps INSIDE the serial walk — the old shape held
+    /// every row behind a poisoning row for ~4.5 s (3 attempts × 1.5 s) before
+    /// moving on. Now the failed row is PARKED and the walk advances
+    /// IMMEDIATELY; once the walk is exhausted the parked rows drain oldest-
+    /// first with the backoff, rotating a still-failing row so the others get
+    /// a turn, up to `prefetchMaxAttempts`. One download is in flight at a
+    /// time throughout (the bandwidth discipline is unchanged). Every decision
+    /// is the pure `PrefetchChain` planner; this method is the thin
+    /// interpreter. Generation-guarded throughout: a queue/track change kills
+    /// pending backoffs with the rest of the chain.
     private static let prefetchMaxAttempts = 3
     private static let prefetchRetryBackoffNanos: UInt64 = 1_500_000_000
 
-    private func prefetchUpcoming(from index: Int, total: Int? = nil, seen: Set<Int> = [], generation: Int? = nil, attempt: Int = 1) {
+    private func prefetchUpcoming(
+        from index: Int,
+        total: Int? = nil,
+        state: PrefetchChain.State? = nil,
+        generation: Int? = nil
+    ) {
         let totalCount = total ?? (crossfadeDuration > 0 ? max(1, preloadCount) : preloadCount)
-        guard totalCount > 0, seen.count < totalCount else { return }
+        guard totalCount > 0 else { return }
         let gen = generation ?? prefetchGeneration
-        // Function parameters are constants; the dedupe set mutates per step.
-        var seen = seen
-        guard let next = nextIndex(after: index),
-              tracks.indices.contains(next),
-              seen.insert(next).inserted else { return }
-        let track = tracks[next]
-        let seenSnapshot = seen // Sendable capture: the Task below must not
-        // reference the mutating var (Swift 6 concurrency, CI compile).
-        eventAdd(.debug, "preload", "chain: prefetch row \(next) (\(track.trackId)) attempt \(attempt)")
-        loader.prefetch(track) { [weak self] _, error in
-            guard let self = self else { return }
-            guard gen == self.prefetchGeneration else { return }
-            guard let error else {
-                self.crossfadeMonitorTick()
-                self.prefetchUpcoming(from: next, total: totalCount, seen: seen, generation: gen)
-                return
-            }
-            // A failed prefetch must not sit "fetching" forever (frozen-tint
-            // report): gone clears the row's tint now.
-            self.emitPreload(track.trackId, "gone", nil)
-            if attempt < Self.prefetchMaxAttempts {
-                self.eventAdd(.info, "preload", "prefetch FAILED row \(next) (\(track.trackId)) attempt \(attempt)/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — retrying")
-                Task { @MainActor [weak self] in
-                    try? await Task.sleep(nanoseconds: Self.prefetchRetryBackoffNanos)
-                    guard let self, gen == self.prefetchGeneration else { return }
-                    self.prefetchUpcoming(from: index, total: totalCount, seen: seenSnapshot, generation: gen, attempt: attempt + 1)
+        let current = state ?? PrefetchChain.State()
+        let action = PrefetchChain.nextAction(
+            state: current,
+            totalCount: totalCount,
+            maxAttempts: Self.prefetchMaxAttempts,
+            walkCandidate: nextIndex(after: index)
+        )
+        switch action {
+        case .finished:
+            return
+
+        case .download(let row):
+            guard tracks.indices.contains(row) else { return }
+            let track = tracks[row]
+            let snapshot = current // Sendable capture: no mutating var in the closure.
+            eventAdd(.debug, "preload", "chain: prefetch row \(row) (\(track.trackId))")
+            loader.prefetch(track) { [weak self] _, error in
+                guard let self, gen == self.prefetchGeneration else { return }
+                // A failed prefetch must not sit "fetching" forever
+                // (frozen-tint report): gone clears the row's tint now.
+                if let error {
+                    self.emitPreload(track.trackId, "gone", nil)
+                    if Self.prefetchMaxAttempts > 1 {
+                        self.eventAdd(.info, "preload", "prefetch FAILED row \(row) (\(track.trackId)) attempt 1/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — parked")
+                    } else {
+                        self.eventAdd(.info, "preload", "prefetch FAILED row \(row) (\(track.trackId)): \(error.localizedDescription) — moving on")
+                    }
+                } else {
+                    self.crossfadeMonitorTick()
                 }
-            } else {
-                self.eventAdd(.danger, "preload", "prefetch FAILED row \(next) (\(track.trackId)) after \(attempt) attempts: \(error.localizedDescription) — moving on")
-                self.crossfadeMonitorTick()
-                self.prefetchUpcoming(from: next, total: totalCount, seen: seen, generation: gen)
+                let next = PrefetchChain.applyDownload(
+                    state: snapshot,
+                    index: row,
+                    success: error == nil,
+                    maxAttempts: Self.prefetchMaxAttempts)
+                self.prefetchUpcoming(from: row, total: totalCount, state: next, generation: gen)
+            }
+
+        case .retry(let row, let attempt):
+            let snapshot = current // Sendable capture: no mutating var in the Task.
+            // The drain runs only once the walk is exhausted, so `from: index`
+            // (the walk's last position) is re-passed unchanged: the walk
+            // cannot re-open mid-drain (seen is monotonic; the candidate is
+            // nil or already seen).
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: Self.prefetchRetryBackoffNanos)
+                guard let self, gen == self.prefetchGeneration else { return }
+                guard self.tracks.indices.contains(row) else {
+                    // The queue shrank under the parked row: drop it and continue.
+                    let skipped = PrefetchChain.applyRetry(
+                        state: snapshot, index: row, attempt: attempt,
+                        success: true, maxAttempts: Self.prefetchMaxAttempts)
+                    self.prefetchUpcoming(from: index, total: totalCount, state: skipped, generation: gen)
+                    return
+                }
+                let track = self.tracks[row]
+                self.loader.prefetch(track) { [weak self] _, error in
+                    guard let self, gen == self.prefetchGeneration else { return }
+                    if let error {
+                        self.emitPreload(track.trackId, "gone", nil)
+                        if attempt >= Self.prefetchMaxAttempts {
+                            self.eventAdd(.danger, "preload", "prefetch FAILED row \(row) (\(track.trackId)) after \(attempt) attempts: \(error.localizedDescription) — giving up")
+                        } else {
+                            self.eventAdd(.info, "preload", "prefetch RETRY FAILED row \(row) (\(track.trackId)) attempt \(attempt)/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — reparked")
+                        }
+                    } else {
+                        self.crossfadeMonitorTick()
+                    }
+                    let next = PrefetchChain.applyRetry(
+                        state: snapshot,
+                        index: row,
+                        attempt: attempt,
+                        success: error == nil,
+                        maxAttempts: Self.prefetchMaxAttempts)
+                    self.prefetchUpcoming(from: index, total: totalCount, state: next, generation: gen)
+                }
             }
         }
+    }
+
+    /// Phase 4 (2026-10-02, the network-churn plan): a network PATH CHANGE
+    /// re-arms the prefetch chain after the plugin's trailing debounce.
+    /// Deliberately classification-free — the engine retries because the
+    /// network changed, not because of a metered/cheap judgement, so no LDM
+    /// semantics are mirrored into Swift and it works backgrounded (no JS
+    /// round trip). No generation bump: in-flight rows chain onto their
+    /// existing task and cached rows are no-ops, so this is cheap and
+    /// idempotent. SKIPPED while a staged stream owns the bandwidth — the
+    /// writer arms its own chain at completion (mirrors the `loadAndStart`
+    /// staged note).
+    ///
+    /// SUPERSEDES an in-flight chain: the generation is bumped so any older
+    /// walk's continuations drop and exactly ONE chain runs. The bump does NOT
+    /// cancel the loader's in-flight downloads (the generation guard only drops
+    /// chain bookkeeping) — the fresh walk re-requests the same rows and chains
+    /// onto their existing tasks. Without the bump a re-arm during an active
+    /// walk would run a SECOND concurrent chain, double-walking the window and
+    /// amplifying event/tick churn (review finding, 2026-10-02).
+    public func rearmPrefetchAfterNetworkChange() {
+        guard stagedSchedule == nil, !loader.hasActiveWriter else {
+            eventAdd(.debug, "preload", "network re-arm skipped (staged stream owns bandwidth)")
+            return
+        }
+        guard !tracks.isEmpty else { return }
+        prefetchGeneration += 1
+        eventAdd(.info, "preload", "network re-arm: prefetchUpcoming from row \(activeIndex) (gen \(prefetchGeneration))")
+        prefetchUpcoming(from: activeIndex)
     }
 
     /// Schedules the current track on the active node, ready to play.
