@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.49",
-      "versionDate": "2026-10-02T21:12:42.252Z",
-      "versionDescription": "The stream self-test now captures a running stream's events (its look-back was reading the wrong clock), so its verdicts populate instead of all reading unknown.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.49/mmdrome.ipa",
+      "version": "1.2.50",
+      "versionDate": "2026-10-02T21:31:28.875Z",
+      "versionDescription": "The stream self-test now folds the promote verdict (it is logged on the loader domain) and treats a 206 as Range proof, so its checks populate instead of reading unknown.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.50/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.50",
+          "buildVersion": "54",
+          "date": "2026-10-02T21:31:28.875Z",
+          "localizedDescription": "The stream self-test now folds the promote verdict (it is logged on the loader domain) and treats a 206 as Range proof, so its checks populate instead of reading unknown.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.50/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.49",
           "buildVersion": "53",
@@ -494,6 +502,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.50",
+      "identifier": "ios-v1.2.50",
+      "appID": "com.mmdrome.player",
+      "caption": "The stream self-test now folds the promote verdict (it is logged on the loader domain) and treats a 206 as Range proof, so its checks popula",
+      "date": "2026-10-02T21:31:28.875Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.49",
       "identifier": "ios-v1.2.49",
       "appID": "com.mmdrome.player",
@@ -526,15 +543,6 @@
       "appID": "com.mmdrome.player",
       "caption": "The auto queue keeps its own persisted sort (hidden while shuffle is on), and the FilterSortBar gains an apply-to-auto-queue button - visibl",
       "date": "2026-09-29T17:30:55.209Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.45",
-      "identifier": "ios-v1.2.45",
-      "appID": "com.mmdrome.player",
-      "caption": "Queue fixes: row taps play the right song again, the now-playing indicator is back, drag to reorder works, scrolling no longer slides, and j",
-      "date": "2026-09-29T09:08:25.557Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
