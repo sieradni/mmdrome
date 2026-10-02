@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.47",
-      "versionDate": "2026-09-29T19:42:21.859Z",
-      "versionDescription": "Queue sort fixes: flipping the sort direction now visibly re-ranks the auto queue, an explicit sort change shows the new order from the top, the queue's sort editor is a distinct card, and the library sort menu stays open so you can flip directions live.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.47/mmdrome.ipa",
+      "version": "1.2.48",
+      "versionDate": "2026-10-02T20:39:08.114Z",
+      "versionDescription": "Transcode playback now streams while downloading instead of waiting for the full file, with a one-button in-app stream self-test; native prefetch retry recovery, park-and-drain, and a network-churn latch that stops metered flapping.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.48/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.48",
+          "buildVersion": "52",
+          "date": "2026-10-02T20:39:08.114Z",
+          "localizedDescription": "Transcode playback now streams while downloading instead of waiting for the full file, with a one-button in-app stream self-test; native prefetch retry recovery, park-and-drain, and a network-churn latch that stops metered flapping.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.48/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.47",
           "buildVersion": "51",
@@ -476,6 +484,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.48",
+      "identifier": "ios-v1.2.48",
+      "appID": "com.mmdrome.player",
+      "caption": "Transcode playback now streams while downloading instead of waiting for the full file, with a one-button in-app stream self-test; native pre",
+      "date": "2026-10-02T20:39:08.114Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.47",
       "identifier": "ios-v1.2.47",
       "appID": "com.mmdrome.player",
@@ -508,15 +525,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Thumbnail fast paths: covers snap in instantly with no fade, cached regions load at decode speed, and every virtualized surface now keeps tw",
       "date": "2026-09-29T07:53:45.264Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.43",
-      "identifier": "ios-v1.2.43",
-      "appID": "com.mmdrome.player",
-      "caption": "Virtualized scrolling across every library surface: Songs, the Albums and Artists grids with their detail lists, and the Queue now render fi",
-      "date": "2026-09-29T05:41:52.673Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
