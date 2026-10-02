@@ -93,7 +93,15 @@ export interface NativeEventLike {
 export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): NativeStreamFacts {
   const domain = ev.domain ?? ''
   const msg = ev.msg ?? ''
-  if (domain !== 'stream') return facts
+  // The staged-flow lines ride the `stream` domain; the writer's VERDICT lines
+  // (promoted / cut short / writer failed) go through the loader's own
+  // `event()` helper, which logs on the `loader` domain with a `stream: `
+  // prefix. Both describe the same stream — fold both, or the promote verdict
+  // is never seen and `completion-verdict` reads UNKNOWN forever (the 1.2.49
+  // field report: `stream: promoted … — cache entry complete` arrived on
+  // `loader` and the domain guard dropped it).
+  const isStreamLine = domain === 'stream' || (domain === 'loader' && msg.startsWith('stream:'))
+  if (!isStreamLine) return facts
   const next = { ...facts }
 
   if (/staged load start row/.test(msg)) next.sawStagedLoadStart = true
@@ -322,12 +330,24 @@ export function evaluateStreamVerification(input: StreamVerifyInput): StreamVeri
         ? `content-length=${http.contentLength}, content-type=${http.contentType ?? '?'}`
         : 'chunked / no Content-Length — transcode streaming stays on the full-download fallback (no regression)',
     })
-    const rangesOk = (http.acceptRanges ?? '').toLowerCase().includes('bytes')
+    // A 206 to our Range GET is DIRECT proof the server honored the range —
+    // and it is the only proof available to JS in a cross-origin context:
+    // `Accept-Ranges`/`Content-Range` are NOT CORS-safelisted response headers,
+    // so a webview fetch cannot read them even when the server sends them
+    // (Content-Length/Content-Type ARE safelisted — hence the 1.2.49 report's
+    // "content-length present, accept-ranges absent" pairing). Trust the status
+    // code before the header.
+    const rangesOk =
+      (http.acceptRanges ?? '').toLowerCase().includes('bytes') ||
+      http.status === 206 ||
+      !!http.contentRange
     checks.push({
       id: 'range-support',
       label: 'Server supports Range (stream recovery can resume)',
       status: rangesOk ? 'pass' : 'warn',
-      evidence: `accept-ranges=${http.acceptRanges ?? 'absent'}`,
+      evidence: http.status === 206
+        ? `status 206 to a Range request${http.acceptRanges ? `, accept-ranges=${http.acceptRanges}` : ' (Accept-Ranges/Content-Range may be CORS-hidden)'}`
+        : `status ${http.status}, accept-ranges=${http.acceptRanges ?? 'absent'}`,
     })
     const progressive = isProgressiveContainer(http.sniffed)
     checks.push({

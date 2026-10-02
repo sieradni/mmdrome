@@ -63,7 +63,7 @@ test('parseNativeStreamTranscript folds the real engine lines', () => {
     { domain: 'stream', level: 'info', msg: 'stall resume at 62.5s — re-scheduling from the delivered end (autoPlay=true)' },
     { domain: 'stream', level: 'info', msg: 'schedule target past delivered end id=abc (seek 91.0s vs endable 90.0s) — buffering' },
     { domain: 'stream', level: 'info', msg: 'promoted abc (3000000B, announced 3000000 — decodability+duration-gated)' },
-    { domain: 'engine', level: 'info', msg: 'promoted abc (3000000B, 3969000 frames) — cache entry complete' },
+    { domain: 'loader', level: 'info', msg: 'stream: promoted abc (3000000B, 3969000 frames) — cache entry complete' },
   ])
   assert.equal(facts.sawStagedLoadStart, true)
   assert.equal(facts.deferredFirstScheduleCount, 1)
@@ -111,6 +111,25 @@ test('classifyContainerShape: unknown without enough evidence', () => {
   assert.equal(classifyContainerShape({ headerClaimFrames: null, metadataFrames: 10_000_000, deliveredBytes: 5, announcedBytes: 10 }), 'unknown')
   assert.equal(classifyContainerShape({ headerClaimFrames: 100, metadataFrames: null, deliveredBytes: 5, announcedBytes: 10 }), 'unknown')
   assert.equal(classifyContainerShape({ headerClaimFrames: 100, metadataFrames: 200, deliveredBytes: 0, announcedBytes: 10 }), 'unknown')
+})
+
+test('foldStreamEvent folds the loader-domain `stream: promoted` verdict (the 1.2.49 field report)', () => {
+  // The raw-path promote rides the LOADER domain with a `stream: ` prefix; the
+  // old domain guard dropped it, so `promoted` stayed false and the completion
+  // verdict read UNKNOWN even though the stream had plainly completed.
+  const rawPath = parseNativeStreamTranscript([
+    { domain: 'stream', msg: 'first staged schedule id=abc endable=2015688 frames (42.0s of header claim 2015688)' },
+    { domain: 'loader', msg: 'stream: promoted abc (2260641B, 8373220 frames) — cache entry complete' },
+  ])
+  assert.equal(rawPath.promoted, true)
+  const transcode = parseNativeStreamTranscript([
+    { domain: 'loader', msg: 'stream: promoted abc (3000000B, announced 3000000 — decodability+duration-gated)' },
+  ])
+  assert.equal(transcode.promoted, true)
+  assert.equal(transcode.promotedDurationGated, true)
+  assert.equal(transcode.promotedAnnouncedBytes, 3_000_000)
+  // A loader line that is NOT a stream verdict is still ignored.
+  assert.equal(parseNativeStreamTranscript([{ domain: 'loader', msg: 'active-load retry attempt 1 for abc' }]).promoted, false)
 })
 
 test('selectStreamWindow: the monotonic window never uses a wall clock (the 1.2.48 regression)', () => {
@@ -206,6 +225,23 @@ test('evaluate: chunked server is a WARN fallback, and a deferred stream that pl
   assert.equal(byId['server-total'], 'warn')
   assert.equal(byId['deferred-plays'], 'pass')
   assert.equal(report.containerShape, 'unknown', 'no state sample')
+})
+
+test('range-support: a 206 proves range support even when the headers are CORS-hidden', () => {
+  // Accept-Ranges/Content-Range are not CORS-safelisted, so a webview fetch
+  // cannot read them — the 1.2.49 report showed content-length present with
+  // accept-ranges absent. The 206 status to a Range GET is the real evidence.
+  const covered = evaluateStreamVerification({
+    trackId: 'abc', variant: 'raw', isTranscode: false, metadataDuration: 100, snapshotSize: 1,
+    http: httpProbe({ status: 206, acceptRanges: null, contentRange: null }), native: null,
+  })
+  assert.equal(covered.checks.find((c) => c.id === 'range-support')?.status, 'pass')
+  // A 200 to the same request means the range was ignored — a genuine warn.
+  const ignored = evaluateStreamVerification({
+    trackId: 'abc', variant: 'raw', isTranscode: false, metadataDuration: 100, snapshotSize: 1,
+    http: httpProbe({ status: 200, acceptRanges: null, contentRange: null }), native: null,
+  })
+  assert.equal(ignored.checks.find((c) => c.id === 'range-support')?.status, 'warn')
 })
 
 test('evaluate: a rejected short transcode FAILS the completion check', () => {
