@@ -160,6 +160,67 @@ final class StreamScheduleTests: XCTestCase {
         XCTAssertEqual(StreamSchedule.estimatedFramesEndable(headerClaimedFrames: 10_000_000, deliveredBytes: 5_000_000, announcedBytes: 0), 0)
     }
 
+    // MARK: - the container-shape-honest estimate (2026-10-02, transcode streaming)
+
+    func testStagedEndEstimateMatchesLegacyForALyingHeader() {
+        // FLAC/MP4 partial: the container claims the FULL track (10M) while
+        // half the bytes exist; metadata duration == the claim → the ratio
+        // discount still applies, exactly as `estimatedFramesEndable` did.
+        let e = StreamSchedule.stagedEndFramesEstimate(
+            containerFrames: 10_000_000, metadataFrames: 10_000_000,
+            deliveredBytes: 5_000_000, announcedBytes: 10_000_000)
+        XCTAssertEqual(e, 4_900_000)
+    }
+
+    func testStagedEndEstimateDoesNotDoubleDiscountAnHonestContainer() {
+        // Ogg/Opus partial: the container already reports only the DELIVERED
+        // duration (5M of a 10M track at 50 % bytes). The legacy estimate
+        // would promise 5M × 0.5 = 2.45M (≈ ratio²) and stall every chunk;
+        // this estimate promises the delivered duration it actually holds.
+        let e = StreamSchedule.stagedEndFramesEstimate(
+            containerFrames: 5_000_000, metadataFrames: 10_000_000,
+            deliveredBytes: 5_000_000, announcedBytes: 10_000_000)
+        XCTAssertEqual(e, 4_900_000, "the delivered duration, not ratio² of it")
+        XCTAssertGreaterThan(e, StreamSchedule.estimatedFramesEndable(
+            headerClaimedFrames: 5_000_000, deliveredBytes: 5_000_000, announcedBytes: 10_000_000))
+    }
+
+    func testStagedEndEstimateIsCappedByTheContainerEnd() {
+        // Safety property: min(container, metadata-ratio) can never promise
+        // audio the container does not hold. That cap — not any comparison
+        // with the legacy value — is what makes the estimate safe everywhere.
+        // (Mismatched metadata: the container decodes to 4M, the metadata
+        // claims 10M, 25 % of bytes delivered → 2.45M, still under container
+        // truth, and better than the legacy 0.98M.)
+        let next = StreamSchedule.stagedEndFramesEstimate(
+            containerFrames: 4_000_000, metadataFrames: 10_000_000,
+            deliveredBytes: 2_000_000, announcedBytes: 8_000_000)
+        XCTAssertEqual(next, 2_450_000)
+        XCTAssertLessThanOrEqual(next, 4_000_000)
+        XCTAssertGreaterThan(next, StreamSchedule.estimatedFramesEndable(
+            headerClaimedFrames: 4_000_000, deliveredBytes: 2_000_000, announcedBytes: 8_000_000))
+    }
+
+    func testStagedEndEstimateFallsBackWithoutMetadataFrames() {
+        // Unknown metadata duration → the legacy header-claim shape (no second
+        // anchor is available).
+        XCTAssertEqual(
+            StreamSchedule.stagedEndFramesEstimate(
+                containerFrames: 10_000_000, metadataFrames: 0,
+                deliveredBytes: 5_000_000, announcedBytes: 10_000_000),
+            StreamSchedule.estimatedFramesEndable(
+                headerClaimedFrames: 10_000_000, deliveredBytes: 5_000_000, announcedBytes: 10_000_000))
+    }
+
+    func testStagedEndEstimateConservativeOnUnknownInputs() {
+        XCTAssertEqual(StreamSchedule.stagedEndFramesEstimate(
+            containerFrames: 0, metadataFrames: 1_000_000, deliveredBytes: 5_000, announcedBytes: 10_000), 0)
+        XCTAssertEqual(StreamSchedule.stagedEndFramesEstimate(
+            containerFrames: 1_000, metadataFrames: 1_000_000, deliveredBytes: 0, announcedBytes: 10_000), 0)
+        XCTAssertEqual(StreamSchedule.stagedEndFramesEstimate(
+            containerFrames: 1_000, metadataFrames: 1_000_000, deliveredBytes: 5_000, announcedBytes: 0), 0)
+    }
+
     // MARK: - the buffering-pause resume decision
 
     func testResumeRequiresTwoSecondMargin() {

@@ -83,4 +83,40 @@ final class StreamPolicyTests: XCTestCase {
         // with a completion-event judgment instead.
         XCTAssertNil(StreamPolicy.writerCompleteVerdict(accumulatedBytes: 10_000_000, announcedBytes: 0))
     }
+
+    // MARK: - transcode streaming (2026-10-02)
+
+    func testTranscodeVerdictIsAlwaysNil() {
+        // A transcode's announced Content-Length is a server-side ESTIMATE of
+        // the yet-to-be-encoded output: byte-exact promotion would false-close
+        // on ordinary encode-size drift. The completion must end through the
+        // decodability + duration-corroboration path instead — regardless of
+        // how the accumulated bytes compare to the estimate.
+        XCTAssertNil(StreamPolicy.writerCompleteVerdict(
+            accumulatedBytes: 9_900_000, announcedBytes: 10_000_000, transcode: true))
+        XCTAssertNil(StreamPolicy.writerCompleteVerdict(
+            accumulatedBytes: 10_000_000, announcedBytes: 10_000_000, transcode: true))
+        XCTAssertNil(StreamPolicy.writerCompleteVerdict(
+            accumulatedBytes: 10_500_000, announcedBytes: 10_000_000, transcode: true))
+        // The raw contract is unchanged by the new parameter.
+        XCTAssertEqual(StreamPolicy.writerCompleteVerdict(
+            accumulatedBytes: 10_000_000, announcedBytes: 10_000_000, transcode: false), .promote)
+    }
+
+    func testEffectiveTotalPrefersTheAnnouncedBody() {
+        // Raw: the snapshot size IS the transfer total.
+        XCTAssertEqual(StreamPolicy.effectiveTotalBytes(snapshotBytes: 5_000_000, announcedBytes: 0), 5_000_000)
+        // Transcode: the snapshot size is the SOURCE file — the response's own
+        // Content-Length is the output's total and must win.
+        XCTAssertEqual(StreamPolicy.effectiveTotalBytes(snapshotBytes: 40_000_000, announcedBytes: 3_000_000), 3_000_000)
+    }
+
+    func testMayDeliverProgressWithholdsAnUnestimatedTranscode() {
+        // A transcode with no announced total has no honest schedule end —
+        // delivering a source would cycle the stall/give-up machine.
+        XCTAssertFalse(StreamPolicy.mayDeliverProgress(announcedBytes: 0, transcode: true))
+        XCTAssertTrue(StreamPolicy.mayDeliverProgress(announcedBytes: 3_000_000, transcode: true))
+        // Raw is unchanged (its total comes from the snapshot).
+        XCTAssertTrue(StreamPolicy.mayDeliverProgress(announcedBytes: 0, transcode: false))
+    }
 }

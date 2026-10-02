@@ -81,19 +81,54 @@ public enum StreamPolicy {
 
     /// The writer's final-promotion contract: the accumulated `.part` bytes
     /// pass the SAME gates a download does. `isComplete` requires the exact
-    /// announced body (raw streams only — a transcode's announced length is
-    /// an estimate and cannot anchor the byte-exact gate; the design keeps
-    /// transcodes on the full-download `downloadTask` path in Phase 2 for
-    /// exactly this reason). Returns nil when completeness cannot be judged
-    /// (no announced length) — the writer then ends the stream with a
-    /// completion-event judgment instead of a byte verdict.
+    /// announced body for a RAW stream (its announced length is a promise).
+    /// Returns nil when completeness cannot be judged — no announced length,
+    /// OR a TRANSCODE. A transcode's announced Content-Length is a server-side
+    /// ESTIMATE of the yet-to-be-encoded output, so a byte-exact verdict would
+    /// false-close (or false-promote) on ordinary encode-size drift; a transcode
+    /// completion therefore ends through the decodability + duration-
+    /// corroboration path (`DownloadSanity.transcodeDurationCorroborated`),
+    /// exactly like a chunked raw body. Announced bytes STILL feed the staged
+    /// schedule's delivered-end ESTIMATE — the estimate is not a promise.
+    ///
+    /// Transcode streaming (2026-10-02): this is the change that lets a
+    /// transcode tap stream — its completion can no longer be misjudged by an
+    /// estimate, so the writer may serve a transcode without the byte-exact
+    /// hazard the original Phase 2 note cited as the reason not to.
     public static func writerCompleteVerdict(
         accumulatedBytes: Int64,
-        announcedBytes: Int64
+        announcedBytes: Int64,
+        transcode: Bool = false
     ) -> WriterVerdict? {
+        if transcode { return nil }
         guard announcedBytes > 0 else { return nil }
         if accumulatedBytes >= announcedBytes { return .promote }
         return .earlyClose
+    }
+
+    // MARK: - Transcode streaming (2026-10-02)
+
+    /// The byte total the writer uses for BYTE↔LEAD and byte↔frame math. For a
+    /// raw stream the snapshot's `size` IS the transfer's total. For a
+    /// TRANSCODE the snapshot `size` is the SOURCE file's bytes — an order of
+    /// magnitude larger than the output — so sizing the lead from it would
+    /// demand ~85 % of the output before PLAYABLE, defeating the whole point.
+    /// Prefer the response's own Content-Length when the server announces one.
+    public static func effectiveTotalBytes(snapshotBytes: Int64, announcedBytes: Int64) -> Int64 {
+        announcedBytes > 0 ? announcedBytes : snapshotBytes
+    }
+
+    /// DECISION: may the writer deliver a PLAYABLE source for this load? A
+    /// transcode's schedule end is estimated from the byte ratio
+    /// (`StreamSchedule.stagedEndFramesEstimate`), which needs the transfer's
+    /// TOTAL — with no announced total there is no honest end, so a delivered
+    /// source could never be scheduled and the load would cycle through the
+    /// stall → give-up → JS-retry machine. Withhold the delivery: the transfer
+    /// then completes and promotes through the duration-corroboration gate,
+    /// byte-identical to today's full-download behavior. Raw streams are
+    /// exempt (their announced total comes from the snapshot and is present).
+    public static func mayDeliverProgress(announcedBytes: Int64, transcode: Bool) -> Bool {
+        !transcode || announcedBytes > 0
     }
 
     public enum WriterVerdict: Equatable {

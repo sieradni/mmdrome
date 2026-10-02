@@ -129,6 +129,51 @@ public enum StreamSchedule {
         return Int64((Double(headerClaimedFrames) * ratio * slack).rounded(.down))
     }
 
+    /// The honest staged end for a PARTIAL file, tracking BOTH container
+    /// shapes (2026-10-02, transcode streaming).
+    ///
+    /// `estimatedFramesEndable` discounts the container's own `length` by the
+    /// delivered byte fraction. That is correct when the container LIES HIGH
+    /// (FLAC STREAMINFO / MP4 partial: `length` = the FULL track while only
+    /// part of the bytes exist) — the classic raw shape. It is WRONG for an
+    /// HONEST container (Ogg/Opus re-serializes page granule positions for
+    /// the audio it actually carries, so a partial file's `length` is already
+    /// the delivered duration): applying the fraction a second time promises
+    /// ~ratio² of the track and the schedule stalls on every chunk — the
+    /// shape a Navidrome opus transcode produces.
+    ///
+    /// This estimate is correct under BOTH, so it is safe to use everywhere:
+    /// the track's own metadata duration × the delivered byte fraction is the
+    /// honest partial-duration promise (CBR), and the container's own
+    /// decodable end is the CAP — an honest container never promises more than
+    /// it holds, and a lying one never promises past the metadata duration. The
+    /// result EQUALS the legacy value whenever the container claims the full
+    /// track (a lying header), and differs only where the legacy value was
+    /// over-conservative: an honest container's own end already bounds it, so
+    /// the cap can never over-promise relative to what the container holds.
+    ///
+    /// - containerFrames: `AVAudioFile.length` of the PARTIAL file.
+    /// - metadataFrames: the snapshot duration × sample rate (0 = unknown →
+    ///   the legacy header-claim × ratio shape is kept).
+    public static func stagedEndFramesEstimate(
+        containerFrames: Int64,
+        metadataFrames: Int64,
+        deliveredBytes: Int64,
+        announcedBytes: Int64,
+        slack: Double = 0.98
+    ) -> Int64 {
+        guard containerFrames > 0, deliveredBytes > 0, announcedBytes > 0 else { return 0 }
+        let ratio = min(1.0, Double(deliveredBytes) / Double(announcedBytes))
+        guard metadataFrames > 0 else {
+            // Metadata duration unknown: no second anchor — keep the legacy
+            // header-claim × ratio shape (correct for lying headers, the only
+            // shape it could previously be used for).
+            return Int64((Double(containerFrames) * ratio * slack).rounded(.down))
+        }
+        let ratioEnd = Int64((Double(metadataFrames) * ratio * slack).rounded(.down))
+        return min(containerFrames, ratioEnd)
+    }
+
     /// DECISION after a buffering pause: has enough new audio landed beyond
     /// the stalled position to resume without immediately re-stalling?
     /// `resumeMarginSeconds` (2 s) is deliberately BELOW `minExtensionSeconds`

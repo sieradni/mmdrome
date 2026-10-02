@@ -322,11 +322,16 @@ final class TrackFileLoader {
     /// is the contract.
     func streamDecision(for track: NativeTrack) -> Bool {
         let requested = TrackVariant(url: track.url)
-        // Transcodes keep the full-download path in Phase 2: their announced
-        // length is a server-side estimate, which the honesty contract (the
-        // schedule ends inside delivered bytes, judged against an exact
-        // announced total) cannot use.
-        guard requested == .raw else { return false }
+        // TRANSCODES STREAM TOO (2026-10-02): the old raw-only guard existed
+        // because the byte-exact promotion verdict could not anchor an
+        // estimate Content-Length — that reason is gone (a transcode writer
+        // now ends through `writerCompleteVerdict(transcode:) → nil`, the
+        // decodability + duration-corroboration path) and the staged estimate
+        // is container-shape-honest (`StreamSchedule.stagedEndFramesEstimate`).
+        // The transfer's own total arrives in the response; a chunked
+        // response with no total cannot be estimated and is withheld by
+        // `StreamPolicy.mayDeliverProgress` (the load then completes and
+        // promotes — today's full-download behavior).
         let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
         // A downloadTask already owns this key (preload chain, Range
         // continuation): never race it with a second byte stream.
@@ -497,9 +502,17 @@ final class TrackFileLoader {
         // (verdict, gates, estimate, arrival ledger) sees whole-file bytes.
         writer.accumulatedBytes = writer.resumeOffset + received
         let track = writer.track
+        let transcode = TrackVariant(url: track.url) != .raw
         let lead = StreamPolicy.effectiveLeadSeconds(trackDuration: track.duration)
+        // BYTE↔LEAD rate (2026-10-02, transcode streaming): a transcode's
+        // snapshot `size` is the SOURCE file's bytes — sizing the lead from it
+        // would demand ~85 % of the output before PLAYABLE. The response's own
+        // Content-Length is the transfer's total where the server announces
+        // one; raw keeps the snapshot total unchanged.
+        let leadTotal = StreamPolicy.effectiveTotalBytes(
+            snapshotBytes: Int64(track.size), announcedBytes: writer.announcedBytes)
         let leadBytes = MaturationStageSupport.bytesForLeadWithFallback(
-            fileBytes: Int64(track.size), duration: track.duration, leadSeconds: lead)
+            fileBytes: leadTotal, duration: track.duration, leadSeconds: lead)
         // F2 (design review): EVERY arrival feeds the engine's progress
         // ledger (stall resume + give-up timer) — rung-gated deliveries alone
         // starved a resuming trickle stream for tens of seconds and let the
@@ -520,6 +533,12 @@ final class TrackFileLoader {
         // channel's cadence) — it must never quantize the byte COUNT, which
         // is the completion verdict's and the continuation offset's truth.
         streamWriter = writer
+        // A TRANSCODE with no announced total (chunked response) has no honest
+        // schedule end — delivering a PLAYABLE source would cycle the
+        // stall/give-up/retry machine. Withhold the delivery; the transfer
+        // completes and promotes through the duration gate, which is exactly
+        // today's full-download behavior (2026-10-02, transcode streaming).
+        guard StreamPolicy.mayDeliverProgress(announcedBytes: writer.announcedBytes, transcode: transcode) else { return }
         let shouldDeliver = StreamPolicy.writerShouldDeliver(
             accumulatedBytes: merged,
             leadRequiredBytes: leadBytes,
@@ -625,7 +644,11 @@ final class TrackFileLoader {
         // Clean end: judge completeness against the announced body.
         let verdict = StreamPolicy.writerCompleteVerdict(
             accumulatedBytes: writer.accumulatedBytes,
-            announcedBytes: writer.announcedBytes)
+            announcedBytes: writer.announcedBytes,
+            // A transcode's announced length is an estimate: the verdict is
+            // deliberately nil, routing the completion through the
+            // decodability + duration-corroboration path below (2026-10-02).
+            transcode: TrackVariant(url: writer.track.url) != .raw)
         switch verdict {
         case .promote:
             clearWriterState()
@@ -807,14 +830,25 @@ final class TrackFileLoader {
                 }
                 state.store(writer.destination, for: writer.cacheKey, bytes: Int(size))
                 variantOf[writer.cacheKey] = TrackVariant(url: writer.track.url)
-                event(.info, "stream: promoted \(writer.track.trackId) (\(size)B, no announced length — decodability-gated)")
+                // Same bookkeeping the byte-exact `.promote` branch runs: the
+                // decodability path is now the NORMAL completion for every
+                // transcode, so a retained scratch / stale resume offer must
+                // not survive a successful promote (2026-10-02).
+                let elapsed = max(0.05, Date().timeIntervalSince(writer.claimedAt))
+                recentTransferRate = Double(size) / elapsed
+                resumeDataByCacheKey[writer.cacheKey] = nil
+                rangeUnsupportedKeys.remove(writer.cacheKey)
+                maturationByteFloor[writer.cacheKey] = nil
+                dropPending(cacheKey: writer.cacheKey, destination: writer.destination)
+                let announcedForProgress = writer.announcedBytes
+                event(.info, "stream: promoted \(writer.track.trackId) (\(size)B, announced \(announcedForProgress) — decodability+duration-gated)")
                 flushWriterChains(key: writer.cacheKey, url: writer.destination, error: nil)
                 let final = StreamProgress(
                     trackId: writer.track.trackId,
                     url: writer.destination,
                     stage: .complete,
                     deliveredBytes: size,
-                    announcedBytes: 0)
+                    announcedBytes: announcedForProgress)
                 clearWriterState()
                 onFinished?(final, nil)
                 onDownloadFinished?(writer.track.trackId, true)
@@ -3696,10 +3730,16 @@ public final class NativeAudioEngine: NSObject {
             let startFrame = Int64(seconds * sr)
             // COMPLETE → the header claim is FILE TRUTH (gates passed):
             // schedule to the real end. Staged → the delivered-end estimate.
+            // CONTAINER-SHAPE-HONEST ESTIMATE (2026-10-02): a transcode's
+            // Ogg/Opus partial already reports only the DELIVERED duration, so
+            // the legacy header-claim × ratio double-discounts. The
+            // metadata-duration ratio capped by the container's own end is
+            // correct under both shapes and never over-promises.
             let endable = staged.isComplete
                 ? file.length
-                : StreamSchedule.estimatedFramesEndable(
-                    headerClaimedFrames: file.length,
+                : StreamSchedule.stagedEndFramesEstimate(
+                    containerFrames: file.length,
+                    metadataFrames: staged.metadataFrames,
                     deliveredBytes: staged.deliveredBytes,
                     announcedBytes: staged.announcedBytes)
             let endFrames = endable
@@ -3907,6 +3947,10 @@ public final class NativeAudioEngine: NSObject {
         let trackId: String
         var headerClaimedFrames: Int64   // file.length of the PARTIAL file (lies high)
         var sampleRate: Double
+        /// The snapshot duration in frames (0 = unknown): the second anchor of
+        /// the container-shape-honest staged estimate (2026-10-02). Recorded at
+        /// the first schedule; the metadata duration does not change mid-load.
+        var metadataFrames: Int64 = 0
         var scheduledEndFrames: Int64    // the current chained schedule's end (the promise)
         var announcedBytes: Int64        // server's exact body length (raw only)
         var deliveredBytes: Int64        // last known delivered byte count
@@ -4025,8 +4069,9 @@ public final class NativeAudioEngine: NSObject {
             // Resume decision: ≥ 2 s of NEW audio beyond the stalled position
             // (below the 5 s extension-churn bar: a stall re-schedules
             // everything schedulable, so even a small chunk unblocks).
-            let endable = StreamSchedule.estimatedFramesEndable(
-                headerClaimedFrames: staged.headerClaimedFrames,
+            let endable = StreamSchedule.stagedEndFramesEstimate(
+                containerFrames: staged.headerClaimedFrames,
+                metadataFrames: staged.metadataFrames,
                 deliveredBytes: progress.deliveredBytes,
                 announcedBytes: staged.announcedBytes)
             if StreamSchedule.shouldResumeAfterStall(
@@ -4049,8 +4094,9 @@ public final class NativeAudioEngine: NSObject {
             return
         }
         // Not stalled: maybe chain an extension (≥ 5 s newly schedulable).
-        let endable = StreamSchedule.estimatedFramesEndable(
-            headerClaimedFrames: staged.headerClaimedFrames,
+        let endable = StreamSchedule.stagedEndFramesEstimate(
+            containerFrames: staged.headerClaimedFrames,
+            metadataFrames: staged.metadataFrames,
             deliveredBytes: progress.deliveredBytes,
             announcedBytes: staged.announcedBytes)
         let plan = StreamSchedule.extensionPlan(
@@ -4078,8 +4124,10 @@ public final class NativeAudioEngine: NSObject {
             return
         }
         let sr = file.processingFormat.sampleRate
-        let endable = StreamSchedule.estimatedFramesEndable(
-            headerClaimedFrames: file.length,
+        let metadataFrames = Int64(track.duration * sr)
+        let endable = StreamSchedule.stagedEndFramesEstimate(
+            containerFrames: file.length,
+            metadataFrames: metadataFrames,
             deliveredBytes: progress.deliveredBytes,
             announcedBytes: progress.announcedBytes)
         guard endable > 0 else {
@@ -4091,10 +4139,47 @@ public final class NativeAudioEngine: NSObject {
             trackId: track.trackId,
             headerClaimedFrames: file.length,
             sampleRate: sr,
+            metadataFrames: metadataFrames,
             scheduledEndFrames: 0,
             announcedBytes: progress.announcedBytes,
             deliveredBytes: progress.deliveredBytes)
         eventAdd(.info, "stream", "first staged schedule id=\(track.trackId) endable=\(endable) frames (\(String(format: "%.1f", Double(endable) / sr))s of header claim \(file.length))")
+        scheduleCurrentTrack(from: 0, autoPlay: stagedAutoPlay)
+    }
+
+    /// The writer promoted a COMPLETE file but NO staged schedule ever formed
+    /// (its container never opened at the lead crossing — a non-progressive
+    /// output — or its response carried no total so the delivery was withheld).
+    /// The promoted file is on disk and passed the gate chain, so schedule it
+    /// WHOLE, exactly what the normal download path does. Without this the
+    /// completion would no-op and the track would load and then never play,
+    /// with no error for the retry machine to act on. (2026-10-02 review: this
+    /// is the shape a chunked transcode deliberately takes, so the hole my
+    /// no-total guard would otherwise open was real; it equally covers a
+    /// deferred RAW stream, which had the same latent dead air.)
+    private func scheduleStagedFileWhole(progress: TrackFileLoader.StreamProgress) {
+        guard tracks.indices.contains(activeIndex) else { return }
+        let track = tracks[activeIndex]
+        guard track.trackId == progress.trackId else { return }
+        guard let file = try? AVAudioFile(forReading: progress.url), file.length > 0 else {
+            let failure = ActiveLoadFailure(kind: .stream, detail: "Completed stream is not decodable")
+            reportActiveLoadFailure(track: track, failure: failure)
+            scheduleActiveLoadRetry(track: track, failure: failure)
+            return
+        }
+        let sr = file.processingFormat.sampleRate
+        stagedSourceURL = progress.url
+        stagedSchedule = StagedSchedule(
+            trackId: track.trackId,
+            headerClaimedFrames: file.length,
+            sampleRate: sr,
+            metadataFrames: Int64(track.duration * sr),
+            scheduledEndFrames: 0,
+            announcedBytes: progress.announcedBytes,
+            deliveredBytes: progress.deliveredBytes,
+            isComplete: true) // the byte/duration gates already passed
+        eventAdd(.info, "stream", "completed stream scheduled whole id=\(track.trackId) frames=\(file.length) (no staged schedule had formed)")
+        prefetchUpcoming(from: activeIndex)
         scheduleCurrentTrack(from: 0, autoPlay: stagedAutoPlay)
     }
 
@@ -4103,6 +4188,12 @@ public final class NativeAudioEngine: NSObject {
     /// segment (the estimate's 2 % slack never truncates the tail) and mark
     /// the schedule complete — its final completion is a REAL natural end.
     private func completeStagedSchedule(progress: TrackFileLoader.StreamProgress) {
+        guard stagedSchedule != nil else {
+            // A deferred stream has no staged schedule to complete: schedule
+            // the promoted file whole (2026-10-02 review — see the helper).
+            scheduleStagedFileWhole(progress: progress)
+            return
+        }
         guard var staged = stagedSchedule, !staged.isComplete else { return }
         staged.isComplete = true
         staged.announcedBytes = progress.announcedBytes > 0 ? progress.announcedBytes : staged.announcedBytes

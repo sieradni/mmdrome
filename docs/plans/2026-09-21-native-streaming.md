@@ -1,6 +1,6 @@
 # A15 Design — Native Streaming (2026-09-21)
 
-**Status**: design approved direction. **Phase 0 LANDED** (`a9c463b`): `StreamSchedule.swift` + `StreamPolicy.swift` pure cores pinned — inert. **Phase 1 LANDED** (2026-09-21): `Maturation.swift` pure core + loader-side staging wired in `AudioEngine.swift` (`loaderMaturation` state, `ensureProgress`, the 1 s sampler calls `tickMaturation` and emits `maturation: key stage=…` events, destination recorded via `destinationExtensions`, track lookup injected from `setQueue`/`refreshQueue`/`loadAndStart`; `streamMaturation` visible in `getDebugState`). Still inert playback-wise: `scheduleCurrentTrack` is unchanged and only reads COMPLETE cache entries, so behavior is byte-identical — but the maturation stage of every downloading row is now field-visible in the dump. **Phase 3 LANDED** (2026-09-21): fade eligibility = schedule completeness (`fadeEligibility` at the monitor choke point + the staged schedule branch); staged end verdicts (`stagedEndVerdict`) route the last-segment completion through finalize when a fade is in flight; finalize tears down the outgoing staged state; completion re-arms the monitor deferred + generation-guarded (the 1.2.31 lesson); the not-complete-during-fade contract violation aborts the fade before the buffering pause (defense in depth). **Phase 4 (the default flip) is MOOT** — streaming is already fully integrated with no setting. Remaining: field-dump validation of staged boundaries + fades on real links. — staged tracks keep crossfade automation off. **Phase 2 LANDED** (2026-09-21): loader dataTask streaming writer into `.part` (gate chain unchanged at promote; `prefetch` chains onto an active writer), staged-aware `scheduleCurrentTrack` (delivered-end schedule, chained-segment extension, generation-guarded segment/track completion discrimination), the buffering contract (stall = pause-never-evict, auto-resume at >=2 s new audio, 10 s no-progress give-up to the JS retry). **Fully integrated same day (user decision)**: the `nativeStreaming` off/slowLink/on setting was REMOVED — every eligible raw direct tap streams via the engine-side `streamDecision` gate; StreamPolicy's Mode/decision functions were deleted (eligibility is engine-side evidence, not policy math); crossfade does NOT fire on streamed boundaries until Phase 3 (accepted). **Design review pre-field** (2026-09-21) fixed seven findings F1-F7: download-path transfer-rate feed, per-byte arrival progress for stall resume, no-bar completion tail (`completionTailPlan`), crossfade-monitor re-arm guard on staged tracks, give-up writer cancel + Range substrate, stalled-latch clear on reschedule, and the slowLink decision rewritten as realtime-sustainability (`shouldStreamSlowLink`) after the original ratio was proven vacuous. Anchor A15 in AGENTS.md records the runtime truth.
+**Status**: design approved direction. **Phase 0 LANDED** (`a9c463b`): `StreamSchedule.swift` + `StreamPolicy.swift` pure cores pinned — inert. **Phase 1 LANDED** (2026-09-21): `Maturation.swift` pure core + loader-side staging wired in `AudioEngine.swift` (`loaderMaturation` state, `ensureProgress`, the 1 s sampler calls `tickMaturation` and emits `maturation: key stage=…` events, destination recorded via `destinationExtensions`, track lookup injected from `setQueue`/`refreshQueue`/`loadAndStart`; `streamMaturation` visible in `getDebugState`). Still inert playback-wise: `scheduleCurrentTrack` is unchanged and only reads COMPLETE cache entries, so behavior is byte-identical — but the maturation stage of every downloading row is now field-visible in the dump. **Phase 3 LANDED** (2026-09-21): fade eligibility = schedule completeness (`fadeEligibility` at the monitor choke point + the staged schedule branch); staged end verdicts (`stagedEndVerdict`) route the last-segment completion through finalize when a fade is in flight; finalize tears down the outgoing staged state; completion re-arms the monitor deferred + generation-guarded (the 1.2.31 lesson); the not-complete-during-fade contract violation aborts the fade before the buffering pause (defense in depth). **Phase 4 (the default flip) is MOOT** — streaming is already fully integrated with no setting. **TRANSCODE STREAMING LANDED (2026-10-02)** — the original Phase 2 note that kept transcodes on the full-download path (their announced Content-Length is a server-side estimate, so the byte-exact promotion verdict could not anchor it) is now resolved without a byte promise: the writer completion for a transcode is deliberately `nil` (`StreamPolicy.writerCompleteVerdict(transcode:)`), routing it through the decodability + `DownloadSanity.transcodeDurationCorroborated` path that already existed for chunked bodies; the lead is sized from the response's OWN total (`StreamPolicy.effectiveTotalBytes`) instead of the source file's bytes; a chunked transcode (no total) withholds the PLAYABLE delivery (`mayDeliverProgress`), so it behaves exactly as a full download; and the staged end estimate is container-shape-honest (`StreamSchedule.stagedEndFramesEstimate` — the metadata-duration ratio capped by the container's own decodable end, which fixes the double-discount the legacy `headerClaimedFrames × ratio` applied to an Ogg/Opus partial that already reports only the delivered duration). Preload rows stay full-download (the offline buffer). Remaining: field-dump validation of transcode staged boundaries + estimates on real links. — staged tracks keep crossfade automation off. **Phase 2 LANDED** (2026-09-21): loader dataTask streaming writer into `.part` (gate chain unchanged at promote; `prefetch` chains onto an active writer), staged-aware `scheduleCurrentTrack` (delivered-end schedule, chained-segment extension, generation-guarded segment/track completion discrimination), the buffering contract (stall = pause-never-evict, auto-resume at >=2 s new audio, 10 s no-progress give-up to the JS retry). **Fully integrated same day (user decision)**: the `nativeStreaming` off/slowLink/on setting was REMOVED — every eligible raw direct tap streams via the engine-side `streamDecision` gate; StreamPolicy's Mode/decision functions were deleted (eligibility is engine-side evidence, not policy math); crossfade does NOT fire on streamed boundaries until Phase 3 (accepted). **Design review pre-field** (2026-09-21) fixed seven findings F1-F7: download-path transfer-rate feed, per-byte arrival progress for stall resume, no-bar completion tail (`completionTailPlan`), crossfade-monitor re-arm guard on staged tracks, give-up writer cancel + Range substrate, stalled-latch clear on reschedule, and the slowLink decision rewritten as realtime-sustainability (`shouldStreamSlowLink`) after the original ratio was proven vacuous. Anchor A15 in AGENTS.md records the runtime truth.
 
 **Problem**: on native, every track is download-then-play. On a slow link, tapping a track means waiting for the whole file before the first sample. Web streams (`HTMLAudioElement` over server URLs; a preload miss still streams via `resolveSrc`). The user asked the right question: can't playback *start* on the bytes that arrived and let the rest catch up?
 
@@ -108,6 +108,53 @@ No changes. The whole graph sits on `AVAudioPlayerNode → mixer → timePitch �
 The one real risk: `AVAudioFile` reading a file that is being **appended while open**. Verified behavior on Apple platforms: the file handle is opened once; a concurrent external append does NOT crash the reader, but the reader's cached length does not update, and reading past the original EOF returns fewer frames/EOF. The staged model therefore **re-opens** the file on each maturation transition (HEADERED→PLAYABLE, each extension) — open is cheap (no full decode; header parse) and keeps `length` honest per schedule. Never hold one `AVAudioFile` across an append boundary. This is the same "file truth" discipline the store gate uses.
 
 ---
+
+## 2b. Transcode streaming (LANDED 2026-10-02)
+
+The one-sentence problem: `streamDecision` required `requested == .raw`, so every LDM /
+transcode tap was a full download — on cellular, the exact case where streaming matters.
+The original blocker was honest: a transcode's announced `Content-Length` is a server-side
+ESTIMATE of the yet-to-be-encoded output, so it cannot anchor the byte-exact promotion
+verdict (`writerCompleteVerdict`) the raw path relies on.
+
+Resolution (all pure cores first, engine as interpreter):
+
+1. **Completion.** `StreamPolicy.writerCompleteVerdict(accumulatedBytes:announcedBytes:transcode:)`
+   returns `nil` for a transcode, so its completion flows through the existing
+   decodability + `DownloadSanity.transcodeDurationCorroborated` branch (the same one a
+   chunked raw body uses) — completion is proven by the CONTAINER's own claim vs the
+   metadata duration, never by comparing bytes to an estimate. A genuinely short body
+   retains its `.part` and Range-continues, exactly like a raw early close. Announced
+   bytes still feed the delivered-end ESTIMATE (an estimate, not a promise).
+2. **Lead sizing.** `StreamPolicy.effectiveTotalBytes(snapshotBytes:announcedBytes:)` —
+   a transcode's snapshot `size` is the SOURCE file's bytes (an order larger than the
+   output), so the writer sizes the lead from the response's own total where present.
+3. **No-total guard.** `StreamPolicy.mayDeliverProgress(announcedBytes:transcode:)` —
+   without a total there is no honest schedule end, so a chunked transcode withholds the
+   PLAYABLE delivery and completes as a full download (no stall/give-up/retry cycling).
+   Review fix (2026-10-02): a completion arriving with NO staged schedule ever formed must
+   still play — `AudioEngine.scheduleStagedFileWhole` schedules the promoted file whole
+   (see the DEVLOG entry); without it a withheld/deferred stream would load and then sit in
+   dead air with no error for the retry machine.
+4. **Honest estimate.** `StreamSchedule.stagedEndFramesEstimate(containerFrames:metadataFrames:deliveredBytes:announcedBytes:)`
+   — `estimatedFramesEndable`'s `headerClaimedFrames × ratio` is correct only when the
+   container LIES HIGH (FLAC/MP4 partial); an HONEST container (Ogg/Opus partial) already
+   reports only the delivered duration, so the ratio applied twice promises ~ratio² and
+   stalls every chunk. The new estimate is `min(container end, metadataDurationFrames ×
+   ratio × slack)` — correct under both shapes, and capped by the container's own decodable end, so
+   it can never promise audio the container does not hold (it equals the legacy value for a
+   lying header and improves it only where the legacy value over-discounted an honest
+   container).
+
+Eligibility is unchanged in kind (variant, no in-flight downloadTask, no scratch,
+range-unsupported sticky flag, size+duration evidence); the raw-only clause is removed.
+
+**Field-verification contract**: the `stream` domain already emits first-schedule /
+`extend` / stall events; a transcode dump should show a `first staged schedule … endable=…`
+some seconds in, `stream: promoted … announced <n> — decodability+duration-gated` at the
+end, and no `Transcode cut short` on honest streams. Container shape (does this server's
+transcode emit a Content-Length? is the header low or high?) is the item to read from the
+first dump.
 
 ## 3. Policy: when does native *use* streaming?
 
