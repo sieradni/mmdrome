@@ -27,7 +27,8 @@
           "date": "2026-10-02T21:12:42.252Z",
           "localizedDescription": "The stream self-test now captures a running stream's events (its look-back was reading the wrong clock), so its verdicts populate instead of all reading unknown.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.49/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5074228
         },
         {
           "version": "1.2.48",
