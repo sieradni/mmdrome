@@ -3367,6 +3367,10 @@ public final class NativeAudioEngine: NSObject {
             "streamAnnouncedBytes": stagedSchedule?.announcedBytes ?? 0,
             "streamScheduledEndFrames": stagedSchedule?.scheduledEndFrames ?? 0,
             "streamHeaderClaimedFrames": stagedSchedule?.headerClaimedFrames ?? 0,
+            // The snapshot duration in frames — the container-shape classifier's
+            // second anchor (2026-10-02 self-test): the JS side cannot derive
+            // frames from a duration without the file's sample rate.
+            "streamMetadataFrames": stagedSchedule?.metadataFrames ?? 0,
             "streamChainedPending": pendingChainedSegments.values.reduce(0, +),
             "streamRecentRate": loader.recentTransferRate ?? 0,
             "standbyScheduleGeneration": standbyScheduleGeneration,

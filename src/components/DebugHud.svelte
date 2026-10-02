@@ -19,6 +19,8 @@
     enabledDomainsList,
     setEnabledDomains,
   } from '../lib/debugLog'
+  import { runStreamSelfTest, getLastStreamVerifyReport } from '../lib/streamVerifyRunner'
+  import { formatStreamVerifyReport } from '../lib/streamVerification'
   import { thumbLoaderDebugSnapshot } from '../lib/thumbLoader'
   import { fillProvenanceGroups } from '../lib/queueProvenance'
   import { coverStatsSummary } from '../lib/coverStats'
@@ -36,7 +38,7 @@
   // 2026-09-17: section collapse state — the state dumps are bulky; the trail
   // and log are the diagnosis surfaces and stay open. Sections persist only
   // for the session (no Dexie: debug-only preference).
-  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false, covers: false, events: false, jsEvents: true })
+  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false, covers: false, events: false, jsEvents: true, verify: false })
   // Structured native events (2026-09-19): the engine's danger verdicts
   // (premature drops, evictions, aborts, stale drops) land here via the
   // incremental `getDebugEvents` poll — a bug that fired BEFORE the HUD was
@@ -53,6 +55,34 @@
 
   function toggleSection(key: string) {
     openSections = { ...openSections, [key]: !openSections[key] }
+  }
+
+  // Streaming Self-Test (2026-10-02): one button that probes the real
+  // transcode URL and (optionally) captures the native stream transcript,
+  // then prints a per-assumption PASS/FAIL table. Replaces the manual
+  // tap-wait-copy-eyeball loop for transcode streaming verification.
+  let verifyBusy = $state(false)
+  let verifyText = $state('')
+  let verifyArmed = $state(false)
+
+  async function runVerify() {
+    if (verifyBusy) return
+    verifyBusy = true
+    verifyText = verifyArmed
+      ? 'probing server + capturing 30s of native stream events (play a transcoded track now)…'
+      : 'probing server…'
+    try {
+      const report = await runStreamSelfTest({
+        captureMs: verifyArmed ? 30_000 : 0,
+        sinceSeq: nativeEventsSeq,
+      })
+      verifyText = formatStreamVerifyReport(report)
+      pushError(`self-test: ${report.summary}`)
+    } catch (e: any) {
+      verifyText = `self-test failed: ${String(e?.message ?? e)}`
+    } finally {
+      verifyBusy = false
+    }
   }
 
   /**
@@ -245,6 +275,10 @@
       nativeEvents: nativeEvents.slice(-1000),
       jsEvents: jsDebugEventsSnapshot().slice(-1000),
       debugDomains: domains,
+      // Streaming self-test: the last run's report (pure evaluation of the
+      // HTTP probe + native transcript) so a dump carries the verdict, not
+      // just the raw events it was derived from.
+      streamVerify: getLastStreamVerifyReport(),
       // Web-only (null on native): the engine's decision inputs — ctx state,
       // element error, crossfade/fade state, EQ branch — the getDebugState
       // parity so a web dump verifies the same assumptions a native one does.
@@ -512,6 +546,32 @@
             >{d}</button>
           {/each}
         </div>
+      </div>
+
+      <!-- Streaming Self-Test (2026-10-02): probes the real transcode URL and
+           (armed) captures the native stream transcript, then prints a
+           per-assumption PASS/FAIL table. HTTP leg needs no playback; armed
+           capture is passive (play a transcoded track normally). -->
+      <div class="mb-1 rounded bg-white/5 p-2">
+        <button onclick={() => toggleSection('verify')} class="mb-1 flex w-full items-center justify-between font-bold text-yellow-300">
+          <span>{openSections.verify ? '▾' : '▸'} STREAM SELF-TEST</span>
+        </button>
+        {#if openSections.verify}
+          <div class="mb-1 flex items-center gap-2">
+            <button onclick={runVerify} disabled={verifyBusy} class="rounded bg-cyan-500/30 px-2 py-0.5 hover:bg-cyan-500/50 disabled:opacity-40">
+              {verifyBusy ? 'running…' : 'Run probe'}
+            </button>
+            <label class="flex items-center gap-1 text-[10px] text-white/60">
+              <input type="checkbox" checked={verifyArmed} onchange={(e) => (verifyArmed = (e.currentTarget as HTMLInputElement).checked)} />
+              + capture 30s (play a transcoded track)
+            </label>
+          </div>
+          {#if verifyText}
+            <pre class="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[10px]">{verifyText}</pre>
+          {:else}
+            <div class="text-[10px] text-white/30">Not run. Probe checks the server total, range support and container magic; capture adds the runtime verdicts.</div>
+          {/if}
+        {/if}
       </div>
 
       <!-- Thumb loader (scroll-gating diagnosis): pending = queue depth,
