@@ -27,7 +27,8 @@
           "date": "2026-10-02T20:39:08.114Z",
           "localizedDescription": "Transcode playback now streams while downloading instead of waiting for the full file, with a one-button in-app stream self-test; native prefetch retry recovery, park-and-drain, and a network-churn latch that stops metered flapping.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.48/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5073930
         },
         {
           "version": "1.2.47",
