@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.51",
-      "versionDate": "2026-10-03T00:43:50.168Z",
-      "versionDescription": "Defer the stream self-test probe while a transcode is live, recover partial transcodes on writer error, attribute transfer cuts (churn vs stable path) and branch the native retry ladder on that verdict, surface the observed retry-branch counters in the Debug HUD, and let its Clear-all button reset them for a fresh observation window.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.51/mmdrome.ipa",
+      "version": "1.2.52",
+      "versionDate": "2026-10-03T09:28:51.407Z",
+      "versionDescription": "Native stream recovery: an active transcode now continues in place through a hard transport cut instead of restarting from 0:00, and a Range answer that is not an aligned 206 (including a mismatched or missing Content-Range) is rejected to a fresh download rather than spliced. Active-load retry ownership is now exclusive and environmental — foreground failures go to the JS ladder, background to the native retry, so a foreground yield immediately followed by backgrounding waits for foreground to resume. The stream self-test now gathers server facts from unloaded tracks, so it no longer needs playback stopped, and reports continuation recovery and Range-answer alignment. Maturation staging deliberately stays with the loader because it is fed by the loader's byte ledgers. NativeAudioEngine remains ~3,548 lines as a known, not-yet-addressed size debt. The in-loader hard-error continuation and its 206 alignment check are compile- and unit-verified only; device verification is intended on this SideStore build.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.52/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.52",
+          "buildVersion": "56",
+          "date": "2026-10-03T09:28:51.407Z",
+          "localizedDescription": "Native stream recovery: an active transcode now continues in place through a hard transport cut instead of restarting from 0:00, and a Range answer that is not an aligned 206 (including a mismatched or missing Content-Range) is rejected to a fresh download rather than spliced. Active-load retry ownership is now exclusive and environmental — foreground failures go to the JS ladder, background to the native retry, so a foreground yield immediately followed by backgrounding waits for foreground to resume. The stream self-test now gathers server facts from unloaded tracks, so it no longer needs playback stopped, and reports continuation recovery and Range-answer alignment. Maturation staging deliberately stays with the loader because it is fed by the loader's byte ledgers. NativeAudioEngine remains ~3,548 lines as a known, not-yet-addressed size debt. The in-loader hard-error continuation and its 206 alignment check are compile- and unit-verified only; device verification is intended on this SideStore build.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.52/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5102187
+        },
         {
           "version": "1.2.51",
           "buildVersion": "55",
@@ -512,6 +521,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.52",
+      "identifier": "ios-v1.2.52",
+      "appID": "com.mmdrome.player",
+      "caption": "Native stream recovery: an active transcode now continues in place through a hard transport cut instead of restarting from 0:00, and a Range",
+      "date": "2026-10-03T09:28:51.407Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.51",
       "identifier": "ios-v1.2.51",
       "appID": "com.mmdrome.player",
@@ -544,15 +562,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Transcode playback now streams while downloading instead of waiting for the full file, with a one-button in-app stream self-test; native pre",
       "date": "2026-10-02T20:39:08.114Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.47",
-      "identifier": "ios-v1.2.47",
-      "appID": "com.mmdrome.player",
-      "caption": "Queue sort fixes: flipping the sort direction now visibly re-ranks the auto queue, an explicit sort change shows the new order from the top,",
-      "date": "2026-09-29T19:42:21.859Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
