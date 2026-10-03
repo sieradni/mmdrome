@@ -27,7 +27,8 @@
           "date": "2026-10-03T00:43:50.168Z",
           "localizedDescription": "Defer the stream self-test probe while a transcode is live, recover partial transcodes on writer error, attribute transfer cuts (churn vs stable path) and branch the native retry ladder on that verdict, surface the observed retry-branch counters in the Debug HUD, and let its Clear-all button reset them for a fresh observation window.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.51/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5097217
         },
         {
           "version": "1.2.50",
