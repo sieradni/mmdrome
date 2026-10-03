@@ -103,6 +103,62 @@ public enum DownloadResume {
         return true
     }
 
+    /// LOOP CAP for the in-loader writer continuation: a server that accepts
+    /// the Range and closes at the same offset forever would cycle one request
+    /// per timeout indefinitely. Past the cap the failure yields to the JS
+    /// retry (its own ladder terminates — bounded above, never an infinite
+    /// silent loop).
+    public static let maxWriterContinuations = 3
+
+    /// DECISION (2026-10-03, the hard-error continuation): may ANY writer
+    /// failure — a clean early close OR a transport error (`cannot parse
+    /// response` / connection lost / …) — re-request the remainder with a
+    /// Range header into the SAME scratch the staged schedule reads?
+    ///
+    /// WHY one predicate for both verdicts. The two `writerDidComplete`
+    /// branches (`.earlyClose` and `error != nil`) must answer this question
+    /// identically: eligibility is a property of the RETAINED BYTES, not of
+    /// how the transfer ended. Keeping a single named decision means the
+    /// hard-error branch cannot silently drift back to "hand every cut to the
+    /// JS retry" — the 1.2.50 field defect, where a mid-body `cannot parse
+    /// response` cut at 3,349,014 of 3,431,872 B (97.6 %) handed the row to
+    /// the JS retry, whose reload re-engaged from 0:00 while the `.part` sat
+    /// on disk almost complete (`stopPlayback` + reload ~1 s later).
+    ///
+    /// The composite mirrors the `.earlyClose` guard exactly:
+    /// `writerContinuationEligible` (positive offset + a scratch that the
+    /// offset cannot splice past), the one-shot Range-unsupported memory (a
+    /// server that answered `200` to a Range would re-deliver the WHOLE body
+    /// into the append — double bytes), and the loop cap.
+    ///
+    /// `deliberateCancel` is the ONE hard-error-only veto: a stall give-up
+    /// (`cancelActiveWriterRetainingScratch`) cancels the task on purpose,
+    /// which surfaces here as `NSURLErrorCancelled` (-999) with `streamWriter`
+    /// still set. Continuing that "failure" would resurrect a stream the
+    /// engine deliberately gave up on — the exact inversion of the intended
+    /// recovery. A clean early close never carries an error, so it passes the
+    /// default `false`; only the hard-error caller can set it.
+    ///
+    /// - Parameters:
+    ///   - offset: delivered bytes (0 = nothing to continue from).
+    ///   - hasRetainedPart: the scratch exists on disk.
+    ///   - continuationAttempt: attempts already spent on this writer.
+    ///   - rangeUnsupported: the server answered a `200` to a Range request.
+    ///   - deliberateCancel: the failure was our own (or the system's)
+    ///     cancellation, not a transport cut.
+    public static func writerErrorContinuationEligible(
+        offset: Int64,
+        hasRetainedPart: Bool,
+        continuationAttempt: Int,
+        rangeUnsupported: Bool,
+        deliberateCancel: Bool = false
+    ) -> Bool {
+        guard !deliberateCancel else { return false }
+        guard writerContinuationEligible(offset: offset, hasRetainedPart: hasRetainedPart) else { return false }
+        guard !rangeUnsupported else { return false }
+        return continuationAttempt < maxWriterContinuations
+    }
+
     public static func parseContentRangeStart(_ text: String?) -> Int64? {
         guard let text, text.hasPrefix("bytes") else { return nil }
         let body = text.dropFirst("bytes".count).trimmingCharacters(in: .whitespaces)
