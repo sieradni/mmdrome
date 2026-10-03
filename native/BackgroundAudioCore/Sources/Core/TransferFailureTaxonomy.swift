@@ -14,8 +14,9 @@ import Foundation
 /// the last network transition (see `TransferCutCorrelation`).
 ///
 /// The doc trail also drifted here: the 2026-09-23 transcode post-mortem named
-/// `cannot parse response` as -1010, but -1010 is `NSURLErrorBadServerResponse`
-/// and `cannot parse response` is `NSURLErrorCannotParseResponse` = **-1017**.
+/// `cannot parse response` as -1010, but -1010 is
+/// `NSURLErrorRedirectToNonExistentLocation` (`badServerResponse` is -1011) and
+/// `cannot parse response` is `NSURLErrorCannotParseResponse` = **-1017**.
 /// An identity that is asserted from memory is exactly what rots; this type
 /// derives it from the `NSError` itself.
 ///
@@ -41,7 +42,7 @@ public struct TransferFailureInfo: Equatable, Sendable {
         case cannotFindHost
         /// -1006.
         case dnsLookupFailed
-        /// -1010: the far end answered something the client rejected.
+        /// -1011: the far end answered something the client rejected.
         case badServerResponse
         /// -1200 family / -1202: TLS.
         case secureConnectionFailed

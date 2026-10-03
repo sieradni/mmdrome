@@ -4,10 +4,10 @@ import XCTest
 
 /// Pins the failure-IDENTITY core (2026-10-02e). The whole point is that the
 /// vocabulary is derived from NSError domain+code, not from a localized
-/// sentence: the 2026-09-23 post-mortem named `cannot parse response` as -1010
-/// (which is `badServerResponse`), and the real code is -1017. A test that
-/// reads the CONSTANTS is the only defense against that memory error
-/// recurring.
+/// sentence: the 2026-09-23 post-mortem named `cannot parse response` as -1010,
+/// but -1010 is `NSURLErrorRedirectToNonExistentLocation` (`badServerResponse`
+/// is -1011) and `cannot parse response` is -1017. A test that reads the
+/// CONSTANTS is the only defense against that memory error recurring.
 final class TransferFailureTaxonomyTests: XCTestCase {
 
     // MARK: - The code → kind map
@@ -37,11 +37,18 @@ final class TransferFailureTaxonomyTests: XCTestCase {
         XCTAssertEqual(NSURLErrorCannotParseResponse, -1017)
         XCTAssertNotEqual(NSURLErrorCannotParseResponse, NSURLErrorBadServerResponse)
         XCTAssertEqual(
-            TransferFailureInfo.classifyKind(domain: NSURLErrorDomain, code: -1017),
+            TransferFailureInfo.classifyKind(domain: NSURLErrorDomain, code: NSURLErrorCannotParseResponse),
             .cannotParseResponse)
         XCTAssertEqual(
-            TransferFailureInfo.classifyKind(domain: NSURLErrorDomain, code: -1010),
+            TransferFailureInfo.classifyKind(domain: NSURLErrorDomain, code: NSURLErrorBadServerResponse),
             .badServerResponse)
+        // The literal -1010 is NOT badServerResponse (that is -1011): it names
+        // `NSURLErrorRedirectToNonExistentLocation`, so it falls through the
+        // vocabulary honestly rather than masquerading as a server rejection.
+        XCTAssertNotEqual(NSURLErrorBadServerResponse, -1010)
+        XCTAssertEqual(
+            TransferFailureInfo.classifyKind(domain: NSURLErrorDomain, code: -1010),
+            .otherTransport)
     }
 
     func testUnknownNSURLErrorCodeIsOtherTransport() {

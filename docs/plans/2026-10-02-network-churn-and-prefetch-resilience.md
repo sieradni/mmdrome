@@ -34,7 +34,7 @@ engaged off a metered report while the user believed they were on Wi-Fi.
    `preloadCount: 5` settled at however many rows preceded it. This is the "stops on the
    3rd upcoming preload" report, exactly.
 2. **The failures are interface-churn casualties.** `cannot parse response` (URLSession
-   `-1010`) and `network connection was lost` cluster immediately after `isExpensive`
+   `-1017`) and `network connection was lost` cluster immediately after `isExpensive`
    flips. The OS tore the TCP transfers down; no app-side parser is implicated.
 3. **The app amplifies the churn.** Every raw flip (before filtering) used to re-derive
    transcode URLs, preload economics, the native params push and `refreshQueue`
@@ -234,7 +234,7 @@ churned link self-heals within seconds, foreground or background.
   fire logs `network re-arm skipped (staged stream owns bandwidth)` at debug level.
 
 Verification item (not a change): confirm the resumable path actually fires on the
-`-1010`/`network lost` shape and that stale `resumeData` from a previous interface does
+`-1017`/`network lost` shape and that stale `resumeData` from a previous interface does
 not loop. If dumps show a loop, clear `resumeDataByCacheKey` for the key on a network
 change; record the finding either way.
 

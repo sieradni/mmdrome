@@ -38,7 +38,7 @@ public enum DownloadSanity {
     /// the announced Content-Length is a server-side ESTIMATE of the yet-to-be-
     /// encoded output, and the snapshot's `size` is the SOURCE file's bytes.
     /// That exemption left a transcode cut mid-stream — Navidrome's stream
-    /// socket dying (URLSession -1010 `cannot parse response`) or a clean early
+    /// socket dying (URLSession -1017 `cannot parse response`) or a clean early
     /// close — with NO evidence gate: it decodes to N>0 frames, so the 0-frame
     /// probe passes, and it was stored as a COMPLETE cache entry. The poisoned
     /// entry then became a fade TARGET: `scheduleSegment` scheduled exactly the
