@@ -27,7 +27,8 @@
           "date": "2026-10-03T09:28:51.407Z",
           "localizedDescription": "Native stream recovery: an active transcode now continues in place through a hard transport cut instead of restarting from 0:00, and a Range answer that is not an aligned 206 (including a mismatched or missing Content-Range) is rejected to a fresh download rather than spliced. Active-load retry ownership is now exclusive and environmental — foreground failures go to the JS ladder, background to the native retry, so a foreground yield immediately followed by backgrounding waits for foreground to resume. The stream self-test now gathers server facts from unloaded tracks, so it no longer needs playback stopped, and reports continuation recovery and Range-answer alignment. Maturation staging deliberately stays with the loader because it is fed by the loader's byte ledgers. NativeAudioEngine remains ~3,548 lines as a known, not-yet-addressed size debt. The in-loader hard-error continuation and its 206 alignment check are compile- and unit-verified only; device verification is intended on this SideStore build.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.52/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5102187
         },
         {
           "version": "1.2.51",
