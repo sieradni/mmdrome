@@ -191,6 +191,23 @@ final class DownloadResumeTests: XCTestCase {
             offset: 3_349_014, hasRetainedPart: true, continuationAttempt: 0, rangeUnsupported: true))
     }
 
+    func testDeliberateCancelFlagWinsWhenTheErrorIsNotACancellation() {
+        // THE QUEUED-ERROR RACE (2026-10-03b): the stall watchdog cancels a
+        // task that had already completed with a NON-cancel error, so
+        // cancel() is a no-op and the completion reports the original error.
+        // Classification reads `notCancelled` — only the explicit flag set at
+        // the cancel site can veto the continuation.
+        XCTAssertTrue(DownloadResume.deliberateWriterCancel(
+            explicitFlag: true, classifiedCancelled: false),
+            "our own cancel must veto even when the surfaced error is not -999")
+        // A system cancel with no flag is still a deliberate cancel.
+        XCTAssertTrue(DownloadResume.deliberateWriterCancel(
+            explicitFlag: false, classifiedCancelled: true))
+        // A genuine transport cut is not.
+        XCTAssertFalse(DownloadResume.deliberateWriterCancel(
+            explicitFlag: false, classifiedCancelled: false))
+    }
+
     func testWriterErrorContinuationRejectsDeliberateCancel() {
         // A stall give-up cancels the task on purpose; the -999 it produces
         // must NOT resurrect the stream the engine just gave up on. The veto

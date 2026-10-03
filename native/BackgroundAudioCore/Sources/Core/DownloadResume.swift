@@ -176,6 +176,30 @@ public enum DownloadResume {
     ///   - rangeUnsupported: the server answered a `200` to a Range request.
     ///   - deliberateCancel: the failure was our own (or the system's)
     ///     cancellation, not a transport cut.
+    /// DECISION (2026-10-03b, the queued-error race): was this writer failure
+    /// a DELIBERATE cancel, or a genuine transport cut?
+    ///
+    /// The original veto classified the ERROR (`TransferFailureInfo.kind ==
+    /// .cancelled`). That misses one race: `cancelActiveWriterRetainingScratch`
+    /// cancels the task, but if the task had ALREADY completed with a
+    /// non-cancel error (its main-hop completion still queued), `cancel()` is a
+    /// no-op and the completion later reports the ORIGINAL error — not -999.
+    /// Classification then reads `notCancelled` and the engine would resurrect
+    /// a stream it just gave up on.
+    ///
+    /// The fix is an EXPLICIT flag set at the cancel site (authoritative — it
+    /// knows the cancel was ours regardless of what error eventually surfaces),
+    /// OR-combined with the classification so a SYSTEM cancel (`URLSession`
+    /// invalidated, `-999` from outside our code) is still vetoed. Extracted so
+    /// the composite is pinned in `swift test`, not re-decided at the call
+    /// site.
+    public static func deliberateWriterCancel(
+        explicitFlag: Bool,
+        classifiedCancelled: Bool
+    ) -> Bool {
+        explicitFlag || classifiedCancelled
+    }
+
     public static func writerErrorContinuationEligible(
         offset: Int64,
         hasRetainedPart: Bool,
