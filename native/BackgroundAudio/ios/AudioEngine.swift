@@ -556,11 +556,25 @@ final class TrackFileLoader {
     /// refines the snapshot's size estimate for the schedule math, and the
     /// status code classifies a CONTINUATION's answer (206 = the remainder;
     /// anything else = the server ignored the range → fresh overwrite).
-    func writerDidReceiveResponse(announced: Int64, statusCode: Int) {
+    func writerDidReceiveResponse(announced: Int64, statusCode: Int, contentRangeStart: Int64?) {
         guard var writer = streamWriter else { return }
-        if writer.resumeOffset > 0, statusCode != 206 {
+        // A continuation must be answered by an ALIGNED 206. Two shapes are
+        // not appendable: a non-206 (a plain 200 = the WHOLE file from byte
+        // 0) and a 206 whose Content-Range start does not equal the requested
+        // offset (a misaligned body — appending splices bytes from the wrong
+        // position mid-file). The download path has always validated the
+        // start (`parseContentRangeStart`); the writer path checked only the
+        // status, so the 2026-10-03 hard-error route (which moves transport
+        // cuts off the download path and onto this one) would have widened
+        // that gap. One shared predicate answers both transports identically.
+        if writer.resumeOffset > 0,
+           !DownloadResume.rangeResponseIsAppendable(
+               statusCode: statusCode,
+               contentRangeStart: contentRangeStart,
+               requestedOffset: writer.resumeOffset) {
             // The continuation's request was answered with a NON-range body
-            // (a plain 200 = the WHOLE file from byte 0). Appending it
+            // (a plain 200 = the WHOLE file from byte 0) or a MISALIGNED 206.
+            // Appending it
             // splices prefix+full, and TRUNCATING the live .part races the
             // delegate queue (bytes already appended before the truncate
             // both poison the file and overcount the counter past file
@@ -575,7 +589,7 @@ final class TrackFileLoader {
             // accumulatedBytes zeroed (the error branch's retention guard
             // is `> 0`), streamWriter nil'd so writerDidComplete early-
             // returns.
-            event(.danger, "stream: continuation answered \(statusCode) (range ignored) for \(writer.track.trackId) — scratch destroyed, fresh download (no in-writer overwrite)")
+            event(.danger, "stream: continuation answered \(statusCode) (range start \(contentRangeStart.map { String($0) } ?? "nil") ≠ requested \(writer.resumeOffset); not appendable) for \(writer.track.trackId) — scratch destroyed, fresh download (no in-writer overwrite)")
             rangeUnsupportedKeys.insert(writer.cacheKey)
             let offsetForLog = writer.accumulatedBytes
             let chains = streamWriterChains.removeValue(forKey: writer.cacheKey) ?? []
@@ -2121,8 +2135,13 @@ private final class StreamWriterDelegate: NSObject, URLSessionDataDelegate {
                 self?.owner?.writerDidReceiveFingerprint(fp)
             }
         }
+        // The continuation's alignment evidence: a 206 must name the
+        // requested start — a mismatched (or missing) Content-Range is the
+        // splice poison class, converted to a fresh download on main.
+        let contentRangeStart = (response as? HTTPURLResponse)
+            .flatMap { DownloadResume.parseContentRangeStart($0.value(forHTTPHeaderField: "Content-Range")) }
         DispatchQueue.main.async { [weak self] in
-            self?.owner?.writerDidReceiveResponse(announced: announced, statusCode: status)
+            self?.owner?.writerDidReceiveResponse(announced: announced, statusCode: status, contentRangeStart: contentRangeStart)
         }
     }
 

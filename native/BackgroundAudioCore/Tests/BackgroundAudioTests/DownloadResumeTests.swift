@@ -65,6 +65,37 @@ final class DownloadResumeTests: XCTestCase {
         XCTAssertFalse(DownloadResume.rangeResponseIsAppendable(statusCode: 416))
     }
 
+    // MARK: - aligned-206 validation (2026-10-03, hard-error continuation
+    // parity — the writer path must validate the Content-Range start exactly
+    // as the download path always has)
+
+    func testAligned206IsAppendable() {
+        XCTAssertTrue(DownloadResume.rangeResponseIsAppendable(
+            statusCode: 206, contentRangeStart: 3_349_014, requestedOffset: 3_349_014))
+    }
+
+    func testMisaligned206IsNotAppendable() {
+        // A proxy re-serving from byte 0 (start 0) must NEVER be appended
+        // onto the retained prefix: that splices the whole body behind it.
+        XCTAssertFalse(DownloadResume.rangeResponseIsAppendable(
+            statusCode: 206, contentRangeStart: 0, requestedOffset: 3_349_014))
+    }
+
+    func test206WithoutContentRangeIsNotAppendable() {
+        // Parity with the download path: an absent Content-Range cannot be
+        // proven aligned (`nil != reqOffset`), so it is discarded, not
+        // appended.
+        XCTAssertFalse(DownloadResume.rangeResponseIsAppendable(
+            statusCode: 206, contentRangeStart: nil, requestedOffset: 3_349_014))
+    }
+
+    func testNon206IsNotAppendableRegardlessOfRange() {
+        XCTAssertFalse(DownloadResume.rangeResponseIsAppendable(
+            statusCode: 200, contentRangeStart: 3_349_014, requestedOffset: 3_349_014))
+        XCTAssertFalse(DownloadResume.rangeResponseIsAppendable(
+            statusCode: 416, contentRangeStart: nil, requestedOffset: 3_349_014))
+    }
+
     // MARK: - Content-Range start parse (the misalignment guard)
 
     func testParseContentRangeStart() {
