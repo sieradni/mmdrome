@@ -22,19 +22,28 @@ exactly which scenarios to run so the reports can be adjudicated.
 For every row below: get the track playing, press **Run test**, wait for
 “running…” to clear (~25 s), then paste the auto-copied block. The block is
 delimited by `=== MMDROME STREAM SELF-TEST ===` and includes the HTTP probe, the
-mid-stream state sample, the verdict table and the raw events.
+server-probe matrix, the mid-stream state sample, the verdict table and the raw
+events.
 
 **If the report must be re-copied**, press **Copy** in the same section.
 
-**The HTTP probe waits for the stream.** If a staged stream owns the track's
-transcode when you press the button, the probe is deferred until the capture
-ends and only then reads the server — and if the stream is still live it is
-skipped, with the report saying so. That is deliberate: probing during an
-active transcode fires a second request at the stream it is measuring and reads
-Navidrome's *in-progress* output (served whole, `200`), neither of which says
-anything true about the server. Its Range verdict is only meaningful against a
-settled transcode, so re-run with playback stopped if you specifically want the
-server facts.
+**The probe gathers server facts without stopping playback.** Two probes run:
+
+- A **server-capability matrix** probes a few random, *unloaded* library tracks
+  across the transcode formats in use (the configured format plus the lossy
+  built-ins; the plain URL when transcoding is off). Those targets are
+  different tracks from the one playing, so the requests cannot attach to a
+  live transcode job — no playback state is needed, and the facts
+  (Content-Length, Range, container-at-front) are server + format properties,
+  not track ones.
+- A **same-stream probe** still measures the current track's exact URL. If a
+  staged stream owns that transcode when you press the button, the probe waits
+  for the stream to settle (promote or teardown) and only then reads the
+  server: a same-track GET during an active transcode attaches to Navidrome's
+  *in-progress* output (served whole, `200`), so its Range verdict would
+describe the moment, not the server. If the stream is still live after ~30 s
+the same-stream probe is skipped and the report says so; the matrix above still
+carries the server facts.
 
 ---
 

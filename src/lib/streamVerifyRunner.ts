@@ -4,19 +4,23 @@
  * hands both to the pure evaluator in `streamVerification.ts`.
  *
  * Designed for ONE PRESS with a paste-ready result:
- *  - the HTTP probe rebuilds the exact URL the manager would use and reads
- *    Content-Length / Accept-Ranges / Content-Type / container magic with no
- *    audio at all;
+ *  - a SERVER-CAPABILITY MATRIX probes a few random, UNLOADED library tracks
+ *    across the transcode formats in use, reading Content-Length / Range /
+ *    container magic with no audio and no dependence on the playing track
+ *    (different tracks cannot attach to a live transcode job);
+ *  - a SAME-STREAM probe still measures the current track's exact URL — if a
+ *    staged stream is live it waits for the stream to SETTLE first, so the
+ *    request never races the transcode it measures;
  *  - the native capture mines a LOOK-BACK window out of the event ring first
  *    (a track already playing when the button was pressed is still captured),
  *    then keeps polling forward. It is read-only: it never plays, seeks or
  *    mutates the queue;
- *  - the assembled bundle (header, HTTP facts, state sample, verdict table,
- *    raw event lines) is returned as text and auto-copied by the caller.
+ *  - the assembled bundle (header, HTTP facts, probe matrix, state sample,
+ *    verdict table, raw event lines) is returned as text and auto-copied.
  */
 import { Capacitor } from '@capacitor/core'
 import { get } from 'svelte/store'
-import { settings, currentTrack, playbackState } from '../stores/appState'
+import { settings, currentTrack, playbackState, library, queue, type Track } from '../stores/appState'
 import { effectiveLowData, networkStatusStore, networkStabilitySnapshot } from './networkMode'
 import { getCachedConfig, buildStreamUrl } from './navidromeApi'
 import { transcodeParams } from './transcodePolicy'
@@ -27,9 +31,11 @@ import {
   type NativeStreamFacts,
   type StreamVerifyReport,
   type NativeEventLike,
+  type LabeledHttpProbe,
   emptyNativeStreamFacts,
   foldStreamEvent,
   selectStreamWindow,
+  selectProbeTargets,
   evaluateStreamVerification,
   sniffContainer,
   formatStreamVerifyBundle,
@@ -205,10 +211,81 @@ async function readStateSample(): Promise<StateSample | null> {
   }
 }
 
+/**
+ * The transcode formats the matrix should exercise: the format actually in use
+ * first, then the other lossy built-ins the app can switch to. With
+ * transcoding off there is no format "in use", so the matrix probes the RAW
+ * URL instead — Content-Length / Range / container-at-front facts are still
+ * worth having for the raw path. flac is deliberately excluded: a lossless
+ * transcode is heavy and is never used for streaming.
+ */
+function matrixFormats(): string[] {
+  const effective = activeTranscodeParams()
+  if (!effective) return ['raw']
+  return [...new Set([effective.format, 'opus', 'mp3', 'aac'])]
+}
+
+/**
+ * Wait for a live staged stream to SETTLE (promote / teardown) before probing
+ * the current track. Returns false when it is still live at the deadline.
+ *
+ * WHY wait rather than the old "run the test with playback stopped": that
+ * advice pointed at a state the user cannot reach — making a track current
+ * engages its staged stream, and pausing does not stop the writer. Waiting for
+ * the stream to stop is the only reachable way to get a same-track probe that
+ * is not racing the very transcode it measures.
+ */
+async function waitForStagedStreamToSettle(timeoutMs: number, pollMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (!(await stagedStreamActive())) return true
+    if (Date.now() >= deadline) return false
+    await new Promise((r) => setTimeout(r, pollMs))
+  }
+}
+
+/**
+ * The SERVER-CAPABILITY MATRIX: probe a few random, UNLOADED library tracks
+ * across the formats in use. Because the targets are DIFFERENT tracks from the
+ * one playing, these requests cannot attach to the live transcode job — which
+ * is exactly why they need no playback state at all.
+ */
+async function probeServerCapabilityMatrix(opts: {
+  formats: string[]
+  perFormat: number
+  track: Track | null
+}): Promise<LabeledHttpProbe[]> {
+  const config = getCachedConfig()
+  if (!config) return []
+  const bitrate = get(settings).transcodeBitrate ?? 128
+  // Everything the loader might be touching: the playing track and the whole
+  // queue (stream writers / prefetch live on those rows).
+  const excludeIds = new Set<string>()
+  if (opts.track) excludeIds.add(opts.track.trackId)
+  const q = get(queue)
+  for (const id of [...q.userQueue, ...q.autoQueue]) excludeIds.add(id)
+
+  const targets = selectProbeTargets(get(library), {
+    formats: opts.formats,
+    perFormat: opts.perFormat,
+    excludeIds,
+  })
+  const out: LabeledHttpProbe[] = []
+  for (const t of targets) {
+    const rawId = t.trackId.replace(/^navidrome-/, '')
+    const url = buildStreamUrl(config, rawId, t.format === 'raw' ? undefined : { format: t.format, maxBitRate: bitrate })
+    const facts = await probeTranscodeHttp(url)
+    if (facts) out.push({ origin: 'matrix', format: t.format, trackId: t.trackId, title: t.title, facts })
+  }
+  return out
+}
+
 export interface StreamSelfTestBundle {
   report: StreamVerifyReport
   text: string
   http: HttpProbeFacts | null
+  /** The decoupled server-capability matrix (random unloaded tracks). */
+  httpProbes: LabeledHttpProbe[]
   native: NativeStreamFacts | null
   stateSample: StateSample | null
   rawLines: string[]
@@ -231,6 +308,14 @@ export interface RunStreamSelfTestOptions {
   /** How far back into the event ring to mine (default 20 s). */
   lookbackMs?: number
   pollMs?: number
+  /** How long to wait for a live staged stream to settle before the same-track
+   *  probe (default 30 s). The server-capability matrix needs no wait. */
+  sameStreamWaitMs?: number
+  /** Matrix: tracks sampled per format (default 1). */
+  matrixPerFormat?: number
+  /** Matrix: formats to exercise; defaults to the format in use + the lossy
+   *  built-ins (or ['raw'] when transcoding is off). */
+  matrixFormats?: string[]
 }
 
 /**
@@ -246,20 +331,37 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
   const lookbackMs = opts.lookbackMs ?? 20_000
   const pollMs = opts.pollMs ?? 500
 
+  const sameStreamWaitMs = opts.sameStreamWaitMs ?? 30_000
+  const matrixPerFormat = Math.max(1, opts.matrixPerFormat ?? 1)
+
   const probe = currentStreamProbeUrl()
   const track = get(currentTrack)
   const variant = probe?.variant ?? 'raw'
   const isTranscode = variant !== 'raw'
   const native = Capacitor.isNativePlatform()
 
-  // Probe immediately ONLY when no staged stream owns this track's transcode;
-  // otherwise defer it past the capture (see `stagedStreamActive`). Deferring
-  // keeps the probe honest AND stops it from perturbing the stream it exists
-  // to verify.
-  let httpDeferred = false
+  // --- Server-capability matrix (decoupled from the playing track) --------
+  // Server facts are SERVER + FORMAT properties, not track properties. A few
+  // random, UNLOADED library tracks across the formats in use therefore yield
+  // the same Content-Length / Range-206 / container-at-front facts without
+  // ever needing playback stopped — and because the targets are DIFFERENT
+  // tracks, the requests cannot attach to the playing track's live transcode
+  // job (the reason the old same-track probe had to defer).
+  const httpProbes = await probeServerCapabilityMatrix({
+    formats: opts.matrixFormats ?? matrixFormats(),
+    perFormat: matrixPerFormat,
+    track,
+  })
+
+  // --- Same-stream probe (the CURRENT track) ------------------------------
+  // Kept for the strongest signal — it measures the exact stream under test —
+  // but it must not race a live transcode job. If a staged stream is live,
+  // wait for it to SETTLE after the capture, then probe; never ask the user
+  // for a state they cannot reach.
   let http: HttpProbeFacts | null = null
+  let sameStreamPending = false
   if (probe) {
-    if (native && (await stagedStreamActive())) httpDeferred = true
+    if (native && (await stagedStreamActive())) sameStreamPending = true
     else http = await probeTranscodeHttp(probe.url)
   }
   let probeNote: string | null = null
@@ -314,18 +416,18 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
     }
   }
 
-  // Deferred probe: the capture window has ended, so the transcode has either
-  // settled (finish now — the facts then describe a completed, likely cached
-  // output) or is still running (skip and say so: probing now would race the
-  // stream, and the resulting 200 would be misread as the server's Range
-  // capability).
-  if (probe && httpDeferred) {
-    if (native && (await stagedStreamActive())) {
-      probeNote =
-        'deferred — a staged stream was still live at the end of the capture; probing now would race the transcode it measures. Run the test with playback stopped for server facts.'
-      http = null
-    } else {
+  // Same-stream probe after the capture: wait for the staged stream to STOP
+  // (promote / teardown) and only then probe, so the request describes a
+  // settled transcode rather than Navidrome's in-progress output (served
+  // whole, `200`, which would misreport Range). If it never settles inside the
+  // wait, skip it and say so — the matrix above already carries the server
+  // facts, which is why no "stop playback" instruction is needed.
+  if (probe && sameStreamPending) {
+    const settled = await waitForStagedStreamToSettle(sameStreamWaitMs, 1000)
+    if (settled) {
       http = await probeTranscodeHttp(probe.url)
+    } else {
+      probeNote = `same-stream probe skipped — the staged stream was still live ${Math.round(sameStreamWaitMs / 1000)}s after the capture; the server-capability matrix probed different tracks, so it never attached to the live transcode job`
     }
   }
 
@@ -336,6 +438,7 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
     metadataDuration: (track as unknown as { duration?: number } | null)?.duration ?? 0,
     snapshotSize: (track as unknown as { size?: number } | null)?.size ?? 0,
     http,
+    httpProbes,
     probeNote,
     native: native ? facts : null,
     stateSample,
@@ -362,12 +465,13 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
       network: `${net.source} cellular=${net.isCellular} osLowData=${net.osLowData} metered=${stab.metered} latched=${stab.latched} sup=${stab.suppressed} playing=${st}`,
     },
     http,
+    httpProbes,
     probeNote,
     native: native ? facts : null,
     stateSample,
     rawLines,
   })
 
-  lastBundle = { report, text, http, native: native ? facts : null, stateSample, rawLines }
+  lastBundle = { report, text, http, httpProbes, native: native ? facts : null, stateSample, rawLines }
   return lastBundle
 }

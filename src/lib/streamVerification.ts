@@ -34,6 +34,27 @@ export interface HttpProbeFacts {
   note?: string
 }
 
+/** One labeled probe in the SERVER-CAPABILITY MATRIX: a request for a
+ *  DIFFERENT, unloaded library track (so it can never attach to the live
+ *  transcode job of the track under test), used to gather the server facts
+ *  that do not depend on which track is playing. */
+export interface LabeledHttpProbe {
+  origin: 'matrix' | 'current-stream'
+  /** The transcode format the probe URL requested ('raw' = no transcode). */
+  format: string
+  trackId: string
+  title: string
+  facts: HttpProbeFacts
+}
+
+/** A track+format pair the matrix should probe. */
+export interface ProbeTarget {
+  trackId: string
+  title: string
+  /** 'raw' means build the plain (non-transcode) stream URL. */
+  format: string
+}
+
 /** Facts parsed out of the native engine's `stream` event transcript. */
 export interface NativeStreamFacts {
   sawStagedLoadStart: boolean
@@ -162,6 +183,58 @@ export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): 
 
 export function parseNativeStreamTranscript(events: NativeEventLike[]): NativeStreamFacts {
   return events.reduce(foldStreamEvent, emptyNativeStreamFacts())
+}
+
+/** Deterministic 32-bit PRNG (mulberry32). The matrix sample must be
+ *  reproducible so a run can be re-adjudicated; a real `Math.random` would
+ *  make the chosen targets unrepeatable. */
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296
+  }
+}
+
+/**
+ * Choose the matrix's probe targets: a deterministic sample of library tracks
+ * that are NOT currently loaded, one (or `perFormat`) per format.
+ *
+ * The exclusion set is the caller's job (it knows the playing track and the
+ * queue the preloader may be touching); this pure core only samples. The same
+ * track is never reused across formats while the pool can supply distinct
+ * rows — a probe that attached to another probe's job would defeat the
+ * decoupling the matrix exists for. A pool smaller than the requested sample
+ * yields fewer targets rather than duplicate ones.
+ */
+export function selectProbeTargets(
+  tracks: ReadonlyArray<{ trackId: string; title?: string }>,
+  opts: { formats: string[]; excludeIds?: Iterable<string>; perFormat?: number; seed?: number },
+): ProbeTarget[] {
+  const exclude = new Set(opts.excludeIds ?? [])
+  const pool = tracks.filter((t) => t.trackId && !exclude.has(t.trackId))
+  const rng = mulberry32(opts.seed ?? 0x5eed)
+  const shuffled = pool.slice()
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1))
+    const tmp = shuffled[i]
+    shuffled[i] = shuffled[j]
+    shuffled[j] = tmp
+  }
+  const perFormat = Math.max(1, opts.perFormat ?? 1)
+  const out: ProbeTarget[] = []
+  let cursor = 0
+  for (const format of opts.formats) {
+    for (let k = 0; k < perFormat; k++) {
+      if (cursor >= shuffled.length) return out
+      const t = shuffled[cursor++]
+      out.push({ trackId: t.trackId, title: t.title ?? '', format })
+    }
+  }
+  return out
 }
 
 /** A native ring entry with its timestamp. `t` is MONOTONIC SECONDS since
@@ -308,13 +381,20 @@ export interface StreamVerifyInput {
   isTranscode: boolean
   metadataDuration: number
   snapshotSize: number
-  /** Parsed HTTP probe facts, or null when the probe could not run. */
+  /** Parsed HTTP probe facts for the CURRENT track's stream, or null when that
+   *  probe could not run. */
   http: HttpProbeFacts | null
-  /** Why `http` is null when the probe was deliberately NOT taken — e.g. a
-   *  staged stream still owned the transcode at the end of the capture, so a
-   *  probe would race the very stream it measures (2026-10-02b field report).
-   *  Surfaces in the HTTP-side evidence instead of the misleading generic
-   *  "did not run" text. */
+  /** The SERVER-CAPABILITY MATRIX: labeled probes of OTHER, unloaded library
+   *  tracks across the transcode formats in use. Server facts (Content-Length /
+   *  Range / container-at-front) are server+format properties, so these feed
+   *  the SAME three server checks as `http` — the report no longer needs
+   *  playback stopped to gather them. */
+  httpProbes?: LabeledHttpProbe[]
+  /** Why no usable probe ran, when that is the case — e.g. a staged stream was
+   *  still live after the settle wait, so the same-stream probe was skipped
+   *  (a same-track/same-format GET attaches to Navidrome's in-progress
+   *  transcode job and reads a misleading whole body). Surfaces in the
+   *  HTTP-side evidence instead of the misleading generic "did not run" text. */
   probeNote?: string | null
   /** Parsed native transcript, or null on web / when no capture ran. */
   native: NativeStreamFacts | null
@@ -327,6 +407,53 @@ export interface StreamVerifyInput {
     headerClaimFrames: number
     metadataFrames: number
   } | null
+}
+
+/** Per-probe verdicts for the three server-side assumptions, keyed by the
+ *  SAME check ids the report has always used. */
+type ProbeVerdict = { 'server-total': CheckStatus; 'range-support': CheckStatus; 'progressive-container': CheckStatus }
+
+function probeRangesOk(f: HttpProbeFacts): boolean {
+  // Accept-Ranges/Content-Range are NOT CORS-safelisted, so a webview fetch
+  // cannot read them even when present — a 206 to our Range GET is the direct
+  // proof and must be trusted first.
+  return (f.acceptRanges ?? '').toLowerCase().includes('bytes') || f.status === 206 || !!f.contentRange
+}
+
+function probeVerdict(f: HttpProbeFacts): ProbeVerdict {
+  const progressive = isProgressiveContainer(f.sniffed)
+  return {
+    'server-total': f.contentLength && f.contentLength > 0 ? 'pass' : 'warn',
+    'range-support': probeRangesOk(f) ? 'pass' : 'warn',
+    'progressive-container': progressive === true ? 'pass' : progressive === false ? 'fail' : 'unknown',
+  }
+}
+
+/** One rolled-up status across the matrix: any fail wins, all-pass passes,
+ *  all-unknown is unknown, everything else (mixed / warn) is a warn. */
+function rollUp(statuses: CheckStatus[]): CheckStatus {
+  if (statuses.some((s) => s === 'fail')) return 'fail'
+  if (statuses.every((s) => s === 'pass')) return 'pass'
+  if (statuses.every((s) => s === 'unknown')) return 'unknown'
+  return 'warn'
+}
+
+function matrixEvidence(id: keyof ProbeVerdict, probes: LabeledHttpProbe[], verdicts: ProbeVerdict[]): string {
+  const n = probes.length
+  const passed = verdicts.filter((v) => v[id] === 'pass').length
+  const detail = probes
+    .map((p) => {
+      if (id === 'server-total') {
+        const cl = p.facts.contentLength && p.facts.contentLength > 0 ? String(p.facts.contentLength) : 'chunked'
+        return `${p.format}:${cl}`
+      }
+      if (id === 'range-support') return `${p.format}:${p.facts.status === 206 ? '206' : `status ${p.facts.status}`}`
+      return `${p.format}:${p.facts.sniffed}`
+    })
+    .join(', ')
+  if (id === 'server-total') return `${passed}/${n} probes announce a total — ${detail}`
+  if (id === 'range-support') return `${passed}/${n} probes honored a Range request — ${detail} (Accept-Ranges/Content-Range may be CORS-hidden)`
+  return `first bytes sniffed — ${detail}`
 }
 
 function countStatus(checks: VerifyCheck[]): string {
@@ -346,11 +473,24 @@ export function evaluateStreamVerification(input: StreamVerifyInput): StreamVeri
   const checks: VerifyCheck[] = []
 
   // --- HTTP-side (server + container) ------------------------------------
-  if (!http) {
+  // The facts may come from the SAME-STREAM probe (the current track) and/or
+  // the decoupled SERVER-CAPABILITY MATRIX. Both feed the SAME three checks
+  // (ids/labels/vocabulary unchanged) so old and new reports stay comparable;
+  // the evidence recounts the per-format roll-up. A probe that did not
+  // complete (status 0 — offline / fetch failure) is NOT evidence about the
+  // server and is excluded from the roll-up.
+  const probes: LabeledHttpProbe[] = []
+  if (http) probes.push({ origin: 'current-stream', format: input.variant, trackId: input.trackId, title: '', facts: http })
+  if (input.httpProbes && input.httpProbes.length > 0) probes.push(...input.httpProbes)
+  const usable = probes.filter((p) => p.facts.status > 0)
+  if (usable.length === 0) {
     // Every server-side assumption stays visible as UNKNOWN rather than being
-    // silently omitted — a skipped probe is a data gap, not a verdict, and the
-    // note says WHICH kind of gap it is (deferred vs offline).
-    const why = input.probeNote ?? 'HTTP probe did not run (offline / native fetch failed)'
+    // silently omitted — a skipped/failed probe is a data gap, not a verdict,
+    // and the note says WHICH kind of gap it is.
+    const failedNote = probes.find((p) => p.facts.note)?.facts.note
+    const why =
+      input.probeNote ??
+      (failedNote ? `HTTP probe failed: ${failedNote}` : 'HTTP probe did not run (offline / native fetch failed)')
     checks.push({
       id: 'server-total',
       label: 'Server announces a total (Content-Length)',
@@ -370,39 +510,24 @@ export function evaluateStreamVerification(input: StreamVerifyInput): StreamVeri
       evidence: why,
     })
   } else {
+    const verdicts = usable.map((p) => probeVerdict(p.facts))
     checks.push({
       id: 'server-total',
       label: 'Server announces a total (Content-Length)',
-      status: http.contentLength && http.contentLength > 0 ? 'pass' : 'warn',
-      evidence: http.contentLength && http.contentLength > 0
-        ? `content-length=${http.contentLength}, content-type=${http.contentType ?? '?'}`
-        : 'chunked / no Content-Length — transcode streaming stays on the full-download fallback (no regression)',
+      status: rollUp(verdicts.map((v) => v['server-total'])),
+      evidence: matrixEvidence('server-total', usable, verdicts),
     })
-    // A 206 to our Range GET is DIRECT proof the server honored the range —
-    // and it is the only proof available to JS in a cross-origin context:
-    // `Accept-Ranges`/`Content-Range` are NOT CORS-safelisted response headers,
-    // so a webview fetch cannot read them even when the server sends them
-    // (Content-Length/Content-Type ARE safelisted — hence the 1.2.49 report's
-    // "content-length present, accept-ranges absent" pairing). Trust the status
-    // code before the header.
-    const rangesOk =
-      (http.acceptRanges ?? '').toLowerCase().includes('bytes') ||
-      http.status === 206 ||
-      !!http.contentRange
     checks.push({
       id: 'range-support',
       label: 'Server supports Range (stream recovery can resume)',
-      status: rangesOk ? 'pass' : 'warn',
-      evidence: http.status === 206
-        ? `status 206 to a Range request${http.acceptRanges ? `, accept-ranges=${http.acceptRanges}` : ' (Accept-Ranges/Content-Range may be CORS-hidden)'}`
-        : `status ${http.status}, accept-ranges=${http.acceptRanges ?? 'absent'}`,
+      status: rollUp(verdicts.map((v) => v['range-support'])),
+      evidence: matrixEvidence('range-support', usable, verdicts),
     })
-    const progressive = isProgressiveContainer(http.sniffed)
     checks.push({
       id: 'progressive-container',
       label: 'Container header is at the front (openable from a partial file)',
-      status: progressive === true ? 'pass' : progressive === false ? 'fail' : 'unknown',
-      evidence: `first bytes sniffed as ${http.sniffed} (${http.bytesRead} B read)`,
+      status: rollUp(verdicts.map((v) => v['progressive-container'])),
+      evidence: matrixEvidence('progressive-container', usable, verdicts),
     })
   }
 
@@ -540,6 +665,8 @@ export interface StreamVerifyBundleInput {
   report: StreamVerifyReport
   context: StreamVerifyContext
   http: HttpProbeFacts | null
+  /** The decoupled server-capability matrix (see `LabeledHttpProbe`). */
+  httpProbes?: LabeledHttpProbe[]
   native: NativeStreamFacts | null
   stateSample?: {
     deliveredBytes: number
@@ -577,6 +704,15 @@ export function formatStreamVerifyBundle(input: StreamVerifyBundleInput): string
     rows.push(`  read: ${http.bytesRead} B   container magic: ${http.sniffed}${http.note ? `   note: ${http.note}` : ''}`)
   } else {
     rows.push(`  (probe did not run${input.probeNote ? ` — ${input.probeNote}` : ''})`)
+  }
+  const matrix = input.httpProbes ?? []
+  if (matrix.length > 0) {
+    rows.push(`--- SERVER PROBE MATRIX (${matrix.length}) ------------------------------------------`)
+    for (const p of matrix) {
+      rows.push(
+        `  ${p.format.padEnd(6)} ${p.trackId} "${p.title}"  status=${p.facts.status} cl=${p.facts.contentLength ?? 'absent'} ar=${p.facts.acceptRanges ?? 'absent'} magic=${p.facts.sniffed}${p.facts.note ? ` note=${p.facts.note}` : ''}`,
+      )
+    }
   }
   rows.push('--- STATE SAMPLE (mid-stream) --------------------------------------')
   if (stateSample) {
