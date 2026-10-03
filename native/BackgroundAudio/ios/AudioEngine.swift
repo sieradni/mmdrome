@@ -3374,13 +3374,7 @@ public final class NativeAudioEngine: NSObject {
         // the row yields to the JS retry quickly, where its bounded ladder
         // can advance past a dead row; backgrounded (6) the recovery owns
         // the silence the user cannot see.
-        let maxAttempts: Int
-        if NSClassFromString("UIApplication") != nil,
-           UIApplication.shared.applicationState != .background {
-            maxAttempts = 2
-        } else {
-            maxAttempts = Self.activeLoadMaxConsecutiveRetries
-        }
+        let maxAttempts = isApplicationBackground ? Self.activeLoadMaxConsecutiveRetries : 2
         guard count <= maxAttempts else {
             eventAdd(.danger, "loader", "active-load retry exhausted (\(count - 1) native attempts, cap \(maxAttempts)) for \(track.trackId): \(failure.detail) — yielding to the JS retry")
             // THE YIELD REPORTS: the JS retry machine's bounded ladder owns
@@ -3519,6 +3513,16 @@ public final class NativeAudioEngine: NSObject {
         }
     }
 
+    /// True only while the app is BACKGROUNDED. `.inactive` is deliberately
+    /// NOT background — the webview still runs there, so the JS ladder still
+    /// owns the yield. A missing `UIApplication` (the macOS host in
+    /// `swift test`) reads as foreground. One definition so the retry-cap
+    /// check and the ownership decision can never disagree about "background".
+    private var isApplicationBackground: Bool {
+        guard NSClassFromString("UIApplication") != nil else { return false }
+        return UIApplication.shared.applicationState == .background
+    }
+
     /// The failure report is FOREGROUND-GATED (2026-09-24 design review):
     /// backgrounded, the JS retry machine is suspended — a report queues a
     /// retry that can't run and (after a give-up) would later misfire at the
@@ -3528,9 +3532,27 @@ public final class NativeAudioEngine: NSObject {
     /// The cap-yield in scheduleActiveLoadRetry reports UNCONDITIONALLY:
     /// it is the single bounded resolution when every native attempt failed.
     private func reportActiveLoadFailure(track: NativeTrack, failure: ActiveLoadFailure) {
-        if NSClassFromString("UIApplication") != nil,
-           UIApplication.shared.applicationState != .background {
-            onError?("Stream failed before start: \(failure.detail)")
+        guard !isApplicationBackground else { return }
+        onError?("Stream failed before start: \(failure.detail)")
+    }
+
+    /// SINGLE-OWNER YIELD (2026-10-03, the double-reload fix): one yielded
+    /// active-load failure is recovered by exactly ONE retry machine. The
+    /// choice is the pure `ActiveLoadRetryOwnership`; this method is only the
+    /// adapter that enacts it. Foreground → report to the JS ladder and do NOT
+    /// arm the native retry; background → arm the native retry and do NOT
+    /// report (the JS machine is suspended). Every yield site routes through
+    /// here — that is what keeps the sites from drifting.
+    private func handleYieldedActiveLoadFailure(track: NativeTrack, failure: ActiveLoadFailure) {
+        let owner = ActiveLoadRetryOwnership.owner(isBackground: isApplicationBackground)
+        // Observed, not assumed: a dump can tell WHICH machine took the yield,
+        // so the single-owner rule is verifiable from the field log alone.
+        eventAdd(.info, "loader", "active-load yield for \(track.trackId) → \(owner.rawValue) owner (background=\(isApplicationBackground)): \(failure.detail)")
+        switch owner {
+        case .jsLadder:
+            reportActiveLoadFailure(track: track, failure: failure)
+        case .nativeRetry:
+            scheduleActiveLoadRetry(track: track, failure: failure)
         }
     }
 
@@ -3888,14 +3910,13 @@ public final class NativeAudioEngine: NSObject {
                 return
             }
             guard let url = url else {
-                // ACTIVE-LOAD RETRY arm (dump-2): the same foreground-gated
-                // report + silent native retry as the stream path.
+                // ACTIVE-LOAD YIELD (dump-2): one owner per environment —
+                // the SAME single-owner yield as the stream path.
                 // (2026-10-02f) Carry the cut attribution when we have an
                 // error; the string-only fallback keeps its previous shape.
                 let failure = error.map { self.activeLoadFailure(kind: .download, error: $0) }
                     ?? ActiveLoadFailure(kind: .download, detail: "Failed to load track")
-                self.reportActiveLoadFailure(track: track, failure: failure)
-                self.scheduleActiveLoadRetry(track: track, failure: failure)
+                self.handleYieldedActiveLoadFailure(track: track, failure: failure)
                 return
             }
             guard self.tracks.indices.contains(self.activeIndex),
@@ -4395,18 +4416,17 @@ public final class NativeAudioEngine: NSObject {
                 // schedule exists there is nothing to keep alive — the retry
                 // simply re-taps and `streamDecision` falls back (scratch
                 // state now present → the resumable download path).
-                // BOTH branches arm the native active-load retry (dump-2:
-                // backgrounded, the JS machine is suspended and the row sat
-                // in dead air for 33 minutes) — foreground-gated reporting
-                // keeps the JS ladder as the foreground's fast path.
+                // ONE owner per environment (dump-2: backgrounded, the JS
+                // machine is suspended and the row sat in dead air for 33
+                // minutes — the native retry covers that; foreground the JS
+                // ladder is the fast path). Arming BOTH was the double-reload
+                // defect: the loser fired after the winner's reload and
+                // re-engaged the track from 0:00 a second time.
                 let failure = self.activeLoadFailure(kind: .stream, error: error)
                 if self.stagedSchedule != nil {
                     self.teardownStagedState()
-                    self.reportActiveLoadFailure(track: track, failure: failure)
-                } else {
-                    self.reportActiveLoadFailure(track: track, failure: failure)
                 }
-                self.scheduleActiveLoadRetry(track: track, failure: failure)
+                self.handleYieldedActiveLoadFailure(track: track, failure: failure)
             }
         }, onArrival: { [weak self] deliveredBytes in
             // F2: raw progress ledger — the ONLY keep-alive the stalled
@@ -4544,8 +4564,7 @@ public final class NativeAudioEngine: NSObject {
         guard track.trackId == progress.trackId else { return }
         guard let file = try? AVAudioFile(forReading: progress.url), file.length > 0 else {
             let failure = ActiveLoadFailure(kind: .stream, detail: "Completed stream is not decodable")
-            reportActiveLoadFailure(track: track, failure: failure)
-            scheduleActiveLoadRetry(track: track, failure: failure)
+            handleYieldedActiveLoadFailure(track: track, failure: failure)
             return
         }
         let sr = file.processingFormat.sampleRate
