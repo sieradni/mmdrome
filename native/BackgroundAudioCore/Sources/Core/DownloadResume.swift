@@ -85,6 +85,36 @@ public enum DownloadResume {
         statusCode == 206
     }
 
+    /// DECISION (2026-10-03, hard-error continuation parity): may a `206`
+    /// continuation answer be APPENDED, or must it be discarded?
+    ///
+    /// WHY this exists. The download path has validated the `Content-Range`
+    /// start since 2026-09-21: a `206` whose start does not equal the
+    /// requested offset is a misaligned body — appending it splices bytes
+    /// from the wrong position mid-file (the poison class the alignment
+    /// guard exists to stop), and the download path REPLACES the prefix
+    /// instead. The in-loader WRITER continuation (2026-09-24) only checked
+    /// the STATUS, so a misaligned `206` (e.g. a proxy re-serving from byte
+    /// 0) was appended verbatim. That gap was latent while only clean early
+    /// closes used the writer continuation; the 2026-10-03 hard-error route
+    /// moved a NEW failure class (`cannot parse response`, connection lost)
+    /// onto it — a class whose OLD recovery (the download path via the JS
+    /// retry's Range prefetch) DID validate alignment. This predicate closes
+    /// the regression: both transports now answer the append question with
+    /// the same rule.
+    ///
+    /// A `206` for a continuation must name the requested start. A missing
+    /// `Content-Range` is treated as NOT appendable — identical to the
+    /// download path (`nil != reqOffset`), keeping the two paths in step.
+    public static func rangeResponseIsAppendable(
+        statusCode: Int,
+        contentRangeStart: Int64?,
+        requestedOffset: Int64
+    ) -> Bool {
+        DownloadResume.rangeResponseIsAppendable(statusCode: statusCode)
+            && contentRangeStart == requestedOffset
+    }
+
     /// Parses the START offset out of a `Content-Range` response header
     /// ("bytes 3700000-4999999/5000000" → 3700000; "bytes */5000000" and
     /// garbage → nil). A 206 whose start does not equal the requested offset
@@ -146,6 +176,30 @@ public enum DownloadResume {
     ///   - rangeUnsupported: the server answered a `200` to a Range request.
     ///   - deliberateCancel: the failure was our own (or the system's)
     ///     cancellation, not a transport cut.
+    /// DECISION (2026-10-03b, the queued-error race): was this writer failure
+    /// a DELIBERATE cancel, or a genuine transport cut?
+    ///
+    /// The original veto classified the ERROR (`TransferFailureInfo.kind ==
+    /// .cancelled`). That misses one race: `cancelActiveWriterRetainingScratch`
+    /// cancels the task, but if the task had ALREADY completed with a
+    /// non-cancel error (its main-hop completion still queued), `cancel()` is a
+    /// no-op and the completion later reports the ORIGINAL error — not -999.
+    /// Classification then reads `notCancelled` and the engine would resurrect
+    /// a stream it just gave up on.
+    ///
+    /// The fix is an EXPLICIT flag set at the cancel site (authoritative — it
+    /// knows the cancel was ours regardless of what error eventually surfaces),
+    /// OR-combined with the classification so a SYSTEM cancel (`URLSession`
+    /// invalidated, `-999` from outside our code) is still vetoed. Extracted so
+    /// the composite is pinned in `swift test`, not re-decided at the call
+    /// site.
+    public static func deliberateWriterCancel(
+        explicitFlag: Bool,
+        classifiedCancelled: Bool
+    ) -> Bool {
+        explicitFlag || classifiedCancelled
+    }
+
     public static func writerErrorContinuationEligible(
         offset: Int64,
         hasRetainedPart: Bool,

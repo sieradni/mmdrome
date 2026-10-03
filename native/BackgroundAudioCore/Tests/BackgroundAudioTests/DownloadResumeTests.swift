@@ -65,6 +65,37 @@ final class DownloadResumeTests: XCTestCase {
         XCTAssertFalse(DownloadResume.rangeResponseIsAppendable(statusCode: 416))
     }
 
+    // MARK: - aligned-206 validation (2026-10-03, hard-error continuation
+    // parity — the writer path must validate the Content-Range start exactly
+    // as the download path always has)
+
+    func testAligned206IsAppendable() {
+        XCTAssertTrue(DownloadResume.rangeResponseIsAppendable(
+            statusCode: 206, contentRangeStart: 3_349_014, requestedOffset: 3_349_014))
+    }
+
+    func testMisaligned206IsNotAppendable() {
+        // A proxy re-serving from byte 0 (start 0) must NEVER be appended
+        // onto the retained prefix: that splices the whole body behind it.
+        XCTAssertFalse(DownloadResume.rangeResponseIsAppendable(
+            statusCode: 206, contentRangeStart: 0, requestedOffset: 3_349_014))
+    }
+
+    func test206WithoutContentRangeIsNotAppendable() {
+        // Parity with the download path: an absent Content-Range cannot be
+        // proven aligned (`nil != reqOffset`), so it is discarded, not
+        // appended.
+        XCTAssertFalse(DownloadResume.rangeResponseIsAppendable(
+            statusCode: 206, contentRangeStart: nil, requestedOffset: 3_349_014))
+    }
+
+    func testNon206IsNotAppendableRegardlessOfRange() {
+        XCTAssertFalse(DownloadResume.rangeResponseIsAppendable(
+            statusCode: 200, contentRangeStart: 3_349_014, requestedOffset: 3_349_014))
+        XCTAssertFalse(DownloadResume.rangeResponseIsAppendable(
+            statusCode: 416, contentRangeStart: nil, requestedOffset: 3_349_014))
+    }
+
     // MARK: - Content-Range start parse (the misalignment guard)
 
     func testParseContentRangeStart() {
@@ -158,6 +189,23 @@ final class DownloadResumeTests: XCTestCase {
         // continuation on the hard-error path too.
         XCTAssertFalse(DownloadResume.writerErrorContinuationEligible(
             offset: 3_349_014, hasRetainedPart: true, continuationAttempt: 0, rangeUnsupported: true))
+    }
+
+    func testDeliberateCancelFlagWinsWhenTheErrorIsNotACancellation() {
+        // THE QUEUED-ERROR RACE (2026-10-03b): the stall watchdog cancels a
+        // task that had already completed with a NON-cancel error, so
+        // cancel() is a no-op and the completion reports the original error.
+        // Classification reads `notCancelled` — only the explicit flag set at
+        // the cancel site can veto the continuation.
+        XCTAssertTrue(DownloadResume.deliberateWriterCancel(
+            explicitFlag: true, classifiedCancelled: false),
+            "our own cancel must veto even when the surfaced error is not -999")
+        // A system cancel with no flag is still a deliberate cancel.
+        XCTAssertTrue(DownloadResume.deliberateWriterCancel(
+            explicitFlag: false, classifiedCancelled: true))
+        // A genuine transport cut is not.
+        XCTAssertFalse(DownloadResume.deliberateWriterCancel(
+            explicitFlag: false, classifiedCancelled: false))
     }
 
     func testWriterErrorContinuationRejectsDeliberateCancel() {

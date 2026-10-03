@@ -11,11 +11,13 @@ import {
   classifyContainerShape,
   parseNativeStreamTranscript,
   selectStreamWindow,
+  selectProbeTargets,
   evaluateStreamVerification,
   formatStreamVerifyReport,
   formatStreamVerifyBundle,
   emptyNativeStreamFacts,
   type HttpProbeFacts,
+  type LabeledHttpProbe,
 } from '../src/lib/streamVerification'
 
 const b = (...bytes: number[]) => Uint8Array.from(bytes)
@@ -313,6 +315,171 @@ test('foldStreamEvent captures the writer-failure identity + cut attribution (20
   assert.equal(legacy.writerFailureEvidence, null)
 })
 
+// MARK: - In-loader continuation (2026-10-03): the cut recovery and its
+// Range-answer validation, made verifiable from the device transcript alone.
+
+test('foldStreamEvent counts the in-loader continuation lines', () => {
+  const facts = parseNativeStreamTranscript([
+    { domain: 'loader', msg: 'stream: writer continuation for abc — counter offset 3349014B, continuing from disk truth — same .part, staged schedule undisturbed' },
+    { domain: 'loader', msg: 'stream: continuation answered 206 (range start 0 ≠ requested 3349014; not appendable) for abc — scratch destroyed, fresh download (no in-writer overwrite)' },
+    { domain: 'loader', msg: 'stream: continuation aborted — scratch 100B cannot support offset 3349014B (announced 3431872B) for abc — scratch destroyed, fresh download' },
+    { domain: 'loader', msg: 'stream: continuation reopen failed for abc: no such file — handing to the JS retry [err=mmdrome.loader(-7004) kind=appVerdict]' },
+    { domain: 'loader', msg: 'stream: continuation unavailable for abc (range ignored, cap, or no scratch) — handing to the JS retry' },
+  ])
+  assert.equal(facts.writerContinuationCount, 1)
+  assert.equal(facts.continuationNotAppendableCount, 1)
+  assert.equal(facts.continuationAbortedCount, 1)
+  assert.equal(facts.continuationReopenFailedCount, 1)
+  assert.equal(facts.continuationCapYieldCount, 1)
+})
+
+test('evaluate: continuation recovery passes and a non-appendable answer proves the alignment guard', () => {
+  const native = parseNativeStreamTranscript([
+    { domain: 'stream', msg: 'staged load start row 3 id=abc autoplay=true' },
+    { domain: 'stream', msg: 'first staged schedule id=abc endable=2205000 frames (50.0s of header claim 2205000)' },
+    { domain: 'loader', msg: 'stream: writer continuation for abc — counter offset 3349014B, continuing from disk truth' },
+    { domain: 'loader', msg: 'stream: continuation answered 206 (range start 0 ≠ requested 3349014; not appendable) for abc — scratch destroyed, fresh download (no in-writer overwrite)' },
+    { domain: 'loader', msg: 'stream: promoted abc (3000000B, announced 3000000 — decodability+duration-gated)' },
+  ])
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,
+    http: httpProbe(), native,
+  })
+  const byId = Object.fromEntries(report.checks.map((c) => [c.id, c.status]))
+  assert.equal(byId['continuation-recovery'], 'pass')
+  assert.equal(byId['continuation-alignment'], 'pass')
+  assert.match(report.checks.find((c) => c.id === 'continuation-alignment')!.evidence, /not appendable/)
+})
+
+test('evaluate: a continuation that aborts before starting warns; no continuation is unknown', () => {
+  const warn = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: httpProbe(),
+    native: parseNativeStreamTranscript([
+      { domain: 'loader', msg: 'stream: writer continuation for abc — counter offset 100B' },
+      { domain: 'loader', msg: 'stream: continuation reopen failed for abc: no such file — handing to the JS retry' },
+    ]),
+  })
+  assert.equal(warn.checks.find((c) => c.id === 'continuation-recovery')?.status, 'warn')
+  const none = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: httpProbe(), native: emptyNativeStreamFacts(),
+  })
+  assert.equal(none.checks.find((c) => c.id === 'continuation-recovery')?.status, 'unknown')
+  assert.equal(none.checks.find((c) => c.id === 'continuation-alignment')?.status, 'unknown')
+})
+
+// MARK: - Server-capability matrix (2026-10-03): server facts without the
+// playing track. The matrix probes random UNLOADED library tracks across the
+// transcode formats in use, so it never attaches to the live transcode job of
+// the track under test.
+
+function matrixProbe(format: string, over: Partial<HttpProbeFacts> = {}): LabeledHttpProbe {
+  return { origin: 'matrix', format, trackId: `navidrome-${format}`, title: `${format} track`, facts: httpProbe(over) }
+}
+
+test('selectProbeTargets: deterministic, excludes loaded ids, one row per format', () => {
+  const tracks = Array.from({ length: 10 }, (_, i) => ({ trackId: `t${i}`, title: `Track ${i}` }))
+  const opts = { formats: ['opus', 'mp3', 'aac'], excludeIds: ['t0', 't1', 't2'], seed: 42 }
+  const a = selectProbeTargets(tracks, opts)
+  const b = selectProbeTargets(tracks, opts)
+  assert.deepEqual(a, b, 'same seed → same sample (a run stays re-adjudicable)')
+  assert.equal(a.length, 3)
+  assert.deepEqual(a.map((t) => t.format), ['opus', 'mp3', 'aac'])
+  for (const t of a) assert.ok(!['t0', 't1', 't2'].includes(t.trackId), 'never probes a loaded row')
+  assert.equal(new Set(a.map((t) => t.trackId)).size, a.length, 'distinct tracks across formats')
+})
+
+test('selectProbeTargets: a small pool yields fewer targets, never duplicates', () => {
+  const out = selectProbeTargets([{ trackId: 'only', title: 'One' }], { formats: ['opus', 'mp3', 'aac'], seed: 1 })
+  assert.equal(out.length, 1)
+  assert.equal(out[0].trackId, 'only')
+})
+
+test('selectProbeTargets: an empty or fully-excluded pool yields nothing', () => {
+  assert.deepEqual(selectProbeTargets([], { formats: ['opus'] }), [])
+  assert.deepEqual(selectProbeTargets([{ trackId: 'a' }], { formats: ['opus'], excludeIds: ['a'] }), [])
+})
+
+test('selectProbeTargets: perFormat samples that many tracks for each format', () => {
+  const tracks = Array.from({ length: 20 }, (_, i) => ({ trackId: `t${i}` }))
+  const out = selectProbeTargets(tracks, { formats: ['opus', 'mp3'], perFormat: 2, seed: 7 })
+  assert.equal(out.length, 4)
+  assert.deepEqual(out.map((t) => t.format), ['opus', 'opus', 'mp3', 'mp3'])
+  assert.equal(new Set(out.map((t) => t.trackId)).size, 4)
+})
+
+test('evaluate: the server-capability matrix rolls up across formats', () => {
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,
+    http: null,
+    httpProbes: [
+      matrixProbe('opus', { status: 206, contentLength: 3_000_000, sniffed: 'ogg-opus' }),
+      matrixProbe('mp3', { status: 206, contentLength: 2_000_000, sniffed: 'mp3' }),
+      matrixProbe('aac', { status: 206, contentLength: null, sniffed: 'aac-adts' }),
+    ],
+    native: null,
+  })
+  const byId = Object.fromEntries(report.checks.map((c) => [c.id, c.status]))
+  assert.equal(byId['server-total'], 'warn', '2/3 announce a total')
+  assert.equal(byId['range-support'], 'pass')
+  assert.equal(byId['progressive-container'], 'pass')
+  const evidence = report.checks.find((c) => c.id === 'server-total')!.evidence
+  assert.match(evidence, /2\/3 probes announce a total/)
+  assert.match(evidence, /aac:chunked/)
+})
+
+test('evaluate: a non-progressive matrix container FAILS the container check', () => {
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: null,
+    httpProbes: [matrixProbe('opus', { sniffed: 'mp4' })],
+    native: null,
+  })
+  assert.equal(report.checks.find((c) => c.id === 'progressive-container')?.status, 'fail')
+})
+
+test('evaluate: a failed matrix probe is a data gap, not a server verdict', () => {
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'raw', isTranscode: false, metadataDuration: 100, snapshotSize: 1,
+    http: null,
+    httpProbes: [matrixProbe('opus', { status: 0, contentLength: null, acceptRanges: null, sniffed: 'other', note: 'Network request failed' })],
+    native: null,
+  })
+  const total = report.checks.find((c) => c.id === 'server-total')!
+  assert.equal(total.status, 'unknown')
+  assert.match(total.evidence, /HTTP probe failed: Network request failed/)
+})
+
+test('evaluate: the same-stream probe and the matrix share the server checks', () => {
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: httpProbe({ status: 206 }),
+    httpProbes: [matrixProbe('mp3', { status: 200, acceptRanges: null, contentRange: null })],
+    native: null,
+  })
+  assert.equal(report.checks.find((c) => c.id === 'range-support')?.status, 'warn', 'one probe ignored Range')
+})
+
+test('formatStreamVerifyBundle renders the server-capability matrix', () => {
+  const httpProbes = [matrixProbe('opus')]
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: null, httpProbes, native: null,
+  })
+  const text = formatStreamVerifyBundle({
+    report,
+    context: { platform: 'ios-native', appVersion: '1.2.52', trackTitle: 'A Song', lowData: 'on', network: 'x' },
+    http: null,
+    httpProbes,
+    native: null,
+    stateSample: null,
+    rawLines: [],
+  })
+  assert.match(text, /SERVER PROBE MATRIX \(1\)/)
+  assert.match(text, /opus\s+navidrome-opus "opus track"/)
+})
+
 test('evaluate: reports the transfer cut as churn-unlikely (server / proxy lead)', () => {
   const native = parseNativeStreamTranscript([
     { domain: 'stream', msg: 'staged load start row 2 id=abc autoplay=true' },
@@ -342,16 +509,16 @@ test('evaluate: reports a churn-suspected cut as local churn', () => {
   assert.match(cut!.evidence, /a reported network transition is the likely cause/)
 })
 
-test('evaluate: a probe deliberately skipped lists every server check UNKNOWN with its reason', () => {
-  // 2026-10-02b: the probe is deferred when a staged stream owns the transcode
-  // (a concurrent GET both races the stream it measures and reads Navidrome's
-  // IN-PROGRESS output, whose 200 is not the server's Range verdict). A skipped
-  // probe must not silently omit the server checks NOR look like an offline
-  // failure.
+test('evaluate: no usable probe lists every server check UNKNOWN with its reason', () => {
+  // The same-stream probe still refuses to race a live transcode (its GET
+  // would attach to Navidrome's IN-PROGRESS output, whose 200 is not the
+  // server's Range verdict). When neither it nor the matrix produced usable
+  // facts, the checks stay UNKNOWN with the caller's reason — never omitted
+  // and never looking like an offline failure.
   const report = evaluateStreamVerification({
     trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,
     http: null,
-    probeNote: 'deferred — a staged stream was still live',
+    probeNote: 'same-stream probe skipped — the staged stream was still live 30s after the capture',
     native: emptyNativeStreamFacts(),
   })
   const byId = Object.fromEntries(report.checks.map((c) => [c.id, c.status]))
@@ -359,7 +526,11 @@ test('evaluate: a probe deliberately skipped lists every server check UNKNOWN wi
   assert.equal(byId['range-support'], 'unknown')
   assert.equal(byId['progressive-container'], 'unknown')
   for (const id of ['server-total', 'range-support', 'progressive-container']) {
-    assert.match(report.checks.find((c) => c.id === id)!.evidence, /deferred — a staged stream was still live/)
+    assert.match(report.checks.find((c) => c.id === id)!.evidence, /same-stream probe skipped — the staged stream was still live 30s/)
+  }
+  // The escape hatch is GONE: no report may tell the user to stop playback.
+  for (const c of report.checks) {
+    assert.doesNotMatch(c.evidence, /playback stopped/)
   }
   // Without a note the generic offline wording still applies.
   const offline = evaluateStreamVerification({
@@ -369,21 +540,21 @@ test('evaluate: a probe deliberately skipped lists every server check UNKNOWN wi
   assert.match(offline.checks.find((c) => c.id === 'server-total')!.evidence, /did not run \(offline/)
 })
 
-test('formatStreamVerifyBundle names why a skipped probe did not run', () => {
+test('formatStreamVerifyBundle names why the same-stream probe was skipped', () => {
   const report = evaluateStreamVerification({
     trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
-    http: null, probeNote: 'deferred — live staged stream', native: null,
+    http: null, probeNote: 'same-stream probe skipped — still live after 30s', native: null,
   })
   const text = formatStreamVerifyBundle({
     report,
-    context: { platform: 'ios-native', appVersion: '1.2.50', trackTitle: 'A Song', lowData: 'on', network: 'x' },
+    context: { platform: 'ios-native', appVersion: '1.2.52', trackTitle: 'A Song', lowData: 'on', network: 'x' },
     http: null,
-    probeNote: 'deferred — live staged stream',
+    probeNote: 'same-stream probe skipped — still live after 30s',
     native: null,
     stateSample: null,
     rawLines: [],
   })
-  assert.match(text, /probe did not run — deferred — live staged stream/)
+  assert.match(text, /probe did not run — same-stream probe skipped — still live after 30s/)
 })
 
 test('formatStreamVerifyBundle is a paste-ready block carrying the raw evidence', () => {

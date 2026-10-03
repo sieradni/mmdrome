@@ -253,7 +253,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve(["verdict": "unknown", "detail": "probeFormat requires an http(s) url"])
             return
         }
-        engine.loaderForProbe.probeDecode(sampleURL: url) { verdict, detail in
+        DecodeProbeRunner.probeDecode(sampleURL: url) { verdict, detail in
             call.resolve(["verdict": verdict, "detail": detail])
         }
     }
