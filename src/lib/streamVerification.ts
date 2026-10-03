@@ -81,6 +81,24 @@ export interface NativeStreamFacts {
   completedWhole: boolean
   writerFailed: boolean
   cleanEarlyClose: boolean
+  /** In-loader Range continuations started for this stream (the writer
+   *  continuation recovery — a mid-body cut that kept playing instead of
+   *  restarting from 0:00). */
+  writerContinuationCount: number
+  /** Continuation answers that were NOT appendable (a non-206, or a 206 whose
+   *  Content-Range start mismatched / was missing) — each CORRECTLY rejected to
+   *  a fresh download instead of spliced into the retained prefix
+   *  (2026-10-03). */
+  continuationNotAppendableCount: number
+  /** Continuations that aborted before starting — the scratch could not
+   *  support the offset (purge/truncation), so the prefix was destroyed. */
+  continuationAbortedCount: number
+  /** Continuations whose scratch could not be reopened — handed to the JS
+   *  retry. */
+  continuationReopenFailedCount: number
+  /** Continuations refused by the eligibility predicate (range-unsupported,
+   *  loop cap, or no scratch) — handed to the JS retry. */
+  continuationCapYieldCount: number
   /** The failure IDENTITY + churn-vs-stable-path attribution bracketed onto
    *  the last `writer failed` line (2026-10-02e): `err=… kind=… cut=…`.
    *  Null when no writer failure was seen, or the line predates the taxonomy
@@ -108,6 +126,11 @@ export function emptyNativeStreamFacts(): NativeStreamFacts {
     completedWhole: false,
     writerFailed: false,
     cleanEarlyClose: false,
+    writerContinuationCount: 0,
+    continuationNotAppendableCount: 0,
+    continuationAbortedCount: 0,
+    continuationReopenFailedCount: 0,
+    continuationCapYieldCount: 0,
     writerFailureEvidence: null,
   }
 }
@@ -160,6 +183,14 @@ export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): 
     if (ev) next.writerFailureEvidence = ev[1]
   }
   if (/clean early close/.test(msg)) next.cleanEarlyClose = true
+  // IN-LOADER CONTINUATION (2026-10-03): the cut recovery. These lines are the
+  // device-side proof that a mid-body cut continued in place (and that a
+  // non-appendable/misaligned answer was rejected rather than spliced).
+  if (/writer continuation for/.test(msg)) next.writerContinuationCount += 1
+  if (/continuation aborted/.test(msg)) next.continuationAbortedCount += 1
+  if (/continuation reopen failed/.test(msg)) next.continuationReopenFailedCount += 1
+  if (/continuation answered .*not appendable/.test(msg)) next.continuationNotAppendableCount += 1
+  if (/continuation unavailable/.test(msg)) next.continuationCapYieldCount += 1
 
   const gated = /promoted \S+ \(\d+B, announced (\d+) — decodability\+duration-gated\)/.exec(msg)
   if (gated) {
@@ -588,6 +619,34 @@ export function evaluateStreamVerification(input: StreamVerifyInput): StreamVeri
           : native.writerFailed || native.cleanEarlyClose
             ? 'writer failed / early close'
             : 'no terminal verdict captured',
+    })
+
+    // --- In-loader continuation (2026-10-03) -----------------------------
+    // The 1.2.50 field defect was a mid-body cut handing to the JS retry, whose
+    // reload restarted from 0:00. These checks make the recovery — and its
+    // Range-answer validation — verifiable from the device transcript alone.
+    checks.push({
+      id: 'continuation-recovery',
+      label: 'In-loader continuation recovered a cut (no restart from 0:00)',
+      status:
+        native.writerContinuationCount === 0
+          ? 'unknown'
+          : native.continuationAbortedCount > 0 || native.continuationReopenFailedCount > 0
+            ? 'warn'
+            : 'pass',
+      evidence:
+        native.writerContinuationCount === 0
+          ? 'no continuation in the capture (no cut, or the recovery was not reached)'
+          : `continuations=${native.writerContinuationCount}, aborted=${native.continuationAbortedCount}, reopenFailed=${native.continuationReopenFailedCount}, capYield=${native.continuationCapYieldCount}`,
+    })
+    checks.push({
+      id: 'continuation-alignment',
+      label: 'A non-appendable continuation answer was rejected, not appended',
+      status: native.continuationNotAppendableCount > 0 ? 'pass' : 'unknown',
+      evidence:
+        native.continuationNotAppendableCount > 0
+          ? `${native.continuationNotAppendableCount} continuation answer(s) were not appendable (non-206 / misaligned or missing Content-Range) — scratch destroyed, fresh download (no in-writer splice)`
+          : 'no non-appendable continuation answer in the capture (guard not exercised)',
     })
   }
 

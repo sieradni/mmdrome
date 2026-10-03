@@ -315,6 +315,60 @@ test('foldStreamEvent captures the writer-failure identity + cut attribution (20
   assert.equal(legacy.writerFailureEvidence, null)
 })
 
+// MARK: - In-loader continuation (2026-10-03): the cut recovery and its
+// Range-answer validation, made verifiable from the device transcript alone.
+
+test('foldStreamEvent counts the in-loader continuation lines', () => {
+  const facts = parseNativeStreamTranscript([
+    { domain: 'loader', msg: 'stream: writer continuation for abc — counter offset 3349014B, continuing from disk truth — same .part, staged schedule undisturbed' },
+    { domain: 'loader', msg: 'stream: continuation answered 206 (range start 0 ≠ requested 3349014; not appendable) for abc — scratch destroyed, fresh download (no in-writer overwrite)' },
+    { domain: 'loader', msg: 'stream: continuation aborted — scratch 100B cannot support offset 3349014B (announced 3431872B) for abc — scratch destroyed, fresh download' },
+    { domain: 'loader', msg: 'stream: continuation reopen failed for abc: no such file — handing to the JS retry [err=mmdrome.loader(-7004) kind=appVerdict]' },
+    { domain: 'loader', msg: 'stream: continuation unavailable for abc (range ignored, cap, or no scratch) — handing to the JS retry' },
+  ])
+  assert.equal(facts.writerContinuationCount, 1)
+  assert.equal(facts.continuationNotAppendableCount, 1)
+  assert.equal(facts.continuationAbortedCount, 1)
+  assert.equal(facts.continuationReopenFailedCount, 1)
+  assert.equal(facts.continuationCapYieldCount, 1)
+})
+
+test('evaluate: continuation recovery passes and a non-appendable answer proves the alignment guard', () => {
+  const native = parseNativeStreamTranscript([
+    { domain: 'stream', msg: 'staged load start row 3 id=abc autoplay=true' },
+    { domain: 'stream', msg: 'first staged schedule id=abc endable=2205000 frames (50.0s of header claim 2205000)' },
+    { domain: 'loader', msg: 'stream: writer continuation for abc — counter offset 3349014B, continuing from disk truth' },
+    { domain: 'loader', msg: 'stream: continuation answered 206 (range start 0 ≠ requested 3349014; not appendable) for abc — scratch destroyed, fresh download (no in-writer overwrite)' },
+    { domain: 'loader', msg: 'stream: promoted abc (3000000B, announced 3000000 — decodability+duration-gated)' },
+  ])
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,
+    http: httpProbe(), native,
+  })
+  const byId = Object.fromEntries(report.checks.map((c) => [c.id, c.status]))
+  assert.equal(byId['continuation-recovery'], 'pass')
+  assert.equal(byId['continuation-alignment'], 'pass')
+  assert.match(report.checks.find((c) => c.id === 'continuation-alignment')!.evidence, /not appendable/)
+})
+
+test('evaluate: a continuation that aborts before starting warns; no continuation is unknown', () => {
+  const warn = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: httpProbe(),
+    native: parseNativeStreamTranscript([
+      { domain: 'loader', msg: 'stream: writer continuation for abc — counter offset 100B' },
+      { domain: 'loader', msg: 'stream: continuation reopen failed for abc: no such file — handing to the JS retry' },
+    ]),
+  })
+  assert.equal(warn.checks.find((c) => c.id === 'continuation-recovery')?.status, 'warn')
+  const none = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: httpProbe(), native: emptyNativeStreamFacts(),
+  })
+  assert.equal(none.checks.find((c) => c.id === 'continuation-recovery')?.status, 'unknown')
+  assert.equal(none.checks.find((c) => c.id === 'continuation-alignment')?.status, 'unknown')
+})
+
 // MARK: - Server-capability matrix (2026-10-03): server facts without the
 // playing track. The matrix probes random UNLOADED library tracks across the
 // transcode formats in use, so it never attaches to the live transcode job of
