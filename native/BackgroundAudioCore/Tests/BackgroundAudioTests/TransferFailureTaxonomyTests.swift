@@ -12,23 +12,39 @@ final class TransferFailureTaxonomyTests: XCTestCase {
 
     // MARK: - The code → kind map
 
+    /// Every code the taxonomy enumerates, pinned THREE ways in ONE table: the
+    /// Foundation constant, its numeric value, and the Kind it maps to.
+    ///
+    /// The numeric pin is the 1.2.51 lesson: a wrong literal shipped in a test
+    /// (`-1010` read as `badServerResponse`, when `badServerResponse` is -1011
+    /// and -1010 is `redirectToNonExistentLocation`) and only CI caught it.
+    /// Asserting the constants' VALUES here — against this single table's
+    /// source of truth — means a comment, a doc, or another test can no longer
+    /// carry a wrong number unnoticed. Keep this table the one place the
+    /// vocabulary is spelled with literals; the sibling tests reference the
+    /// CONSTANTS so the two can never drift.
     func testEnumeratedNSURLErrorCodes() {
-        let m: [(Int, TransferFailureInfo.Kind)] = [
-            (NSURLErrorCannotParseResponse, .cannotParseResponse),
-            (NSURLErrorNetworkConnectionLost, .connectionLost),
-            (NSURLErrorTimedOut, .timedOut),
-            (NSURLErrorNotConnectedToInternet, .notConnected),
-            (NSURLErrorCannotConnectToHost, .cannotConnect),
-            (NSURLErrorCannotFindHost, .cannotFindHost),
-            (NSURLErrorDNSLookupFailed, .dnsLookupFailed),
-            (NSURLErrorBadServerResponse, .badServerResponse),
-            (NSURLErrorSecureConnectionFailed, .secureConnectionFailed),
-            (NSURLErrorCancelled, .cancelled),
+        let table: [(name: String, constant: Int, value: Int, kind: TransferFailureInfo.Kind)] = [
+            ("NSURLErrorCancelled", NSURLErrorCancelled, -999, .cancelled),
+            ("NSURLErrorTimedOut", NSURLErrorTimedOut, -1001, .timedOut),
+            ("NSURLErrorCannotFindHost", NSURLErrorCannotFindHost, -1003, .cannotFindHost),
+            ("NSURLErrorCannotConnectToHost", NSURLErrorCannotConnectToHost, -1004, .cannotConnect),
+            ("NSURLErrorNetworkConnectionLost", NSURLErrorNetworkConnectionLost, -1005, .connectionLost),
+            ("NSURLErrorDNSLookupFailed", NSURLErrorDNSLookupFailed, -1006, .dnsLookupFailed),
+            ("NSURLErrorNotConnectedToInternet", NSURLErrorNotConnectedToInternet, -1009, .notConnected),
+            ("NSURLErrorBadServerResponse", NSURLErrorBadServerResponse, -1011, .badServerResponse),
+            ("NSURLErrorCannotParseResponse", NSURLErrorCannotParseResponse, -1017, .cannotParseResponse),
+            ("NSURLErrorSecureConnectionFailed", NSURLErrorSecureConnectionFailed, -1200, .secureConnectionFailed),
         ]
-        for (code, expected) in m {
-            let actual = TransferFailureInfo.classifyKind(domain: NSURLErrorDomain, code: code)
-            XCTAssertEqual(actual, expected, "NSURLError code \(code) maps to \(actual), expected \(expected)")
+        for row in table {
+            XCTAssertEqual(row.constant, row.value, "\(row.name) should be \(row.value)")
+            let actual = TransferFailureInfo.classifyKind(domain: NSURLErrorDomain, code: row.constant)
+            XCTAssertEqual(actual, row.kind, "\(row.name) (\(row.value)) maps to \(actual), expected \(row.kind)")
         }
+        // No two enumerated codes may share a value — a duplicate would make one
+        // case unreachable and silently widen another Kind.
+        let values = table.map(\.value)
+        XCTAssertEqual(Set(values).count, values.count, "enumerated NSURLError values must be distinct")
     }
 
     /// The identity correction this core exists for: `cannot parse response`
