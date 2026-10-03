@@ -166,6 +166,26 @@ function fmtRawEv(ev: RawEvent, base: number): string {
   return `${rel} ${(ev.level ?? 'info').padEnd(6)} ${(ev.domain ?? '?').padEnd(7)} ${ev.msg}`
 }
 
+/**
+ * True while the native engine has a staged schedule engaged — i.e. a
+ * transcode is being written and/or played right now.
+ *
+ * The HTTP probe MUST NOT run then (2026-10-02b field report): it would fire a
+ * SECOND concurrent GET at the still-running transcode — the same request the
+ * report shows dying with a URLSession parse failure at 99.65 % of the body —
+ * and it would read Navidrome's IN-PROGRESS output, which it serves whole
+ * (200), so the Range verdict would describe the moment rather than the server
+ * (the same server answered 206 once its transcode had completed and cached).
+ */
+async function stagedStreamActive(): Promise<boolean> {
+  try {
+    const d = await (BackgroundAudio as unknown as { getDebugState?: () => Promise<Record<string, unknown>> }).getDebugState?.()
+    return d?.streamActive === true
+  } catch {
+    return false
+  }
+}
+
 async function readStateSample(): Promise<StateSample | null> {
   try {
     const d = await (BackgroundAudio as unknown as { getDebugState?: () => Promise<Record<string, unknown>> }).getDebugState?.()
@@ -230,14 +250,25 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
   const track = get(currentTrack)
   const variant = probe?.variant ?? 'raw'
   const isTranscode = variant !== 'raw'
+  const native = Capacitor.isNativePlatform()
 
-  const http = probe ? await probeTranscodeHttp(probe.url) : null
+  // Probe immediately ONLY when no staged stream owns this track's transcode;
+  // otherwise defer it past the capture (see `stagedStreamActive`). Deferring
+  // keeps the probe honest AND stops it from perturbing the stream it exists
+  // to verify.
+  let httpDeferred = false
+  let http: HttpProbeFacts | null = null
+  if (probe) {
+    if (native && (await stagedStreamActive())) httpDeferred = true
+    else http = await probeTranscodeHttp(probe.url)
+  }
+  let probeNote: string | null = null
 
   let facts = emptyNativeStreamFacts()
   const raw: RawEvent[] = []
   let stateSample: StateSample | null = null
 
-  if (Capacitor.isNativePlatform()) {
+  if (native) {
     // 1. Look-back: read the ring and keep the CURRENT stream's events so a
     //    track already playing (or one that just finished) is still captured.
     //    The window is chosen on the NATIVE MONOTONIC clock — `EventLog.t` is
@@ -283,6 +314,21 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
     }
   }
 
+  // Deferred probe: the capture window has ended, so the transcode has either
+  // settled (finish now — the facts then describe a completed, likely cached
+  // output) or is still running (skip and say so: probing now would race the
+  // stream, and the resulting 200 would be misread as the server's Range
+  // capability).
+  if (probe && httpDeferred) {
+    if (native && (await stagedStreamActive())) {
+      probeNote =
+        'deferred — a staged stream was still live at the end of the capture; probing now would race the transcode it measures. Run the test with playback stopped for server facts.'
+      http = null
+    } else {
+      http = await probeTranscodeHttp(probe.url)
+    }
+  }
+
   const report = evaluateStreamVerification({
     trackId: track?.trackId ?? 'unknown',
     variant,
@@ -290,7 +336,8 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
     metadataDuration: (track as unknown as { duration?: number } | null)?.duration ?? 0,
     snapshotSize: (track as unknown as { size?: number } | null)?.size ?? 0,
     http,
-    native: Capacitor.isNativePlatform() ? facts : null,
+    probeNote,
+    native: native ? facts : null,
     stateSample,
   })
 
@@ -308,18 +355,19 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
   const text = formatStreamVerifyBundle({
     report,
     context: {
-      platform: Capacitor.isNativePlatform() ? 'ios-native' : 'web',
+      platform: native ? 'ios-native' : 'web',
       appVersion,
       trackTitle: (track as unknown as { title?: string } | null)?.title ?? '',
       lowData: get(effectiveLowData) ? 'on' : 'off',
       network: `${net.source} cellular=${net.isCellular} osLowData=${net.osLowData} metered=${stab.metered} latched=${stab.latched} sup=${stab.suppressed} playing=${st}`,
     },
     http,
-    native: Capacitor.isNativePlatform() ? facts : null,
+    probeNote,
+    native: native ? facts : null,
     stateSample,
     rawLines,
   })
 
-  lastBundle = { report, text, http, native: Capacitor.isNativePlatform() ? facts : null, stateSample, rawLines }
+  lastBundle = { report, text, http, native: native ? facts : null, stateSample, rawLines }
   return lastBundle
 }

@@ -26,6 +26,16 @@ mid-stream state sample, the verdict table and the raw events.
 
 **If the report must be re-copied**, press **Copy** in the same section.
 
+**The HTTP probe waits for the stream.** If a staged stream owns the track's
+transcode when you press the button, the probe is deferred until the capture
+ends and only then reads the server — and if the stream is still live it is
+skipped, with the report saying so. That is deliberate: probing during an
+active transcode fires a second request at the stream it is measuring and reads
+Navidrome's *in-progress* output (served whole, `200`), neither of which says
+anything true about the server. Its Range verdict is only meaningful against a
+settled transcode, so re-run with playback stopped if you specifically want the
+server facts.
+
 ---
 
 ## The scenarios
@@ -57,9 +67,22 @@ mid-stream state sample, the verdict table and the raw events.
 - Mode: **Low data mode ON**, opus.
 - Start an uncached transcoded track; once audio is playing, **turn on Airplane
   Mode** (or stop the Navidrome container), then press **Run test**.
-- Expected: `writer failed` or `clean early close` with `scratch retained`, and
-  NO `promoted` of a short file.
-- Why: proves a cut transcode is not promoted as complete (the poison gate).
+- Expected: `writer failed` (or `clean early close`) with `scratch retained`, and
+  — if the cut landed near the very end of the body — `promoted … despite writer
+  error … duration-corroborated partial` instead, which is the recovery working
+  (a body that already carries the full track promotes rather than re-downloading).
+  A genuinely short body must still show NO `promoted` — that is the poison gate.
+- The `writer failed` line now ends with a bracketed identity + attribution, e.g.
+  `[err=NSURLErrorDomain(-1017) kind=cannotParseResponse cut=churnUnlikely (no
+  transition within 5.0s; last was 42.0s earlier)]`, and the report grows a
+  **Transfer cut attributed** row that prints it verbatim. Read it as: a
+  `churnSuspected` cut means a *reported* network transition explains it (local
+  churn — a resume recovers); a `churnUnlikely` cut means the local path was
+  stable and points at the **server / reverse-proxy keep-alive** lead. It only
+  sees transitions the OS reports, so repeat the test a few times if the answer
+  matters — a run of `churnUnlikely` cuts is the actionable signal.
+- Why: proves a cut transcode is not promoted as complete (the poison gate), and
+  names the cut's cause instead of leaving it at “cannot parse response”.
 
 ### T5 — Alternate container (mp3)
 - Mode: **Low data mode ON**; Streaming Quality → **mp3**.

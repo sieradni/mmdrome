@@ -276,6 +276,116 @@ test('evaluate: a probe that could not run is unknown, never a false pass', () =
   assert.equal(report.checks.find((c) => c.id === 'server-total')?.status, 'unknown')
 })
 
+test('foldStreamEvent recognises the writer-error recovery promote (2026-10-02d)', () => {
+  // A late `cannot parse response` that still promoted is a COMPLETED stream,
+  // not a writer failure — without this fold the next field report would read
+  // writerFailed=false + promoted=false, i.e. UNKNOWN, on a track that played.
+  const facts = parseNativeStreamTranscript([
+    { domain: 'loader', msg: 'stream: promoted abc (2803498B) despite writer error (cannot parse response) — duration-corroborated partial' },
+  ])
+  assert.equal(facts.promoted, true)
+  assert.equal(facts.promotedDurationGated, true)
+  assert.equal(facts.promotedAfterWriterError, true)
+  assert.equal(facts.writerFailed, false, 'a recovered error is not a writer failure')
+  // An ordinary duration-gated promote must NOT claim the recovery flag.
+  const plain = parseNativeStreamTranscript([
+    { domain: 'loader', msg: 'stream: promoted abc (3000000B, announced 3000000 — decodability+duration-gated)' },
+  ])
+  assert.equal(plain.promoted, true)
+  assert.equal(plain.promotedAfterWriterError, false)
+})
+
+test('foldStreamEvent captures the writer-failure identity + cut attribution (2026-10-02e)', () => {
+  // The native failure line now brackets the taxonomy + churn-vs-stable-path
+  // verdict. Without this fold the self-test would report `writerFailed: true`
+  // and drop the one piece of evidence that discriminates interface churn from
+  // a reverse-proxy keep-alive race.
+  const facts = parseNativeStreamTranscript([
+    { domain: 'loader', msg: 'stream: writer failed for abc: cannot parse response — scratch retained (2803498B) [err=NSURLErrorDomain(-1017) kind=cannotParseResponse cut=churnUnlikely (no transition within 5.0s; last was 42.0s earlier)]' },
+  ])
+  assert.equal(facts.writerFailed, true)
+  assert.match(facts.writerFailureEvidence!, /err=NSURLErrorDomain\(-1017\) kind=cannotParseResponse cut=churnUnlikely/)
+  // A pre-taxonomy line (no bracket) leaves the field null rather than lying.
+  const legacy = parseNativeStreamTranscript([
+    { domain: 'loader', msg: 'stream: writer failed for abc: cannot parse response — scratch retained (100B)' },
+  ])
+  assert.equal(legacy.writerFailed, true)
+  assert.equal(legacy.writerFailureEvidence, null)
+})
+
+test('evaluate: reports the transfer cut as churn-unlikely (server / proxy lead)', () => {
+  const native = parseNativeStreamTranscript([
+    { domain: 'stream', msg: 'staged load start row 2 id=abc autoplay=true' },
+    { domain: 'stream', msg: 'first staged schedule id=abc endable=2205000 frames (50.0s of header claim 2205000)' },
+    { domain: 'loader', msg: 'stream: writer failed for abc: cannot parse response — scratch retained (2803498B) [err=NSURLErrorDomain(-1017) kind=cannotParseResponse cut=churnUnlikely (no transition within 5.0s; last was 42.0s earlier)]' },
+  ])
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,
+    http: httpProbe(), native,
+  })
+  const cut = report.checks.find((c) => c.id === 'cut-attribution')
+  assert.equal(cut?.status, 'warn')
+  assert.match(cut!.evidence, /cut=churnUnlikely/)
+  assert.match(cut!.evidence, /stable local path points at the server \/ reverse-proxy keep-alive lead/)
+})
+
+test('evaluate: reports a churn-suspected cut as local churn', () => {
+  const native = parseNativeStreamTranscript([
+    { domain: 'stream', msg: 'staged load start row 2 id=abc autoplay=true' },
+    { domain: 'loader', msg: 'stream: writer failed for abc: cannot parse response — scratch retained (500000B) [err=NSURLErrorDomain(-1017) kind=cannotParseResponse cut=churnSuspected (network transition 1.2s before the cut)]' },
+  ])
+  const cut = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,
+    http: httpProbe(), native,
+  }).checks.find((c) => c.id === 'cut-attribution')
+  assert.equal(cut?.status, 'warn')
+  assert.match(cut!.evidence, /a reported network transition is the likely cause/)
+})
+
+test('evaluate: a probe deliberately skipped lists every server check UNKNOWN with its reason', () => {
+  // 2026-10-02b: the probe is deferred when a staged stream owns the transcode
+  // (a concurrent GET both races the stream it measures and reads Navidrome's
+  // IN-PROGRESS output, whose 200 is not the server's Range verdict). A skipped
+  // probe must not silently omit the server checks NOR look like an offline
+  // failure.
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,
+    http: null,
+    probeNote: 'deferred — a staged stream was still live',
+    native: emptyNativeStreamFacts(),
+  })
+  const byId = Object.fromEntries(report.checks.map((c) => [c.id, c.status]))
+  assert.equal(byId['server-total'], 'unknown')
+  assert.equal(byId['range-support'], 'unknown')
+  assert.equal(byId['progressive-container'], 'unknown')
+  for (const id of ['server-total', 'range-support', 'progressive-container']) {
+    assert.match(report.checks.find((c) => c.id === id)!.evidence, /deferred — a staged stream was still live/)
+  }
+  // Without a note the generic offline wording still applies.
+  const offline = evaluateStreamVerification({
+    trackId: 'abc', variant: 'raw', isTranscode: false, metadataDuration: 100, snapshotSize: 1,
+    http: null, native: null,
+  })
+  assert.match(offline.checks.find((c) => c.id === 'server-total')!.evidence, /did not run \(offline/)
+})
+
+test('formatStreamVerifyBundle names why a skipped probe did not run', () => {
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: null, probeNote: 'deferred — live staged stream', native: null,
+  })
+  const text = formatStreamVerifyBundle({
+    report,
+    context: { platform: 'ios-native', appVersion: '1.2.50', trackTitle: 'A Song', lowData: 'on', network: 'x' },
+    http: null,
+    probeNote: 'deferred — live staged stream',
+    native: null,
+    stateSample: null,
+    rawLines: [],
+  })
+  assert.match(text, /probe did not run — deferred — live staged stream/)
+})
+
 test('formatStreamVerifyBundle is a paste-ready block carrying the raw evidence', () => {
   const report = evaluateStreamVerification({
     trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,

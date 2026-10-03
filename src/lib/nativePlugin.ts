@@ -100,6 +100,10 @@ interface BackgroundAudioPlugin {
   getDebugEvents(options: { sinceSeq: number }): Promise<NativeEventsPage>
   /** Opt-in verbose domains (HUD toggles → native write-time gate). */
   setDebugDomains(options: { domains: string[] }): Promise<void>
+  /** Restart the retry-branch observation window (native only) — the HUD's
+   *  Clear all button calls this so a field session can count from zero
+   *  without a relaunch. Registered in pluginMethods (the §3.4 gate). */
+  resetRetryBranch(): Promise<void>
   /** Live spectrum bands for the EQ overlay: `bands` holds SPECTRUM_BAND_COUNT
    *  normalized 0..1 levels on the shared 20 Hz–20 kHz log ladder (zeros when
    *  paused — the native tap freezes its snapshot at pause); `playing`
@@ -195,6 +199,14 @@ export class NativeAudioEngineApp {
   async setDebugDomains(domains: string[]): Promise<void> {
     if (!this.isNative()) return
     await BackgroundAudio.setDebugDomains({ domains }).catch(() => {})
+  }
+
+  /** Restart the native retry-branch observation window (2026-10-02h).
+   *  No-op off-native — the branch is a native-ladder construct with no web
+   *  counterpart, so the HUD's Clear all stays a single-path call. */
+  async resetRetryBranch(): Promise<void> {
+    if (!this.isNative()) return
+    await BackgroundAudio.resetRetryBranch().catch(() => {})
   }
 
   /** The OS major version (HUD dump context — the false-opus saga proved

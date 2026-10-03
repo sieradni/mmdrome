@@ -322,10 +322,15 @@
     }
   }
 
-  function clearAll() {
+  async function clearAll() {
     clearLog()
     clearNativeBridgeTrail()
     clearJsDebugEvents()
+    // 2026-10-02h: also restart the NATIVE retry-branch window so a fresh
+    // field observation can begin without relaunching the app. No-op on web
+    // (the branch is native-only); refresh so the counter line zeros at once.
+    await nativeEngine.resetRetryBranch()
+    await refreshNative()
   }
 
   let q = $derived(get(queue))
@@ -417,6 +422,29 @@
       return null
     }
   })
+  // Retry-branch counters (2026-10-02g): the native ladder's branch decisions
+  // plus the pools the loader actually rotated. Native-only (getDebugState
+  // carries it); null on web, where the branch does not exist yet. The
+  // DECISION vs ENACTMENT split is deliberate — an opaque-resume retry keeps
+  // the shared session, so a fresh decision need not become an enactment.
+  let retryBranch = $derived.by(() => {
+    void jsTick
+    return (nativeDebug?.retryBranch ?? null) as {
+      scheduled: number
+      freshConnectionSoon: number
+      resumeAfterBackoff: number
+      standard: number
+      freshConnectionEnacted: number
+      recent: string[]
+    } | null
+  })
+  let retryBranchRecent = $derived.by(() => {
+    void jsTick
+    const label = (s: string) =>
+      s === 'freshConnectionSoon' ? 'fresh' : s === 'resumeAfterBackoff' ? 'resume' : 'std'
+    const recent = retryBranch?.recent ?? []
+    return recent.slice(-8).map(label).join(',') || '—'
+  })
   // Thumb loader counters sampled per tick (the snapshot is a plain read of
   // module state; identity changes each poll so the section re-renders).
   let thumbDebug = $derived.by(() => {
@@ -474,6 +502,9 @@
         <div>activeId: {(combined[q.activeIndex] ?? '—')}</div>
         <div>ldm: {ldm ? `on-${ldmWhy}` : 'off'} stream: {streamVariant}</div>
         <div>net: {netStability.metered === null ? 'unknown' : netStability.metered ? 'metered' : 'open'}{netStability.latched ? ` LATCHED(${Math.ceil(netStability.latchedRemainingMs / 1000)}s)` : ''} sup: {netStability.suppressed} flips: {netStability.transitions}</div>
+        {#if retryBranch}
+          <div>retry: {retryBranch.scheduled} decided (fresh {retryBranch.freshConnectionSoon} / resume {retryBranch.resumeAfterBackoff} / std {retryBranch.standard}) · fresh enacted {retryBranch.freshConnectionEnacted} · recent {retryBranchRecent}</div>
+        {/if}
         {#if lastTrackChanged}<div class="text-green-300">{lastTrackChanged}</div>{/if}
       </div>
 

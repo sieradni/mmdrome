@@ -39,6 +39,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getDebugState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getDebugEvents", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setDebugDomains", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "resetRetryBranch", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getNetworkState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getSpectrum", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "secureGet", returnType: CAPPluginReturnPromise),
@@ -129,8 +130,18 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             // walk (review finding, 2026-10-02). Captured before the state
             // overwrite; the boot snapshot (nil) counts as a path change.
             let pathChanged = self.lastNetworkState?.0 != isExpensive
+            // (2026-10-02e) The BOOT snapshot is not a transition: it would
+            // otherwise stamp the engine at launch and make any cut in the
+            // first 5 s read `churnSuspected`. Captured before the overwrite.
+            let isFirstSnapshot = self.lastNetworkState == nil
             self.lastNetworkState = (isExpensive, isConstrained)
             self.engineEvent(.info, "network", "changed isExpensive=\(isExpensive) isConstrained=\(isConstrained)")
+            // Stamp the engine's failure-correlation clock the instant the
+            // transition is seen (NOT at the debounced re-arm below, which is
+            // 2.5 s late). See TransferCutCorrelation (2026-10-02e).
+            if pathChanged && !isFirstSnapshot {
+                self.performOnMain { self.engine.noteNetworkChangeOccurred() }
+            }
             self.notifyListeners("networkStateChanged", data: [
                 "isExpensive": isExpensive,
                 "isConstrained": isConstrained
@@ -524,6 +535,19 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let self else { call.resolve(); return }
             let since = Int(call.getDouble("sinceSeq", 0))
             call.resolve(self.engine.debugEvents(sinceSeq: since))
+        }
+    }
+
+    /// Start a fresh retry-branch observation window (2026-10-02h). The HUD's
+    /// Clear all button calls this so a field session can measure the retry
+    /// ladder from zero without relaunching the app. MUST be in
+    /// `pluginMethods` above — Capacitor's getMethod gate silently drops
+    /// unregistered names and the JS promise never resolves (§3.4 lesson).
+    @objc func resetRetryBranch(_ call: CAPPluginCall) {
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.resetRetryBranchStats()
+            call.resolve()
         }
     }
 

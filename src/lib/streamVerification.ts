@@ -51,12 +51,21 @@ export interface NativeStreamFacts {
   promotedAnnouncedBytes: number | null
   /** The promote came through the transcode duration/decodability route. */
   promotedDurationGated: boolean
+  /** The promote RECOVERED a writer error: the transfer failed, but the
+   *  delivered body already carried the track (2026-10-02d). */
+  promotedAfterWriterError: boolean
   /** A short transcode was rejected rather than poisoned into the cache. */
   rejectedTranscodeShort: boolean
   /** A completion with no staged schedule scheduled the file whole (fallback). */
   completedWhole: boolean
   writerFailed: boolean
   cleanEarlyClose: boolean
+  /** The failure IDENTITY + churn-vs-stable-path attribution bracketed onto
+   *  the last `writer failed` line (2026-10-02e): `err=… kind=… cut=…`.
+   *  Null when no writer failure was seen, or the line predates the taxonomy
+   *  (an older native build). The self-test reports it verbatim; the LABEL is
+   *  a convenience, the numbers are the evidence. */
+  writerFailureEvidence: string | null
 }
 
 export function emptyNativeStreamFacts(): NativeStreamFacts {
@@ -73,10 +82,12 @@ export function emptyNativeStreamFacts(): NativeStreamFacts {
     promoted: false,
     promotedAnnouncedBytes: null,
     promotedDurationGated: false,
+    promotedAfterWriterError: false,
     rejectedTranscodeShort: false,
     completedWhole: false,
     writerFailed: false,
     cleanEarlyClose: false,
+    writerFailureEvidence: null,
   }
 }
 
@@ -120,7 +131,13 @@ export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): 
   if (/schedule target past delivered end/.test(msg)) next.schedulePastDeliveredCount += 1
   if (/promoted transcode cut short/.test(msg)) next.rejectedTranscodeShort = true
   if (/completed stream scheduled whole/.test(msg)) next.completedWhole = true
-  if (/writer failed/.test(msg)) next.writerFailed = true
+  if (/writer failed/.test(msg)) {
+    next.writerFailed = true
+    // (2026-10-02e) Capture the taxonomy + correlation bracket the native
+    // writer-failure line now carries: `[err=… kind=… cut=…]`. Last one wins.
+    const ev = /\[(err=\S+ kind=\S+(?: under=\S+)? cut=[^\]]+)\]/.exec(msg)
+    if (ev) next.writerFailureEvidence = ev[1]
+  }
   if (/clean early close/.test(msg)) next.cleanEarlyClose = true
 
   const gated = /promoted \S+ \(\d+B, announced (\d+) — decodability\+duration-gated\)/.exec(msg)
@@ -130,6 +147,15 @@ export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): 
     next.promotedAnnouncedBytes = Number(gated[1])
   }
   if (/cache entry complete/.test(msg)) next.promoted = true
+  // The writer-ERROR recovery (2026-10-02d): the transfer failed late, but the
+  // delivered body already carried the track and promoted. Without this fold
+  // the recovery would still read `writerFailed: false` + `promoted: false`,
+  // i.e. completion-verdict UNKNOWN, on a stream that plainly completed.
+  if (/promoted \S+ \(\d+B\) despite writer error/.test(msg)) {
+    next.promoted = true
+    next.promotedDurationGated = true
+    next.promotedAfterWriterError = true
+  }
 
   return next
 }
@@ -284,6 +310,12 @@ export interface StreamVerifyInput {
   snapshotSize: number
   /** Parsed HTTP probe facts, or null when the probe could not run. */
   http: HttpProbeFacts | null
+  /** Why `http` is null when the probe was deliberately NOT taken — e.g. a
+   *  staged stream still owned the transcode at the end of the capture, so a
+   *  probe would race the very stream it measures (2026-10-02b field report).
+   *  Surfaces in the HTTP-side evidence instead of the misleading generic
+   *  "did not run" text. */
+  probeNote?: string | null
   /** Parsed native transcript, or null on web / when no capture ran. */
   native: NativeStreamFacts | null
   /** A live getDebugState() sample taken during the capture, used to classify
@@ -315,11 +347,27 @@ export function evaluateStreamVerification(input: StreamVerifyInput): StreamVeri
 
   // --- HTTP-side (server + container) ------------------------------------
   if (!http) {
+    // Every server-side assumption stays visible as UNKNOWN rather than being
+    // silently omitted — a skipped probe is a data gap, not a verdict, and the
+    // note says WHICH kind of gap it is (deferred vs offline).
+    const why = input.probeNote ?? 'HTTP probe did not run (offline / native fetch failed)'
     checks.push({
       id: 'server-total',
       label: 'Server announces a total (Content-Length)',
       status: 'unknown',
-      evidence: 'HTTP probe did not run (offline / native fetch failed)',
+      evidence: why,
+    })
+    checks.push({
+      id: 'range-support',
+      label: 'Server supports Range (stream recovery can resume)',
+      status: 'unknown',
+      evidence: why,
+    })
+    checks.push({
+      id: 'progressive-container',
+      label: 'Container header is at the front (openable from a partial file)',
+      status: 'unknown',
+      evidence: why,
     })
   } else {
     checks.push({
@@ -409,12 +457,32 @@ export function evaluateStreamVerification(input: StreamVerifyInput): StreamVeri
             ? 'warn'
             : 'unknown',
       evidence: native.promoted
-        ? `promoted (announced=${native.promotedAnnouncedBytes ?? '?'}${native.promotedDurationGated ? ', duration-gated' : ''})`
+        ? `promoted (announced=${native.promotedAnnouncedBytes ?? '?'}${native.promotedDurationGated ? ', duration-gated' : ''}${native.promotedAfterWriterError ? ', recovered a writer error' : ''})`
         : native.rejectedTranscodeShort
           ? 'a short transcode was rejected (poison gate fired)'
           : native.writerFailed || native.cleanEarlyClose
             ? 'writer failed / early close'
             : 'no terminal verdict captured',
+    })
+  }
+
+  // --- Transfer-cut attribution (2026-10-02e) -----------------------------
+  // The discriminating evidence for the repeated `cannot parse response`
+  // cuts: does a REPORTED network transition explain the cut (local churn),
+  // or was the local path stable (a server / reverse-proxy keep-alive lead)?
+  // The native failure line now brackets `err=… kind=… cut=…`; report it
+  // verbatim so the label can never disagree with the numbers.
+  if (native) {
+    const evidence = native.writerFailureEvidence
+    const churnSuspected = evidence ? /cut=churnSuspected/.test(evidence) : false
+    const churnUnlikely = evidence ? /cut=churnUnlikely/.test(evidence) : false
+    checks.push({
+      id: 'cut-attribution',
+      label: 'Transfer cut attributed (interface churn vs stable path)',
+      status: evidence ? 'warn' : 'unknown',
+      evidence: evidence
+        ? `${evidence}${churnSuspected ? ' — a reported network transition is the likely cause (local churn, not the server)' : churnUnlikely ? ' — no reported transition: a stable local path points at the server / reverse-proxy keep-alive lead' : ''}`
+        : 'no writer failure carried an attribution bracket (no failure, or a pre-2026-10-02e native build)',
     })
   }
 
@@ -484,6 +552,9 @@ export interface StreamVerifyBundleInput {
   } | null
   /** Raw engine event lines captured in the window, oldest first. */
   rawLines: string[]
+  /** Same note `evaluateStreamVerification` received when the probe was
+   *  deliberately skipped (deferred behind a live staged stream). */
+  probeNote?: string | null
 }
 
 /**
@@ -505,7 +576,7 @@ export function formatStreamVerifyBundle(input: StreamVerifyBundleInput): string
     rows.push(`  content-type: ${http.contentType ?? '?'}  content-range: ${http.contentRange ?? 'absent'}`)
     rows.push(`  read: ${http.bytesRead} B   container magic: ${http.sniffed}${http.note ? `   note: ${http.note}` : ''}`)
   } else {
-    rows.push('  (probe did not run)')
+    rows.push(`  (probe did not run${input.probeNote ? ` — ${input.probeNote}` : ''})`)
   }
   rows.push('--- STATE SAMPLE (mid-stream) --------------------------------------')
   if (stateSample) {

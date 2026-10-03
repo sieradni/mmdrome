@@ -137,6 +137,112 @@ final class TrackFileLoader {
     private func event(_ level: NativeEvent.Level, _ message: String) {
         eventSink?(level, message)
     }
+    /// Monotonic-second provider for the last reported network PATH
+    /// transition (2026-10-02e). Injected by the engine so a loader failure
+    /// line carries the SAME churn-vs-stable-path attribution the engine's
+    /// lines do. Nil (tests/previews) is honest: no transition observed.
+    var networkChangeStampProvider: (() -> Double?)?
+    /// One evidence tail for a transport failure: the stable error identity
+    /// (`TransferFailureTaxonomy`) plus the churn-vs-keep-alive attribution
+    /// (`TransferCutCorrelation`). Appended to every failure line that takes
+    /// a raw URLSession error, so a field dump can discriminate interface
+    /// churn from a reverse-proxy race with no guessing. See AGENTS.md
+    /// 2026-10-02e for the discriminator's limit (it only sees transitions
+    /// the OS REPORTS).
+    func transferEvidence(_ error: Error) -> String {
+        let info = TransferFailureInfo.classify(error)
+        let correlation = TransferCutCorrelation.evidenceLine(
+            failure: info,
+            lastNetworkChangeAt: networkChangeStampProvider?(),
+            cutAt: ProcessInfo.processInfo.systemUptime)
+        return "[\(info.evidenceLine) \(correlation)]"
+    }
+
+    // MARK: Fresh-connection retry sessions (2026-10-02f)
+
+    /// One-shot demand set by the engine when the retry ladder decided a cut
+    /// was attributed to a stable local path (`churnUnlikely`): the suspect
+    /// pooled keep-alive socket must not be reused. Consumed by the next
+    /// attempt the loader issues; every ordinary path is untouched.
+    private var freshConnectionPending = false
+
+    /// Called by the engine (main thread) before a fresh-connection retry.
+    func requestFreshConnectionForNextAttempt() {
+        freshConnectionPending = true
+    }
+
+    /// Consume the one-shot demand. Main-thread-only, like all loader state.
+    private func consumeFreshConnection() -> Bool {
+        defer { freshConnectionPending = false }
+        return freshConnectionPending
+    }
+
+    /// WHY a separate SESSION is the mechanism: a URLSession's connection pool
+    /// is per-session, so a session that has never issued a request provably
+    /// has no pooled socket to inherit. A request-level `Connection: close` is
+    /// deliberately NOT the guarantee — CFNetwork's honoring of it is not a
+    /// documented contract. The pool is ROTATED per fresh retry; the retired
+    /// session drains with `finishTasksAndInvalidate` so an attempt still
+    /// running is never cancelled.
+    private var retrySession: URLSession? = nil
+    private var retiredRetrySessions: [URLSession] = []
+
+    private static func makeTransferSession() -> URLSession {
+        let config = URLSessionConfiguration.default
+        config.requestCachePolicy = .returnCacheDataElseLoad
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 600
+        return URLSession(configuration: config)
+    }
+
+    /// (2026-10-02g) How many attempts actually ran on a ROTATED pool — the
+    /// ENACTMENT half of the retry-branch counters (the engine counts the
+    /// decisions). Incremented only where a rotation really happens, so the
+    /// design gap is visible: a fresh decision whose attempt takes the
+    /// opaque-resumeData shape keeps the shared session and is NOT counted.
+    private(set) var freshConnectionAttempts = 0
+
+    /// Start a fresh observation window for the ENACTMENT half of the retry
+    /// counters (2026-10-02h). The engine resets the decision half and calls
+    /// this beside it, so the HUD's summary line never mixes two windows.
+    func resetFreshConnectionAttempts() {
+        freshConnectionAttempts = 0
+    }
+
+    /// A pool that cannot inherit any previous socket.
+    private func rotateRetrySession() -> URLSession {
+        freshConnectionAttempts += 1
+        retrySession?.finishTasksAndInvalidate()
+        if let old = retrySession { retiredRetrySessions.append(old) }
+        if retiredRetrySessions.count > 4 { retiredRetrySessions.removeFirst() }
+        let fresh = TrackFileLoader.makeTransferSession()
+        retrySession = fresh
+        return fresh
+    }
+
+    /// The stream path's equivalent: a fresh pool AND a fresh delegate (the
+    /// delegate is per-session state — see `streamSession`).
+    private var retryStreamSession: URLSession? = nil
+    private var retryStreamDelegate: StreamWriterDelegate? = nil
+    private var retiredFreshStreamSessions: [URLSession] = []
+
+    private func rotateStreamSessionForFreshConnection() -> (URLSession, StreamWriterDelegate) {
+        freshConnectionAttempts += 1
+        retryStreamSession?.finishTasksAndInvalidate()
+        if let old = retryStreamSession { retiredFreshStreamSessions.append(old) }
+        if retiredFreshStreamSessions.count > 4 { retiredFreshStreamSessions.removeFirst() }
+        let config = URLSessionConfiguration.default
+        config.requestCachePolicy = .returnCacheDataElseLoad
+        config.timeoutIntervalForRequest = 120
+        config.timeoutIntervalForResource = 600
+        let delegate = StreamWriterDelegate()
+        delegate.owner = self
+        retryStreamDelegate = delegate
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        retryStreamSession = session
+        return (session, delegate)
+    }
+
     /// Live counts for the debug snapshot (no file I/O — pure state reads).
     func stats() -> (cached: Int, inFlight: Int) {
         (state.cache.count, state.inFlight.count)
@@ -410,8 +516,23 @@ final class TrackFileLoader {
         // "writer started", then total silence — no schedule, no maturation,
         // no bytes, for 74 s until the user's seek forced attempt 2, where
         // the now-existing delegate attached fine and everything worked).
-        let task = streamSession.dataTask(with: request)
-        streamWriterDelegate?.attach(handle)
+        // FRESH CONNECTION (2026-10-02f): an attempt the retry ladder
+        // attributed to a stable local path must not inherit the suspect
+        // pooled keep-alive socket — a rotated pool (and its delegate)
+        // replace this attempt's session. Everything else is unchanged.
+        let attemptSession: URLSession
+        let attemptDelegate: StreamWriterDelegate?
+        if consumeFreshConnection() {
+            let rotated = rotateStreamSessionForFreshConnection()
+            attemptSession = rotated.0
+            attemptDelegate = rotated.1
+            event(.info, "stream: fresh connection for this attempt (stable-path cut)")
+        } else {
+            attemptSession = streamSession
+            attemptDelegate = streamWriterDelegate
+        }
+        let task = attemptSession.dataTask(with: request)
+        attemptDelegate?.attach(handle)
         // The multi-delivery closures ride the writer struct: main-thread
         // updates happen in the delegate hop (didReceive data → main), which
         // calls writerDidReceiveBytes/writerDidComplete below.
@@ -604,8 +725,30 @@ final class TrackFileLoader {
             claimAt.removeValue(forKey: writer.cacheKey)
         }
         if let error {
+            // NEAR-COMPLETE RECOVERY (2026-10-02b): a late transient failure
+            // can leave a body that already carries the whole track — judge it
+            // through the same transcode gate the clean close uses before
+            // retaining a scratch the server may be unable to continue.
+            if let promotedBytes = promotePartialTranscodeOnWriterError(writer) {
+                event(.info, "stream: promoted \(writer.track.trackId) (\(promotedBytes)B) despite writer error (\(error.localizedDescription)) — duration-corroborated partial")
+                let final = StreamProgress(
+                    trackId: writer.track.trackId,
+                    url: writer.destination,
+                    stage: .complete,
+                    deliveredBytes: promotedBytes,
+                    announcedBytes: writer.announcedBytes)
+                flushWriterChains(key: writer.cacheKey, url: writer.destination, error: nil)
+                clearWriterState()
+                onFinished?(final, nil)
+                onDownloadFinished?(writer.track.trackId, true)
+                return
+            }
             clearWriterState()
-            event(.danger, "stream: writer failed for \(writer.track.trackId): \(error.localizedDescription) — scratch retained (\(writer.accumulatedBytes)B)")
+            event(.danger, "stream: writer failed for \(writer.track.trackId): \(error.localizedDescription) — scratch retained (\(writer.accumulatedBytes)B) \(transferEvidence(error))")
+            // ^ the trailing [] is the failure IDENTITY + churn-vs-keep-alive
+            // attribution (2026-10-02e). This was the field's `cannot parse
+            // response` line; it now says which -1017-class failure it was and
+            // whether a network transition could explain it.
             // Range-continue substrate: identical to a downloadTask loud-fail
             // minus the opaque resumeData (a dataTask has none — the .part
             // prefix IS the resume state).
@@ -930,7 +1073,7 @@ final class TrackFileLoader {
             // handle may be OPEN here (seek threw after a successful open)
             // — close it before aborting or the FD leaks.
             try? reopenedHandle?.close()
-            event(.danger, "stream: continuation reopen failed for \(track.trackId): \(error.localizedDescription) — handing to the JS retry")
+            event(.danger, "stream: continuation reopen failed for \(track.trackId): \(error.localizedDescription) — handing to the JS retry \(transferEvidence(error))")
             abortContinuation(writer: writer, chained: chained)
             return
         }
@@ -940,9 +1083,24 @@ final class TrackFileLoader {
         var request = URLRequest(url: track.url)
         request.timeoutInterval = 120
         request.setValue(DownloadResume.rangeHeader(offset: continueFrom), forHTTPHeaderField: "Range")
-        let task = streamSession.dataTask(with: request)
+        // FRESH CONNECTION (2026-10-02f): same one-shot demand as `streamLoad` —
+        // a continuation the ladder attributed to a stable local path (the
+        // dominant field shape: scratch retained after a mid-body cut) must
+        // Range-resume on a pool that cannot inherit the suspect socket.
+        let attemptSession: URLSession
+        let attemptDelegate: StreamWriterDelegate?
+        if consumeFreshConnection() {
+            let rotated = rotateStreamSessionForFreshConnection()
+            attemptSession = rotated.0
+            attemptDelegate = rotated.1
+            event(.info, "stream: fresh connection for this continuation (stable-path cut)")
+        } else {
+            attemptSession = streamSession
+            attemptDelegate = streamWriterDelegate
+        }
+        let task = attemptSession.dataTask(with: request)
         // Reset the delegate's counter: this task delivers the REMAINDER.
-        streamWriterDelegate?.attach(handle)
+        attemptDelegate?.attach(handle)
         streamWriterHandle = handle
         streamWriterTask = task
         // The RESUMED writer: accumulated bytes continue from the DISK mark
@@ -969,6 +1127,69 @@ final class TrackFileLoader {
     /// shape to the JS retry machine.
     private func lastContinuationError(_ writer: StreamWriter) -> Error {
         NSError(domain: "mmdrome.loader", code: -7004, userInfo: [NSLocalizedDescriptionKey: "Stream cut short (\(writer.accumulatedBytes) of \(writer.announcedBytes) bytes): \(writer.track.title)"])
+    }
+
+    /// NEAR-COMPLETE RECOVERY ON WRITER ERROR (2026-10-02b field report).
+    ///
+    /// A writer error is NOT evidence that the delivered bytes are unusable.
+    /// The field report's `cannot parse response` (NSURLError-
+    /// CannotParseResponse) killed the writer at 2,803,498 of 2,813,296
+    /// announced bytes — 99.65 % — and the retention path then kept a scratch
+    /// that a Range-IGNORING live transcode server can never continue (the
+    /// request was answered 200, not 206), so the row re-downloaded the whole
+    /// transcode to gain 9,798 bytes.
+    ///
+    /// The trust boundary is what is on disk, and the SAME gate the clean
+    /// close already uses for a transcode (`writerCompleteVerdict(transcode:)`
+    /// → nil → decodability + `DownloadSanity.transcodeDurationCorroborated`)
+    /// answers exactly the right question here: does the partial body already
+    /// carry the track's full audio? Run it before falling back to retention.
+    /// A genuinely cut body fails the same gate the clean-close path would
+    /// fail it with, so this widens RECOVERY, never the completeness bar.
+    ///
+    /// Returns the promoted byte count, or nil when the body is not
+    /// promotable — in which case the .part is restored byte-for-byte so the
+    /// caller's retention path runs unchanged.
+    private func promotePartialTranscodeOnWriterError(_ writer: StreamWriter) -> Int64? {
+        // RAW streams keep the byte-exact verdict: an error means the transfer
+        // is short, and the byte gate — not duration — is their honesty test.
+        guard TrackVariant(url: writer.track.url) != .raw else { return nil }
+        guard FileManager.default.fileExists(atPath: writer.part.path) else { return nil }
+        let onDisk = (try? FileManager.default.attributesOfItem(atPath: writer.part.path)[.size] as? Int64) ?? 0
+        guard onDisk >= TrackFileLoader.minimumAudioBytes else { return nil }
+        do {
+            if FileManager.default.fileExists(atPath: writer.destination.path) {
+                try FileManager.default.removeItem(at: writer.destination)
+            }
+            try FileManager.default.moveItem(at: writer.part, to: writer.destination)
+            let probeFile = try? AVAudioFile(forReading: writer.destination)
+            let probeFrames = probeFile?.length ?? 0
+            let probeSampleRate = probeFile?.fileFormat.sampleRate ?? 0
+            // Undecodable, or the container's own claim is short of the
+            // metadata duration → NOT complete: restore the scratch exactly
+            // where the retention path expects it.
+            guard probeFrames > 0,
+                  !DownloadSanity.transcodeDurationCorroborated(
+                    probeFrames: probeFrames,
+                    sampleRate: probeSampleRate,
+                    metadataDuration: writer.track.duration,
+                    transcode: true) else {
+                try? FileManager.default.moveItem(at: writer.destination, to: writer.part)
+                return nil
+            }
+            let size = onDisk
+            let elapsed = max(0.05, Date().timeIntervalSince(writer.claimedAt))
+            recentTransferRate = Double(size) / elapsed
+            resumeDataByCacheKey[writer.cacheKey] = nil
+            rangeUnsupportedKeys.remove(writer.cacheKey)
+            maturationByteFloor[writer.cacheKey] = nil
+            dropPending(cacheKey: writer.cacheKey, destination: writer.destination)
+            state.store(writer.destination, for: writer.cacheKey, bytes: Int(size))
+            variantOf[writer.cacheKey] = TrackVariant(url: writer.track.url)
+            return size
+        } catch {
+            return nil
+        }
     }
 
     /// The continuation-abort fallback (reopen failure, size mismatch): the
@@ -1315,6 +1536,12 @@ final class TrackFileLoader {
         // wasted, and every gate below still runs on the FINAL bytes —
         // resume changes how a download RECOVERS, never what counts as
         // complete.
+        // FRESH CONNECTION (2026-10-02f): consume the ladder's one-shot demand
+        // HERE, where an attempt is actually about to be issued. The returns
+        // ABOVE (cache serve, in-flight chain, live writer) are not attempts —
+        // spending the demand on one would silently waste it and the retry's
+        // real attempt would land on the same pooled socket it must avoid.
+        let freshTransferRequested = consumeFreshConnection()
         let continuation = DownloadResume.planNextAttempt(
             pending: pendingParts[cacheKey],
             opaqueResumeData: resumeDataByCacheKey[cacheKey])
@@ -1397,7 +1624,7 @@ final class TrackFileLoader {
                             // directly (temp is discarded below by moving to
                             // destination first for gate uniformity).
                         } catch {
-                            self?.event(.danger, "resume append failed for \(track.trackId): \(error.localizedDescription) — falling back to fresh")
+                            self?.event(.danger, "resume append failed for \(track.trackId): \(error.localizedDescription) — falling back to fresh \(self?.transferEvidence(error) ?? "")")
                             try? FileManager.default.removeItem(at: part)
                             effectiveSize = -1 // force the fresh path below
                         }
@@ -1657,9 +1884,19 @@ final class TrackFileLoader {
         // The SAME completion body drives both task constructors: a plain
         // request (fresh / Range-append) and URLSession's own resumeData
         // continuation — identical gates on the final bytes either way.
+        // A fresh-connection retry runs on a rotated pool (2026-10-02f): the
+        // ordinary prefetch/download paths keep the shared session exactly as
+        // before, so no in-flight chain is disturbed by the rotation.
+        // Only the REQUEST-based shapes rotate: URLSession's opaque resumeData
+        // is bound to the session that produced it, so that continuation keeps
+        // the shared session. The Range-append shape — the field's actual
+        // recovery path after a mid-body cut — is request-based and rotates.
+        let transferSession = (freshTransferRequested && resumeData == nil)
+            ? rotateRetrySession()
+            : session
         let task: URLSessionDownloadTask = resumeData != nil
-            ? session.downloadTask(withResumeData: resumeData!, completionHandler: completionBody)
-            : session.downloadTask(with: request!, completionHandler: completionBody)
+            ? transferSession.downloadTask(withResumeData: resumeData!, completionHandler: completionBody)
+            : transferSession.downloadTask(with: request!, completionHandler: completionBody)
         if state.claim(cacheKey, task: task, requestID: requestID) {
             // Bandwidth-evidence start time (F1, design review): the
             // completion hop reads this to update recentTransferRate for the
@@ -1944,6 +2181,68 @@ public final class NativeAudioEngine: NSObject {
     internal func eventAdd(_ level: NativeEvent.Level, _ domain: String, _ message: String) {
         eventLog.add(now: ProcessInfo.processInfo.systemUptime, domain: domain, level: level, message)
     }
+    /// Monotonic seconds of the last reported network PATH transition
+    /// (2026-10-02e). Stamped by the plugin's NWPathMonitor handler the
+    /// INSTANT a transition is seen — deliberately NOT at the debounced
+    /// prefetch re-arm, which fires 2.5 s later and would smear the window
+    /// the churn-vs-keep-alive discriminator compares against.
+    private var lastNetworkChangeAt: Double?
+    /// Rolling counter of the retry ladder's branch decisions (2026-10-02g),
+    /// exposed through `getDebugState.retryBranch` for the HUD + Copy dump.
+    private var retryBranchStats = TransferRetryBranchStats()
+    /// Called by the plugin on a network path change (main thread).
+    public func noteNetworkChangeOccurred() {
+        lastNetworkChangeAt = ProcessInfo.processInfo.systemUptime
+    }
+    /// Restart the retry-branch observation window (2026-10-02h). Called by
+    /// the HUD's Clear all button so a field session can measure the branch
+    /// from zero WITHOUT relaunching the app. Both halves are reset together:
+    /// the decisions here and the loader's enacted-rotation count — resetting
+    /// one leaves the summary line describing two different windows. Logged so
+    /// the event ring records the boundary (a dump can tell a genuine zero
+    /// from a pre-reset count).
+    public func resetRetryBranchStats() {
+        retryBranchStats.reset()
+        loader.resetFreshConnectionAttempts()
+        eventAdd(.info, "loader", "retry counters reset (fresh observation window)")
+    }
+    /// Classify AND attribute one transport failure, once (2026-10-02e/f).
+    /// The evidence string and the retry ladder BOTH read this, so a log line
+    /// and the action taken on it can never disagree. A single `cutAt` is
+    /// sampled for both, so the printed offset and the bucket are consistent
+    /// even at the window boundary.
+    internal func transferFailure(
+        _ error: Error,
+        cutAt: Double = ProcessInfo.processInfo.systemUptime
+    ) -> (info: TransferFailureInfo, cut: CutAttribution, evidence: String) {
+        let info = TransferFailureInfo.classify(error)
+        let cut = TransferCutCorrelation.attribute(
+            failure: info, lastNetworkChangeAt: lastNetworkChangeAt, cutAt: cutAt)
+        let correlation = TransferCutCorrelation.evidenceLine(
+            failure: info, lastNetworkChangeAt: lastNetworkChangeAt, cutAt: cutAt)
+        return (info, cut, "[\(info.evidenceLine) \(correlation)]")
+    }
+
+    /// The evidence tail for a transport failure (2026-10-02e): the stable
+    /// error identity plus the churn-vs-stable-path attribution. Appended to
+    /// every engine failure line that takes a raw URLSession error, so a
+    /// field dump can discriminate interface churn from a reverse-proxy
+    /// keep-alive race. Limit is documented on `TransferCutCorrelation`.
+    internal func transferEvidence(_ error: Error) -> String {
+        transferFailure(error).evidence
+    }
+
+    /// Build the retry ladder's failure record with the attribution attached
+    /// (2026-10-02f): the strategy branch (`TransferCutRetryPolicy`) reads
+    /// `cut`, and the detail carries the greppable bracket so a retry log line
+    /// is as diagnosable as the original cut.
+    internal func activeLoadFailure(kind: ActiveLoadFailure.Kind, error: Error) -> ActiveLoadFailure {
+        let classified = transferFailure(error)
+        return ActiveLoadFailure(
+            kind: kind,
+            detail: "\(error.localizedDescription) \(classified.evidence)",
+            cut: classified.cut)
+    }
     /// Opt-in verbose domains (HUD toggles → bridge → here). NOT persisted
     /// natively — the HUD re-pushes them whenever it opens, so a fresh
     /// launch defaults to the danger+info baseline.
@@ -2124,6 +2423,10 @@ public final class NativeAudioEngine: NSObject {
         loader.eventSink = { [weak self] level, message in
             self?.eventAdd(level, "loader", message)
         }
+        // (2026-10-02e) The loader's transport-failure lines read the SAME
+        // network-transition stamp the engine's do, so a churn-attributed cut
+        // is attributed identically whichever layer reported it.
+        loader.networkChangeStampProvider = { [weak self] in self?.lastNetworkChangeAt }
         // Maturation staging (A15 Phase 1): the loader's per-tick stage
         // machine needs the queue for per-track lead sizing.
         loader.engineTrackLookup = { [weak self] trackId in
@@ -2980,6 +3283,14 @@ public final class NativeAudioEngine: NSObject {
         enum Kind { case stream, download }
         let kind: Kind
         let detail: String
+        /// (2026-10-02f) The churn-vs-stable-path attribution captured when
+        /// the failure was classified. Drives the retry STRATEGY
+        /// (`TransferCutRetryPolicy`): `churnUnlikely` retries quickly on a
+        /// fresh connection (the suspect pool must not be reused), while
+        /// `churnSuspected` keeps the ladder's standard resume timing. Nil
+        /// (a non-transport failure, or a record built from a bare string)
+        /// leaves the ladder's behavior unchanged.
+        var cut: CutAttribution? = nil
     }
     /// Generous for a backgrounded stream: six × (timeout-bounded attempt +
     /// 3 s spacing) ≈ 12+ minutes of autonomous recovery per phase.
@@ -3047,7 +3358,20 @@ public final class NativeAudioEngine: NSObject {
         activeLoadRetryTimer?.invalidate()
         activeLoadLongHaulTimer?.invalidate()
         let attempt = count
-        activeLoadRetryTimer = Timer(timeInterval: Self.activeLoadRetryDelaySeconds, repeats: false) { [weak self] _ in
+        // STRATEGY BRANCH (2026-10-02f): a cut attributed to a stable local
+        // path (`churnUnlikely`) is the reverse-proxy keep-alive shape — the
+        // retry must not inherit the suspect pooled connection, and there is
+        // no path to wait for, so it goes promptly. A `churnSuspected` cut
+        // keeps the ladder's standard spacing and its resume substrate (the
+        // path was the variable and the delivered bytes are on disk).
+        // `standard`/nil preserves the previous behavior exactly.
+        let retryStrategy = TransferCutRetryPolicy.strategy(for: failure.cut)
+        let retryDelay = TransferCutRetryPolicy.delaySeconds(
+            for: failure.cut, standardDelaySeconds: Self.activeLoadRetryDelaySeconds)
+        // Observed, not assumed (2026-10-02g): the HUD's retry counters are fed
+        // here, at the decision, so a dump can show the branch firing.
+        retryBranchStats.record(strategy: retryStrategy)
+        activeLoadRetryTimer = Timer(timeInterval: retryDelay, repeats: false) { [weak self] _ in
             guard let self else { return }
             self.activeLoadRetryTimer = nil
             self.retryActiveLoad(track: track, attempt: attempt, failure: failure)
@@ -3065,7 +3389,7 @@ public final class NativeAudioEngine: NSObject {
             self.retryActiveLoad(track: track, attempt: attempt, failure: failure)
         }
         RunLoop.main.add(activeLoadLongHaulTimer!, forMode: .common)
-        eventAdd(.info, "loader", "active-load retry scheduled (\(attempt)/\(Self.activeLoadMaxConsecutiveRetries)) for \(track.trackId) in \(Int(Self.activeLoadRetryDelaySeconds)) s: \(failure.detail)")
+        eventAdd(.info, "loader", "active-load retry scheduled (\(attempt)/\(Self.activeLoadMaxConsecutiveRetries)) for \(track.trackId) in \(String(format: "%.1f", retryDelay)) s (strategy \(retryStrategy.rawValue)): \(failure.detail)")
     }
 
     /// The retry body: re-attempt the SAME row through the same loaders the
@@ -3081,7 +3405,13 @@ public final class NativeAudioEngine: NSObject {
             eventAdd(.info, "loader", "active-load retry \(attempt) skipped — the writer is already live for \(track.trackId)")
             return
         }
-        eventAdd(.info, "loader", "active-load retry attempt \(attempt) for \(track.trackId) (failed as \(failure.kind == .stream ? "stream" : "download"))")
+        // FRESH CONNECTION (2026-10-02f): a `churnUnlikely` cut points at the
+        // pooled keep-alive socket, so the retry asks the loader to issue its
+        // request on a session whose pool cannot inherit it. The decision is
+        // the SAME pure predicate that chose the delay; the loader enacts it.
+        let wantsFreshConnection = TransferCutRetryPolicy.requiresFreshConnection(for: failure.cut)
+        if wantsFreshConnection { loader.requestFreshConnectionForNextAttempt() }
+        eventAdd(.info, "loader", "active-load retry attempt \(attempt) for \(track.trackId) (failed as \(failure.kind == .stream ? "stream" : "download")\(wantsFreshConnection ? ", fresh connection" : ""))")
         // Route by the SAME gate loadAndStart used: scratch state from the
         // failed attempt makes streamDecision false, so the retry goes down
         // the download path and RANGE-CONTINUES the retained prefix. (A
@@ -3100,7 +3430,7 @@ public final class NativeAudioEngine: NSObject {
                     self.eventAdd(.info, "loader", "active-load retry \(attempt) succeeded for \(track.trackId) — scheduling")
                     self.scheduleCurrentTrack(from: 0, autoPlay: true)
                 } else {
-                    self.eventAdd(.info, "loader", "active-load retry \(attempt) failed for \(track.trackId): \(error?.localizedDescription ?? "?") — rescheduling")
+                    self.eventAdd(.info, "loader", "active-load retry \(attempt) failed for \(track.trackId): \(error?.localizedDescription ?? "?") — rescheduling \(error.map { self.transferEvidence($0) } ?? "")")
                     // NO per-attempt onError: a foreground user watching the
                     // row fall would see the JS retry aim its ladder at the
                     // NEXT row (the counter reset bug) — the native retry
@@ -3138,7 +3468,7 @@ public final class NativeAudioEngine: NSObject {
                     // cap yields with the single report). A per-attempt
                     // onError would start the JS ladder against a row the
                     // native retry is already recovering — double ownership.
-                    let failure = ActiveLoadFailure(kind: .stream, detail: error.localizedDescription)
+                    let failure = self.activeLoadFailure(kind: .stream, error: error)
                     self.teardownStagedState()
                     self.scheduleActiveLoadRetry(track: track, failure: failure)
                 }
@@ -3361,6 +3691,13 @@ public final class NativeAudioEngine: NSObject {
             // Resumable-download scratch state (2026-09-21): dump-visible so
             // a stuck resume is diagnosable from the field.
             "loaderPendingResume": loader.pendingResumeScratchCount,
+            // (2026-10-02g) The retry ladder's BRANCH counters: decisions taken
+            // at schedule time plus the pools the loader actually rotated.
+            // The two numbers differ by design (an opaque-resume retry keeps
+            // the shared session), and both are needed to prove the new path
+            // fires at all rather than only inferring it from timings.
+            "retryBranch": retryBranchStats.snapshot(
+                enactedFreshConnection: loader.freshConnectionAttempts),
             // A15 Phase 1: staged-model field evidence (stage per in-flight
             // key; empty until a slow-link session shows maturation).
             "maturationStages": loader.maturationSummary,
@@ -3519,9 +3856,10 @@ public final class NativeAudioEngine: NSObject {
             guard let url = url else {
                 // ACTIVE-LOAD RETRY arm (dump-2): the same foreground-gated
                 // report + silent native retry as the stream path.
-                let failure = ActiveLoadFailure(
-                    kind: .download,
-                    detail: error?.localizedDescription ?? "Failed to load track")
+                // (2026-10-02f) Carry the cut attribution when we have an
+                // error; the string-only fallback keeps its previous shape.
+                let failure = error.map { self.activeLoadFailure(kind: .download, error: $0) }
+                    ?? ActiveLoadFailure(kind: .download, detail: "Failed to load track")
                 self.reportActiveLoadFailure(track: track, failure: failure)
                 self.scheduleActiveLoadRetry(track: track, failure: failure)
                 return
@@ -3614,9 +3952,9 @@ public final class NativeAudioEngine: NSObject {
                 if let error {
                     self.emitPreload(track.trackId, "gone", nil)
                     if Self.prefetchMaxAttempts > 1 {
-                        self.eventAdd(.info, "preload", "prefetch FAILED row \(row) (\(track.trackId)) attempt 1/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — parked")
+                        self.eventAdd(.info, "preload", "prefetch FAILED row \(row) (\(track.trackId)) attempt 1/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — parked \(self.transferEvidence(error))")
                     } else {
-                        self.eventAdd(.info, "preload", "prefetch FAILED row \(row) (\(track.trackId)): \(error.localizedDescription) — moving on")
+                        self.eventAdd(.info, "preload", "prefetch FAILED row \(row) (\(track.trackId)): \(error.localizedDescription) — moving on \(self.transferEvidence(error))")
                     }
                 } else {
                     self.crossfadeMonitorTick()
@@ -3652,9 +3990,9 @@ public final class NativeAudioEngine: NSObject {
                     if let error {
                         self.emitPreload(track.trackId, "gone", nil)
                         if attempt >= Self.prefetchMaxAttempts {
-                            self.eventAdd(.danger, "preload", "prefetch FAILED row \(row) (\(track.trackId)) after \(attempt) attempts: \(error.localizedDescription) — giving up")
+                            self.eventAdd(.danger, "preload", "prefetch FAILED row \(row) (\(track.trackId)) after \(attempt) attempts: \(error.localizedDescription) — giving up \(self.transferEvidence(error))")
                         } else {
-                            self.eventAdd(.info, "preload", "prefetch RETRY FAILED row \(row) (\(track.trackId)) attempt \(attempt)/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — reparked")
+                            self.eventAdd(.info, "preload", "prefetch RETRY FAILED row \(row) (\(track.trackId)) attempt \(attempt)/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — reparked \(self.transferEvidence(error))")
                         }
                     } else {
                         self.crossfadeMonitorTick()
@@ -4027,7 +4365,7 @@ public final class NativeAudioEngine: NSObject {
                 // backgrounded, the JS machine is suspended and the row sat
                 // in dead air for 33 minutes) — foreground-gated reporting
                 // keeps the JS ladder as the foreground's fast path.
-                let failure = ActiveLoadFailure(kind: .stream, detail: error.localizedDescription)
+                let failure = self.activeLoadFailure(kind: .stream, error: error)
                 if self.stagedSchedule != nil {
                     self.teardownStagedState()
                     self.reportActiveLoadFailure(track: track, failure: failure)
