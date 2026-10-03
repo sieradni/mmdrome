@@ -153,10 +153,6 @@ public final class NativeAudioEngine: NSObject {
     // MARK: - State
 
     private let loader = TrackFileLoader()
-    /// The codec probe lives on the loader (it owns the download machinery);
-    /// the plugin reaches it through this accessor — the engine's other
-    /// surface (queue, graph, state) is orthogonal to byte fetching.
-    var loaderForProbe: TrackFileLoader { loader }
     /// Structured diagnostics (2026-09-19): every print()/diagnostic the
     /// engine emits rides THIS instead of stdout, so the Debug HUD Copy dump
     /// carries the danger verdicts (premature drops, evictions, aborts,

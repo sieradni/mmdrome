@@ -6,10 +6,24 @@ import BackgroundAudioCore
 // The native loader subsystem: downloading and staged-streaming remote tracks
 // into the caches directory so AVAudioFile can schedule them.
 //
-// BOUNDARY (2026-10-03 split): this file owns the transfer layer ONLY —
-// `TrackFileLoader` (cache state, downloadTask path, the streaming writer,
-// Range resume/continuation bookkeeping) plus its `StreamWriterDelegate`. It
-// has NO dependency on the engine: the engine (`NativeAudioEngine`, still in
+// BOUNDARY (2026-10-03, restated 2026-10-03b to match the contents). This file
+// owns `TrackFileLoader` — everything defined by the loader's OWN byte and
+// cache state — plus its `StreamWriterDelegate`:
+//
+//   • cache state + the downloadTask path (`prefetch`, serving, evict)
+//   • the streaming writer (StreamWriter/StreamProgress, `streamLoad`)
+//   • Range resume/continuation bookkeeping (pendingParts, the writer
+//     continuation, `writerDidComplete`'s verdicts)
+//   • maturation staging (`tickMaturation`): it is fed BY the loader's byte
+//     ledgers (accumulatedBytes, maturationByteFloor, pendingParts) and runs
+//     on the loader's tick — it belongs with the bytes it observes, not in the
+//     engine. The pure `Maturation` policy lives in BackgroundAudioCore.
+//
+// Deliberately NOT here (2026-10-03b): the native codec probe moved to
+// `DecodeProbeRunner.swift` — it shares the loader's URLSession habits but
+// NONE of its state, so keeping it here contradicted the boundary.
+//
+// It has NO dependency on the engine: the engine (`NativeAudioEngine`, still in
 // AudioEngine.swift) owns this loader and talks to it through `prefetch` /
 // `streamLoad` / `streamDecision` / `evict` and the progress/verdict
 // callbacks. The shared models (`NativeTrack`, `NativeEngineState`, …) stay in
@@ -642,6 +656,22 @@ final class TrackFileLoader {
     /// delivered end → buffering stall at the LAST tick → 10 s give-up → JS
     /// retry — for a file that was already fully downloaded. The handlers
     /// are captured BEFORE any state clears; `clearWriterState` runs after.
+    /// THE single continuation-eligibility derivation. Both `writerDidComplete`
+    /// verdicts — the clean `.earlyClose` and the hard-error transport cut —
+    /// ask this one question, so they cannot drift in what they check or in
+    /// how they derive it (the 2026-10-03 hard-error route was added precisely
+    /// because the two branches had drifted). The caller supplies the
+    /// hard-error-only veto (a deliberate cancel has no meaning on a clean
+    /// close, which carries no error at all).
+    private func continuationEligible(writer: StreamWriter, deliberateCancel: Bool = false) -> Bool {
+        DownloadResume.writerErrorContinuationEligible(
+            offset: writer.accumulatedBytes,
+            hasRetainedPart: FileManager.default.fileExists(atPath: writer.part.path),
+            continuationAttempt: writer.continuationAttempt,
+            rangeUnsupported: rangeUnsupportedKeys.contains(writer.cacheKey),
+            deliberateCancel: deliberateCancel)
+    }
+
     func writerDidComplete(_ error: Error?) {
         guard var writer = streamWriter else { return }
         // Capture the engine legs up front (F1): the verdict branches below
@@ -707,19 +737,14 @@ final class TrackFileLoader {
             // the engine just gave up on — only a genuine transport cut may
             // continue. The veto lives in the pure predicate so it is
             // test-pinned, not re-decided at the call site.
+            // The veto is the EXPLICIT cancel-site flag (authoritative through
+            // the queued-error race) OR the error's own -999 classification (a
+            // system cancel). Pinned in DownloadResumeTests.
+            let deliberateCancel = DownloadResume.deliberateWriterCancel(
+                explicitFlag: deliberatelyCancelledWriterKey == writer.cacheKey,
+                classifiedCancelled: TransferFailureInfo.classify(error).kind == .cancelled)
             if writer.accumulatedBytes >= TrackFileLoader.minimumAudioBytes,
-               DownloadResume.writerErrorContinuationEligible(
-                   offset: writer.accumulatedBytes,
-                   hasRetainedPart: FileManager.default.fileExists(atPath: writer.part.path),
-                   continuationAttempt: writer.continuationAttempt,
-                   rangeUnsupported: rangeUnsupportedKeys.contains(writer.cacheKey),
-                   // The veto is the EXPLICIT cancel-site flag (authoritative
-                   // through the queued-error race) OR the error's own -999
-                   // classification (a system cancel). Pinned in
-                   // DownloadResumeTests.
-                   deliberateCancel: DownloadResume.deliberateWriterCancel(
-                       explicitFlag: deliberatelyCancelledWriterKey == writer.cacheKey,
-                       classifiedCancelled: TransferFailureInfo.classify(error).kind == .cancelled)) {
+               continuationEligible(writer: writer, deliberateCancel: deliberateCancel) {
                 // Retention substrate parity with `.earlyClose`: if the
                 // continuation itself aborts (reopen failure), the retained
                 // prefix still lets the JS retry Range-continue rather than
@@ -884,11 +909,7 @@ final class TrackFileLoader {
                 // key) re-attach — they follow the writer's final verdict.
                 // Guarded on Range support (a 200-answering server would
                 // re-deliver the WHOLE body into the append — double bytes).
-                if DownloadResume.writerErrorContinuationEligible(
-                    offset: writer.accumulatedBytes,
-                    hasRetainedPart: FileManager.default.fileExists(atPath: writer.part.path),
-                    continuationAttempt: writer.continuationAttempt,
-                    rangeUnsupported: rangeUnsupportedKeys.contains(writer.cacheKey)) {
+                if continuationEligible(writer: writer) {
                     startWriterContinuation(writer: writer, chained: chains)
                 } else {
                     event(.info, "stream: continuation unavailable for \(writer.track.trackId) (range ignored, cap, or no scratch) — handing to the JS retry")
@@ -1328,81 +1349,6 @@ final class TrackFileLoader {
     /// leaves `empty` on a slow link is field-diagnosable).
     var maturationSummary: [String: String] {
         maturationStages.mapValues { "\($0)" }
-    }
-
-    // MARK: Native decode probe (2026-09-21 — evidence, not a table)
-
-    /// Downloads a tiny sample of `sampleURL` (a low-bitrate server-side
-    /// transcode — same shape as the web probe's request) and hands the REAL
-    /// bytes to AVAudioFile, the exact decoder the playback graph uses.
-    /// Two-phase, mirroring `formatProbe.ts`: transport failures and error
-    /// bodies answer `network` (never persisted, retried next boot); only
-    /// bytes the decoder actually opened and read produce `ok`/`unsupported`.
-    func probeDecode(sampleURL: URL, completion: @escaping (_ verdict: String, _ detail: String) -> Void) {
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 10
-        config.timeoutIntervalForResource = 15
-        let probeSession = URLSession(configuration: config)
-        let task = probeSession.dataTask(with: sampleURL) { body, response, error in
-            // Deliberately NOT main-thread-bound: the probe is independent of
-            // the audio graph; the completion hops wherever the caller needs.
-            guard error == nil, let http = response as? HTTPURLResponse else {
-                completion("network", error?.localizedDescription ?? "no response")
-                return
-            }
-            let status = http.statusCode
-            guard let body, !body.isEmpty else {
-                completion("network", "http \(status) empty body")
-                return
-            }
-            let verdict = DecodeProbe.classifyTransportWithMinimum(statusCode: status, bodyBytes: body)
-            switch verdict {
-            case .network:
-                completion("network", "http \(status) body \(body.count)B (error payload or too small)")
-                return
-            case .unsupported(let reason):
-                completion("unsupported", reason)
-                return
-            case .ok:
-                break // real media bytes — proceed to the decoder
-            }
-            let tmp = URL(fileURLWithPath: NSTemporaryDirectory())
-                .appendingPathComponent("mmprobe-").appendingPathExtension("bin")
-            do {
-                try body.write(to: tmp, options: .atomic)
-            } catch {
-                completion("network", "sample write failed: \(error.localizedDescription)")
-                return
-            }
-            defer { try? FileManager.default.removeItem(at: tmp) }
-            var decodeError: String?
-            var frames: Int64 = 0
-            do {
-                let audio = try AVAudioFile(forReading: tmp)
-                frames = audio.length
-                if frames > 0 {
-                    // Read a frame to force real demux work (length alone can
-                    // trust the header; a frame read exercises the decoder).
-                    guard let format = try? AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: audio.fileFormat.sampleRate, channels: max(1, audio.fileFormat.channelCount), interleaved: false) else {
-                        throw NSError(domain: "mmdrome.probe", code: 1)
-                    }
-                    let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)
-                    if let buf { try audio.read(into: buf) }
-                }
-            } catch {
-                decodeError = error.localizedDescription
-            }
-            let verdict2 = DecodeProbe.classifyDecode(decodeError: decodeError, decodedFrames: frames)
-            switch verdict2 {
-            case .ok(let f):
-                completion("ok", "\(f) frames decoded by AVAudioFile")
-            case .unsupported(let reason):
-                completion("unsupported", reason)
-            case .network:
-                completion("network", "unexpected transport verdict in decode phase")
-            }
-        }
-        task.resume()
     }
 
     /// Serve check under the preserve-unless-upgrade rule (TrackVariant): the
