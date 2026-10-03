@@ -743,6 +743,46 @@ final class TrackFileLoader {
                 onDownloadFinished?(writer.track.trackId, true)
                 return
             }
+            // IN-LOADER CONTINUATION FOR A HARD TRANSPORT CUT (2026-10-03,
+            // the 1.2.50 restart-from-0:00 field report). The `.earlyClose`
+            // branch below has owned its own recovery since 2026-09-24, but
+            // THIS branch — the `cannot parse response` / connection-lost
+            // shape — handed every cut to the JS retry. The field log is the
+            // proof: a -1017 cut at 3,349,014 of 3,431,872 B (97.6 %) retained
+            // the scratch, then a `stopPlayback` + reload ~1 s later
+            // re-engaged from 0:00 with the bar full. The eligibility is the
+            // SAME pure decision the clean early close uses
+            // (`writerErrorContinuationEligible`) so the two verdicts can
+            // never drift. Continuing re-requests the remainder with
+            // `Range: bytes=<delivered>-` into the SAME .part the staged
+            // schedule reads: audio never stops, the staged schedule stays
+            // live, and no JS retry round trip runs.
+            // `deliberateCancel`: the stall give-up cancels the task on
+            // purpose (`cancelActiveWriterRetainingScratch` nils the engine
+            // legs but leaves `streamWriter` set), and that cancellation
+            // surfaces here as -999. Continuing it would resurrect the stream
+            // the engine just gave up on — only a genuine transport cut may
+            // continue. The veto lives in the pure predicate so it is
+            // test-pinned, not re-decided at the call site.
+            if writer.accumulatedBytes >= TrackFileLoader.minimumAudioBytes,
+               DownloadResume.writerErrorContinuationEligible(
+                   offset: writer.accumulatedBytes,
+                   hasRetainedPart: FileManager.default.fileExists(atPath: writer.part.path),
+                   continuationAttempt: writer.continuationAttempt,
+                   rangeUnsupported: rangeUnsupportedKeys.contains(writer.cacheKey),
+                   deliberateCancel: TransferFailureInfo.classify(error).kind == .cancelled) {
+                // Retention substrate parity with `.earlyClose`: if the
+                // continuation itself aborts (reopen failure), the retained
+                // prefix still lets the JS retry Range-continue rather than
+                // re-download from zero.
+                pendingParts[writer.cacheKey] = DownloadResume.Pending(
+                    parts: [writer.accumulatedBytes],
+                    announcedTotal: writer.announcedBytes)
+                maturationByteFloor[writer.cacheKey] = writer.accumulatedBytes
+                let chains = streamWriterChains.removeValue(forKey: writer.cacheKey) ?? []
+                startWriterContinuation(writer: writer, chained: chains)
+                return
+            }
             clearWriterState()
             event(.danger, "stream: writer failed for \(writer.track.trackId): \(error.localizedDescription) — scratch retained (\(writer.accumulatedBytes)B) \(transferEvidence(error))")
             // ^ the trailing [] is the failure IDENTITY + churn-vs-keep-alive
@@ -895,17 +935,11 @@ final class TrackFileLoader {
                 // key) re-attach — they follow the writer's final verdict.
                 // Guarded on Range support (a 200-answering server would
                 // re-deliver the WHOLE body into the append — double bytes).
-                if DownloadResume.writerContinuationEligible(
+                if DownloadResume.writerErrorContinuationEligible(
                     offset: writer.accumulatedBytes,
-                    hasRetainedPart: FileManager.default.fileExists(atPath: writer.part.path)),
-                   !rangeUnsupportedKeys.contains(writer.cacheKey),
-                   // LOOP CAP (2026-09-24 design review): a server that
-                   // accepts the Range and closes at the same offset forever
-                   // would cycle one request per timeout indefinitely. Past
-                   // the cap the failure yields to the JS retry (its own
-                   // ladder terminates — bounded above, never an infinite
-                   // silent loop).
-                   writer.continuationAttempt < 3 {
+                    hasRetainedPart: FileManager.default.fileExists(atPath: writer.part.path),
+                    continuationAttempt: writer.continuationAttempt,
+                    rangeUnsupported: rangeUnsupportedKeys.contains(writer.cacheKey)) {
                     startWriterContinuation(writer: writer, chained: chains)
                 } else {
                     event(.info, "stream: continuation unavailable for \(writer.track.trackId) (range ignored, cap, or no scratch) — handing to the JS retry")

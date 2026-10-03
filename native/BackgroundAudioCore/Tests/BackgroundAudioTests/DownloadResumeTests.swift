@@ -128,6 +128,73 @@ final class DownloadResumeTests: XCTestCase {
         XCTAssertTrue(DownloadResume.writerContinuationEligible(offset: 3_673_790, hasRetainedPart: true))
     }
 
+    // MARK: - writerErrorContinuationEligible (2026-10-03, the hard-error
+    // continuation — the 1.2.50 restart-from-0:00 field defect). ONE decision
+    // shared by the `.earlyClose` and `error != nil` writerDidComplete
+    // branches so they cannot drift.
+
+    func testWriterErrorContinuationBaselineIsEligible() {
+        XCTAssertTrue(DownloadResume.writerErrorContinuationEligible(
+            offset: 3_349_014,
+            hasRetainedPart: true,
+            continuationAttempt: 0,
+            rangeUnsupported: false))
+    }
+
+    func testWriterErrorContinuationInheritsTheRetainedBytesGuard() {
+        // The offset/scratch guard is the SAME one the early close uses — a
+        // hard cut is not a license to splice from a phantom offset.
+        XCTAssertFalse(DownloadResume.writerErrorContinuationEligible(
+            offset: 0, hasRetainedPart: true, continuationAttempt: 0, rangeUnsupported: false),
+            "zero delivered bytes: nothing to continue from")
+        XCTAssertFalse(DownloadResume.writerErrorContinuationEligible(
+            offset: 3_349_014, hasRetainedPart: false, continuationAttempt: 0, rangeUnsupported: false),
+            "a missing scratch would splice wrong bytes")
+    }
+
+    func testWriterErrorContinuationRejectsRangeUnsupportedServer() {
+        // A 200 answer to a Range request means the append would receive the
+        // WHOLE body — double bytes. The one-shot memory must veto the
+        // continuation on the hard-error path too.
+        XCTAssertFalse(DownloadResume.writerErrorContinuationEligible(
+            offset: 3_349_014, hasRetainedPart: true, continuationAttempt: 0, rangeUnsupported: true))
+    }
+
+    func testWriterErrorContinuationRejectsDeliberateCancel() {
+        // A stall give-up cancels the task on purpose; the -999 it produces
+        // must NOT resurrect the stream the engine just gave up on. The veto
+        // is part of the shared decision (defaulting false for the clean-close
+        // caller, which carries no error at all).
+        XCTAssertFalse(DownloadResume.writerErrorContinuationEligible(
+            offset: 3_349_014, hasRetainedPart: true, continuationAttempt: 0,
+            rangeUnsupported: false, deliberateCancel: true))
+        // Omitting the parameter keeps the previous (eligible) behavior — the
+        // early-close caller must be unaffected by this hard-error-only veto.
+        XCTAssertTrue(DownloadResume.writerErrorContinuationEligible(
+            offset: 3_349_014, hasRetainedPart: true, continuationAttempt: 0,
+            rangeUnsupported: false))
+    }
+
+    func testWriterErrorContinuationLoopCap() {
+        // Under the cap continues; at the cap yields to the JS retry (a server
+        // closing at the same offset forever must not loop silently).
+        XCTAssertTrue(DownloadResume.writerErrorContinuationEligible(
+            offset: 3_349_014, hasRetainedPart: true,
+            continuationAttempt: DownloadResume.maxWriterContinuations - 1,
+            rangeUnsupported: false))
+        XCTAssertFalse(DownloadResume.writerErrorContinuationEligible(
+            offset: 3_349_014, hasRetainedPart: true,
+            continuationAttempt: DownloadResume.maxWriterContinuations,
+            rangeUnsupported: false))
+    }
+
+    func testMaxWriterContinuationsIsThree() {
+        // Pinned literal: the `.earlyClose` branch shipped with a hard-coded
+        // `< 3` and the regression alarm is a silent loop, so the number is
+        // asserted here as the single source of truth.
+        XCTAssertEqual(DownloadResume.maxWriterContinuations, 3)
+    }
+
     // MARK: - responseFingerprintLine (2026-09-25, the early-close network
     // evidence — confirms or rules out Wi-Fi data assist / proxies)
 
