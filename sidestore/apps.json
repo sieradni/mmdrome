@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.50",
-      "versionDate": "2026-10-02T21:31:28.875Z",
-      "versionDescription": "The stream self-test now folds the promote verdict (it is logged on the loader domain) and treats a 206 as Range proof, so its checks populate instead of reading unknown.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.50/mmdrome.ipa",
+      "version": "1.2.51",
+      "versionDate": "2026-10-03T00:43:50.168Z",
+      "versionDescription": "Defer the stream self-test probe while a transcode is live, recover partial transcodes on writer error, attribute transfer cuts (churn vs stable path) and branch the native retry ladder on that verdict, surface the observed retry-branch counters in the Debug HUD, and let its Clear-all button reset them for a fresh observation window.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.51/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.51",
+          "buildVersion": "55",
+          "date": "2026-10-03T00:43:50.168Z",
+          "localizedDescription": "Defer the stream self-test probe while a transcode is live, recover partial transcodes on writer error, attribute transfer cuts (churn vs stable path) and branch the native retry ladder on that verdict, surface the observed retry-branch counters in the Debug HUD, and let its Clear-all button reset them for a fresh observation window.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.51/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5097217
+        },
         {
           "version": "1.2.50",
           "buildVersion": "54",
@@ -503,6 +512,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.51",
+      "identifier": "ios-v1.2.51",
+      "appID": "com.mmdrome.player",
+      "caption": "Defer the stream self-test probe while a transcode is live, recover partial transcodes on writer error, attribute transfer cuts (churn vs st",
+      "date": "2026-10-03T00:43:50.168Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.50",
       "identifier": "ios-v1.2.50",
       "appID": "com.mmdrome.player",
@@ -535,15 +553,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Queue sort fixes: flipping the sort direction now visibly re-ranks the auto queue, an explicit sort change shows the new order from the top,",
       "date": "2026-09-29T19:42:21.859Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.46",
-      "identifier": "ios-v1.2.46",
-      "appID": "com.mmdrome.player",
-      "caption": "The auto queue keeps its own persisted sort (hidden while shuffle is on), and the FilterSortBar gains an apply-to-auto-queue button - visibl",
-      "date": "2026-09-29T17:30:55.209Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
