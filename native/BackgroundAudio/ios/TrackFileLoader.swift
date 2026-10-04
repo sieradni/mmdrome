@@ -1853,9 +1853,12 @@ final class TrackFileLoader {
                     // One line per failed attempt carrying the response
                     // fingerprint (when a response arrived) beside the error
                     // identity + cut attribution — the download path's parity
-                    // with the stream writer's `writer failed` line.
+                    // with the stream writer's `writer failed` line. `err` is
+                    // `moveError ?? error`, both optional, hence the unwrap.
                     let fpLine = responseFingerprint.map { " [" + DownloadResume.responseFingerprintLine($0) + "]" } ?? ""
-                    self.event(.info, "download attempt failed for \(track.trackId) (\(requested)): \(err.localizedDescription)\(fpLine) \(self.transferEvidence(err))")
+                    if let err {
+                        self.event(.info, "download attempt failed for \(track.trackId) (\(requested)): \(err.localizedDescription)\(fpLine) \(self.transferEvidence(err))")
+                    }
                     deliver(nil, err)
                     pendings.forEach { $0(nil, err) }
                     self.onDownloadFinished?(track.trackId, false)
