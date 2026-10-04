@@ -27,7 +27,8 @@
           "date": "2026-10-04T21:44:55.507Z",
           "localizedDescription": "Recovery and streaming reliability: the audio engine rebuilds after an invalidated audio session instead of dying until relaunch (with a tap-to-restart banner); prefetch retries use the classified ladder and carry response fingerprints; and transcode streams start as soon as the file is readable.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.53/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5119918
         },
         {
           "version": "1.2.52",
