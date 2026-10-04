@@ -2682,6 +2682,14 @@ public final class NativeAudioEngine: NSObject {
     /// The autoPlay flag for the pending first staged schedule (captured at
     /// `startStagedLoad` — the tap that asked for the stream).
     private var stagedAutoPlay = false
+    /// Workstream C (2026-10-04): the latest delivery while the FIRST staged
+    /// schedule is still pending, cached so the open can be re-attempted on
+    /// byte ARRIVALS (already main-hopped) instead of only on the next
+    /// rung-gated delivery — see `StreamSchedule.firstScheduleRetryDue`.
+    private var lastFirstScheduleProgress: TrackFileLoader.StreamProgress? = nil
+    /// Monotonic stamp of the last first-schedule OPEN attempt (the retry
+    /// throttle). Cleared with the rest of the staged state.
+    private var lastFirstScheduleAttemptAt: Double? = nil
     /// The file the staged schedule reads from: the growing `.part` while
     /// the writer streams, the promoted destination once COMPLETE. `nil` =
     /// normal cache-served playback (the overwhelmingly common path).
@@ -2758,10 +2766,42 @@ public final class NativeAudioEngine: NSObject {
     /// only keep the give-up timer honest and unblock resume promptly at
     /// rung cadence (~2-4 s on a trickle link, not ~30-60 s).
     private func recordStreamArrival(deliveredBytes: Int64) {
+        // Workstream C (2026-10-04): while the FIRST schedule is still
+        // pending, arrivals re-attempt the open at a bounded cadence. The
+        // rung-gated delivery is the only other trigger, so a partial whose
+        // header / first audio page landed just after a rung waited a whole
+        // rung (a lead of bytes) to be opened — the field's 5-6 "partial not
+        // openable yet" rounds.
+        if stagedSchedule == nil {
+            retryFirstStagedScheduleIfDue(deliveredBytes: deliveredBytes)
+            return
+        }
         guard var staged = stagedSchedule else { return }
         staged.deliveredBytes = deliveredBytes
         staged.lastProgressAt = Date()
         stagedSchedule = staged
+    }
+
+    /// MAIN, on each byte arrival while the first schedule is still pending: a
+    /// throttled re-attempt of the first open. The pure `StreamSchedule`
+    /// cadence owns the timing; `startFirstStagedSchedule` owns the identity
+    /// guards (its `trackId == progress.trackId` check drops a stale cache
+    /// after a track change). The retry attempt deliberately does NOT log a
+    /// deferral — otherwise the self-test's `deferredFirstScheduleCount` would
+    /// count cadence retries instead of the meaningful per-rung deferrals.
+    private func retryFirstStagedScheduleIfDue(deliveredBytes: Int64) {
+        guard let cached = lastFirstScheduleProgress else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard StreamSchedule.firstScheduleRetryDue(lastAttemptAt: lastFirstScheduleAttemptAt, now: now) else { return }
+        lastFirstScheduleAttemptAt = now
+        let refreshed = TrackFileLoader.StreamProgress(
+            trackId: cached.trackId,
+            url: cached.url,
+            stage: cached.stage,
+            deliveredBytes: max(deliveredBytes, cached.deliveredBytes),
+            announcedBytes: cached.announcedBytes)
+        lastFirstScheduleProgress = refreshed
+        startFirstStagedSchedule(progress: refreshed, logDeferral: false)
     }
 
     /// MAIN, on each writer delivery: the staged schedule's growth engine.
@@ -2769,6 +2809,10 @@ public final class NativeAudioEngine: NSObject {
     /// First delivery → the first honest schedule.
     private func extendStagedSchedule(progress: TrackFileLoader.StreamProgress) {
         guard let current = stagedSchedule, stagedSourceURL != nil else {
+            // Cache the delivery so byte arrivals can re-attempt the open
+            // between rungs (workstream C).
+            lastFirstScheduleProgress = progress
+            lastFirstScheduleAttemptAt = ProcessInfo.processInfo.systemUptime
             startFirstStagedSchedule(progress: progress)
             return
         }
@@ -2829,12 +2873,14 @@ public final class NativeAudioEngine: NSObject {
     /// the first honest schedule clamped to the delivered-end estimate. The
     /// header must have landed (the file opens); otherwise the delivery is
     /// deferred — the writer keeps rung-delivering and the next one retries.
-    private func startFirstStagedSchedule(progress: TrackFileLoader.StreamProgress) {
+    private func startFirstStagedSchedule(progress: TrackFileLoader.StreamProgress, logDeferral: Bool = true) {
         guard tracks.indices.contains(activeIndex) else { return }
         let track = tracks[activeIndex]
         guard track.trackId == progress.trackId else { return }
         guard let file = try? AVAudioFile(forReading: progress.url), file.length > 0 else {
-            eventAdd(.info, "stream", "partial not openable yet id=\(track.trackId) delivered=\(progress.deliveredBytes)B — deferring first schedule")
+            if logDeferral {
+                eventAdd(.info, "stream", "partial not openable yet id=\(track.trackId) delivered=\(progress.deliveredBytes)B — deferring first schedule")
+            }
             return
         }
         let sr = file.processingFormat.sampleRate
@@ -2845,7 +2891,9 @@ public final class NativeAudioEngine: NSObject {
             deliveredBytes: progress.deliveredBytes,
             announcedBytes: progress.announcedBytes)
         guard endable > 0 else {
-            eventAdd(.info, "stream", "no schedulable evidence yet id=\(track.trackId) — deferring first schedule")
+            if logDeferral {
+                eventAdd(.info, "stream", "no schedulable evidence yet id=\(track.trackId) — deferring first schedule")
+            }
             return
         }
         stagedSourceURL = progress.url
@@ -3028,6 +3076,10 @@ public final class NativeAudioEngine: NSObject {
         stagedSchedule = nil
         stagedSourceURL = nil
         pendingChainedSegments.removeAll()
+        // Workstream C: the first-schedule retry cache dies with the state it
+        // belongs to (a new load must never re-open the previous row's .part).
+        lastFirstScheduleProgress = nil
+        lastFirstScheduleAttemptAt = nil
     }
 
     /// 1 s monitor (rides the preload sampler): the stalled schedule's GIVE-UP
