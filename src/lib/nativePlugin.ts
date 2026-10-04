@@ -104,6 +104,10 @@ interface BackgroundAudioPlugin {
    *  Clear all button calls this so a field session can count from zero
    *  without a relaunch. Registered in pluginMethods (the §3.4 gate). */
   resetRetryBranch(): Promise<void>
+  /** Explicit audio-engine restart (native only): clears the surfaced
+   *  "engine unavailable" state and forces a full AVAudioEngine graph
+   *  rebuild. Registered in pluginMethods (the §3.4 gate). */
+  restartAudioEngine(): Promise<void>
   /** Live spectrum bands for the EQ overlay: `bands` holds SPECTRUM_BAND_COUNT
    *  normalized 0..1 levels on the shared 20 Hz–20 kHz log ladder (zeros when
    *  paused — the native tap freezes its snapshot at pause); `playing`
@@ -135,6 +139,17 @@ interface BackgroundAudioPlugin {
     eventName: 'preloadProgress',
     listenerFunc: (data: { trackId: string; state: 'progress' | 'done' | 'gone'; progress?: number }) => void
   ): Promise<PluginListenerHandle>
+  /** The recovery ladder gave up (engine unavailable) or the engine became
+   *  healthy again. Separate from the per-track `error` event so the manager
+   *  can stop advancing the queue in the former case (2026-10-04). */
+  addListener(
+    eventName: 'engineUnavailable',
+    listenerFunc: (data: { unavailable: boolean }) => void
+  ): Promise<PluginListenerHandle>
+  addListener(
+    eventName: 'engineRecovered',
+    listenerFunc: (data: { unavailable: boolean }) => void
+  ): Promise<PluginListenerHandle>
   addListener(eventName: string, listenerFunc: (data: unknown) => void): Promise<PluginListenerHandle>
 }
 
@@ -161,6 +176,12 @@ export interface NativeEngineCallbacks {
   onPlaybackStateChanged: (playing: boolean) => void
   onQueueEnded: () => void
   onError: (message: string) => void
+  /** The native audio engine surfaced as UNAVAILABLE — the recovery ladder
+   *  ran out of retries/rebuilds. The manager shows a restart affordance and
+   *  stops advancing the queue (2026-10-04). */
+  onEngineUnavailable?: () => void
+  /** The engine became healthy again; the manager clears the banner. */
+  onEngineRecovered?: () => void
   /** Native preload download progress (queue-row tint parity with web). */
   onPreloadProgress?: (event: { trackId: string; state: 'progress' | 'done' | 'gone'; progress?: number }) => void
 }
@@ -207,6 +228,14 @@ export class NativeAudioEngineApp {
   async resetRetryBranch(): Promise<void> {
     if (!this.isNative()) return
     await BackgroundAudio.resetRetryBranch().catch(() => {})
+  }
+
+  /** Explicit audio-engine restart (2026-10-04). No-op off-native: the web
+   *  engine has no session/graph that can be invalidated this way. The native
+   *  call clears the surfaced state and rebuilds the AVAudioEngine. */
+  async restartAudioEngine(): Promise<void> {
+    if (!this.isNative()) return
+    await BackgroundAudio.restartAudioEngine().catch(() => {})
   }
 
   /** The OS major version (HUD dump context — the false-opus saga proved
@@ -272,6 +301,18 @@ export class NativeAudioEngineApp {
       await plugin.addListener('preloadProgress', (data) => {
         this.preloadForward?.(data)
         this.callbacks?.onPreloadProgress?.(data)
+      }),
+    )
+    this.listeners.push(
+      await plugin.addListener('engineUnavailable', () => {
+        trailBridge('event', 'engineUnavailable')
+        this.callbacks?.onEngineUnavailable?.()
+      }),
+    )
+    this.listeners.push(
+      await plugin.addListener('engineRecovered', () => {
+        trailBridge('event', 'engineRecovered')
+        this.callbacks?.onEngineRecovered?.()
       }),
     )
 

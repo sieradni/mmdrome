@@ -42,6 +42,7 @@ import {
   currentTime,
   loopMode,
   metadataScanState,
+  engineUnavailable,
   setCurrentTrack,
   setPlaybackState,
   setActiveQueueIndex,
@@ -319,6 +320,16 @@ export class PlaybackManager {
     transport.onRetry = (trackId) => { void this._onNativeRetry(trackId) }
     transport.onPlaybackState = (state) => setPlaybackState(state)
     transport.onTick = (position) => currentTime.set(position)
+    // Engine recovery surfacing (2026-10-04): the native ladder retried and
+    // rebuilt and still could not start. Stop the per-track ladder (done in
+    // the transport) and show a restart affordance instead of skipping rows.
+    transport.onEngineUnavailable = () => {
+      dbgDanger('playback', 'native audio engine unavailable — halting auto-advance')
+      engineUnavailable.set(true)
+    }
+    transport.onEngineRecovered = () => {
+      engineUnavailable.set(false)
+    }
     // Native preload progress → the SAME store the web preloader writes
     // (parity, via the pure mapper): "progress" maps to start/progress
     // (indeterminate when the response carries no length), "done" → cached,
@@ -846,6 +857,13 @@ export class PlaybackManager {
    */
   private async _onNativeTrackEnded(fromError = false): Promise<void> {
     if (this._handlingNativeEnd) return
+    // A surfaced engine cannot start any track, so advancing would just walk
+    // the queue into the same failure (the 2026-10-04 "following songs didn't
+    // work either" cascade). The restart affordance owns the recovery.
+    if (get(engineUnavailable)) {
+      dbgDanger('playback', 'native ended while engine unavailable — not advancing')
+      return
+    }
     // Bridge trail: this handler and `_onNativeTrackChanged` are the two JS
     // reactions to engine events — recording the DECISION (not just the raw
     // event) tells the HUD dump whether the A4 chain itself advanced.

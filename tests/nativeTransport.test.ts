@@ -78,6 +78,8 @@ class FakeClient implements NativeEngineClient {
     onPlaybackStateChanged(playing: boolean): void
     onQueueEnded(): void
     onError(message: string): void
+    onEngineUnavailable?(): void
+    onEngineRecovered?(): void
   } | null = null
   polling: Array<{ enabled: boolean; handler: ((state: NativePollState) => void) | null }> = []
   destroyed = false
@@ -91,6 +93,8 @@ class FakeClient implements NativeEngineClient {
     onPlaybackStateChanged(playing: boolean): void
     onQueueEnded(): void
     onError(message: string): void
+    onEngineUnavailable?(): void
+    onEngineRecovered?(): void
   }): Promise<void> {
     this.callbacks = callbacks
   }
@@ -569,6 +573,44 @@ test('an engage of a DIFFERENT track resets the retry policy (fresh backoff)', a
   const armed = timers.entries.filter((e) => !e.cancelled)
   assert.equal(armed.length, 1)
   assert.equal(armed[0].delayMs, 1000)
+})
+
+// ── engine recovery surfacing (2026-10-04) ─────────────────────────────────
+
+test('engineUnavailable cancels the pending retry ladder and forwards the signal', async () => {
+  const { transport, client, timers } = setupTimed()
+  const unavailable: number[] = []
+  const retried: string[] = []
+  transport.onEngineUnavailable = () => unavailable.push(1)
+  transport.onRetry = (id) => retried.push(id)
+  await transport.init()
+  await transport.engage(tracks, 0, 'none')
+  client.callbacks!.onError('boom')
+  assert.equal(timers.entries.filter((e) => !e.cancelled).length, 1)
+
+  client.callbacks!.onEngineUnavailable!()
+  assert.deepEqual(unavailable, [1])
+  // The armed retry must be voided: the engine is down, so reloading the row
+  // (or advancing) cannot help — that was the 2026-10-04 skip cascade.
+  assert.equal(timers.entries.filter((e) => !e.cancelled).length, 0)
+  timers.fireAll()
+  assert.deepEqual(retried, [])
+})
+
+test('engineRecovered forwards the signal', async () => {
+  const { transport, client } = setup()
+  const recovered: number[] = []
+  transport.onEngineRecovered = () => recovered.push(1)
+  await transport.init()
+  client.callbacks!.onEngineRecovered!()
+  assert.deepEqual(recovered, [1])
+})
+
+test('init without the recovery callbacks is safe (no throw)', async () => {
+  const { transport, client } = setup()
+  await transport.init()
+  client.callbacks!.onEngineUnavailable!()
+  client.callbacks!.onEngineRecovered!()
 })
 
 // ── seek memory (1.7) ──────────────────────────────────────────────────────

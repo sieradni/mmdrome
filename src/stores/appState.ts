@@ -141,6 +141,13 @@ export interface SettingsMap {
 
 export const currentTrack = writable<Track | null>(null)
 export const playbackState = writable<PlaybackState>('stopped')
+/** Native audio engine surfaced as UNAVAILABLE (2026-10-04): the recovery
+ *  ladder retried, rebuilt the graph, and still could not start the engine
+ *  (an invalidated AVAudioSession that never recovered). The UI shows a
+ *  persistent restart affordance; a successful recovery or an explicit
+ *  restart clears it. Always false on web (the PWA engine cannot enter this
+ *  state). */
+export const engineUnavailable = writable<boolean>(false)
 export const queue = writable<QueueState>({ userQueue: [], autoQueue: [], recentTrackIds: [], activeIndex: -1 })
 export const settings = writable<SettingsMap>({})
 export const metadataCache = writable<Map<string, LocalMetadataStore>>(new Map())

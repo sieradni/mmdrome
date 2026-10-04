@@ -136,6 +136,17 @@ class EngineFacade {
     BackgroundAudio.setAudioMixing({ mode }).catch(() => {})
   }
 
+  /**
+   * Explicit native audio-engine restart (2026-10-04). Called from the
+   * engine-unavailable banner after the recovery ladder surfaced. Clears the
+   * surfaced state and rebuilds the AVAudioEngine graph. No-op on web — the
+   * PWA engine cannot enter that state.
+   */
+  restartAudioEngine(): void {
+    if (!this.isNative) return
+    BackgroundAudio.restartAudioEngine().catch(() => {})
+  }
+
   setEqBypass(bypassed: boolean): void {
     if (this.isNative) {
       this._bypassed = bypassed
