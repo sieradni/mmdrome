@@ -2248,7 +2248,10 @@ public final class NativeAudioEngine: NSObject {
     /// interpreter. Generation-guarded throughout: a queue/track change kills
     /// pending backoffs with the rest of the chain.
     private static let prefetchMaxAttempts = 3
-    private static let prefetchRetryBackoffNanos: UInt64 = 1_500_000_000
+    /// The ladder's STANDARD retry spacing. `TransferCutRetryPolicy` shortens
+    /// it for a `churnUnlikely` (fresh-connection) retry — there is no path to
+    /// wait for, the suspect keep-alive socket is simply replaced.
+    private static let prefetchRetryBackoffSeconds: TimeInterval = 1.5
 
     private func prefetchUpcoming(
         from index: Int,
@@ -2279,21 +2282,35 @@ public final class NativeAudioEngine: NSObject {
                 guard let self, gen == self.prefetchGeneration else { return }
                 // A failed prefetch must not sit "fetching" forever
                 // (frozen-tint report): gone clears the row's tint now.
+                let cut: CutAttribution?
                 if let error {
                     self.emitPreload(track.trackId, "gone", nil)
+                    // RETRY-BRANCH ACCOUNTING (2026-10-04, workstream B): the
+                    // prefetch path used to log and park WITHOUT the ladder's
+                    // classification, so `TransferCutRetryPolicy`'s
+                    // `freshConnectionSoon` branch was structurally
+                    // unreachable here — ~30 field failures parked on the
+                    // first -1017 and `retryBranch` stayed all zeros.
+                    // Classify once and COUNT the decision, exactly as
+                    // `scheduleActiveLoadRetry` does; the cut is parked with
+                    // the row so the drain retries it through the same branch.
+                    cut = self.transferFailure(error).cut
+                    self.retryBranchStats.record(strategy: TransferCutRetryPolicy.strategy(for: cut))
                     if Self.prefetchMaxAttempts > 1 {
                         self.eventAdd(.info, "preload", "prefetch FAILED row \(row) (\(track.trackId)) attempt 1/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — parked \(self.transferEvidence(error))")
                     } else {
                         self.eventAdd(.info, "preload", "prefetch FAILED row \(row) (\(track.trackId)): \(error.localizedDescription) — moving on \(self.transferEvidence(error))")
                     }
                 } else {
+                    cut = nil
                     self.crossfadeMonitorTick()
                 }
                 let next = PrefetchChain.applyDownload(
                     state: snapshot,
                     index: row,
                     success: error == nil,
-                    maxAttempts: Self.prefetchMaxAttempts)
+                    maxAttempts: Self.prefetchMaxAttempts,
+                    cut: cut)
                 self.prefetchUpcoming(from: row, total: totalCount, state: next, generation: gen)
             }
 
@@ -2303,8 +2320,21 @@ public final class NativeAudioEngine: NSObject {
             // (the walk's last position) is re-passed unchanged: the walk
             // cannot re-open mid-drain (seen is monotonic; the candidate is
             // nil or already seen).
+            //
+            // RETRY BRANCH (2026-10-04, workstream B): the row's parked cut
+            // attribution selects the retry's SHAPE through the SAME pure
+            // policy the active-load path uses. A `churnUnlikely` cut retries
+            // promptly on a pool that cannot inherit the suspect keep-alive
+            // socket; every other cut keeps the ladder's standard spacing and
+            // its resume substrate. Decided-vs-enacted: the DECISION was
+            // counted at the failure; the fresh pool is counted by the LOADER
+            // only when a rotation actually happens.
+            let parkedCut = snapshot.parked.first(where: { $0.index == row })?.cut
+            let retryDelaySeconds = TransferCutRetryPolicy.delaySeconds(
+                for: parkedCut, standardDelaySeconds: Self.prefetchRetryBackoffSeconds)
+            let wantsFreshConnection = TransferCutRetryPolicy.requiresFreshConnection(for: parkedCut)
             Task { @MainActor [weak self] in
-                try? await Task.sleep(nanoseconds: Self.prefetchRetryBackoffNanos)
+                try? await Task.sleep(nanoseconds: UInt64(retryDelaySeconds * 1_000_000_000))
                 guard let self, gen == self.prefetchGeneration else { return }
                 guard self.tracks.indices.contains(row) else {
                     // The queue shrank under the parked row: drop it and continue.
@@ -2315,16 +2345,24 @@ public final class NativeAudioEngine: NSObject {
                     return
                 }
                 let track = self.tracks[row]
+                if wantsFreshConnection {
+                    self.loader.requestFreshConnectionForNextAttempt()
+                    self.eventAdd(.info, "preload", "prefetch retry row \(row) (\(track.trackId)) attempt \(attempt)/\(Self.prefetchMaxAttempts) on a fresh connection (\(TransferCutRetryPolicy.strategy(for: parkedCut).rawValue))")
+                }
                 self.loader.prefetch(track) { [weak self] _, error in
                     guard let self, gen == self.prefetchGeneration else { return }
+                    let cut: CutAttribution?
                     if let error {
                         self.emitPreload(track.trackId, "gone", nil)
+                        cut = self.transferFailure(error).cut
+                        self.retryBranchStats.record(strategy: TransferCutRetryPolicy.strategy(for: cut))
                         if attempt >= Self.prefetchMaxAttempts {
                             self.eventAdd(.danger, "preload", "prefetch FAILED row \(row) (\(track.trackId)) after \(attempt) attempts: \(error.localizedDescription) — giving up \(self.transferEvidence(error))")
                         } else {
                             self.eventAdd(.info, "preload", "prefetch RETRY FAILED row \(row) (\(track.trackId)) attempt \(attempt)/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — reparked \(self.transferEvidence(error))")
                         }
                     } else {
+                        cut = nil
                         self.crossfadeMonitorTick()
                     }
                     let next = PrefetchChain.applyRetry(
@@ -2332,7 +2370,8 @@ public final class NativeAudioEngine: NSObject {
                         index: row,
                         attempt: attempt,
                         success: error == nil,
-                        maxAttempts: Self.prefetchMaxAttempts)
+                        maxAttempts: Self.prefetchMaxAttempts,
+                        cut: cut)
                     self.prefetchUpcoming(from: index, total: totalCount, state: next, generation: gen)
                 }
             }
