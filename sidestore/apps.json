@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.52",
-      "versionDate": "2026-10-03T09:28:51.407Z",
-      "versionDescription": "Native stream recovery: an active transcode now continues in place through a hard transport cut instead of restarting from 0:00, and a Range answer that is not an aligned 206 (including a mismatched or missing Content-Range) is rejected to a fresh download rather than spliced. Active-load retry ownership is now exclusive and environmental — foreground failures go to the JS ladder, background to the native retry, so a foreground yield immediately followed by backgrounding waits for foreground to resume. The stream self-test now gathers server facts from unloaded tracks, so it no longer needs playback stopped, and reports continuation recovery and Range-answer alignment. Maturation staging deliberately stays with the loader because it is fed by the loader's byte ledgers. NativeAudioEngine remains ~3,548 lines as a known, not-yet-addressed size debt. The in-loader hard-error continuation and its 206 alignment check are compile- and unit-verified only; device verification is intended on this SideStore build.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.52/mmdrome.ipa",
+      "version": "1.2.53",
+      "versionDate": "2026-10-04T21:44:55.507Z",
+      "versionDescription": "Recovery and streaming reliability: the audio engine rebuilds after an invalidated audio session instead of dying until relaunch (with a tap-to-restart banner); prefetch retries use the classified ladder and carry response fingerprints; and transcode streams start as soon as the file is readable.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.53/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.53",
+          "buildVersion": "57",
+          "date": "2026-10-04T21:44:55.507Z",
+          "localizedDescription": "Recovery and streaming reliability: the audio engine rebuilds after an invalidated audio session instead of dying until relaunch (with a tap-to-restart banner); prefetch retries use the classified ladder and carry response fingerprints; and transcode streams start as soon as the file is readable.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.53/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.52",
           "buildVersion": "56",
@@ -521,6 +529,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.53",
+      "identifier": "ios-v1.2.53",
+      "appID": "com.mmdrome.player",
+      "caption": "Recovery and streaming reliability: the audio engine rebuilds after an invalidated audio session instead of dying until relaunch (with a tap",
+      "date": "2026-10-04T21:44:55.507Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.52",
       "identifier": "ios-v1.2.52",
       "appID": "com.mmdrome.player",
@@ -553,15 +570,6 @@
       "appID": "com.mmdrome.player",
       "caption": "The stream self-test now captures a running stream's events (its look-back was reading the wrong clock), so its verdicts populate instead of",
       "date": "2026-10-02T21:12:42.252Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.48",
-      "identifier": "ios-v1.2.48",
-      "appID": "com.mmdrome.player",
-      "caption": "Transcode playback now streams while downloading instead of waiting for the full file, with a one-button in-app stream self-test; native pre",
-      "date": "2026-10-02T20:39:08.114Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
