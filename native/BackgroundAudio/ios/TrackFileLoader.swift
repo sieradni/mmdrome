@@ -1386,6 +1386,15 @@ final class TrackFileLoader {
     }
 
     func prefetch(_ track: NativeTrack, completion: @escaping (URL?, Error?) -> Void) {
+        // CONSUME THE FRESH-CONNECTION DEMAND UP FRONT (2026-10-04, workstream
+        // B). The engine sets it before a retry; the returns BELOW (a cache
+        // hit, an in-flight chain, a live writer) never issue an attempt. The
+        // old code consumed it only at the attempt, so those returns LEAKED
+        // the demand into the next unrelated attempt — rotating a pool and
+        // incrementing `freshConnectionAttempts` for a row that never asked,
+        // polluting the decided-vs-enacted counters this workstream adds.
+        // Spending it on the call it was set for is the correct scope.
+        let freshTransferRequested = consumeFreshConnection()
         // Every completion is delivered on the main thread, including cache hits.
         // Capacitor invokes plugin methods on its bridge queue, while the audio
         // graph, loader state, and crossfade timers are main-thread-owned.
@@ -1470,12 +1479,10 @@ final class TrackFileLoader {
         // wasted, and every gate below still runs on the FINAL bytes —
         // resume changes how a download RECOVERS, never what counts as
         // complete.
-        // FRESH CONNECTION (2026-10-02f): consume the ladder's one-shot demand
-        // HERE, where an attempt is actually about to be issued. The returns
-        // ABOVE (cache serve, in-flight chain, live writer) are not attempts —
-        // spending the demand on one would silently waste it and the retry's
-        // real attempt would land on the same pooled socket it must avoid.
-        let freshTransferRequested = consumeFreshConnection()
+        // FRESH CONNECTION (2026-10-02f, scoped 2026-10-04):
+        // `freshTransferRequested` was consumed at the top of this call — the
+        // returns above are not attempts and must not leave the demand pending
+        // for an unrelated one.
         let continuation = DownloadResume.planNextAttempt(
             pending: pendingParts[cacheKey],
             opaqueResumeData: resumeDataByCacheKey[cacheKey])
@@ -1759,6 +1766,23 @@ final class TrackFileLoader {
                 }
                 }
             }
+            // NETWORK EVIDENCE (2026-10-04, workstream B): the download path now
+            // captures the SAME response fingerprint the stream writer records,
+            // so a prefetch/download failure (the field's -1017 storm) carries
+            // the response's network facts — status plus Connection /
+            // Content-Length / Content-Range / Accept-Ranges / Content-Type.
+            // That is the keep-alive / data-assist verdict a byte count cannot
+            // prove. Nil when the transfer died before a response (the -1017
+            // shape usually has none), so the line prints no bracket then.
+            let responseFingerprint: DownloadResume.ResponseFingerprint? = (response as? HTTPURLResponse).map {
+                DownloadResume.ResponseFingerprint(
+                    statusCode: $0.statusCode,
+                    connectionHeader: $0.value(forHTTPHeaderField: "Connection"),
+                    contentLengthHeader: $0.value(forHTTPHeaderField: "Content-Length"),
+                    contentRangeHeader: $0.value(forHTTPHeaderField: "Content-Range"),
+                    acceptRangesHeader: $0.value(forHTTPHeaderField: "Accept-Ranges"),
+                    contentTypeHeader: $0.value(forHTTPHeaderField: "Content-Type"))
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else {
                     if let moved = movedURL { try? FileManager.default.removeItem(at: moved) }
@@ -1825,6 +1849,15 @@ final class TrackFileLoader {
                         if retain.deliveredBytes > 0 {
                             self.maturationByteFloor[cacheKey] = retain.deliveredBytes
                         }
+                    }
+                    // One line per failed attempt carrying the response
+                    // fingerprint (when a response arrived) beside the error
+                    // identity + cut attribution — the download path's parity
+                    // with the stream writer's `writer failed` line. `err` is
+                    // `moveError ?? error`, both optional, hence the unwrap.
+                    let fpLine = responseFingerprint.map { " [" + DownloadResume.responseFingerprintLine($0) + "]" } ?? ""
+                    if let err {
+                        self.event(.info, "download attempt failed for \(track.trackId) (\(requested)): \(err.localizedDescription)\(fpLine) \(self.transferEvidence(err))")
                     }
                     deliver(nil, err)
                     pendings.forEach { $0(nil, err) }

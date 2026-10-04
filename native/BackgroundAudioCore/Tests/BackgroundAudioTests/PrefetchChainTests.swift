@@ -86,6 +86,55 @@ final class PrefetchChainTests: XCTestCase {
         XCTAssertTrue(next.parked.isEmpty)
     }
 
+    // MARK: - Cut attribution carried to the drain (workstream B, 2026-10-04)
+
+    /// The failure's attribution must ride the parked row so the DRAIN retry
+    /// branches on the cut that PARKED it, not a re-derivation seconds later.
+    func testApplyDownloadParksTheRowsCutAttribution() {
+        let next = PrefetchChain.applyDownload(
+            state: PrefetchChain.State(seen: [], parked: []),
+            index: 3, success: false, maxAttempts: 3, cut: .churnUnlikely)
+        XCTAssertEqual(next.parked, [.init(index: 3, attempts: 1, cut: .churnUnlikely)])
+    }
+
+    /// No attribution (a non-transport failure) parks with nil — the retry
+    /// then keeps the ladder's standard shape.
+    func testApplyDownloadParksNilCutWhenThereIsNoAttribution() {
+        let next = PrefetchChain.applyDownload(
+            state: PrefetchChain.State(seen: [], parked: []), index: 0, success: false, maxAttempts: 3)
+        XCTAssertNil(next.parked.first?.cut)
+    }
+
+    /// A failed RETRY replaces the stored cut with the new failure's evidence.
+    func testApplyRetryRefreshesTheCutOnAFailedRetry() {
+        let next = PrefetchChain.applyRetry(
+            state: PrefetchChain.State(seen: [0], parked: [.init(index: 0, attempts: 1, cut: .churnUnlikely)]),
+            index: 0, attempt: 2, success: false, maxAttempts: 3, cut: .churnSuspected)
+        XCTAssertEqual(next.parked, [.init(index: 0, attempts: 2, cut: .churnSuspected)])
+    }
+
+    /// A failed retry with no fresh attribution keeps the previous one rather
+    /// than clearing it (the row's fault class usually persists).
+    func testApplyRetryKeepsThePreviousCutWhenNoneIsGiven() {
+        let next = PrefetchChain.applyRetry(
+            state: PrefetchChain.State(seen: [0], parked: [.init(index: 0, attempts: 1, cut: .churnUnlikely)]),
+            index: 0, attempt: 2, success: false, maxAttempts: 3)
+        XCTAssertEqual(next.parked.first?.cut, .churnUnlikely)
+    }
+
+    /// Rotation to the back preserves the attribution with the row.
+    func testApplyRetryRotationPreservesTheCut() {
+        let next = PrefetchChain.applyRetry(
+            state: PrefetchChain.State(
+                seen: Set([0, 1]),
+                parked: [.init(index: 0, attempts: 1, cut: .churnSuspected), .init(index: 1, attempts: 1)]),
+            index: 0, attempt: 2, success: false, maxAttempts: 4)
+        XCTAssertEqual(next.parked, [
+            .init(index: 1, attempts: 1),
+            .init(index: 0, attempts: 2, cut: .churnSuspected),
+        ])
+    }
+
     func testApplyRetrySuccessDropsTheRow() {
         let next = PrefetchChain.applyRetry(
             state: PrefetchChain.State(seen: Set([0]), parked: [.init(index: 0, attempts: 1)]),

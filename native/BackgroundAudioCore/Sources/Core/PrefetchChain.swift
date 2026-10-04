@@ -53,9 +53,18 @@ public enum PrefetchChain {
         public var index: Int
         /// Failed attempts spent on this row so far (1 after the first walk try).
         public var attempts: Int
-        public init(index: Int, attempts: Int) {
+        /// The failure's cut attribution, carried from the failure to the
+        /// DRAIN retry (2026-10-04, workstream B). The retry's SHAPE (delay,
+        /// fresh pool) derives from `TransferCutRetryPolicy` — and that
+        /// decision must read the attribution of the failure that PARKED the
+        /// row, not a re-derivation at drain time (a later `cutAt` could give
+        /// a different bucket, and the drain may run seconds later). A pure
+        /// value so the whole thing stays host-testable.
+        public var cut: CutAttribution?
+        public init(index: Int, attempts: Int, cut: CutAttribution? = nil) {
             self.index = index
             self.attempts = attempts
+            self.cut = cut
         }
     }
 
@@ -106,17 +115,20 @@ public enum PrefetchChain {
     /// Apply a PRIMARY-WALK download outcome. The row is always marked seen
     /// (so the walk never revisits it); a failure with retries available is
     /// PARKED for the drain. `maxAttempts <= 1` means retries are disabled —
-    /// the failure simply walks on.
+    /// the failure simply walks on. `cut` is the failure's attribution, parked
+    /// with the row so the drain retries it through the matching
+    /// `TransferCutRetryPolicy` branch.
     public static func applyDownload(
         state: State,
         index: Int,
         success: Bool,
-        maxAttempts: Int
+        maxAttempts: Int,
+        cut: CutAttribution? = nil
     ) -> State {
         var next = state
         next.seen.insert(index)
         if !success, maxAttempts > 1 {
-            next.parked.append(Parked(index: index, attempts: 1))
+            next.parked.append(Parked(index: index, attempts: 1, cut: cut))
         }
         return next
     }
@@ -133,7 +145,8 @@ public enum PrefetchChain {
         index: Int,
         attempt: Int,
         success: Bool,
-        maxAttempts: Int
+        maxAttempts: Int,
+        cut: CutAttribution? = nil
     ) -> State {
         var next = state
         guard let pos = next.parked.firstIndex(where: { $0.index == index }) else { return next }
@@ -142,6 +155,9 @@ public enum PrefetchChain {
         } else {
             var row = next.parked.remove(at: pos)
             row.attempts = attempt
+            // A failed retry is NEW evidence: refresh the attribution so the
+            // next drain decision branches on the latest cut, not the first.
+            row.cut = cut ?? row.cut
             next.parked.append(row)
         }
         return next
