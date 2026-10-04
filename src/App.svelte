@@ -31,6 +31,7 @@
   import LyricsView from './components/LyricsView.svelte'
   import { lyricsState } from './lib/lyricsService'
   import DebugHud from './components/DebugHud.svelte'
+  import EngineUnavailableBanner from './components/EngineUnavailableBanner.svelte'
   import SeekBar from './components/SeekBar.svelte'
   import BufferSpinner from './components/BufferSpinner.svelte'
   import PreloadSegments, { type PreloadSegment } from './components/PreloadSegments.svelte'
@@ -741,6 +742,10 @@
     <DetailView onclose={toggleNowPlaying} oncloseall={closeAll} />
   </div>
 {/if}
+
+<!-- Native engine-unavailable restart affordance (2026-10-04). Renders only
+     while the store is set, so it is inert on web and on a healthy engine. -->
+<EngineUnavailableBanner />
 
 {#if debugHudEnabled}
   <DebugHud onclose={() => { debugHudEnabled = false; try { localStorage.removeItem('mmdrome:debugHud') } catch {} }} />

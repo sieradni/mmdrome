@@ -115,20 +115,32 @@ public final class NativeAudioEngine: NSObject {
     /// the 1 s sampler ONLY on a real state change (pure PreloadProgress diff
     /// — never a steady chatter stream). "progress"/"done"/"gone".
     public var onPreloadProgress: ((String, String, Double?) -> Void)?
+    /// Fired when the recovery ladder gives up (bounded retries + one rebuild
+    /// all failed). JS surfaces a persistent "restart audio" affordance and
+    /// STOPS advancing the queue — the 2026-10-04 dump showed the old code
+    /// silently skipping row after row into a dead engine.
+    public var onEngineUnavailable: (() -> Void)?
+    /// Fired when the engine starts successfully after having surfaced.
+    public var onEngineRecovered: (() -> Void)?
     // (loader hook wired in setup, below)
 
     // MARK: - Nodes
 
-    private let engine = AVAudioEngine()
-    private let playerA = AVAudioPlayerNode()
-    private let playerB = AVAudioPlayerNode()
-    private let gainA = AVAudioMixerNode()
-    private let gainB = AVAudioMixerNode()
-    private let mixer = AVAudioMixerNode()
-    private let timePitch = AVAudioUnitTimePitch()
-    private let varispeed = AVAudioUnitVarispeed()
-    private let eq = AVAudioUnitEQ(numberOfBands: 24)
-    private let preamp = AVAudioMixerNode()
+    // NOTE: these are `var`, not `let`, because the whole stack is rebuilt on
+    // a session invalidation (`rebuildAudioStack()`) — the 2026-10-04 field
+    // bug was a graph built ONCE at init that could never recover. Recreating
+    // every node avoids re-attaching a node that a dead engine may still
+    // reference. Do NOT turn these back into `let`.
+    private var engine = AVAudioEngine()
+    private var playerA = AVAudioPlayerNode()
+    private var playerB = AVAudioPlayerNode()
+    private var gainA = AVAudioMixerNode()
+    private var gainB = AVAudioMixerNode()
+    private var mixer = AVAudioMixerNode()
+    private var timePitch = AVAudioUnitTimePitch()
+    private var varispeed = AVAudioUnitVarispeed()
+    private var eq = AVAudioUnitEQ(numberOfBands: 24)
+    private var preamp = AVAudioMixerNode()
 
     // ── Spectrum tap (2026-09-15) ────────────────────────────────────────
     // A TAP node connected FROM the preamp in parallel with the main path
@@ -139,7 +151,7 @@ public final class NativeAudioEngine: NSObject {
     // is acceptable for a visualization). The FFT + band aggregation run
     // on the MAIN thread at read time (`spectrum()`), publishing the
     // per-band snapshot under `spectrumLock`.
-    private let spectrumTap = AVAudioMixerNode()
+    private var spectrumTap = AVAudioMixerNode()
     private let spectrumLock = NSLock()
     private var spectrumSnapshot: [Double] = Array(repeating: 0, count: SpectrumBands.bandCount)
     private var spectrumTapBuffer: [Float] = []
@@ -172,6 +184,36 @@ public final class NativeAudioEngine: NSObject {
     /// Rolling counter of the retry ladder's branch decisions (2026-10-02g),
     /// exposed through `getDebugState.retryBranch` for the HUD + Copy dump.
     private var retryBranchStats = TransferRetryBranchStats()
+
+    // MARK: - Engine recovery (2026-10-04)
+
+    /// Mirrors `SessionController.isInterrupted`. While true the recovery
+    /// policy only ever waits — re-activating the session mid-interruption
+    /// always fails, so a rebuild would be wasted graph churn.
+    public var interruptionActive = false
+    /// 1-based count of consecutive failed start attempts, fed to the pure
+    /// `EngineRecoveryPolicy`. Reset by any successful start, by an
+    /// interruption ending, and by an explicit user restart.
+    private var consecutiveEngineStartFailures = 0
+    /// True once the ladder surfaced. Until an explicit restart (or an
+    /// interruption ending) clears it, `ensureEngineRunning` short-circuits so
+    /// the app stops thrashing and the JS side stops skipping the queue.
+    private var engineUnavailable = false
+    /// Re-entrancy guard: a rebuild's own start attempt must not trigger a
+    /// second rebuild from inside itself.
+    private var isRebuildingAudioStack = false
+    /// Set when a start failure interrupted an intended play (the guarded
+    /// play()/schedule sites only fail AFTER the user asked to play). On a
+    /// successful recovery the current track resumes from `cachedPosition` —
+    /// without this a recovered engine would start silent, since `isPlaying`
+    /// was never allowed to flip true. 2026-10-04.
+    private var resumeAfterEngineRecovery = false
+    /// The ladder's deferred retry (`retryLater` rung).
+    private var engineRecoveryTimer: Timer?
+    /// `.AVAudioEngineConfigurationChange` observer for the CURRENT engine
+    /// instance (object identity changes on every rebuild, so it is
+    /// re-registered by `setupGraph`).
+    private var configurationChangeObserver: NSObjectProtocol?
     /// Called by the plugin on a network path change (main thread).
     public func noteNetworkChangeOccurred() {
         lastNetworkChangeAt = ProcessInfo.processInfo.systemUptime
@@ -356,6 +398,10 @@ public final class NativeAudioEngine: NSObject {
     private var replayGainMode = "off"
     private var preampDb: Double = 0
     private var masterVolume: Double = 1
+    /// The last EQ config pushed from JS, replayed after a rebuild (fresh
+    /// AVAudioUnitEQ bands start flat). 2026-10-04.
+    private var lastFilters: [NativeFilterConfig] = []
+    private var lastFiltersBypassed = false
     /// JS `iosAudioMixing` setting ('exclusive' | 'mix'), mirrored by the
     /// `setAudioMixing` bridge alongside `SessionController`. Read here (not
     /// hardcoded) so an engine restart keeps the user's sharing choice.
@@ -479,34 +525,301 @@ public final class NativeAudioEngine: NSObject {
         timePitch.rate = 1.0
         varispeed.rate = 1.0
         for band in eq.bands { band.bypass = true }
+
+        // Watch for the engine's configuration changing underneath us (route /
+        // format change, media-services churn). Registered per engine
+        // INSTANCE — the object identity changes on rebuild, so setupGraph
+        // (re-)registers it and the old one is removed first.
+        if let existing = configurationChangeObserver {
+            NotificationCenter.default.removeObserver(existing)
+        }
+        configurationChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.handleEngineConfigurationChanged()
+        }
     }
 
-    /// Starts the engine if needed. Returns whether the engine IS RUNNING
-    /// afterward. Callers MUST check the result before `player.play()` —
-    /// playing into a stopped engine raises an NSException (SIGABRT; the
-    /// 1.2.14 play crash). The failure itself only logs here; the call site
-    /// reports the honest error.
-    /// Deliberately NOT `@discardableResult` (the bare call in play() was the
-    /// 1.2.14 crash shape): an ignored Bool result warns at compile time, so
-    /// a future direct-play site can't silently skip the guard.
+    /// Starts the engine if needed, driving the bounded recovery ladder.
+    /// Returns whether the engine IS RUNNING afterward. Callers MUST check the
+    /// result before `player.play()` — playing into a stopped engine raises an
+    /// NSException (SIGABRT; the 1.2.14 play crash). Deliberately NOT
+    /// `@discardableResult` (the bare call in play() was the 1.2.14 crash
+    /// shape): an ignored Bool result warns at compile time, so a future
+    /// direct-play site can't silently skip the guard.
+    ///
+    /// 2026-10-04: the old version swallowed the session-activation error and
+    /// re-attempted `engine.start()` on a dead session forever — once the
+    /// AVAudioSession went inactive (interruption / media-services reset),
+    /// every start failed with -50 until a full relaunch. Every failure now
+    /// goes through `EngineRecoveryPolicy` (retry → one rebuild → surface),
+    /// and a surfaced engine short-circuits so the app stops thrashing.
     private func ensureEngineRunning() -> Bool {
         guard !engine.isRunning else { return true }
+        if engineUnavailable { return false }
+        guard let failure = activateSessionAndStart() else {
+            noteEngineStartSucceeded()
+            return true
+        }
+        return handleEngineStartFailure(failure)
+    }
+
+    /// ONE attempt to activate the session and start the engine. Returns the
+    /// failure kind, or nil on success. Logs the raw error identity (NSError
+    /// domain + numeric code / OSStatus) — the old `localizedDescription`
+    /// printed "The operation couldn't be completed", which told a field dump
+    /// nothing and cost a full diagnosis round trip.
+    private func activateSessionAndStart() -> EngineFailureKind? {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: SessionController.categoryOptions(for: audioMixingMode))
             try AVAudioSession.sharedInstance().setActive(true)
         } catch {
-            // Non-fatal: engine.start may still succeed if session already active.
-            eventAdd(.danger, "engine", "ensureEngineRunning session activate failed: \(error.localizedDescription)")
+            let ns = error as NSError
+            eventAdd(.danger, "engine", "session activate failed \(errorEvidence(ns))")
+            return EngineRecoveryPolicy.classifySessionError(ns)
         }
         installSpectrumTapIfNeeded()
         engine.prepare()
         do {
             try engine.start()
-            return true
+            return nil
         } catch {
-            eventAdd(.danger, "engine", "engine start failed: \(error.localizedDescription)")
+            let ns = error as NSError
+            eventAdd(.danger, "engine", "engine start failed \(errorEvidence(ns))")
+            return .startFailed
+        }
+    }
+
+    /// The greppable identity of an audio error: the raw NSError domain+code
+    /// and, for OSStatus errors, the numeric status.
+    private func errorEvidence(_ error: NSError) -> String {
+        if error.domain == NSOSStatusErrorDomain {
+            return "[domain=\(error.domain) code=\(error.code) osstatus=0x\(String(error.code, radix: 16))]"
+        }
+        return "[domain=\(error.domain) code=\(error.code)]"
+    }
+
+    /// Any successful start clears the ladder's run and the surfaced state.
+    private func noteEngineStartSucceeded() {
+        engineRecoveryTimer?.invalidate()
+        engineRecoveryTimer = nil
+        consecutiveEngineStartFailures = 0
+        if engineUnavailable {
+            engineUnavailable = false
+            eventAdd(.info, "engine", "engine recovered — clearing engineUnavailable")
+            onEngineRecovered?()
+        }
+    }
+
+    /// Feed one failure to the pure policy and enact its decision.
+    private func handleEngineStartFailure(_ failure: EngineFailureKind) -> Bool {
+        // The failing call is always a play/schedule site, so a play was
+        // intended: remember to resume once recovery succeeds.
+        resumeAfterEngineRecovery = true
+        consecutiveEngineStartFailures += 1
+        let action = EngineRecoveryPolicy.decide(
+            failure: failure,
+            interruptionActive: interruptionActive,
+            consecutiveFailures: consecutiveEngineStartFailures)
+        eventAdd(
+            .danger, "engine",
+            "recovery: failure=\(failure.rawValue) attempt=\(consecutiveEngineStartFailures) interrupted=\(interruptionActive) → \(recoveryActionName(action))")
+        switch action {
+        case .retryLater(let delaySeconds):
+            scheduleEngineRecovery(after: delaySeconds)
+            return false
+        case .rebuild:
+            // A rebuild's own start attempt also increments the run; never let
+            // it recurse into a second rebuild from inside itself.
+            guard !isRebuildingAudioStack else { return false }
+            rebuildAudioStack()
+            return engine.isRunning
+        case .surfaceUnavailable:
+            surfaceEngineUnavailable()
             return false
         }
+    }
+
+    /// Schedule the ladder's next automatic attempt.
+    private func scheduleEngineRecovery(after delaySeconds: TimeInterval) {
+        guard !engineUnavailable else { return }
+        engineRecoveryTimer?.invalidate()
+        let timer = Timer(timeInterval: delaySeconds, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.engineRecoveryTimer = nil
+            if self.ensureEngineRunning() {
+                self.resumeCurrentAfterRecovery()
+            }
+        }
+        engineRecoveryTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    /// Bounded recovery exhausted: stop thrashing and surface to JS.
+    private func surfaceEngineUnavailable() {
+        engineRecoveryTimer?.invalidate()
+        engineRecoveryTimer = nil
+        guard !engineUnavailable else { return }
+        engineUnavailable = true
+        eventAdd(
+            .danger, "engine",
+            "audio engine unavailable after \(consecutiveEngineStartFailures) consecutive start failures — surfacing for a user restart")
+        onEngineUnavailable?()
+    }
+
+    private func recoveryActionName(_ action: EngineRecoveryAction) -> String {
+        switch action {
+        case .retryLater(let delaySeconds): return "retryLater(\(delaySeconds)s)"
+        case .rebuild: return "rebuild"
+        case .surfaceUnavailable: return "surfaceUnavailable"
+        }
+    }
+
+    // MARK: - Session / interruption recovery
+
+    /// Mirrors the session controller's interruption state (main thread). On
+    /// the falling edge the session may be usable again, so the ladder gets a
+    /// fresh run and a surfaced engine is un-surfaced (the recovery timer, or
+    /// the next play, retries).
+    public func setInterruptionActive(_ active: Bool) {
+        guard interruptionActive != active else { return }
+        interruptionActive = active
+        guard !active else { return }
+        eventAdd(.info, "engine", "interruption ended — resetting recovery ladder")
+        engineRecoveryTimer?.invalidate()
+        engineRecoveryTimer = nil
+        consecutiveEngineStartFailures = 0
+        // The interruption released the session, so a surfaced engine gets a
+        // fresh chance; tell JS so the restart banner clears while we retry
+        // (if the retry fails, the ladder re-surfaces and it returns).
+        if engineUnavailable {
+            engineUnavailable = false
+            onEngineRecovered?()
+        }
+        if !engine.isRunning {
+            scheduleEngineRecovery(after: EngineRecoveryPolicy.firstRetryDelaySeconds)
+        }
+    }
+
+    /// Explicit user-requested restart (bridge `restartAudioEngine`): clears
+    /// the surfaced state and forces a full rebuild regardless of the ladder.
+    public func restartAudioEngine() {
+        eventAdd(.info, "engine", "explicit engine restart requested")
+        consecutiveEngineStartFailures = 0
+        // NOTE: `engineUnavailable` is deliberately left set here — a
+        // successful rebuild clears it via noteEngineStartSucceeded (which
+        // also notifies JS), so the banner only disappears on a REAL recovery.
+        // A user-requested restart means "make it play again".
+        resumeAfterEngineRecovery = true
+        engineRecoveryTimer?.invalidate()
+        engineRecoveryTimer = nil
+        rebuildAudioStack()
+    }
+
+    /// After a successful non-rebuild recovery, restart the interrupted play.
+    private func resumeCurrentAfterRecovery() {
+        guard resumeAfterEngineRecovery else { return }
+        resumeAfterEngineRecovery = false
+        guard tracks.indices.contains(activeIndex) else { return }
+        eventAdd(.info, "engine", "resuming current track after engine recovery")
+        play()
+    }
+
+    /// The `.AVAudioEngineConfigurationChange` handler: the graph's config
+    /// changed underneath us and the engine stopped. Hand it to the ladder.
+    private func handleEngineConfigurationChanged() {
+        guard !isRebuildingAudioStack else { return }
+        guard !engine.isRunning else { return }
+        eventAdd(.danger, "engine", "AVAudioEngineConfigurationChange with the engine stopped — attempting recovery")
+        _ = ensureEngineRunning()
+    }
+
+    /// Tear the whole audio stack down and rebuild it (2026-10-04). Recreates
+    /// the AVAudioEngine + every node, re-runs `setupGraph` (the attach/connect
+    /// audit), reinstalls the spectrum tap, and preserves the current track,
+    /// position and playing state.
+    ///
+    /// The start is attempted exactly ONCE here — the CALLER owns the recovery
+    /// ladder, so a failed rebuild cannot recurse into itself.
+    public func rebuildAudioStack() {
+        guard !isRebuildingAudioStack else { return }
+        isRebuildingAudioStack = true
+        defer { isRebuildingAudioStack = false }
+
+        // A failed play() never let `isPlaying` flip true, so the interrupted
+        // intent is carried separately (resumeAfterEngineRecovery).
+        let resumePlaying = isPlaying || resumeAfterEngineRecovery
+        let resumeIndex = activeIndex
+        let resumePosition = max(0, currentPosition)
+        let hadTrack = tracks.indices.contains(resumeIndex)
+        eventAdd(
+            .danger, "engine",
+            "rebuilding audio stack (wasPlaying=\(resumePlaying) position=\(String(format: "%.2f", resumePosition)))")
+
+        // Stop every timer + node BEFORE dropping the engine so no closure
+        // touches a torn-down graph. cancelScheduled() also bumps the schedule
+        // generation, voiding this graph's pending completions.
+        engineRecoveryTimer?.invalidate()
+        engineRecoveryTimer = nil
+        paramRestartTimer?.invalidate()
+        paramRestartTimer = nil
+        cancelScheduled()
+        hasLiveSchedule = false
+        cachedPosition = resumePosition
+        positionBias = 0
+        teardownStagedState()
+
+        if let observer = configurationChangeObserver {
+            NotificationCenter.default.removeObserver(observer)
+            configurationChangeObserver = nil
+        }
+        engine.stop()
+        // Detach only what is actually attached (`attachedNodes` is the
+        // authoritative set) — and stop first, so no node is detached while it
+        // is still rendering. `mainMixerNode` is engine-owned and not detached.
+        let attached = engine.attachedNodes
+        let nodes: [AVAudioNode] = [playerA, playerB, gainA, gainB, mixer, timePitch, varispeed, eq, preamp, spectrumTap]
+        for node in nodes where attached.contains(node) {
+            engine.detach(node)
+        }
+
+        // Fresh engine + nodes — never re-use a node from a dead engine.
+        engine = AVAudioEngine()
+        playerA = AVAudioPlayerNode()
+        playerB = AVAudioPlayerNode()
+        gainA = AVAudioMixerNode()
+        gainB = AVAudioMixerNode()
+        mixer = AVAudioMixerNode()
+        timePitch = AVAudioUnitTimePitch()
+        varispeed = AVAudioUnitVarispeed()
+        eq = AVAudioUnitEQ(numberOfBands: 24)
+        preamp = AVAudioMixerNode()
+        spectrumTap = AVAudioMixerNode()
+        // The tap lived on the old node; force a reinstall on the new one.
+        spectrumTapInstalled = false
+        spectrumTapBuffer = []
+        spectrumHasNewFrame = false
+
+        setupGraph()
+        // The new units start neutral; restore the live session-level state.
+        refreshPreamp()
+        refreshPlaybackParams()
+        refreshActiveGain()
+        applyFilters(lastFilters, bypassed: lastFiltersBypassed)
+
+        guard activateSessionAndStart() == nil else {
+            eventAdd(.danger, "engine", "rebuild start failed — the ladder owns the next attempt")
+            return
+        }
+        noteEngineStartSucceeded()
+        eventAdd(.info, "engine", "audio stack rebuilt and started")
+
+        if hadTrack {
+            scheduleCurrentTrack(from: cachedPosition, autoPlay: resumePlaying)
+        }
+        resumeAfterEngineRecovery = false
     }
 
     // MARK: - Spectrum tap
@@ -832,12 +1145,16 @@ public final class NativeAudioEngine: NSObject {
         // into a stopped engine raises in AVAudioPlayerNodeImpl::StartImpl —
         // the 1.2.14 crash shape. The schedule-based returns below re-guard
         // inside scheduleCurrentTrack; this is the one direct-play path.
-        // Degrade honestly: the JS retry machinery re-plays, re-attempting
-        // the engine start.
+        // Degrade honestly into the bounded recovery ladder (2026-10-04),
+        // which retries/rebuilds and resumes the play itself — NOT via the JS
+        // retry ladder, which would advance the queue into the same failure.
         guard ensureEngineRunning() else {
-            if tracks.indices.contains(activeIndex) {
-                onError?("Audio engine failed to start for \(tracks[activeIndex].title)")
-            }
+            // The recovery ladder owns this failure: it retries, rebuilds, and
+            // resumes the play itself on success. Deliberately NO onError —
+            // the JS retry ladder gives up after 2 tries and advances to the
+            // next row, which is exactly the 2026-10-04 "playback stopped and
+            // the following songs didn't work either" cascade. A definitively
+            // failed engine reports through onEngineUnavailable instead.
             return
         }
         guard !tracks.isEmpty else { return }
@@ -1611,6 +1928,11 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func applyFilters(_ filters: [NativeFilterConfig], bypassed: Bool) {
+        // Remember the last pushed config: a rebuild creates fresh
+        // AVAudioUnitEQ bands, and without replaying this the user's EQ would
+        // silently reset to flat (2026-10-04).
+        lastFilters = filters
+        lastFiltersBypassed = bypassed
         let bands = eq.bands
         for band in bands { band.bypass = true }
 
@@ -1656,6 +1978,11 @@ public final class NativeAudioEngine: NSObject {
             "isRunning": engine.isRunning,
             "isPlaying": isPlaying,
             "hasLiveSchedule": hasLiveSchedule,
+            // Recovery (2026-10-04): the ladder's live state, so a dump shows
+            // whether an engine failure is being handled or has given up.
+            "interruptionActive": interruptionActive,
+            "consecutiveEngineStartFailures": consecutiveEngineStartFailures,
+            "engineUnavailable": engineUnavailable,
             "activeIndex": activeIndex,
             "queueCount": tracks.count,
             "activeTrackId": track?.trackId ?? "",
@@ -2146,7 +2473,7 @@ public final class NativeAudioEngine: NSObject {
             crossfade = .idle
             if autoPlay {
                 guard ensureEngineRunning() else {
-                    onError?("Audio engine failed to start for \(track.title)")
+                    // Recovery ladder owns it (see play()); no onError.
                     return
                 }
                 player.play()
@@ -2270,10 +2597,9 @@ public final class NativeAudioEngine: NSObject {
 
         if autoPlay {
             // Never play() into a stopped engine — that raises (1.2.14 play
-            // crash). Degrade to the error event instead; the JS retry
-            // machinery re-plays, which re-attempts the engine start.
+            // crash). Degrade into the engine's own recovery ladder instead.
             guard ensureEngineRunning() else {
-                onError?("Audio engine failed to start for \(track.title)")
+                // Recovery ladder owns it (see play()); no onError.
                 return
             }
             player.play()

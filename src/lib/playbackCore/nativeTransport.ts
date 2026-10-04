@@ -109,6 +109,8 @@ export interface NativeEngineClient {
     onPlaybackStateChanged(playing: boolean): void
     onQueueEnded(): void
     onError(message: string): void
+    onEngineUnavailable?(): void
+    onEngineRecovered?(): void
   }): Promise<void>
   setPositionPolling(enabled: boolean, handler: (state: NativePollState) => void): void
   plugin(): NativePluginClient
@@ -170,6 +172,11 @@ export class NativeTransport {
   onPlaybackState: ((state: 'playing' | 'paused') => void) | null = null
   onRetry: ((trackId: string) => void) | null = null
   onTick: ((position: number) => void) | null = null
+  /** The native recovery ladder surfaced (engine unavailable): the manager
+   *  must stop advancing the queue and show a restart affordance. */
+  onEngineUnavailable: (() => void) | null = null
+  /** The engine became healthy again: clear the affordance. */
+  onEngineRecovered: (() => void) | null = null
 
   constructor(client: NativeEngineClient, timers: NativeTransportTimers = defaultTimers) {
     this._client = client
@@ -193,6 +200,14 @@ export class NativeTransport {
       onPlaybackStateChanged: (playing) => this.onPlaybackState?.(playing ? 'playing' : 'paused'),
       onQueueEnded: () => this.onTrackEnded?.({ kind: 'natural', fromError: false }),
       onError: (message) => this._handleEngineError(message),
+      onEngineUnavailable: () => {
+        // Stop the per-track retry ladder: the engine is down, so retrying the
+        // row or advancing to the next one cannot help (2026-10-04).
+        this._resetRetry()
+        this._retryTrackId = null
+        this.onEngineUnavailable?.()
+      },
+      onEngineRecovered: () => this.onEngineRecovered?.(),
     })
   }
 

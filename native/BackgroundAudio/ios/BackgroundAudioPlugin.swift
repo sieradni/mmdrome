@@ -40,6 +40,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getDebugEvents", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setDebugDomains", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resetRetryBranch", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "restartAudioEngine", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getNetworkState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getSpectrum", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "secureGet", returnType: CAPPluginReturnPromise),
@@ -161,6 +162,17 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self?.engineEvent(level, "artwork", message)
         }
 
+        // Session lifecycle → engine recovery (2026-10-04). An active
+        // interruption makes the engine's ladder WAIT (re-activating
+        // mid-interruption always fails); media-services reset/lost forces a
+        // full rebuild — without this the graph stayed dead until relaunch.
+        session.onInterruptionStateChanged = { [weak self] active in
+            self?.performOnMain { self?.engine.setInterruptionActive(active) }
+        }
+        session.onSessionInvalidated = { [weak self] in
+            self?.performOnMain { self?.engine.rebuildAudioStack() }
+        }
+
         session.configure(
             onPause: { [weak self] in self?.performOnMain { self?.engine.pause() } },
             onResume: { [weak self] in self?.performOnMain { self?.engine.play() } },
@@ -189,6 +201,16 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         engine.onError = { [weak self] message in
             self?.notifyListeners("error", data: ["message": message])
+        }
+        // Recovery ladder (2026-10-04): a distinct UNAVAILABLE signal, separate
+        // from the per-track `error`. JS stops advancing the queue and offers
+        // an explicit restart; `engineRecovered` clears the banner.
+        engine.onEngineUnavailable = { [weak self] in
+            self?.notifyListeners("engineUnavailable", data: ["unavailable": true])
+        }
+        engine.onEngineRecovered = { [weak self] in
+            self?.notifyListeners("engineRecovered", data: ["unavailable": false])
+            self?.refreshNowPlaying()
         }
         engine.onSleepTimerFired = { [weak self] in
             self?.notifyListeners("sleepTimerFired", data: [:])
@@ -547,6 +569,20 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
             self.engine.resetRetryBranchStats()
+            call.resolve()
+        }
+    }
+
+    /// Explicit user-requested audio-engine restart (2026-10-04). Called from
+    /// the JS banner once the recovery ladder has surfaced: clears the
+    /// surfaced state and forces a full graph rebuild. MUST be in
+    /// `pluginMethods` above — Capacitor's getMethod gate silently drops
+    /// unregistered names and the JS promise never resolves (§3.4 lesson).
+    @objc func restartAudioEngine(_ call: CAPPluginCall) {
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.restartAudioEngine()
+            self.refreshNowPlaying()
             call.resolve()
         }
     }
