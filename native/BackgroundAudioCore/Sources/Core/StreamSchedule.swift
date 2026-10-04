@@ -373,4 +373,31 @@ public enum StreamSchedule {
         guard isPlaying, timeMeasured, !loopOne else { return false }
         return elapsedSeconds > scheduledEndSeconds + deadAirGraceSeconds
     }
+
+    // MARK: - First-schedule open retry (workstream C, 2026-10-04)
+
+    /// Minimum spacing between FIRST-staged-schedule OPEN attempts.
+    ///
+    /// WHY this exists. `startFirstStagedSchedule` used to be attempted on
+    /// exactly ONE trigger: a rung-gated `.playable` delivery (the loader's
+    /// lead crossing, ~512 KB on a miss). When the partial was not yet
+    /// readable at that instant — the header / first audio page had not landed,
+    /// so `AVAudioFile.length` was still 0 — the attempt was dropped and the
+    /// engine waited for the NEXT rung, i.e. another whole lead of bytes and
+    /// seconds of start latency. The 2026-10-04 field dump showed 5-6
+    /// `partial not openable yet … deferring first schedule` rounds per track.
+    /// Byte arrivals already hop to main, so re-attempting the open on a
+    /// bounded cadence lands the first schedule as soon as the file is
+    /// actually readable. This constant is the cadence, kept pure so it is
+    /// `swift test`-hostable (E5).
+    public static let firstScheduleRetryMinIntervalSeconds: Double = 0.2
+
+    /// DECISION: may the first-schedule open be re-attempted now? `nil`
+    /// `lastAttemptAt` means no attempt has run yet — due immediately. Both
+    /// inputs ride the SAME monotonic clock (seconds) as the engine's other
+    /// uptime stamps.
+    public static func firstScheduleRetryDue(lastAttemptAt: Double?, now: Double) -> Bool {
+        guard let lastAttemptAt else { return true }
+        return now - lastAttemptAt >= firstScheduleRetryMinIntervalSeconds
+    }
 }

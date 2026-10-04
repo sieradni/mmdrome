@@ -334,4 +334,28 @@ final class StreamScheduleTests: XCTestCase {
             isPlaying: true, timeMeasured: true,
             elapsedSeconds: 200, scheduledEndSeconds: 161.05, loopOne: true))
     }
+
+    // MARK: - First-schedule open retry (workstream C)
+
+    func testFirstScheduleRetryIsDueWhenNeverAttempted() {
+        XCTAssertTrue(StreamSchedule.firstScheduleRetryDue(lastAttemptAt: nil, now: 100))
+    }
+
+    func testFirstScheduleRetryIsHeldInsideTheMinInterval() {
+        let last = 100.0
+        XCTAssertFalse(StreamSchedule.firstScheduleRetryDue(
+            lastAttemptAt: last, now: last + StreamSchedule.firstScheduleRetryMinIntervalSeconds - 0.01))
+    }
+
+    func testFirstScheduleRetryIsDueAtTheMinInterval() {
+        let last = 100.0
+        XCTAssertTrue(StreamSchedule.firstScheduleRetryDue(
+            lastAttemptAt: last, now: last + StreamSchedule.firstScheduleRetryMinIntervalSeconds))
+    }
+
+    /// The cadence is a real bound, not an accident of the constant's value.
+    func testFirstScheduleRetryIntervalIsSubSecond() {
+        XCTAssertGreaterThan(StreamSchedule.firstScheduleRetryMinIntervalSeconds, 0)
+        XCTAssertLessThan(StreamSchedule.firstScheduleRetryMinIntervalSeconds, 1.0)
+    }
 }
