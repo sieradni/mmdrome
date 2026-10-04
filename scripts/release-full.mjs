@@ -17,14 +17,24 @@
  *      verified individually — a fast wall clock proves nothing, §3.5)
  *   4. tag solo (E11) + wait for the tag run
  *   5. release published: not draft, mmdrome.ipa asset present → size read
- *   6. backfill: --size re-run → diff verified → commit → push main
- *   7. deploy web (the deploy script's own manifest guard runs here)
+ *   6. backfill: E11a — the tag run's CI `finalize-release` job OWNS the
+ *      backfill. Reconcile here (fast-forward local main); a local backfill
+ *      runs ONLY if CI did not, and it rebases before pushing. Duplicating
+ *      CI's push is a two-writers-one-branch race that aborts the run with a
+ *      non-fast-forward — the consistent hiccup this phase used to cause.
+ *   7. deploy web: SKIPPED when the finalize job's mirror already serves the
+ *      release; `npm run deploy` is the fallback only
  *   8. CDN verify: gh-pages mirror must serve <ver> with the size; jsDelivr
- *      is purged and polled (a stale jsDelivr WARNS — the mirror is primary)
+ *      is purged and polled (a stale jsDelivr WARNS — the mirror is primary),
+ *      then the local tree is left fast-forwarded onto the finalize commit
  */
 
 import { execSync, execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
+// The Phase 6/7 write plans are the SAME pure decisions the resumable driver
+// (release-phases.mjs) is built on — one definition of "CI already did it", so
+// the two drivers can never disagree about who owns the backfill (E11a).
+import { manifestHasSize, planBackfill, planDeploy } from './releasePhaseCore.mjs'
 
 const args = process.argv.slice(2)
 if (args.length < 1) {
@@ -214,34 +224,84 @@ const release = await waitForRuns('release to appear', async () => {
 const asset = release.assets.find((a) => a.name === 'mmdrome.ipa')
 ok(`release published, mmdrome.ipa = ${asset.size} bytes`)
 
-// ── Phase 6: size backfill, verify the diff, commit, push ────────────────
+// ── Phase 6: size backfill — reconcile with CI, never duplicate it ────────
+// E11a: the tag run's `finalize-release` job stamps the manifest size,
+// commits it to main, deploys gh-pages, purges jsDelivr and verifies the
+// surfaces. This script used to duplicate the backfill and push its own
+// commit, which raced the finalize job's push and aborted here with a
+// non-fast-forward — leaving Phases 7-8 unrun. Two writers to one branch is
+// the documented 1.2.32 bug shape; reconcile instead.
 step(`Size backfill (${asset.size})`)
-const manifestBefore = JSON.stringify(JSON.parse(readFileSync('sidestore/apps.json', 'utf8')))
-runFile('node', ['scripts/release-ios.mjs', version, notes, '--size', String(asset.size)])
-const manifestAfter = JSON.parse(readFileSync('sidestore/apps.json', 'utf8'))
-const newest = manifestAfter.apps[0].versions[0]
-if (newest.version !== version || newest.size !== asset.size) {
-  throw new Error(`backfill produced ${newest.version}/size=${newest.size} — expected ${version}/${asset.size}`)
-}
-if (JSON.stringify(manifestAfter) === manifestBefore) {
-  throw new Error('backfill changed nothing — wrong --size?')
-}
-run('git add sidestore/apps.json')
-run(`git commit -m "sidestore: backfill ${version} IPA size (${asset.size})"`)
-run('git push origin main')
-ok('backfill committed and pushed')
-
-// ── Phase 7: deploy web (its script validates the manifest itself) ───────
-step('Deploy web (gh-pages + source mirror)')
-run('npm run deploy')
-
-// ── Phase 8: CDN verify ───────────────────────────────────────────────────
-step('CDN verification')
 const bust = `?t=${Date.now()}`
 async function servedManifest(url) {
   const res = await fetch(url + bust, { headers: { 'Cache-Control': 'no-cache' } })
   return res.ok ? res.json() : null
 }
+/** True when origin/main already carries the finalized size for `version`. */
+function originManifestHasSize() {
+  run('git fetch origin main --quiet')
+  try {
+    return manifestHasSize(JSON.parse(runOut('git show origin/main:sidestore/apps.json')), version, asset.size)
+  } catch {
+    return false
+  }
+}
+// The tag run already concluded, so the finalize commit (when it ran) is on
+// origin/main by now; a short retry covers a late CI push.
+let backfilledByCi = originManifestHasSize()
+for (let i = 0; !backfilledByCi && i < 6; i++) {
+  await new Promise((r) => setTimeout(r, 10 * 1000))
+  backfilledByCi = originManifestHasSize()
+}
+if (planBackfill({ originHasSize: backfilledByCi }) === 'reconcile') {
+  // Fast-forward local main onto the finalize commit — the release commit is
+  // its ancestor, so nothing local is discarded and no second writer touches
+  // the branch.
+  run('git merge --ff-only origin/main')
+  ok('origin/main already carries the finalized size — fast-forwarded (no duplicate push)')
+} else {
+  // Fallback only: CI did not stamp it (older CI, a skipped job, a step that
+  // failed without failing the run). Do it locally, but reconcile before the
+  // push so a concurrent remote commit can never abort the run.
+  const manifestBefore = JSON.stringify(JSON.parse(readFileSync('sidestore/apps.json', 'utf8')))
+  runFile('node', ['scripts/release-ios.mjs', version, notes, '--size', String(asset.size)])
+  const manifestAfter = JSON.parse(readFileSync('sidestore/apps.json', 'utf8'))
+  const newest = manifestAfter.apps[0].versions[0]
+  if (newest.version !== version || newest.size !== asset.size) {
+    throw new Error(`backfill produced ${newest.version}/size=${newest.size} — expected ${version}/${asset.size}`)
+  }
+  if (JSON.stringify(manifestAfter) === manifestBefore) {
+    throw new Error('backfill changed nothing — wrong --size?')
+  }
+  run('git add sidestore/apps.json')
+  run(`git commit -m "sidestore: backfill ${version} IPA size (${asset.size})"`)
+  run('git fetch origin main --quiet')
+  run('git rebase origin/main')
+  run('git push origin main')
+  ok('backfill committed and pushed (CI finalize did not intervene)')
+}
+
+// ── Phase 7: deploy web — only when the finalize job did not ───────────────
+// The finalize job already ran the SAME `npm run deploy`. Re-running it is
+// redundant (an identical gh-pages push); skip it when the mirror already
+// serves this release, and fall back to the local deploy otherwise.
+step('Deploy web (gh-pages + source mirror)')
+let mirrorServes = false
+try {
+  const m = await servedManifest(pagesUrl)
+  const v = m?.apps?.[0]?.versions?.[0]
+  mirrorServes = v?.version === version && v?.size === asset.size
+} catch {
+  // Unreachable mirror → take the deploy path (its own guards protect it).
+}
+if (planDeploy({ mirrorServes }) === 'skip') {
+  ok('gh-pages mirror already serves this release (finalize job deployed) — skipping re-deploy')
+} else {
+  run('npm run deploy')
+}
+
+// ── Phase 8: CDN verify ───────────────────────────────────────────────────
+step('CDN verification')
 
 // Mirror (primary): MUST be correct — version AND size.
 const mirrorDeadline = Date.now() + 5 * 60 * 1000

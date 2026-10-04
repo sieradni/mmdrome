@@ -36,6 +36,20 @@ export declare function manifestBackfillState(
   assetSize: number,
 ): ManifestState
 
+export declare function findVersionEntry(manifest: unknown, version: string): { version: string; size?: number } | undefined
+
+export declare function manifestHasSize(manifest: unknown, version: string, assetSize: number): boolean
+
+/** Phase-6 write plan: reconcile with CI's finalize job, or run the local fallback. */
+export type BackfillPlan = 'reconcile' | 'local-backfill'
+
+export declare function planBackfill(f: { originHasSize: boolean }): BackfillPlan
+
+/** Phase-7 deploy plan: skip the redundant deploy, or run the local fallback. */
+export type DeployPlan = 'skip' | 'deploy'
+
+export declare function planDeploy(f: { mirrorServes: boolean }): DeployPlan
+
 export declare function deriveReleasePhase(f: ReleaseFacts): PhaseDecision
 
 export declare function stateRecordValid(record: { sha?: string } | undefined, currentSha: string): boolean
