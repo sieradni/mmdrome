@@ -55,6 +55,57 @@ export function manifestBackfillState(entry, version, assetSize) {
 }
 
 /**
+ * @param {any} manifest  a parsed `sidestore/apps.json`
+ * @param {string} version
+ * @returns {object|undefined} the `apps[0].versions[]` entry for `version`.
+ *   Shape-tolerant: a malformed/foreign manifest reads as "no entry" instead
+ *   of throwing — the driver inspects remote JSON it did not write.
+ */
+export function findVersionEntry(manifest, version) {
+  return (manifest?.apps?.[0]?.versions ?? []).find((v) => v?.version === version)
+}
+
+/**
+ * Does a parsed manifest already carry `version` at the EXACT published size?
+ * Composes `manifestBackfillState`, so "the manifest is correct" has ONE
+ * definition across both drivers.
+ */
+export function manifestHasSize(manifest, version, assetSize) {
+  return manifestBackfillState(findVersionEntry(manifest, version), version, assetSize) === 'correct'
+}
+
+/**
+ * Phase-6 write plan (release-full). E11a: the tag run's `finalize-release`
+ * job OWNS the manifest backfill — it stamps the size, commits to main,
+ * deploys gh-pages, purges jsDelivr and verifies the surfaces. When
+ * origin/main already carries the finalized size the local driver must
+ * RECONCILE (fast-forward onto CI's commit), never run its own backfill +
+ * push: two writers to one branch is the documented 1.2.32 bug shape, and the
+ * rejected push aborted every release before 2026-10-04 (1.2.46, 1.2.47,
+ * 1.2.53). `local-backfill` is the fallback for when CI did NOT stamp it
+ * (older CI, a skipped job, a step that failed without failing the run).
+ *
+ * @param {{originHasSize: boolean}} f
+ * @returns {'reconcile'|'local-backfill'}
+ */
+export function planBackfill({ originHasSize }) {
+  return originHasSize ? 'reconcile' : 'local-backfill'
+}
+
+/**
+ * Phase-7 deploy plan (release-full). The finalize job already ran the SAME
+ * `npm run deploy`; re-running it is an identical gh-pages push. Skip it when
+ * the mirror already serves version + size, and fall back to the local deploy
+ * otherwise (mirror unreachable or stale).
+ *
+ * @param {{mirrorServes: boolean}} f
+ * @returns {'skip'|'deploy'}
+ */
+export function planDeploy({ mirrorServes }) {
+  return mirrorServes ? 'skip' : 'deploy'
+}
+
+/**
  * The world facts the driver gathered. Every field is derived from git/gh/
  * live HTTP — never from a state file — except `gatesRanForHead`, which the
  * state file provides (there is no world artifact for "tests already ran").
