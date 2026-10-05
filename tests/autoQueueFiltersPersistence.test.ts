@@ -128,6 +128,11 @@ test('autoQueueSort: a write persists to its own Dexie row and round-trips the s
   assert.deepEqual(decodeAutoQueueSort({ sortBy: 'year', sortAsc: false }), { sortBy: 'year', sortAsc: false })
   assert.deepEqual(decodeAutoQueueSort({ sortBy: null }), { sortBy: null, sortAsc: true }, 'missing sortAsc defaults true')
   assert.deepEqual(decodeAutoQueueSort({ sortBy: 'length', sortAsc: false }), { sortBy: 'length', sortAsc: false })
+  assert.deepEqual(
+    decodeAutoQueueSort({ sortBy: 'added', sortAsc: false }),
+    { sortBy: 'added', sortAsc: false },
+    'added is a valid persisted key',
+  )
 })
 
 test('decodeAutoQueueSort: corrupt rows fall back to the default', () => {

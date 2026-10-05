@@ -248,7 +248,7 @@ export const AUTO_QUEUE_SORT_DEFAULT: AutoQueueSort = { sortBy: null, sortAsc: t
 export function decodeAutoQueueSort(raw: unknown): AutoQueueSort | undefined {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
   const p = raw as Partial<AutoQueueSort>
-  const validKeys: LibrarySortKey[] = ['rating', 'loved', 'year', 'length']
+  const validKeys: LibrarySortKey[] = ['rating', 'loved', 'year', 'length', 'added']
   if (p.sortBy !== null && p.sortBy !== undefined && !validKeys.includes(p.sortBy)) return undefined
   return {
     sortBy: p.sortBy ?? null,

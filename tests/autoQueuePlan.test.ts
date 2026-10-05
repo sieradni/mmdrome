@@ -166,6 +166,20 @@ test('buildOrderRank: no sort keeps library order; ranks are SORTED POSITIONS (t
   assert.deepEqual([...year.entries()], [['a', 0], ['b', 1], ['c', 2]], 'missing years tie → library order')
 })
 
+test('buildOrderRank: added sorts by createdAt; undated tracks are oldest', () => {
+  const ts = [
+    track('old', { createdAt: 1000 }),
+    track('new', { createdAt: 5000 }),
+    track('mid', { createdAt: 3000 }),
+    track('undated'),
+  ]
+  const meta = metaOf([])
+  const asc = buildOrderRank(ts, { sortBy: 'added', sortAsc: true }, meta)
+  assert.deepEqual([...asc.keys()], ['undated', 'old', 'mid', 'new'], 'asc = oldest first, undated (0) leads')
+  const desc = buildOrderRank(ts, { sortBy: 'added', sortAsc: false }, meta)
+  assert.deepEqual([...desc.keys()], ['new', 'mid', 'old', 'undated'], 'desc = newest first, undated last')
+})
+
 test('buildOrderRank: a fully-tied library mirrors the arrow (the "flip does nothing" fix)', () => {
   // Unrated library: every comparison ties, so the tie-break IS the order.
   const ts = [track('a'), track('b'), track('c'), track('d')]

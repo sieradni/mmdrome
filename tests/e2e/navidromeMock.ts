@@ -12,10 +12,13 @@ import type { Page } from '@playwright/test'
  * rejects malformed rows — the mock's payloads are the real shapes.
  */
 
+// `created` dates are DELIBERATELY distinct and out of catalog order
+// (mock-2 newest, then mock-1, then mock-3) so the "Added" sort spec can
+// prove a real reorder — the catalog arrives mock-1, mock-2, mock-3.
 const SONGS = [
-  { id: 'mock-1', title: 'Midnight Drive', artist: 'The Orbitals', album: 'Nightdrive', duration: 201, track: 1, year: 2021, genre: 'Electronic', suffix: 'flac', bitRate: 320, size: 32000000, starred: 'false', created: '2024-01-01T00:00:00Z', albumId: 'al-1', path: 'Music/Midnight Drive.flac' },
-  { id: 'mock-2', title: 'Golden Hour', artist: 'Mara Voss', album: 'Nightdrive', duration: 187, track: 2, year: 2021, genre: 'Electronic', suffix: 'flac', bitRate: 320, size: 29000000, starred: 'false', created: '2024-01-01T00:00:00Z', albumId: 'al-1', path: 'Music/Golden Hour.flac' },
-  { id: 'mock-3', title: 'Paper Planes', artist: 'Cassette Club', album: 'Daytrips', duration: 214, track: 3, year: 2022, genre: 'Indie', suffix: 'mp3', bitRate: 320, size: 8200000, starred: 'false', created: '2024-01-01T00:00:00Z', albumId: 'al-2', path: 'Music/Paper Planes.mp3' },
+  { id: 'mock-1', title: 'Midnight Drive', artist: 'The Orbitals', album: 'Nightdrive', duration: 201, track: 1, year: 2021, genre: 'Electronic', suffix: 'flac', bitRate: 320, size: 32000000, starred: 'false', created: '2024-02-15T00:00:00Z', albumId: 'al-1', path: 'Music/Midnight Drive.flac' },
+  { id: 'mock-2', title: 'Golden Hour', artist: 'Mara Voss', album: 'Nightdrive', duration: 187, track: 2, year: 2021, genre: 'Electronic', suffix: 'flac', bitRate: 320, size: 29000000, starred: 'false', created: '2024-03-20T00:00:00Z', albumId: 'al-1', path: 'Music/Golden Hour.flac' },
+  { id: 'mock-3', title: 'Paper Planes', artist: 'Cassette Club', album: 'Daytrips', duration: 214, track: 3, year: 2022, genre: 'Indie', suffix: 'mp3', bitRate: 320, size: 8200000, starred: 'false', created: '2024-01-05T00:00:00Z', albumId: 'al-2', path: 'Music/Paper Planes.mp3' },
 ]
 
 export const MOCK_SERVER = 'http://mock-navidrome.test'
