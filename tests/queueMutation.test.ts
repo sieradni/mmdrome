@@ -47,6 +47,47 @@ test('planDragDrop: auto→auto reorders within auto (slot counts the dragged ro
   assert.deepEqual(r, { user: ['a'], auto: ['y', 'x', 'z'] })
 })
 
+test('planDragDrop: auto→user with an existing user copy dedupe-moves (no each-key collision)', () => {
+  // The tier-3 cross-section duplicate b (user[1] AND auto[0]) dragged from
+  // auto onto slot 0 must NOT land twice in the user section — the duplicate
+  // crashed Svelte's each-key check from the drag preview (`u-${id}`).
+  const r = planDragDrop(['a', 'b'], ['b', 'c'], 2, 0)
+  assert.deepEqual(r, { user: ['b', 'a'], auto: ['c'] })
+  assert.equal(new Set(r.user).size, r.user.length)
+})
+
+test('planDragDrop: auto→user dedupe-move drops the auto copy too', () => {
+  // Same duplicate, but dropped onto the user tail: the old copy moves, the
+  // auto copy leaves with it, and the id appears exactly once overall.
+  const r = planDragDrop(['a', 'b'], ['b', 'c'], 2, 2)
+  assert.deepEqual(r, { user: ['a', 'b'], auto: ['c'] })
+  assert.equal(new Set([...r.user, ...r.auto]).size, r.user.length + r.auto.length)
+})
+
+test('planDragDrop: user→auto conversion drops the dragged id from the converted prefix', () => {
+  // Dragging user 'b' past the user tail converts auto rows above the slot —
+  // including the tier-3 duplicate of the dragged id itself, which must not
+  // ride into the user section alongside the dragged occurrence.
+  const r = planDragDrop(['b', 'a'], ['b', 'c'], 0, 3)
+  assert.deepEqual(r, { user: ['a', 'b'], auto: ['c'] })
+  assert.equal(new Set(r.user).size, r.user.length)
+})
+
+test('applyDragDrop: a cross-section duplicate drag never yields a within-section duplicate', () => {
+  const s = q(['a', 'b'], ['b', 'c'], 0, [])
+  const r = applyDragDrop(s, 'b', 0, ['a', 'b'], ['b', 'c'])
+  assert.ok(r)
+  assert.equal(new Set(r.userQueue!).size, r.userQueue!.length, 'user duplicate')
+  assert.equal(new Set(r.autoQueue!).size, r.autoQueue!.length, 'auto duplicate')
+})
+
+test('applyDragDrop: a pre-corrupt snapshot is normalized as it passes through', () => {
+  const s = q(['a', 'a', 'b'], [], 0, [])
+  const r = applyDragDrop(s, 'b', 3, ['a', 'a', 'b'], [])
+  assert.ok(r)
+  assert.deepEqual(r.userQueue, ['a', 'b'])
+})
+
 test('applyDragDrop: mid-drag advance no longer resurrects the stale order (regression)', () => {
   // Drag started with user [A,B,C] + auto [X], dragging A toward the end.
   // While held, the natural advance fires: B left the queue (heard), user is
@@ -473,6 +514,7 @@ test('a null mutation produces no state change (no store write)', () => {
 test('fuzz: anchor invariant, uniqueness, drag row-count preservation (10k x 6 seeds)', () => {
   const ids = Array.from({ length: 12 }, (_, i) => `t${i}`)
   const ops: Array<{ name: string; drag?: boolean; run: (s: QueueState, id: string) => QueueMutation | null }> = [
+    { name: 'drag', drag: true, run: (s, id) => applyDragDrop(s, id, 0, s.userQueue, s.autoQueue) },
     { name: 'add', run: (s, id) => addToUserQueue(s, id) },
     { name: 'playNext', run: (s, id) => playNext(s, id) },
     { name: 'promoteUser', drag: true, run: (s, id) => promoteToUser(s, id) },
@@ -495,7 +537,15 @@ test('fuzz: anchor invariant, uniqueness, drag row-count preservation (10k x 6 s
       const id = ids[Math.floor(rnd() * ids.length)]
       const pre = combined(s)
       const activeId = s.activeIndex >= 0 && s.activeIndex < pre.length ? pre[s.activeIndex] : undefined
-      const result = applyQueueMutation(s, (x) => op.run(x, id))
+      const result = applyQueueMutation(s, (x) => {
+        if (op.name !== 'drag' || pre.length === 0) return op.run(x, id)
+        // Random drag: pick a real source row and a drop slot in combined
+        // space, resolving against the drag-time sections (what the preview
+        // shows) — the path whose within-section duplicate crashed QueueView.
+        const dragged = pre[Math.floor(rnd() * pre.length)]
+        const toIdx = Math.floor(rnd() * (pre.length + 1))
+        return applyDragDrop(x, dragged, toIdx, s.userQueue, s.autoQueue)
+      })
       if (result === null) continue
       s = result
       const c = combined(s)
