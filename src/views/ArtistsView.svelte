@@ -44,6 +44,7 @@
     lovedCount: number
     year: number | null
     length: number
+    latestAdded: number
   }
 
   function getRating(trackId: string): number {

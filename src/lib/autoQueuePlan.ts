@@ -207,6 +207,9 @@ export function buildOrderRank(
         case 'length':
           cmp = a[0].duration - b[0].duration
           break
+        case 'added':
+          cmp = (a[0].createdAt ?? 0) - (b[0].createdAt ?? 0)
+          break
       }
       if (cmp !== 0) return cmp * (sort.sortAsc ? 1 : -1)
       // Ties MIRROR the arrow (2026-09-29, the "arrow flips but the queue

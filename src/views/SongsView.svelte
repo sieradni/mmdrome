@@ -89,6 +89,9 @@
           case 'length':
             cmp = a.duration - b.duration
             break
+          case 'added':
+            cmp = (a.createdAt ?? 0) - (b.createdAt ?? 0)
+            break
         }
         return cmp * (f.sortAsc ? 1 : -1)
       })

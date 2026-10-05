@@ -1,7 +1,7 @@
 import { writable } from 'svelte/store'
 import type { Track } from '../stores/appState'
 
-export type LibrarySortKey = 'rating' | 'loved' | 'year' | 'length'
+export type LibrarySortKey = 'rating' | 'loved' | 'year' | 'length' | 'added'
 
 export interface LibraryFilterState {
   filterOpen: boolean
@@ -67,6 +67,7 @@ export const sortLabels: Record<LibrarySortKey, string> = {
   loved: 'Loved',
   year: 'Year',
   length: 'Length',
+  added: 'Added',
 }
 
 export interface TrackGroupAggregates {
@@ -74,6 +75,9 @@ export interface TrackGroupAggregates {
   lovedCount: number
   year: number | null
   length: number
+  /** Newest track's `createdAt` (epoch ms) in the group; 0 when none carry a
+   *  date. Lets an album/artist surface by its most recently added track. */
+  latestAdded: number
 }
 
 /** Aggregates a track list into album/artist-level values used by the shared filter/sort. */
@@ -87,6 +91,7 @@ export function makeGroupAggregates(
   let lovedCount = 0
   let minYear: number | null = null
   let length = 0
+  let latestAdded = 0
   for (const t of tracks) {
     const r = ratingOf(t.trackId)
     if (r > 0) {
@@ -98,12 +103,15 @@ export function makeGroupAggregates(
       minYear = minYear === null ? t.year : Math.min(minYear, t.year)
     }
     length += t.duration
+    const added = t.createdAt ?? 0
+    if (added > latestAdded) latestAdded = added
   }
   return {
     avgRating: ratedCount > 0 ? sum / ratedCount : 0,
     lovedCount,
     year: minYear,
     length,
+    latestAdded,
   }
 }
 
@@ -191,6 +199,9 @@ export function applyFilterSort<T extends TrackGroupAggregates & { tracks: reado
           break
         case 'length':
           cmp = a.length - b.length
+          break
+        case 'added':
+          cmp = a.latestAdded - b.latestAdded
           break
       }
       return cmp * (f.sortAsc ? 1 : -1)

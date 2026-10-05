@@ -283,7 +283,7 @@
         </button>
       </div>
     <div class="space-y-1 px-3 py-3">
-      {#each ['rating', 'loved', 'year', 'length'] as key (key)}
+      {#each ['rating', 'loved', 'year', 'length', 'added'] as key (key)}
         {@const k = key as LibrarySortKey}
         <button
           onclick={() => applySort(k)}

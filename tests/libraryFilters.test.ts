@@ -38,7 +38,7 @@ interface G extends TrackGroupAggregates {
 }
 
 function group(id: string, tracks: Track[], over: Partial<TrackGroupAggregates> = {}): G {
-  return { id, tracks, avgRating: 0, lovedCount: 0, year: null, length: 0, ...over }
+  return { id, tracks, avgRating: 0, lovedCount: 0, year: null, length: 0, latestAdded: 0, ...over }
 }
 
 test('makeGroupAggregates averages only rated tracks', () => {
@@ -63,6 +63,16 @@ test('makeGroupAggregates: unrated-only group has avg 0; lovedCount and min year
 test('makeGroupAggregates: year is null when no track carries one', () => {
   const g = makeGroupAggregates([mkTrack('a')], () => 0, () => false)
   assert.equal(g.year, null)
+})
+
+test('makeGroupAggregates: latestAdded is the newest createdAt, 0 when none dated', () => {
+  const g = makeGroupAggregates(
+    [mkTrack('a', { createdAt: 1000 }), mkTrack('b', { createdAt: 3000 }), mkTrack('c')],
+    () => 0,
+    () => false,
+  )
+  assert.equal(g.latestAdded, 3000)
+  assert.equal(makeGroupAggregates([mkTrack('a')], () => 0, () => false).latestAdded, 0)
 })
 
 test('trackMatchesGenre is case-insensitive and token-aware', () => {
@@ -137,6 +147,25 @@ test('applyFilterSort sorts by rating (avg over rated tracks), loved, year, leng
   assert.deepEqual(applyFilterSort(groups, defaults({ sortBy: 'loved', sortAsc: false }), () => 0).map((g) => g.id), ['mid', 'low', 'high'])
   assert.deepEqual(applyFilterSort(groups, defaults({ sortBy: 'year' }), () => 0).map((g) => g.id), ['low', 'mid', 'high'])
   assert.deepEqual(applyFilterSort(groups, defaults({ sortBy: 'length' }), () => 0).map((g) => g.id), ['mid', 'high', 'low'])
+})
+
+test('applyFilterSort sorts by added (latestAdded) x asc/desc', () => {
+  const groups = [
+    group('old', [mkTrack('a')], { latestAdded: 1000 }),
+    group('mid', [mkTrack('b')], { latestAdded: 2000 }),
+    group('new', [mkTrack('c')], { latestAdded: 5000 }),
+    group('undated', [mkTrack('d')], { latestAdded: 0 }),
+  ]
+  // Ascending: undated (0) first, then oldest to newest.
+  assert.deepEqual(
+    applyFilterSort(groups, defaults({ sortBy: 'added' }), () => 0).map((g) => g.id),
+    ['undated', 'old', 'mid', 'new'],
+  )
+  // Descending (the picker default): newest first, undated last.
+  assert.deepEqual(
+    applyFilterSort(groups, defaults({ sortBy: 'added', sortAsc: false }), () => 0).map((g) => g.id),
+    ['new', 'mid', 'old', 'undated'],
+  )
 })
 
 test('applyFilterSort returns a new array and never mutates the input', () => {

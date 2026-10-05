@@ -1097,7 +1097,7 @@
           <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
             <span class="text-sm font-medium text-muted">Sort order</span>
             <div class="mt-1.5 space-y-0.5">
-              {#each ['rating', 'loved', 'year', 'length'] as key (key)}
+              {#each ['rating', 'loved', 'year', 'length', 'added'] as key (key)}
                 {@const k = key as LibrarySortKey}
                 <button
                   onclick={() => setAutoSort(k)}
