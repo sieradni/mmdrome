@@ -13,6 +13,13 @@
  * section duplicate (id in both sections) is transient and collapses on
  * promote.
  *
+ * The DRAG planner is part of this invariant (2026-10-04): the tier-3 cross-
+ * section duplicate it can fold is exactly how a queue drag used to put one id
+ * in the user section twice — and because `planDragDrop` feeds the LIVE PREVIEW,
+ * the duplicate crashed Svelte's each-key check mid-drag. `planDragDrop` now
+ * dedupe-moves into the user section and drops the dragged id from the
+ * converted prefix; `applyDragDrop` normalizes again at the write boundary.
+ *
  * Anchor rule: normally the re-anchor targets the (unique) user occurrence of
  * the pre-mutation active id. ONE sanctioned exception — the promoteActive
  * repeat-collapse (2026-09-27): a tier-3 duplicate of an already-played row
@@ -28,6 +35,21 @@ import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import type { QueueState } from '../stores/appState'
 
 const DEV = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true
+
+/** True when an id appears more than once (section-scoped uniqueness check). */
+function hasWithinSectionDuplicate(ids: string[]): boolean {
+  return new Set(ids).size !== ids.length
+}
+
+/**
+ * Keeps only the FIRST occurrence of each id. The store write path must never
+ * emit a within-section duplicate (fatal Svelte each-key collision), so even a
+ * pre-existing corrupt snapshot is normalized as it passes through.
+ */
+function uniqueFirst(ids: string[]): string[] {
+  const seen = new Set<string>()
+  return ids.filter((id) => (seen.has(id) ? false : (seen.add(id), true)))
+}
 
 /**
  * The sections a queue mutation may rewrite. `activeIndex` is deliberately NOT
@@ -78,6 +100,16 @@ export function applyQueueMutation(
   if (mutation === null) return null
   const { anchorForward, ...sections } = mutation
   const updated: QueueState = { ...q, ...sections }
+  if (DEV && (hasWithinSectionDuplicate(updated.userQueue) || hasWithinSectionDuplicate(updated.autoQueue))) {
+    // A within-section duplicate is a fatal Svelte each-key collision
+    // (`u-${trackId}` / `a-${trackId}` in QueueView) — the effect flush aborts
+    // and the view goes inert (nav buttons dead). No builder may emit one; a
+    // violation fails loudly here instead of surfacing as an opaque crash.
+    console.error(
+      '[queueMutation] within-section duplicate — Svelte each-key collision risk:',
+      { userQueue: updated.userQueue, autoQueue: updated.autoQueue },
+    )
+  }
   if (activeId !== undefined) {
     const newCombined = [...updated.userQueue, ...updated.autoQueue]
     const foundIdx = newCombined.indexOf(activeId)
@@ -277,15 +309,31 @@ export function planDragDrop(
       return { user: nextUser, auto }
     }
     const autoTargetIdx = toIdx - U
-    const converted = auto.slice(0, autoTargetIdx)
+    // Dedupe: a tier-3 cross-section duplicate of the DRAGGED id can sit in
+    // the converted prefix, and `remainingUser` + `converted` + `dragged`
+    // would then put that id in the user section TWICE — a fatal Svelte
+    // each-key collision (`e/each_key_duplicate`, QueueView `u-${id}`),
+    // thrown from the drag PREVIEW while the user is still holding the row.
+    // The dragged occurrence carries the move intent, so the converted copy
+    // is dropped.
+    const converted = auto.slice(0, autoTargetIdx).filter((id) => id !== dragged)
     return { user: [...remainingUser, ...converted, dragged], auto: auto.slice(autoTargetIdx) }
   }
 
   const autoFromIdx = fromIdx - U
   const remainingAuto = auto.filter((_, i) => i !== autoFromIdx)
   if (toIdx <= U) {
-    const insertAt = Math.max(0, Math.min(toIdx, user.length))
-    const nextUser = [...user]
+    // Dedupe-move parity with `insertUserAfterActive`: an existing user copy
+    // of the dragged id is removed BEFORE the insert (one user row per track
+    // — the same key-collision guard on the auto→user half). The slot
+    // decrements when the removed copy sat above it so the row still lands
+    // on the drop the user aimed at.
+    const existingIdx = user.indexOf(dragged)
+    const withoutExisting = existingIdx >= 0 ? user.filter((_, i) => i !== existingIdx) : user
+    let insertAt = toIdx
+    if (existingIdx >= 0 && existingIdx < toIdx) insertAt--
+    insertAt = Math.max(0, Math.min(insertAt, withoutExisting.length))
+    const nextUser = [...withoutExisting]
     nextUser.splice(insertAt, 0, dragged)
     return { user: nextUser, auto: remainingAuto }
   }
@@ -333,8 +381,14 @@ export function applyDragDrop(
   if (!liveCombined.includes(draggedTrackId)) return null
   const liveIds = new Set(liveCombined)
   const inPlan = new Set([...plan.user, ...plan.auto])
-  const user = plan.user.filter((id) => liveIds.has(id))
-  const auto = [...plan.auto.filter((id) => liveIds.has(id)), ...liveCombined.filter((id) => !inPlan.has(id))]
+  // Defense in depth: the plan is duplicate-free after the 2026-10-04 fix, but
+  // the reconciliation appends the live tail verbatim — a snapshot that is
+  // ALREADY corrupt would otherwise leak its duplicate into the write.
+  const user = uniqueFirst(plan.user.filter((id) => liveIds.has(id)))
+  const auto = uniqueFirst([
+    ...plan.auto.filter((id) => liveIds.has(id)),
+    ...liveCombined.filter((id) => !inPlan.has(id)),
+  ])
   if (JSON.stringify(user) === JSON.stringify(q.userQueue) && JSON.stringify(auto) === JSON.stringify(q.autoQueue)) {
     return null
   }
