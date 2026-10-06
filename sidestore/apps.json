@@ -27,7 +27,8 @@
           "date": "2026-10-06T09:02:53.161Z",
           "localizedDescription": "Applying a filter or sort to the queue now continues from the current track instead of restarting at the top of the sort order.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.55/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5120090
         },
         {
           "version": "1.2.54",
