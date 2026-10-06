@@ -1,3 +1,19 @@
+## 2026-10-06 (a sort change restarts the queue at the top) — the `fromTop` override removed; the fill continues from the current position
+
+Field report: **applying a new filter/sort to the queue with shuffle off regenerated the auto queue from the TOP of the sorted pool** instead of from where playback was — "the generated queue doesn't take into account the current position, only doing so after toggle shuffle", with the songs immediately after the current one being the view's earliest and the correct ordering only continuing after they ran out (the wrap).
+
+**The pure rotation was never broken — the override bypassed it.** `planAutoQueueFill` sorts the candidate pool by the rank map and then `rotateAfterAnchor`s it so the first track positioned after the anchor leads; the anchor is the **last user-queue entry** (deliberately not the active id — the user may queue tracks past the playing one, and the auto section plays after the whole user pile). But the manager's `autoQueueSort` subscription passed `fromTop: true`, and that branch returned the sorted pool UNROTATED. So an explicit sort pick/flip (and the FilterSortBar apply, which writes the same store) restarted the fill at the top.
+
+**Why it existed, and why it was redundant.** The 2026-09-29 "the arrow flips but the auto queue doesn't change" report was fixed by TWO mechanisms: `buildOrderRank`'s tie-break now mirrors the arrow (the tied-library case, where the order genuinely did not depend on direction) AND `fromTop`. The second was an over-correction: with ties fixed, the rotation head is the anchor's OTHER neighbor, which IS direction-variant — measured directly (asc head `d` vs desc head `b` in the reproduction, `aq4` vs `aq6` in the e2e). So `fromTop` only bought the "arrow visible" property that the tie fix already delivered, and it cost position-awareness.
+
+**Fix: delete `fromTop`.** The option and its branch are gone from `planAutoQueueFill`, `rebuildAutoQueue` lost the parameter, and the `autoQueueSort` subscription calls the plain rebuild. `grep fromTop` is empty. `wrapNotice` now honestly reports a wrap on an explicit sort change (it used to be forced false), which is correct — the notice exists to make the wrap-around read as intentional.
+
+**Reproduction, real entry point first.** The regression test drives the ACTUAL `PlaybackManager` `autoQueueSort` subscription into the REAL `queueManager` (library a..e rated 10..50, `userQueue: ['c']` playing c): before the fix `['a','b','d','e']` (from the top), after `['d','e','a','b']` (continues d,e then wraps a,b). Through the built bundle (`autoqueueadded.spec.ts`, aq1 played with Added DESC = aq3,aq5,aq6,aq1,aq4,aq2): the fill is now `[aq4,aq2,aq3,aq5,aq6]` — continues after the played aq1, wraps the earlier rows to the tail — and can never be the from-the-top `[aq3,aq5,aq6,aq4,aq2]` again.
+
+`[test-enforced: tests/queueManagerFill.test.ts (the subscription reproduction + the B7 flip pin), tests/e2e/autoqueueadded.spec.ts (FROM_TOP_DESC excluded)]` `[not test-pinned: no local Swift toolchain — unaffected, this is pure JS]`
+
+**SideStore note:** the iOS app bundles its own web build, so this only reaches SideStore on the next iOS release (1.2.54 shipped hours before this fix and does NOT carry it).
+
 ## 2026-10-04 (the queue drag that killed the overlay) — a cross-section duplicate folded into a fatal each-key collision
 
 Field report: playing an album in full, looped around, then **dragging a row inside the queue overlay** — `Error: https://svelte.dev/e/each_key_duplicate`, and the overlay went INERT ("none of the buttons to go back to current song or home was working"). Svelte's each-key check throws out of the effect flush, so every later update — including the nav state — aborts with it.

@@ -4,11 +4,14 @@
 // "decision vs application" gap for the interpreter — the two no-op guards
 // must skip the Dexie write, and the written queue must equal kept+fill.
 
+import './stub-audio-worklet-node'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { get } from 'svelte/store'
 import { db } from '../src/lib/db'
 import { queueManager } from '../src/lib/queueManager'
+import { PlaybackManager } from '../src/lib/playbackManager'
+import { engine } from '../src/lib/engineFacade'
 import { libraryFilters } from '../src/lib/libraryFilters'
 import {
   queue,
@@ -81,6 +84,18 @@ function reset(): void {
 function lastWrite(): QueueState & { id: string } {
   assert.ok(playQueueWrites.length > 0, 'expected at least one queue write')
   return playQueueWrites[playQueueWrites.length - 1] as QueueState & { id: string }
+}
+
+/** Minimal engine surface the `_subscribeShared` reactions can touch under Node. */
+class FakeEngine {
+  setSpeed(): void {}
+  setSnapTolerance(): void {}
+  setPitchOctaves(): void {}
+  setMasterVolume(): void {}
+  setTapeMode(): void {}
+  setCrossfade(): void {}
+  setAudioMixing(): void {}
+  pushNativeEqFromStore(): void {}
 }
 
 test('replenish fills the auto queue from fresh tracks, excluding the playing user track', () => {
@@ -186,13 +201,13 @@ test('the auto queue follows its OWN sort, never the library sort (2026-09-29 de
   queueManager.rebuildAutoQueue()
   assert.deepEqual(get(queue).autoQueue, ['a', 'b', 'c', 'd', 'e'], 'the auto sort re-ranks the fill')
 
-  // An EXPLICIT sort flip (the manager passes fromTop) shows the sorted
-  // order FROM THE TOP — no anchor rotation, so the arrow's effect lands at
-  // the visible queue head (the 2026-09-29 "flip does nothing" report).
+  // An explicit sort FLIP still visibly re-ranks the head (the 2026-09-29
+  // "flip does nothing" report stays fixed) — the head is the anchor's OTHER
+  // neighbor, so the direction is visible without restarting from the top.
   autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
-  queueManager.rebuildAutoQueue(true)
-  assert.deepEqual(get(queue).autoQueue, ['e', 'd', 'c', 'b', 'a'], 'fromTop rebuild: rating-sorted DESC from the top (playing f still excluded)')
-  assert.equal(get(queueWrapNotice), false, 'fromTop never wraps')
+  queueManager.rebuildAutoQueue()
+  assert.deepEqual(get(queue).autoQueue, ['e', 'd', 'c', 'b', 'a'], 'rating-sorted DESC, continuing after the anchor f (excluded)')
+  assert.equal(get(queueWrapNotice), false, 'the anchor sits at the DESC top — no wrap')
 })
 
 test('shuffle mode permutes the pool (set-preserving) and clears the wrap notice', () => {
@@ -235,6 +250,55 @@ test('the empty-fill notice fires when nothing can be added and clears on a succ
   queueManager.replenishAutoQueue()
   assert.equal(get(autoQueueEmptyNotice), false, 'a successful fill clears the notice')
   assert.deepEqual(get(queue).autoQueue, ['t2', 't3', 't4'])
+})
+
+test('a fully-tied library still shows the flip at the queue head (rotation preserves the arrow)', () => {
+  // The reason `fromTop` once existed: on a library that ties on the sort key
+  // (unrated → every rating 0) the old fixed tie-break made the direction a
+  // no-op. The tie fix mirrors the arrow in `buildOrderRank`; the anchor
+  // rotation must keep that visible at the HEAD — the property the removed
+  // fromTop override used to provide redundantly.
+  reset()
+  library.set(['a', 'b', 'c', 'd', 'e'].map((id) => track(id))) // no ratings → all tie
+  setQueue({ userQueue: ['c'], activeIndex: 0 }) // playing c
+
+  autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
+  queueManager.rebuildAutoQueue()
+  assert.deepEqual(get(queue).autoQueue, ['d', 'e', 'a', 'b'], 'ascending head is the anchor\'s up-neighbor')
+
+  autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
+  queueManager.rebuildAutoQueue()
+  assert.deepEqual(get(queue).autoQueue, ['b', 'a', 'e', 'd'], 'descending head is the anchor\'s down-neighbor — the flip is visible')
+})
+
+test('the autoQueueSort subscription continues the fill from the playing track (not the top)', () => {
+  // REPRODUCTION for the mission report: applying a new filter/sort to the
+  // queue with shuffle off regenerated the auto queue from the TOP of the
+  // sorted pool instead of from the current position. Driven through the REAL
+  // entry point — the PlaybackManager `autoQueueSort` subscription — so a
+  // regression in the wiring (not just the pure plan) is caught here.
+  reset()
+  library.set(['a', 'b', 'c', 'd', 'e'].map((id) => track(id)))
+  metadataCache.set(metaOf([['a', 10], ['b', 20], ['c', 30], ['d', 40], ['e', 50]]))
+  setQueue({ userQueue: ['c'], activeIndex: 0 }) // playing c, mid-list
+
+  const m = new PlaybackManager({
+    engine: new FakeEngine() as unknown as typeof engine,
+    queueManager,
+  })
+  const priv = m as unknown as { _subscribeShared(): Array<() => void>; _initialized: boolean }
+  priv._initialized = true
+  const unsubs = priv._subscribeShared()
+  try {
+    autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
+
+    // The Songs view order is a,b,c,d,e and playback is at c — the regenerated
+    // tail must continue d,e then wrap a,b, matching the view order after the
+    // current track. Restarting at the top ("a,b,d,e") is the reported bug.
+    assert.deepEqual(get(queue).autoQueue, ['d', 'e', 'a', 'b'])
+  } finally {
+    for (const u of unsubs) u()
+  }
 })
 
 test('searchQuery persists as a filter through the real manager', () => {

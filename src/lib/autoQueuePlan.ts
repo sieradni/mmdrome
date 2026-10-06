@@ -275,7 +275,7 @@ export function filterRangesValid(f: Pick<AutoQueueFilterFields, 'minRating' | '
 export function planAutoQueueFill(
   state: AutoQueuePlanState,
   needed: number,
-  opts: { keepAuto: boolean; fromTop?: boolean },
+  opts: { keepAuto: boolean },
 ): AutoQueueFillPlan {
   const { library: lib, userQueue, autoQueue, recentTrackIds, activeId, shuffle, sort, filters, meta } = state
   const inUser = new Set(userQueue)
@@ -327,14 +327,11 @@ export function planAutoQueueFill(
     }
     const orderRank = buildOrderRank(lib, sort, meta)
     pool.sort((a, b) => (orderRank.get(a.trackId) ?? 0) - (orderRank.get(b.trackId) ?? 0))
-    // An explicit sort change passes fromTop: the sorted order shows FROM
-    // THE TOP — rotating after the anchor would land the head on whatever
-    // follows the playing track (often the same row in both directions,
-    // which read as "the sort does nothing"). Background rebuilds keep the
-    // anchor rotation.
-    if (opts.fromTop) {
-      return { kept, pool, shuffle: false, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
-    }
+    // ALWAYS rotate after the anchor (the last user-queue entry — the point
+    // playback is headed from), including an explicit sort change: the fill
+    // must CONTINUE from the current position in the new order, not restart
+    // at the top of the sorted pool (the 2026-10-06 field report). The arrow
+    // is still visible at the head — it lands on the anchor's OTHER neighbor.
     const rotated = rotateAfterAnchor(pool, orderRank, userQueue[userQueue.length - 1])
     return { kept, pool: rotated.pool, shuffle: false, wrapNotice: rotated.wrapNotice, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
   }

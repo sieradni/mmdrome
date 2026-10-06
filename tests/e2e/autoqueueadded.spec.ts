@@ -39,8 +39,17 @@ const SONGS = [
 }))
 
 // aq1 is played first (→ the user queue), so the auto queue holds aq2..aq6.
-const DESC = ['navidrome-aq3', 'navidrome-aq5', 'navidrome-aq6', 'navidrome-aq4', 'navidrome-aq2']
-const ASC = ['navidrome-aq2', 'navidrome-aq4', 'navidrome-aq6', 'navidrome-aq5', 'navidrome-aq3']
+//
+// The fill CONTINUES from the played aq1 in the sort order — it does NOT
+// restart at the top of the sorted pool (the 2026-10-06 report). Added DESC is
+// aq3,aq5,aq6,aq1,aq4,aq2; with aq1 played and excluded, the fill continues
+// aq4,aq2 and wraps the earlier rows to the tail. ASC (aq2,aq4,aq1,aq6,aq5,aq3)
+// continues aq6,aq5,aq3 then wraps aq2,aq4. Restarting at the top would
+// produce FROM_TOP_DESC/ASC instead — the regression this pins.
+const DESC = ['navidrome-aq4', 'navidrome-aq2', 'navidrome-aq3', 'navidrome-aq5', 'navidrome-aq6']
+const ASC = ['navidrome-aq6', 'navidrome-aq5', 'navidrome-aq3', 'navidrome-aq2', 'navidrome-aq4']
+// What a from-the-top rebuild would produce (the 2026-10-06 regression).
+const FROM_TOP_DESC = ['navidrome-aq3', 'navidrome-aq5', 'navidrome-aq6', 'navidrome-aq4', 'navidrome-aq2']
 // What the index tie-break would produce if buildOrderRank lost its `added` case.
 const TIE_FALLBACK_DESC = ['navidrome-aq6', 'navidrome-aq5', 'navidrome-aq4', 'navidrome-aq3', 'navidrome-aq2']
 
@@ -94,6 +103,8 @@ test('the auto-queue editor offers Added and reorders the fill; flipping reverse
 
   await expect.poll(() => autoOrder(page)).toEqual(DESC)
   expect(await autoOrder(page)).not.toEqual(TIE_FALLBACK_DESC)
+  // Position-aware: the fill continues from the played aq1, never the top.
+  expect(await autoOrder(page)).not.toEqual(FROM_TOP_DESC)
 
   // Re-picking the active key flips the direction → oldest first.
   await openAutoFilters(page)
