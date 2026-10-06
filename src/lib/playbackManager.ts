@@ -560,9 +560,12 @@ export class PlaybackManager {
       const key = `${sort.sortBy}|${String(sort.sortAsc)}`
       if (key === this._lastSortKey) return
       this._lastSortKey = key
-      // fromTop: the user just picked/flipped a sort — show the sorted order
-      // from the top (the anchor rotation would hide the arrow's effect).
-      this._qm.rebuildAutoQueue(true)
+      // The rebuild continues from the anchor (the last user-queue entry —
+      // where playback is headed), so the new order fills the UPCOMING songs
+      // as the view would order them after the current track, instead of
+      // restarting at the top of the sorted pool (the 2026-10-06 report).
+      // The flip is still visible: the head is the anchor's other neighbor.
+      this._qm.rebuildAutoQueue()
     }))
 
     // Keep the native engine's queue snapshot in step with ANY queue mutation
