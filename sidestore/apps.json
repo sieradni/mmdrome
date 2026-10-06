@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.53",
-      "versionDate": "2026-10-04T21:44:55.507Z",
-      "versionDescription": "Recovery and streaming reliability: the audio engine rebuilds after an invalidated audio session instead of dying until relaunch (with a tap-to-restart banner); prefetch retries use the classified ladder and carry response fingerprints; and transcode streams start as soon as the file is readable.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.53/mmdrome.ipa",
+      "version": "1.2.54",
+      "versionDate": "2026-10-06T08:24:56.219Z",
+      "versionDescription": "Fixes a crash when dragging rows in the queue, and adds a 'Recently added' library sort.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.54/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.54",
+          "buildVersion": "58",
+          "date": "2026-10-06T08:24:56.219Z",
+          "localizedDescription": "Fixes a crash when dragging rows in the queue, and adds a 'Recently added' library sort.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.54/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.53",
           "buildVersion": "57",
@@ -530,6 +538,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.54",
+      "identifier": "ios-v1.2.54",
+      "appID": "com.mmdrome.player",
+      "caption": "Fixes a crash when dragging rows in the queue, and adds a 'Recently added' library sort.",
+      "date": "2026-10-06T08:24:56.219Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.53",
       "identifier": "ios-v1.2.53",
       "appID": "com.mmdrome.player",
@@ -562,15 +579,6 @@
       "appID": "com.mmdrome.player",
       "caption": "The stream self-test now folds the promote verdict (it is logged on the loader domain) and treats a 206 as Range proof, so its checks popula",
       "date": "2026-10-02T21:31:28.875Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.49",
-      "identifier": "ios-v1.2.49",
-      "appID": "com.mmdrome.player",
-      "caption": "The stream self-test now captures a running stream's events (its look-back was reading the wrong clock), so its verdicts populate instead of",
-      "date": "2026-10-02T21:12:42.252Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
