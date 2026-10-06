@@ -53,3 +53,22 @@ export declare function planDeploy(f: { mirrorServes: boolean }): DeployPlan
 export declare function deriveReleasePhase(f: ReleaseFacts): PhaseDecision
 
 export declare function stateRecordValid(record: { sha?: string } | undefined, currentSha: string): boolean
+
+/** The Pages build state for one commit; `pending` also means "not listed yet". */
+export type PagesState = 'pending' | 'built' | 'errored'
+
+export declare function pagesStateForCommit(builds: unknown, commit: string | undefined): PagesState
+
+/** The next action for the surface wait (bounded; never assumes success). */
+export type SurfaceAction = 'pass' | 'wait' | 'fail'
+
+export interface SurfaceObservation {
+  pendingSurfaces: string[]
+  pagesState: PagesState | string
+  elapsedMs: number
+  pagesBuiltElapsedMs: number | null
+  pagesTimeoutMs: number
+  convergeTimeoutMs: number
+}
+
+export declare function decideSurfaceVerification(obs: SurfaceObservation): { action: SurfaceAction; reason: string }

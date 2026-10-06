@@ -193,3 +193,68 @@ export function deriveReleasePhase(f) {
 export function stateRecordValid(record, currentSha) {
   return !!record && record.sha === currentSha
 }
+
+// ── SideStore surface verification (2026-10-06) ────────────────────────────
+//
+// The finalize job used to sample the CDN surfaces for a fixed 10 × 15 s. A
+// queued GitHub Pages deployment routinely outlasts that: 1.2.55's mirror
+// build sat QUEUED for 25+ minutes and the finalize failed a release that was
+// in fact complete. The wait now keys on the Pages build for the deployed
+// gh-pages commit, so "the CDN has not caught up yet" is a WAIT and only "the
+// deployment is done (or stuck) and the surface still serves the old release"
+// is a FAIL. Both states stay bounded, and the fail reasons stay loud.
+
+/**
+ * The Pages build state for one commit, from a `repos/{o}/{r}/pages/builds`
+ * list. `pending` also covers "the build is not listed yet" and a malformed
+ * payload — both mean "keep waiting, bounded", never "assume success".
+ *
+ * @param {unknown} builds  the parsed pages/builds response
+ * @param {string|undefined} commit  the deployed gh-pages commit
+ * @returns {'pending'|'built'|'errored'}
+ */
+export function pagesStateForCommit(builds, commit) {
+  if (!Array.isArray(builds) || !commit) return 'pending'
+  const build = builds.find((b) => b && b.commit === commit)
+  if (!build) return 'pending'
+  if (build.status === 'built') return 'built'
+  if (build.status === 'errored') return 'errored'
+  return 'pending'
+}
+
+/**
+ * The next action for the surface wait, from one poll tick's observations.
+ *
+ * @param {{pendingSurfaces: string[], pagesState: string, elapsedMs: number,
+ *   pagesBuiltElapsedMs: number|null, pagesTimeoutMs: number,
+ *   convergeTimeoutMs: number}} obs
+ * @returns {{action: 'pass'|'wait'|'fail', reason: string}}
+ */
+export function decideSurfaceVerification(obs) {
+  const pending = obs.pendingSurfaces ?? []
+  if (pending.length === 0) return { action: 'pass', reason: 'every surface serves the release' }
+  const names = pending.join(', ')
+  if (obs.pagesState === 'errored') {
+    return { action: 'fail', reason: `the Pages deployment errored and ${names} still serve the old release` }
+  }
+  if (obs.pagesState === 'built') {
+    // The deployment finished — only the CDN-propagation window applies now.
+    // Past it the deployment is not the story any more: the surface is stale.
+    const since = obs.pagesBuiltElapsedMs == null ? 0 : obs.elapsedMs - obs.pagesBuiltElapsedMs
+    if (since >= obs.convergeTimeoutMs) {
+      return {
+        action: 'fail',
+        reason: `the Pages deployment finished ${Math.round(since / 1000)}s ago but ${names} still serve the old release`,
+      }
+    }
+    return { action: 'wait', reason: `${names} pending; the Pages deployment is built — waiting for CDN propagation` }
+  }
+  // pending: the deployment itself may still be queued (the 1.2.55 shape).
+  if (obs.elapsedMs >= obs.pagesTimeoutMs) {
+    return {
+      action: 'fail',
+      reason: `the Pages deployment never completed within ${Math.round(obs.pagesTimeoutMs / 1000)}s and ${names} still serve the old release`,
+    }
+  }
+  return { action: 'wait', reason: `${names} pending; waiting for the Pages deployment` }
+}

@@ -9,6 +9,8 @@ import {
   planDeploy,
   deriveReleasePhase,
   stateRecordValid,
+  pagesStateForCommit,
+  decideSurfaceVerification,
   PHASE_ORDER,
 } from '../scripts/releasePhaseCore.mjs'
 import type { ReleaseFacts } from '../scripts/releasePhaseCore.mjs'
@@ -164,4 +166,67 @@ test('done requires EVERY surface: manifest correct AND both CDNs current', () =
 
 test('PHASE_ORDER is the documented execution order', () => {
   assert.deepEqual(PHASE_ORDER, ['preflight', 'gates', 'bump', 'branch-ci', 'tag', 'verify'])
+})
+
+// ── The SideStore surface wait (2026-10-06) ────────────────────────────────
+// The finalize gate must not fail a COMPLETE release because a queued Pages
+// deployment outlasted a short CDN sample (1.2.55's mirror build sat queued
+// 25+ minutes), and it must not pass when a surface genuinely never serves it.
+
+const options = { pagesTimeoutMs: 1_800_000, convergeTimeoutMs: 300_000 }
+
+const wait = (pendingSurfaces: string[], pagesState: string, elapsedMs: number, pagesBuiltElapsedMs: number | null = null) =>
+  decideSurfaceVerification({ pendingSurfaces, pagesState, elapsedMs, pagesBuiltElapsedMs, ...options })
+
+test('pagesStateForCommit: the build for the deployed commit decides the state', () => {
+  const builds = [{ commit: 'bbb', status: 'building' }, { commit: 'aaa', status: 'built' }]
+  assert.equal(pagesStateForCommit(builds, 'aaa'), 'built')
+  assert.equal(pagesStateForCommit(builds, 'bbb'), 'pending', 'still building → pending')
+  assert.equal(pagesStateForCommit([{ commit: 'aaa', status: 'errored' }], 'aaa'), 'errored')
+  // Not listed yet / foreign shapes → pending (keep waiting, bounded).
+  assert.equal(pagesStateForCommit(builds, 'ccc'), 'pending')
+  assert.equal(pagesStateForCommit(builds, undefined), 'pending')
+  assert.equal(pagesStateForCommit(null, 'aaa'), 'pending')
+  assert.equal(pagesStateForCommit('nope', 'aaa'), 'pending')
+  assert.equal(pagesStateForCommit([null, { commit: 'aaa', status: 'weird' }], 'aaa'), 'pending')
+})
+
+test('a serving release passes regardless of the deployment signal', () => {
+  assert.equal(wait([], 'pending', 1000).action, 'pass')
+  assert.equal(wait([], 'errored', 1000).action, 'pass', 'an unrelated Pages error must not fail a serving release')
+})
+
+test('KEEPS WAITING while the Pages deployment is queued — never fails on lag', () => {
+  // 25 minutes of queueing is exactly the 1.2.55 shape: still a wait.
+  const queued = wait(['gh-pages mirror'], 'pending', 25 * 60_000)
+  assert.equal(queued.action, 'wait')
+  assert.match(queued.reason, /gh-pages mirror/)
+  // Only past the bound does it fail, naming the surface.
+  const expired = wait(['gh-pages mirror'], 'pending', options.pagesTimeoutMs)
+  assert.equal(expired.action, 'fail')
+  assert.match(expired.reason, /never completed/)
+  assert.match(expired.reason, /gh-pages mirror/)
+})
+
+test('once the deployment is BUILT only the short CDN window applies', () => {
+  // Just built → the CDN may still be propagating: wait, never fail on lag.
+  assert.equal(wait(['gh-pages mirror'], 'built', 20_000, 10_000).action, 'wait')
+  // Propagated past the window → the deployment is no longer the story.
+  const stale = wait(['gh-pages mirror'], 'built', 10_000 + options.convergeTimeoutMs, 10_000)
+  assert.equal(stale.action, 'fail')
+  assert.match(stale.reason, /finished .* ago but/)
+  // An unset "built at" (a build already complete before the first tick) is 0.
+  assert.equal(wait(['gh-pages mirror'], 'built', 1_000, null).action, 'wait')
+})
+
+test('an errored deployment fails immediately (the release genuinely is unreachable there)', () => {
+  const d = wait(['gh-pages mirror'], 'errored', 1000)
+  assert.equal(d.action, 'fail')
+  assert.match(d.reason, /errored/)
+})
+
+test('never passes vacuously: every stale surface is named in the failure', () => {
+  const d = wait(['jsDelivr CDN', 'gh-pages mirror'], 'built', 400_000, 0)
+  assert.equal(d.action, 'fail')
+  assert.match(d.reason, /jsDelivr CDN, gh-pages mirror/)
 })

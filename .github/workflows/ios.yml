@@ -126,6 +126,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Read the Pages build for the deployed gh-pages commit — the surface
+      # wait keys on it. Without this scope the builds API is unreadable and
+      # the wait silently falls back to its timeout (see verify-surfaces.mjs).
+      pages: read
     steps:
       - name: Checkout (full history)
         uses: actions/checkout@v4
@@ -228,31 +232,20 @@ jobs:
           echo "CDN purge requested"
 
       - name: Verify every SideStore surface serves the new release
-        # The verification E11 mandates, now enforced by CI: each surface is
-        # polled until it serves the new version AND its stamped size (or the
-        # job fails loudly). A red step here means SideStore cannot see the
-        # release — fix before anything else.
+        # The verification E11 mandates: every surface SideStore reads must
+        # serve the released version AND its published byte size. It waits on
+        # the PAGES DEPLOYMENT (the build for the deployed gh-pages commit),
+        # NOT a fixed CDN sample — a queued Pages build routinely outlasts any
+        # short window (1.2.55's mirror build sat queued 25+ minutes and this
+        # gate failed a release that was in fact complete). Bounded, and it
+        # still fails loudly when a surface genuinely never serves the release.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION="${{ steps.ver.outputs.version }}"
-          SIZE="${{ steps.size.outputs.size }}"
-          check () {
-            NAME="$1"; URL="$2"
-            for i in 1 2 3 4 5 6 7 8 9 10; do
-              BODY=$(curl -fsS "$URL" 2>/dev/null || true)
-              GOT_VERSION=$(printf '%s' "$BODY" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).apps[0].version)}catch(e){console.log('PARSE-FAIL')}})")
-              GOT_SIZE=$(printf '%s' "$BODY" | node -e "let d='',v=process.argv[1];process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const e=JSON.parse(d).apps[0].versions.find(x=>x.version===v);console.log(e&&e.size!==undefined?e.size:'MISSING')}catch(e2){console.log('PARSE-FAIL')}})" "$VERSION")
-              if [ "$GOT_VERSION" = "$VERSION" ] && [ "$GOT_SIZE" = "$SIZE" ]; then
-                echo "$NAME serves $VERSION (size $SIZE) - OK"
-                return 0
-              fi
-              echo "$NAME attempt $i: version=$GOT_VERSION size=$GOT_SIZE — retrying in 15 s"
-              sleep 15
-            done
-            echo "::error::$NAME never served $VERSION (size $SIZE) — SideStore cannot see this release"
-            return 1
-          }
-          check "jsDelivr CDN" "https://cdn.jsdelivr.net/gh/${{ github.repository }}@main/sidestore/apps.json"
-          check "gh-pages mirror" "https://${{ github.repository_owner }}.github.io/${GITHUB_REPOSITORY#*/}/sidestore/apps.json"
+          node scripts/verify-surfaces.mjs \
+            --version "${{ steps.ver.outputs.version }}" \
+            --size "${{ steps.size.outputs.size }}" \
+            --repo "${{ github.repository }}"
 
       - name: Verify release asset integrity
         env:
