@@ -27,7 +27,8 @@
           "date": "2026-10-06T08:24:56.219Z",
           "localizedDescription": "Fixes a crash when dragging rows in the queue, and adds a 'Recently added' library sort.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.54/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5120103
         },
         {
           "version": "1.2.53",
