@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.54",
-      "versionDate": "2026-10-06T08:24:56.219Z",
-      "versionDescription": "Fixes a crash when dragging rows in the queue, and adds a 'Recently added' library sort.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.54/mmdrome.ipa",
+      "version": "1.2.55",
+      "versionDate": "2026-10-06T09:02:53.161Z",
+      "versionDescription": "Applying a filter or sort to the queue now continues from the current track instead of restarting at the top of the sort order.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.55/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.55",
+          "buildVersion": "59",
+          "date": "2026-10-06T09:02:53.161Z",
+          "localizedDescription": "Applying a filter or sort to the queue now continues from the current track instead of restarting at the top of the sort order.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.55/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5120090
+        },
         {
           "version": "1.2.54",
           "buildVersion": "58",
@@ -539,6 +548,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.55",
+      "identifier": "ios-v1.2.55",
+      "appID": "com.mmdrome.player",
+      "caption": "Applying a filter or sort to the queue now continues from the current track instead of restarting at the top of the sort order.",
+      "date": "2026-10-06T09:02:53.161Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.54",
       "identifier": "ios-v1.2.54",
       "appID": "com.mmdrome.player",
@@ -571,15 +589,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Defer the stream self-test probe while a transcode is live, recover partial transcodes on writer error, attribute transfer cuts (churn vs st",
       "date": "2026-10-03T00:43:50.168Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.50",
-      "identifier": "ios-v1.2.50",
-      "appID": "com.mmdrome.player",
-      "caption": "The stream self-test now folds the promote verdict (it is logged on the loader domain) and treats a 206 as Range proof, so its checks popula",
-      "date": "2026-10-02T21:31:28.875Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
