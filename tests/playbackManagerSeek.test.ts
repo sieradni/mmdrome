@@ -48,7 +48,9 @@ class FakeSleepTimer {
   }
 }
 
-class FakeWebTransport {}
+class FakeWebTransport {
+  cancelNext(): void {}
+}
 
 class FakeBgTransport {
   isEngaged: boolean
@@ -69,15 +71,29 @@ class FakeBgTransport {
 
 class FakeNativeTransport {
   seekedTo: number[] = []
-  engagedValue = true
-  seek(position: number, _opts?: { live?: boolean }): Promise<void> {
+  seekTrackIds: Array<string | null> = []
+  engagedValue = false
+  lastTrackIdValue: string | null = null
+
+  get engaged(): boolean {
+    return this.engagedValue
+  }
+  get lastTrackId(): string | null {
+    return this.lastTrackIdValue
+  }
+
+  seek(position: number, trackId: string | null = null): Promise<void> {
     // Records every call that REACHES it — the live-seek gate is manager-
     // side (playbackCore/seekThrottle), so the fake observes only passing
-    // samples, exactly what the engine would receive.
-    void _opts
+    // samples, exactly what the engine would receive. The trackId is the
+    // manager's row identity (Phase 1: the transport holds the seek until
+    // that row is engaged).
     this.seekedTo.push(position)
+    this.seekTrackIds.push(trackId)
     return Promise.resolve()
   }
+
+  disengage(): void {}
 }
 
 function makeHarness(opts: { engaged: boolean; native: boolean; src: string }) {
@@ -261,4 +277,74 @@ test('bg-engaged live seeks stay unthrottled (no fg fade machinery to guard)', a
   // All three reach the bg element — nothing was gated.
   assert.equal(h.el.currentTime, 12)
   assert.deepEqual(h.am.seekedTo, [])
+})
+
+// --- Phase 1 (2026-10-07): parked seek intent -------------------------------
+// The latch is armed ONLY when the engine layer cannot take the position at
+// issue time. A deliverable seek must NOT latch: a later fresh play of the same
+// row still has to start at 0.
+
+type LatchView = { _seekIntent: { intent: { trackId: string; position: number } | null } }
+
+function latchOf(m: PlaybackManager): LatchView['_seekIntent'] {
+  return (m as unknown as LatchView)._seekIntent
+}
+
+test('a native seek on the engaged row is delivered and NOT latched', () => {
+  const h = makeHarness({ engaged: false, native: true, src: 'https://srv/stream' })
+  resetStores()
+  h.nativeTransport.engagedValue = true
+  h.nativeTransport.lastTrackIdValue = track.trackId
+
+  h.m.seek(25)
+
+  assert.deepEqual(h.nativeTransport.seekedTo, [25])
+  assert.deepEqual(h.nativeTransport.seekTrackIds, [track.trackId])
+  // No latch: this row can take the seek now, and a fresh play must start at 0.
+  assert.equal(latchOf(h.m).intent, null)
+})
+
+test('a native seek while the row is not engaged parks the intent and forwards it with the row identity', () => {
+  const h = makeHarness({ engaged: false, native: true, src: 'https://srv/stream' })
+  resetStores()
+  h.nativeTransport.engagedValue = true
+  h.nativeTransport.lastTrackIdValue = 'navidrome-other'
+
+  h.m.seek(25)
+
+  // The manager always forwards (the transport decides to hold and replay);
+  // the row identity is what lets it avoid seeking the OUTGOING row.
+  assert.deepEqual(h.nativeTransport.seekedTo, [25])
+  assert.deepEqual(h.nativeTransport.seekTrackIds, [track.trackId])
+  assert.equal(latchOf(h.m).intent?.trackId, track.trackId)
+  assert.equal(latchOf(h.m).intent?.position, 25)
+  assert.equal(get(currentTime), 25)
+})
+
+test('a web seek with no source parks the intent and starts the load (the time is never dropped)', () => {
+  const h = makeHarness({ engaged: false, native: false, src: '' })
+  resetStores()
+  let plays = 0
+  ;(h.m as unknown as { play(): Promise<void> }).play = async () => {
+    plays++
+  }
+
+  h.m.seek(25)
+
+  assert.equal(plays, 1)
+  assert.equal(get(currentTime), 25)
+  assert.deepEqual(h.am.seekedTo, [])
+  assert.equal(latchOf(h.m).intent?.trackId, track.trackId)
+  assert.equal(latchOf(h.m).intent?.position, 25)
+})
+
+test('a stop drops the parked intent (no stale position onto a later play)', () => {
+  const h = makeHarness({ engaged: false, native: false, src: '' })
+  resetStores()
+  ;(h.m as unknown as { play(): Promise<void> }).play = async () => {}
+
+  h.m.seek(25)
+  assert.equal(latchOf(h.m).intent?.position, 25)
+  ;(h.m as unknown as { _stopPlayback(): void })._stopPlayback()
+  assert.equal(latchOf(h.m).intent, null)
 })

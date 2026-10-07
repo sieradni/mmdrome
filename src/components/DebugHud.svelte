@@ -107,6 +107,10 @@
       crossfadeDuration: s.crossfadeDuration,
       crossfadeCurve: s.crossfadeCurve,
       iosAudioMixing: s.iosAudioMixing,
+      // Not a secret: the epoch kill switch must be verifiable in a field dump
+      // (Phase 2, 2026-10-07) — a report that says "the seek still waits" must
+      // be able to prove whether `off` was in effect.
+      seekEpochs: s.seekEpochs ?? 'auto',
       preloadTracks: s.preloadTracks,
       scrobbling: s.scrobbling,
       syncToNavidrome: s.syncToNavidrome,

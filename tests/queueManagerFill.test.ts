@@ -95,6 +95,7 @@ class FakeEngine {
   setTapeMode(): void {}
   setCrossfade(): void {}
   setAudioMixing(): void {}
+  setSeekEpochs(): void {}
   pushNativeEqFromStore(): void {}
 }
 

@@ -21,11 +21,13 @@ import { WebTransport } from './playbackCore/webTransport'
 import { WebBgTransport, type BgFacts, type LoadDecision } from './playbackCore/webBgTransport'
 import { NativeTransport } from './playbackCore/nativeTransport'
 import { trailBridge } from './playbackCore/nativeBridgeTrail'
+import { deriveSeekCapability } from './playbackCore/seekCapability'
 import { dbgDanger, enabledDomainsList } from './debugLog'
 import { reconcileReload } from './playbackCore/nativeReconcile'
 import { decideAdvance, type LoopMode } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
 import { freshSeekThrottle, resetSeekThrottle, shouldEmitSeek } from './playbackCore/seekThrottle'
+import { clearSeekIntent, consumeSeekIntent, createSeekIntentState, latchSeekIntent } from './playbackCore/seekIntent'
 import { computeReplayGainFields } from './playbackCore/replayGain'
 import {
   currentTrack,
@@ -98,6 +100,12 @@ export class PlaybackManager {
   private _seekThrottle = freshSeekThrottle()
   /** Injectable clock for the cadence (tests pin the timing matrix). */
   _nowFn: () => number = () => performance.now()
+  /** Phase 1 (2026-10-07): the parked playback-position intent. Armed by
+   *  `seek()` ONLY when the engine layer cannot take the position yet, spent
+   *  by the load path that finally owns a source — so a scrub into an
+   *  unloaded row is never rewritten to 0:00. Pure latch: see
+   *  `playbackCore/seekIntent.ts`. */
+  private _seekIntent = createSeekIntentState()
   private _webTransport: WebTransport | null = null
   private _bgTransport: WebBgTransport | null = null
   private _nativeTransport: NativeTransport | null = null
@@ -338,6 +346,9 @@ export class PlaybackManager {
     nativeEngine.initPreloadForwarding((event) => {
       emitPreloadEvent(mapNativePreloadEvent(event))
     })
+    // Seek-epoch telemetry (Phase 2, 2026-10-07): the plugin's listener writes
+    // the bridge-trail line (so it exists even with no manager interest); the
+    // manager's callback is the extension point (nothing here drives playback).
     await transport.init()
 
     // 1.5 — recover a track the engine kept playing across a webview reload.
@@ -349,10 +360,14 @@ export class PlaybackManager {
     this._applyPlaybackParams()
     this._engine.setCrossfade(s.crossfadeDuration ?? 0)
     this._engine.setAudioMixing(s.iosAudioMixing ?? 'exclusive')
+    this._engine.setSeekEpochs(s.seekEpochs ?? 'auto')
     this._syncNativePreload()
     this._engine.pushNativeEqFromStore()
 
     BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode ?? 'off' }).catch(() => {})
+    // Phase 2 kill switch (2026-10-07): pushed at BOOT, not on the settings
+    // edge alone — a repro session must launch with the switch already
+    // applied (the same rule the verbose domains follow).
     transport.setLoopMode(get(loopMode)).catch(() => {})
 
     // Bridge-trail boot parameters (2026-09-19): the engine's crossfade,
@@ -425,6 +440,9 @@ export class PlaybackManager {
     // so boot parity is unchanged.
     let prevMixing: string | null = null
     let prevPreload: number | null = null
+    // Phase 2 kill switch: pushed on a VALUE change only (the boot push rides
+    // _initNative). Sentinel '' keeps the subscription-time fire harmless.
+    let prevSeekEpochs = ''
     unsubs.push(settings.subscribe((s) => {
       const crossfadeVal = s.crossfadeDuration ?? 0
       const mixingVal = s.iosAudioMixing ?? 'exclusive'
@@ -472,6 +490,16 @@ export class PlaybackManager {
         }
         if (s.replayGainMode) {
           BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode }).catch(() => {})
+        }
+        // Phase 2 kill switch: a mid-session flip (the field rollback) must
+        // reach the engine without a relaunch. `off` stops every new epoch
+        // open AND discards a live one (the engine side of the switch).
+        // Boot and reaction share the ONE facade call (pinning the reaction
+        // pins the contract — the audio-mixing rule).
+        const epochsVal = s.seekEpochs ?? 'auto'
+        if (epochsVal !== prevSeekEpochs) {
+          prevSeekEpochs = epochsVal
+          this._engine.setSeekEpochs(epochsVal)
         }
       } else {
         const track = get(currentTrack)
@@ -690,6 +718,15 @@ export class PlaybackManager {
         if (track.replayGain != null) row.replayGain = track.replayGain
         if (track.albumReplayGain != null) row.albumReplayGain = track.albumReplayGain
       }
+      // Phase 0 (2026-10-07): the seek-capability declaration rides the SAME
+      // transcode decision that built this row's url (one source of truth).
+      // JS declares, native executes — the engine's runtime verdict is the
+      // authority, so a false "can" only costs one demoted request.
+      row.seekCapability = deriveSeekCapability({
+        transcode: transcode ? { format: transcode.format, maxBitRate: transcode.maxBitRate } : null,
+        fileType: track?.fileType,
+        bitrate: track?.bitrate,
+      })
       return row
     })
     // Preload-progress window (queue-row tints on native): DERIVED ENGINE-
@@ -726,14 +763,22 @@ export class PlaybackManager {
     if (activeIndex < 0 || activeIndex >= combined.length) return
 
     const snapshot = this._buildSnapshot(combined)
+    // Phase 1: the load path CONSUMES the parked intent instead of writing
+    // 0:00 — a scrub issued before this load started must survive it. The
+    // intent is spent either way; a consume against another row clears.
+    const parked = consumeSeekIntent(this._seekIntent, track.trackId)
     setCurrentTrack(track)
-    currentTime.set(0)
+    currentTime.set(parked ? parked.position : 0)
 
     const ok = await this._nativeTransport!.engage(snapshot, activeIndex, get(loopMode))
     // A superseded engage must not reflect its outcome: a newer load already
     // moved currentTrack, so this request's success/failure is stale.
     if (get(currentTrack)?.trackId !== track.trackId) return
     if (!ok) {
+      // The intent is spent with the failed load: the transport dropped any
+      // held seek (`_markEngagementFailed`), so keeping the latch would pin
+      // the UI at a position no engine will ever honor.
+      clearSeekIntent(this._seekIntent)
       setCurrentTrack(null)
       setPlaybackState('stopped')
       return
@@ -984,10 +1029,18 @@ export class PlaybackManager {
     this._am.setMasterVolume(get(masterGain))
 
     const el = this._am.activeElement
+    // Phase 1: consume the parked intent instead of hard-writing 0:00 — the
+    // element cannot take a time before metadata, so the parked position is
+    // applied on `loadedmetadata` (a seek dispatched before the source exists
+    // resumes at the requested time, not at 0).
+    const parked = consumeSeekIntent(this._seekIntent, track.trackId)
     setCurrentTrack(track)
-    currentTime.set(0)
+    currentTime.set(parked ? parked.position : 0)
     this._bgTransport!.syncSource(url)
     el.src = url
+    if (parked && parked.position > 0) {
+      this._applyWebStartPosition(el, parked.position)
+    }
 
     // The end-of-track sleep timer fired during this transition: keep the
     // loaded track parked instead of letting the play() below resume it.
@@ -1191,6 +1244,7 @@ export class PlaybackManager {
   /** Uniform end-of-queue stop (A4): the machine's stop{fg} and the fg advance
    *  chain map here. */
   private _stopPlayback(): void {
+    clearSeekIntent(this._seekIntent)
     setPlaybackState('stopped')
     setCurrentTrack(null)
     this._webTransport?.cancelNext()
@@ -1367,8 +1421,11 @@ export class PlaybackManager {
     // previous track while the element/queue already moved on. The pause's
     // 'paused' write lands after; a dropped settle by an exit re-route is
     // idempotent (the fg load re-sets everything).
+    // Phase 1: same consume as _loadAndPlay — the parked position survives the
+    // bg load and is applied to the bg element once it can accept a time.
+    const parked = consumeSeekIntent(this._seekIntent, track.trackId)
     setCurrentTrack(track)
-    currentTime.set(0)
+    currentTime.set(parked ? parked.position : 0)
     setPlaybackState('playing')
 
     const started = await this._bgTransport!.startBgLoad(url)
@@ -1376,6 +1433,9 @@ export class PlaybackManager {
       // The load was superseded (newer load, park, or an exit that re-routed
       // the resolution to the fg path) — the machine already decided.
       return
+    }
+    if (parked && parked.position > 0) {
+      this._applyWebStartPosition(this._bgTransport!.sessionElement, parked.position)
     }
 
     // NO success reset (see _loadAndPlay): a bg load that starts and then
@@ -1671,6 +1731,16 @@ export class PlaybackManager {
       const track = get(currentTrack)
       const metaDur = track?.duration || time
       const clamped = Math.min(time, metaDur)
+      // Phase 1 (2026-10-07): the transport can only deliver a seek to the row
+      // it is engaged on — during a load/engage it is still on the OUTGOING
+      // row, and forwarding there seeks the wrong track. Whenever the row
+      // cannot take the position yet, park the intent: the transport replays
+      // it once an engage settles onto that row (nativeTransport._pendingSeek)
+      // and the load paths consume the same latch for the JS clock. A
+      // deliverable seek is NOT latched — a later fresh play of the same row
+      // must still start at 0.
+      const deliverable = !!track && this._nativeTransport?.engaged === true && this._nativeTransport.lastTrackId === track.trackId
+      if (track && !deliverable) latchSeekIntent(this._seekIntent, track.trackId, clamped)
       // Scrub cadence (2026-09-12): the SeekBar emits onSeek per pointermove;
       // a native engine seek is cancel + re-open + re-schedule, so per-event
       // firing stacked re-schedules and the playhead lagged the thumb (worse
@@ -1679,23 +1749,32 @@ export class PlaybackManager {
       // re-arm the cadence so the next drag's first sample is never gated.
       if (opts.live) {
         if (shouldEmitSeek(this._seekThrottle, this._nowFn())) {
-          this._nativeTransport?.seek(clamped).catch(() => {})
+          this._nativeTransport?.seek(clamped, track?.trackId ?? null).catch(() => {})
         }
       } else {
         resetSeekThrottle(this._seekThrottle)
-        this._nativeTransport?.seek(clamped).catch(() => {})
+        this._nativeTransport?.seek(clamped, track?.trackId ?? null).catch(() => {})
       }
       currentTime.set(clamped)
       return
     }
     const el = this._bgTransport!.sessionElement
-    if (!el.src) {
-      this.play()
-      return
-    }
     const track = get(currentTrack)
     const metaDur = (track?.duration) || time
     const clamped = Math.min(time, metaDur)
+    if (!el.src) {
+      // Phase 1: no source to seek yet — park the intent and start the load;
+      // the load path consumes it and applies the position once the element
+      // has metadata. The old shape called play() and DROPPED the time; the
+      // thumb/time label must still follow the user (the store write is the
+      // same one the loaded branches do below).
+      if (track) {
+        latchSeekIntent(this._seekIntent, track.trackId, clamped)
+      }
+      currentTime.set(clamped)
+      this.play()
+      return
+    }
     // User scrubbing owns the transition state (A12): the engine latches the
     // crossfade suppression when the position lands in the window and collapses
     // any in-flight fade. Live drag samples pass through the SAME cadence as
@@ -1721,6 +1800,26 @@ export class PlaybackManager {
     }
     el.currentTime = clamped
     currentTime.set(clamped)
+  }
+
+  /**
+   * Phase 1: apply a parked web position once the media element can accept
+   * one. Before metadata a `currentTime` write is dropped (and throws in some
+   * engines), so a fresh source waits for the one-shot `loadedmetadata`.
+   */
+  private _applyWebStartPosition(el: HTMLAudioElement, position: number): void {
+    const apply = (): void => {
+      el.currentTime = position
+    }
+    if (el.readyState >= 1) {
+      apply()
+      return
+    }
+    const onLoadedMetadata = (): void => {
+      el.removeEventListener('loadedmetadata', onLoadedMetadata)
+      apply()
+    }
+    el.addEventListener('loadedmetadata', onLoadedMetadata)
   }
 
   private async _playFirstInQueue(): Promise<void> {

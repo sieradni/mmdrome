@@ -137,6 +137,12 @@ export interface SettingsMap {
    *  Native only — the PWA has no audio-session API, so Safari owns mixing
    *  there and this key is never read on web. */
   iosAudioMixing?: 'exclusive' | 'mix'
+  /** Seek-epoch kill switch (2026-10-07, plan §8): 'auto' (default) lets a
+   *  far seek open a server-offset epoch; 'off' reproduces Phase-1 behavior
+   *  exactly (position-preserving wait, no extra requests) — the field
+   *  rollback for Phases 2-3 without a release. Native only; the web lane
+   *  never opens an epoch. */
+  seekEpochs?: 'auto' | 'off'
 }
 
 export const currentTrack = writable<Track | null>(null)
@@ -611,7 +617,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'lastfmApiKey', 'lastfmApiSecret', 'lowDataMode', 'lowDataOnCellular', 'transcodeMode', 'transcodeFormat', 'transcodeBitrate', 'transcodeProbe', 'iosAudioMixing']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'lastfmApiKey', 'lastfmApiSecret', 'lowDataMode', 'lowDataOnCellular', 'transcodeMode', 'transcodeFormat', 'transcodeBitrate', 'transcodeProbe', 'iosAudioMixing', 'seekEpochs']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]
@@ -652,6 +658,9 @@ export function applyDefaultSettings(): void {
     replayGainMode: s.replayGainMode ?? 'track',
     crossfadeDuration: s.crossfadeDuration ?? 6,
     iosAudioMixing: s.iosAudioMixing ?? 'exclusive',
+    // Phase 2 (2026-10-07): the seek-epoch kill switch defaults to 'auto' —
+    // an absent key must mean the feature is ON, never undefined-mode.
+    seekEpochs: s.seekEpochs ?? 'auto',
     ...s,
   }))
 }

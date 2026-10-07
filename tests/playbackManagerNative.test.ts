@@ -49,9 +49,15 @@ class FakeNativeTransport {
   getStateResult: { trackId: string; position: number; playing: boolean } | null = null
   getStateError = false
   adopted: string[] = []
+  lastTrackIdValue: string | null = null
+  seeks: Array<{ position: number; trackId: string | null }> = []
 
   get engaged(): boolean {
     return this.engagedValue
+  }
+
+  get lastTrackId(): string | null {
+    return this.lastTrackIdValue
   }
 
   async engage(snapshot: unknown[], activeIndex: number, loopMode: string): Promise<boolean> {
@@ -79,7 +85,8 @@ class FakeNativeTransport {
     return Promise.resolve()
   }
 
-  seek(position: number): Promise<void> {
+  seek(position: number, trackId: string | null = null): Promise<void> {
+    this.seeks.push({ position, trackId })
     this.calls.push(`seek:${position}`)
     return Promise.resolve()
   }
@@ -177,6 +184,7 @@ class FakeSleepTimer {
 // --- harness ---------------------------------------------------------------
 
 type PrivatePM = {
+  seek(time: number, opts?: { live?: boolean }): void
   playTrackById(trackId: string): Promise<void>
   playTrackAt(index: number): Promise<void>
   _nativeLoadPlay(track: Track): Promise<void>
@@ -264,6 +272,64 @@ test('_nativeLoadPlay failure: reports stopped and never promotes', async () => 
   assert.equal(get(playbackState), 'stopped')
   assert.ok(!h.qm.calls.includes('promoteActiveTrack'))
   assert.ok(!h.stm.calls.includes('rearmAfterSnapshot'))
+})
+
+// --- Phase 1 (2026-10-07): parked seek intent -------------------------------
+// The reported bug: seek into an unloaded region, press play → back to 0:00.
+// The load paths must consume the parked intent instead of hard-writing 0:00,
+// and a scrub issued DURING an engage must survive the settle untouched.
+
+test('a seek before the row loads survives it — _nativeLoadPlay starts at the parked position', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1'], [t1], 0)
+  setCurrentTrack(t1)
+
+  h.m.seek(180) // the row is not engaged yet — the intent parks
+  assert.equal(get(currentTime), 180)
+  assert.deepEqual(h.nt.seeks, [{ position: 180, trackId: 't1' }])
+
+  await h.m._nativeLoadPlay(t1)
+
+  // The load CONSUMED the intent — never rewritten to 0.
+  assert.equal(get(currentTime), 180)
+  assert.equal(get(currentTrack)?.trackId, 't1')
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('a seek during the engage never rewrites the position to 0 (the reported bug)', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1'], [t1], 0)
+  h.nt.manualEngage = true
+
+  const load = h.m._nativeLoadPlay(t1)
+  // The load path ran BEFORE the scrub: its 0:00 write is already on the clock.
+  assert.equal(get(currentTime), 0)
+
+  h.m.seek(200) // scrub while the engage is in flight
+  assert.equal(get(currentTime), 200)
+
+  h.nt.engageResolvers.shift()!(true)
+  await load
+
+  // Nothing after the scrub rewrote the position, and the transport got the
+  // row identity it needs to hold + replay the seek.
+  assert.equal(get(currentTime), 200)
+  assert.deepEqual(h.nt.seeks, [{ position: 200, trackId: 't1' }])
+  assert.equal(get(playbackState), 'playing')
+})
+
+test('a parked intent is spent by its own row, never applied to another', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1', 't2'], [t1, t2], 0)
+  setCurrentTrack(t1)
+
+  h.m.seek(180) // parked for t1
+  await h.m._nativeLoadPlay(t2) // the app moved on
+
+  assert.equal(get(currentTime), 0)
 })
 
 test('_onNativeTrackEnded advances to the next row through decideAdvance', async () => {

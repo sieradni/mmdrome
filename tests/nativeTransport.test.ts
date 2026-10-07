@@ -684,7 +684,110 @@ test('disengage cancels the retry and clears the seek memory', async () => {
   assert.deepEqual(plugin.order.filter((o) => o.startsWith('seek:')), ['seek:30'])
 })
 
-// ── engage serialization ───────────────────────────────────────────────────
+// ── pending seek (2026-10-07, Phase 1: seek intent) ────────────────────────
+
+test('a seek issued during an engage is held and replayed once the engage settles on its row', async () => {
+  const { transport, plugin } = setup()
+  let release!: () => void
+  plugin.setQueueGate = new Promise((r) => {
+    release = r
+  })
+  const p = transport.engage(tracks, 1, 'none') // landing on t2
+  await tick()
+  await transport.seek(20, 't2') // issued mid-engage — the engine is still on t1
+  // Held: nothing was sent to the OUTGOING row.
+  assert.deepEqual(plugin.order.filter((o) => o.startsWith('seek:')), [])
+  release()
+  assert.equal(await p, true)
+  // The replay rides the settle TAIL (after the deferred resolve), so one
+  // flush lands it — the caller's continuation runs first by design.
+  await tick()
+  assert.deepEqual(plugin.order, ['setQueue:1', 'playTrackAt:1', 'seek:20'])
+})
+
+test('a held seek is never sent to a row the engine is not on — it stays parked for its own row', async () => {
+  const { transport, plugin } = setup()
+  let release!: () => void
+  plugin.setQueueGate = new Promise((r) => {
+    release = r
+  })
+  const p = transport.engage(tracks, 1, 'none') // the engine lands on t2
+  await tick()
+  await transport.seek(20, 't1') // …but the scrub was for t1
+  release()
+  assert.equal(await p, true)
+  await tick()
+  // Never aimed at t2 — the parked position waits for ITS row.
+  assert.deepEqual(plugin.order.filter((o) => o.startsWith('seek:')), [])
+  await transport.engage(tracks, 0, 'none')
+  await tick()
+  assert.deepEqual(plugin.order, ['setQueue:1', 'playTrackAt:1', 'setQueue:0', 'playTrackAt:0', 'seek:20'])
+})
+
+test('a seek for a row the engine is not on is held, never sent to the current row', async () => {
+  const { transport, plugin } = setup()
+  await transport.engage(tracks, 0, 'none')
+  await transport.seek(40, 't2')
+  assert.deepEqual(plugin.order.filter((o) => o.startsWith('seek:')), [])
+  // Engaging t2 delivers the parked position once the row is live.
+  await transport.engage(tracks, 1, 'none')
+  await tick()
+  assert.deepEqual(plugin.order, ['setQueue:0', 'playTrackAt:0', 'setQueue:1', 'playTrackAt:1', 'seek:40'])
+})
+
+test('the replayed pending seek also arms the retry memory (1.7)', async () => {
+  const { transport, client, plugin, timers } = setupTimed()
+  transport.onRetry = () => {}
+  await transport.init()
+  let release!: () => void
+  plugin.setQueueGate = new Promise((r) => {
+    release = r
+  })
+  const p = transport.engage(tracks, 1, 'none')
+  await tick()
+  await transport.seek(20, 't2')
+  release()
+  assert.equal(await p, true)
+  await tick()
+  assert.deepEqual(plugin.order.filter((o) => o.startsWith('seek:')), ['seek:20'])
+  // A retry reload of the same row re-issues the replayed position.
+  client.callbacks!.onError('boom')
+  timers.fireAll()
+  await transport.engage(tracks, 1, 'none')
+  assert.deepEqual(plugin.order.filter((o) => o.startsWith('seek:')), ['seek:20', 'seek:20'])
+})
+
+test('disengage drops a held seek', async () => {
+  const { transport, plugin } = setup()
+  let release!: () => void
+  plugin.setQueueGate = new Promise((r) => {
+    release = r
+  })
+  const p = transport.engage(tracks, 1, 'none')
+  await tick()
+  await transport.seek(20, 't2')
+  transport.disengage()
+  release()
+  assert.equal(await p, false)
+  assert.deepEqual(plugin.order.filter((o) => o.startsWith('seek:')), [])
+})
+
+test('an engage failure drops a held seek (no stale position onto a later row)', async () => {
+  const { transport, plugin } = setup()
+  let release!: () => void
+  plugin.setQueueGate = new Promise((r) => {
+    release = r
+  })
+  plugin.failPlayTrackAt = true
+  const p = transport.engage(tracks, 1, 'none')
+  await tick()
+  await transport.seek(20, 't2')
+  release()
+  assert.equal(await p, false)
+  assert.deepEqual(plugin.order.filter((o) => o.startsWith('seek:')), [])
+})
+
+// ── engage serialization ──────────────────────────────────
 
 test('rapid engages serialize into full setQueue+playTrackAt pairs in order', async () => {
   const { transport, plugin } = setup()

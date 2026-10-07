@@ -43,6 +43,38 @@ export function trailBridge(kind: NativeBridgeTrailEntry['kind'], name: string):
   if (entries.length > LIMIT) entries.shift()
 }
 
+export interface StreamEpochTrailEvent {
+  phase: 'open' | 'verdict' | 'closed'
+  epoch?: number
+  base?: number
+  target?: number
+  verdict?: string
+  containerFrames?: number
+  expectedFrames?: number
+}
+
+/**
+ * The SEEK EPOCH actor's trail line (2026-10-07, Phase 2).
+ *
+ * The trail knows only `engage` and `refreshQueue` as positioners today, and a
+ * multi-skip dump reads it to decide whether JS or the engine moved the
+ * playhead. A server-offset epoch is a THIRD positioner — the engine starts a
+ * new transfer at an arbitrary offset and re-bases the timeline on it — so it
+ * must be named in the same timeline with `epoch` as the actor; otherwise the
+ * next investigation blames the wrong side. Pure (no imports) so the formatter
+ * is unit-pinned.
+ */
+export function epochTrailLine(event: StreamEpochTrailEvent): string {
+  const parts: string[] = [`epoch ${event.phase}`]
+  if (event.epoch != null) parts.push(`#${event.epoch}`)
+  if (event.base != null) parts.push(`base=${event.base}s`)
+  if (event.target != null) parts.push(`target=${event.target.toFixed(1)}s`)
+  if (event.verdict) parts.push(`verdict=${event.verdict}`)
+  if (event.containerFrames != null) parts.push(`container=${event.containerFrames}f`)
+  if (event.expectedFrames != null) parts.push(`expected=${event.expectedFrames}f`)
+  return parts.join(' ')
+}
+
 export function nativeBridgeTrailSnapshot(): NativeBridgeTrailEntry[] {
   return [...entries]
 }

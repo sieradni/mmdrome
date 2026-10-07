@@ -1,5 +1,6 @@
 import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
-import { trailBridge } from './playbackCore/nativeBridgeTrail'
+import { epochTrailLine, trailBridge, type StreamEpochTrailEvent } from './playbackCore/nativeBridgeTrail'
+import type { SeekCapability } from './playbackCore/seekCapability'
 
 // MARK: - Types shared with the native engine
 
@@ -21,6 +22,10 @@ export interface NativeTrackSnapshot {
   coverUrl?: string
   replayGain?: number
   albumReplayGain?: number
+  /** Phase 0 (2026-10-07): the seek-capability declaration for this row,
+   *  derived from the SAME transcode decision that built `url`. JS declares,
+   *  native executes; absent = the engine takes the Phase-1 path. */
+  seekCapability?: SeekCapability
 }
 
 export interface NativeFilterSnapshot {
@@ -88,6 +93,11 @@ interface BackgroundAudioPlugin {
     sigmoidSteepness: number
   }): Promise<void>
   setAudioMixing(options: { mode: string }): Promise<void>
+  /** Phase 2 kill switch (2026-10-07): `off` reproduces Phase-1 behavior
+   *  exactly (position-preserving wait, no epochs, no extra requests) so the
+   *  epoch machinery can be disabled in the field without a release.
+   *  Registered in pluginMethods (the §3.4 gate). */
+  setSeekEpochs(options: { mode: 'auto' | 'off' }): Promise<void>
   setPreloadCount(options: { count: number }): Promise<void>
   setSleepTimer(options: { active: boolean; mode: 'minutes' | 'endOfTrack'; minutes: number }): Promise<void>
   setEq(options: { filters: NativeFilterSnapshot[]; bypassed: boolean }): Promise<void>
@@ -150,6 +160,10 @@ interface BackgroundAudioPlugin {
     eventName: 'engineRecovered',
     listenerFunc: (data: { unavailable: boolean }) => void
   ): Promise<PluginListenerHandle>
+  addListener(
+    eventName: 'streamEpoch',
+    listenerFunc: (data: StreamEpochTrailEvent) => void
+  ): Promise<PluginListenerHandle>
   addListener(eventName: string, listenerFunc: (data: unknown) => void): Promise<PluginListenerHandle>
 }
 
@@ -184,6 +198,10 @@ export interface NativeEngineCallbacks {
   onEngineRecovered?: () => void
   /** Native preload download progress (queue-row tint parity with web). */
   onPreloadProgress?: (event: { trackId: string; state: 'progress' | 'done' | 'gone'; progress?: number }) => void
+  /** Seek-epoch lifecycle (Phase 2, 2026-10-07): an epoch is a POSITIONING
+   *  actor, so it is recorded in the bridge trail and read by the self-test's
+   *  verdict check. Pure telemetry — nothing here drives playback. */
+  onStreamEpoch?: (event: StreamEpochTrailEvent) => void
 }
 
 export const BackgroundAudio = registerPlugin<BackgroundAudioPlugin>('BackgroundAudio')
@@ -313,6 +331,15 @@ export class NativeAudioEngineApp {
       await plugin.addListener('engineRecovered', () => {
         trailBridge('event', 'engineRecovered')
         this.callbacks?.onEngineRecovered?.()
+      }),
+    )
+    this.listeners.push(
+      await plugin.addListener('streamEpoch', (event) => {
+        // The epoch is a third POSITIONING actor beside engage/refreshQueue
+        // (2026-10-07, Phase 2) — name it in the same timeline, or a future
+        // multi-skip dump blames the wrong side.
+        trailBridge('event', epochTrailLine(event))
+        this.callbacks?.onStreamEpoch?.(event)
       }),
     )
 
