@@ -143,10 +143,13 @@ public enum SeekLatency {
             guard let value else { return "-" }
             return String(format: "%.1f", value)
         }
-        let byte = m(report.firstByteMs) + (report.firstByteInferred ? "*" : "")
+        // The star is a TRAILING mark on the `ms` token (`firstByte=1200.0ms*`),
+        // matching the shape the JS fold parses — a star placed before `ms` read
+        // as part of the number and folded as NaN (CI, 2026-10-07).
+        let byte = m(report.firstByteMs) + "ms" + (report.firstByteInferred ? "*" : "")
         let strategy = report.strategy.replacingOccurrences(of: " ", with: "_")
         return "seek latency id=\(report.trackId) target=\(String(format: "%.1f", report.targetSeconds))s "
-            + "strategy=\(strategy) decision=\(m(report.decisionMs))ms firstByte=\(byte)ms "
+            + "strategy=\(strategy) decision=\(m(report.decisionMs))ms firstByte=\(byte) "
             + "firstSchedule=\(m(report.firstScheduleMs))ms firstPlayback=\(m(report.firstPlaybackMs))ms "
             + "total=\(m(report.totalMs))ms"
     }

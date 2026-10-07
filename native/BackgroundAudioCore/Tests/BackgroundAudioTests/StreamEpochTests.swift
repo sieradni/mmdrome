@@ -153,6 +153,14 @@ final class StreamEpochTests: XCTestCase {
         XCTAssertEqual(StreamEpoch.offsetHonored(
             containerFrames: expected - 1_500_000, expectedEpochFrames: expected,
             trackFrames: trackFrames, toleranceFrames: tol), .honored)
+        // The honored band EDGE: at `expected + tol` still counts, one frame
+        // past it does not — the two bands must never overlap.
+        XCTAssertEqual(StreamEpoch.offsetHonored(
+            containerFrames: expected + tol, expectedEpochFrames: expected,
+            trackFrames: trackFrames, toleranceFrames: tol), .honored)
+        XCTAssertEqual(StreamEpoch.offsetHonored(
+            containerFrames: expected + tol + 1, expectedEpochFrames: expected,
+            trackFrames: trackFrames, toleranceFrames: tol), .unknown)
     }
 
     func testAFullLengthContainerIsTheIgnoredOffset() {
@@ -163,9 +171,24 @@ final class StreamEpochTests: XCTestCase {
         XCTAssertEqual(StreamEpoch.offsetHonored(
             containerFrames: trackFrames, expectedEpochFrames: expected,
             trackFrames: trackFrames, toleranceFrames: tol), .ignored)
+        // The band EDGES, so "≈" cannot drift into "roughly anywhere near":
+        // exactly at `track − tol` is still the full-track shape, one frame
+        // further in is NOT.
         XCTAssertEqual(StreamEpoch.offsetHonored(
-            containerFrames: trackFrames - 60 * sr, expectedEpochFrames: expected,
+            containerFrames: trackFrames - tol, expectedEpochFrames: expected,
             trackFrames: trackFrames, toleranceFrames: tol), .ignored)
+        XCTAssertEqual(StreamEpoch.offsetHonored(
+            containerFrames: trackFrames - tol - 1, expectedEpochFrames: expected,
+            trackFrames: trackFrames, toleranceFrames: tol), .unknown)
+        // A container 10 % short of the track is neither shape: it must DISCARD
+        // (500 s between a 300 s expectation and a 600 s track). The 540 s case
+        // this test used to call `ignored` was the same between-bands shape the
+        // next test pins as `unknown`, and calling it `ignored` would have
+        // adopted a transfer with no bandwidth evidence that it is the full one
+        // (CI, 2026-10-07).
+        XCTAssertEqual(StreamEpoch.offsetHonored(
+            containerFrames: 540 * sr, expectedEpochFrames: expected,
+            trackFrames: trackFrames, toleranceFrames: tol), .unknown)
     }
 
     func testABetweenBandsContainerIsUnknownAndNeverHonored() {

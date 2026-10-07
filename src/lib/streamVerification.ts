@@ -211,7 +211,14 @@ export function parseSeekLatencyLine(msg: string): SeekLatencyReport | null {
       msg,
     )
   if (!m) return null
-  const num = (raw: string): number | null => (raw === '-' ? null : Number(raw))
+  // A non-finite parse (e.g. a `*` sitting INSIDE the token, the wrong shape the
+  // native emitter shipped once — CI 2026-10-07) must degrade to a MISSING leg:
+  // `NaN` in the facts JSON reads as a number to every downstream consumer.
+  const num = (raw: string): number | null => {
+    if (raw === '-') return null
+    const value = Number(raw)
+    return Number.isFinite(value) ? value : null
+  }
   const decisionMs = num(m[4])
   const firstByteMs = num(m[5])
   const firstScheduleMs = num(m[7])

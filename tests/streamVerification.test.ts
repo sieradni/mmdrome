@@ -733,6 +733,16 @@ test('parseSeekLatencyLine reads the native core\'s line, including the inferred
 
   // Anything that is not the canonical line is not a report.
   assert.equal(parseSeekLatencyLine('seek 100.0 → 182.4 crossfade=idle'), null)
+
+  // A star INSIDE the token is the wrong shape (the native emitter shipped it
+  // once): it must degrade to a MISSING leg, never a NaN in the facts.
+  const wrongShape = parseSeekLatencyLine(
+    'seek latency id=navidrome-t9 target=30.0s strategy=unknown decision=1.0ms firstByte=1200.0*ms firstSchedule=1200.0ms firstPlayback=-ms total=-ms',
+  )!
+  assert.equal(wrongShape.firstByteMs, null)
+  assert.equal(wrongShape.firstByteInferred, false)
+  assert.equal(wrongShape.complete, false)
+  assert.equal(wrongShape.firstScheduleMs, 1200)
 })
 
 test('foldStreamEvent keeps the last COMPLETE report and counts the stranded probes', () => {

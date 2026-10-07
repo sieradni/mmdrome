@@ -527,6 +527,7 @@ host, and the server-capability checks require a real Navidrome.
 | Ogg splice may never be acceptable | Fixture gate; permanent wait-only is an acceptable outcome |
 | Bounded-window extension interacts with the stall contract | Reuses the existing chained-segment + stall/resume machinery unchanged; the window only changes *where* bytes come from |
 | A rebase acting on a false verdict | Verdict is container-primary and evaluated before audio; the rebase is lossless by design |
+| **Direct play under an offset request with a HEADER-LESS source** (found 2026-10-07 while the first CI run reviewed the verdict bands) | The verdict judges a PARTIAL container's own claim. A head-first direct-play response (fact 20) of an Ogg/Opus ORIGINAL under-claims exactly like a young epoch, so the `honored` band can absorb it and schedule the head at base T — the silent-wrong-position class the verdict exists to prevent. FLAC/MP4 originals carry the full duration in their header and land correctly in `ignored`. Discriminator identified, NOT yet wired: the requested `format=` versus the SERVED container's codec family (fact 20 — a direct-play resolution serves the source codec, so a mismatch proves the offset was ignored regardless of the claim). | Wire the format-family corroboration where the engine already opens the file (`resolveStagedPlacement`); a field run on an opus-sourced library decides how reachable this is in practice |
 
 ## 8. Tunables (adaptability)
 
@@ -636,7 +637,22 @@ Corrections adopted during design review (2026-10-07), each traced to source:
     hold); the byte leg is `*`-inferred from the schedule leg when the download lane
     gives no callback; the probe is same-row, 60 s-bounded, first-mark-wins; and the
     self-test reports UNKNOWN — never a pass — when no complete report exists.
-25. Follow-up: the ladder's settle re-arm first shipped WITHOUT the generation bump,
+25. CI review (2026-10-07, the first `ios.yml` run on the branch — the local box has no
+    Swift toolchain, so this is the gate that mattered): `swift test` caught three
+    things. (a) The latency LINE shipped the inferred-byte star INSIDE the token
+    (`firstByte=1200.0*ms`) while the JS fold parses a trailing star — the native
+    test and the JS test each passed against their own assumption, which is exactly
+    the emitter/parser contract a single canonical line is supposed to hold; the
+    emitter now appends the star after `ms`, and the JS parser degrades a
+    non-finite token to a MISSING leg instead of folding `NaN`. (b) The
+    full-length-container test asserted `ignored` for a container 60 s short of a
+    600 s track — the same between-bands shape its sibling test pins as `unknown`,
+    and the design text (`openedFrames ≈ duration`) allows only the track within the
+    tolerance. The TEST was corrected (not the rule) and both band EDGES are now
+    pinned, so "≈" cannot drift into "roughly anywhere near". (c) Reviewing (b)
+    surfaced the direct-play hazard recorded in §7: a partial, header-less ORIGINAL
+    under-claims like a young epoch, so `honored` could absorb a head-first body.
+26. Follow-up: the ladder's settle re-arm first shipped WITHOUT the generation bump,
     so a settle edge landing while an older speculative chain was still walking
     could run a SECOND concurrent chain — the exact double-walk the network re-arm
     has guarded against since 2026-10-02. Both re-arm paths now route through ONE
