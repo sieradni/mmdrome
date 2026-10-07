@@ -503,7 +503,7 @@ landed, item 4 (docs promotion) done:
 | Swift cores | `swift test` in CI (E5 hosts BackgroundAudioCore on macOS) |
 | Spliced-container acceptance | fixture harness (§Phase 3) |
 | Server behavior on the real deployment | the extended Stream Self-Test bundle + `docs/STREAMING-SELF-TEST.md` |
-| Native runtime behavior | field-dump session (the established loop for engine-only behavior; no simulator audio e2e exists) |
+| Native runtime behavior | field-dump session — the S1–S6 protocol in `docs/STREAMING-SELF-TEST.md` (one session judges the epoch verdict, the prefetch ladder and the latency legs; the established loop for engine-only behavior, since no simulator audio e2e exists) |
 
 Environment note: the local environment for this document's authoring can run the Node
 suite and svelte-check; Swift compilation and the fixture harness run in CI/a macOS
@@ -518,6 +518,7 @@ host, and the server-capability checks require a real Navidrome.
 | **MP4/M4A `stco`/`co64` rewriting** | The `moov` describes the whole file's byte layout; a subset sample table is a real project, and the failing-header-probe case is already an A15 non-goal. | — |
 | **Cache stitching** (gap prefix + fetched tail → one complete offline file) | Needed to restore the offline-advance contract after a bounded-window raw epoch. Byte-identical concatenation is feasible for raw, but must handle bounded windows and promotion timing. | Phase 3 |
 | ~~**Offset-ignored epoch adoption** (§2.6 refinement)~~ | **LANDED 2026-10-07** — see the note below. | — |
+| **A control for the global kill switch** (§8 promises `off` as "the field rollback for Phases 2–3" without a release) | The setting is hydrated, pushed to the engine, and pinned by `tests/seekEpochsKillSwitch.test.ts`, but nothing in Settings exposes it — so on a phone-only session the promised rollback cannot be reached, and the S4 protocol scenario cannot be run. Raised while writing that protocol (2026-10-07). | A Settings toggle (or HUD control) writing `seekEpochs`; until then, flipping it needs a settings write + reload |
 
 Landed from this register (2026-10-07): **offset-ignored epoch adoption** — a
 rebased epoch continues as the row's own source at base 0 instead of being
