@@ -2794,7 +2794,9 @@ public final class NativeAudioEngine: NSObject {
                 // Seek (or stall resume) at/past the delivered end: the
                 // buffering pause, not an error. autoPlay=false so the stall
                 // resume (or the user's own play tap) restarts audio.
-                eventAdd(.info, "stream", "schedule target past delivered end id=\(track.trackId) (seek \(String(format: "%.1f", seconds))s vs endable \(String(format: "%.1f", Double(endFrames) / sr))s) — buffering")
+                // Both numbers are ABSOLUTE (this source's reach on the row's
+                // timeline), so an epoch's message compares like for like.
+                eventAdd(.info, "stream", "schedule target past delivered end id=\(track.trackId) (seek \(String(format: "%.1f", seconds))s vs endable \(String(format: "%.1f", Double(baseFrames + localEndable) / sr))s) — buffering")
                 staged.userPaused = !autoPlay
                 staged.isStalled = true
                 staged.stalledAtFrames = baseFrames + min(startFrame, localEndable)
@@ -3032,14 +3034,15 @@ public final class NativeAudioEngine: NSObject {
         /// both anchors of the estimate describe the SAME window.
         var metadataFrames: Int64 = 0
         var scheduledEndFrames: Int64    // the current chained schedule's end (ABSOLUTE)
-        /// Phase 2 (2026-10-07): the ABSOLUTE seconds of this source's frame
-        /// 0, in frames. 0 for an ordinary head-first transfer; the epoch's
-        /// integer offset for an epoch file (and 0 again after an
-        /// offset-ignored rebase). Every frame this struct stores is ABSOLUTE
-        /// (`scheduledEndFrames`, `stalledAtFrames`) while the container's own
+        /// Phase 2 (2026-10-07): the ABSOLUTE frame of this source's frame 0.
+        /// 0 for an ordinary head-first transfer; the epoch's offset in frames
+        /// for an epoch file (and 0 again after an offset-ignored rebase).
+        /// Every frame this struct stores is ABSOLUTE (`scheduledEndFrames`,
+        /// `stalledAtFrames`, `timelineBaseFrames`) while the container's own
         /// numbers (`headerClaimedFrames`, `metadataFrames`) are LOCAL — the
         /// two meet only in `stagedSchedulableEndFrames` and the scheduler's
         /// coordinate clause. Do NOT add the base twice.
+        var timelineBaseFrames: Int64 = 0
         var announcedBytes: Int64        // server's exact body length (raw only)
         var deliveredBytes: Int64        // last known delivered byte count
         var isComplete = false           // the writer promoted (gates passed)
