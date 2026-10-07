@@ -114,6 +114,22 @@ carries the server facts.
   let the interface flip, then **Run test**.
 - Why: exercises the network re-arm + resume paths around the stream.
 
+### T9 — Seek latency (the measurement)
+- Play a **transcode** (T2 mode), scrub far forward into a region the stream has
+  not delivered yet, and let it reach audio. Then **Run test**.
+- Read: the `seek-latency` check. A complete report reads
+  `total=<ms>ms (decision=…, firstByte=…, firstSchedule=…) strategy=…`; the
+  strategy label is the comparison (`parked+epoch` is the epoch path,
+  `local`/`parked` is the Phase-1 wait). A `firstByte=…*` mark means the byte leg
+  was INFERRED from the schedule (the plain download lane has no byte callback).
+- Why: this is the number the seek work is judged by — request → audible, in
+  four legs. Compare a `+epoch` report against a plain `parked` one on the same
+  link; the engine logs one line per seek, so a longer session accumulates
+  samples.
+- A `WARN` (`probe(s) never reached playback`) is expected when you scrub while
+  PAUSED and do not press play inside a minute — that probe expires by design
+  rather than reporting a total that is really your own pause.
+
 ---
 
 ## What to paste
@@ -126,4 +142,5 @@ are what a wrong verdict gets re-adjudicated against, so do not trim them.
 
 If time is short, run **T1, T2, T4, T3** — in that order. They settle: does raw
 still stream; does transcode stream at all; is a cut stream safe; does a streamed
-track end cleanly.
+track end cleanly. Add **T9** when the question is seek latency rather than
+streaming health.

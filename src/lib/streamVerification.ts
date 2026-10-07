@@ -62,6 +62,38 @@ export interface NativeStreamFacts {
   firstScheduleEndableFrames: number | null
   firstScheduleHeaderClaimFrames: number | null
   firstScheduleSeconds: number | null
+  /** The first staged schedule's timeline base in seconds (Phase 2): 0 is an
+   *  ordinary head-first transfer, > 0 an epoch file scheduled at that base. */
+  firstScheduleBaseSeconds: number | null
+  /** Seek epochs opened in the capture window (Phase 2, 2026-10-07). */
+  epochOpenCount: number
+  /** The last epoch's container verdict: 'honored' | 'ignored' | 'unknown' | ''.
+   *  '' means no verdict line was seen — an epoch that started but never
+   *  demoted itself, the one shape the design forbids. */
+  epochVerdict: string
+  /** The last epoch's base offset in seconds. */
+  epochBaseSeconds: number | null
+  /** An offset-ignored epoch was rebased to base 0 with the intent kept. */
+  epochRebased: boolean
+  /** Transfer ladder (2026-10-07): the speculative prefetch walk was held
+   *  because a user-initiated transfer owned the link (staged stream, seek
+   *  epoch, or the active row's own download). */
+  prefetchHoldCount: number
+  /** Distinct hold reasons seen, oldest first (deduped) — the label the engine
+   *  logged at each hold transition. */
+  prefetchHoldReasons: string[]
+  /** The walk resumed after a hold (the settle edge fired) — the proof a hold
+   *  is not a permanent stop. */
+  prefetchResumeCount: number
+  /** Seek latency (plan Phase 4 item 3, 2026-10-07): COMPLETE four-leg reports
+   *  in the window — the number the seek work is judged by. A launch with no
+   *  user seek reports zero, which the check reads as UNKNOWN, never a pass. */
+  seekLatencyCount: number
+  /** The LAST complete report's legs (ms from the seek request), or null. */
+  lastSeekLatency: SeekLatencyReport | null
+  /** Probes that never reached playback: a paused seek (legitimately no total),
+   *  or a stranded probe. Counted so "no number" is never read as "fast". */
+  seekLatencyIncompleteCount: number
   deferredFirstScheduleCount: number
   stallResumeCount: number
   stallGiveUpCount: number
@@ -114,6 +146,17 @@ export function emptyNativeStreamFacts(): NativeStreamFacts {
     firstScheduleEndableFrames: null,
     firstScheduleHeaderClaimFrames: null,
     firstScheduleSeconds: null,
+    firstScheduleBaseSeconds: null,
+    epochOpenCount: 0,
+    epochVerdict: '',
+    epochBaseSeconds: null,
+    epochRebased: false,
+    prefetchHoldCount: 0,
+    prefetchHoldReasons: [],
+    prefetchResumeCount: 0,
+    seekLatencyCount: 0,
+    lastSeekLatency: null,
+    seekLatencyIncompleteCount: 0,
     deferredFirstScheduleCount: 0,
     stallResumeCount: 0,
     stallGiveUpCount: 0,
@@ -141,6 +184,59 @@ export interface NativeEventLike {
   msg: string
 }
 
+export interface SeekLatencyReport {
+  trackId: string
+  targetSeconds: number
+  strategy: string
+  decisionMs: number | null
+  firstByteMs: number | null
+  /** The byte leg was inferred from the schedule leg (the downloadTask lane has
+   *  no progress callback) — printed with a `*` by the native core. */
+  firstByteInferred: boolean
+  firstScheduleMs: number | null
+  firstPlaybackMs: number | null
+  /** request → playback: the number the user actually waits for. */
+  totalMs: number | null
+  complete: boolean
+}
+
+/**
+ * Parse the native engine's ONE seek-latency line (`SeekLatency.line` in
+ * BackgroundAudioCore). Pure so the fold's arithmetic is unit-testable; a
+ * missing leg is `-`, and an inferred byte leg carries a trailing `*`.
+ */
+export function parseSeekLatencyLine(msg: string): SeekLatencyReport | null {
+  const m =
+    /^seek latency id=(\S+) target=([\d.]+)s strategy=(\S+) decision=(\S+?)ms firstByte=(\S+?)ms(\*?) firstSchedule=(\S+?)ms firstPlayback=(\S+?)ms total=(\S+?)ms/.exec(
+      msg,
+    )
+  if (!m) return null
+  const num = (raw: string): number | null => (raw === '-' ? null : Number(raw))
+  const decisionMs = num(m[4])
+  const firstByteMs = num(m[5])
+  const firstScheduleMs = num(m[7])
+  const firstPlaybackMs = num(m[8])
+  return {
+    trackId: m[1],
+    targetSeconds: Number(m[2]),
+    strategy: m[3],
+    decisionMs,
+    firstByteMs,
+    firstByteInferred: m[6] === '*',
+    firstScheduleMs,
+    firstPlaybackMs,
+    totalMs: num(m[9]),
+    complete:
+      decisionMs !== null && firstByteMs !== null && firstScheduleMs !== null && firstPlaybackMs !== null,
+  }
+}
+
+/** One-decimal millisecond leg for the check's evidence; `-` when a leg never
+ *  landed (the check's status already says whether that is a problem). */
+function fmtMs(value: number | null): string {
+  return value === null ? '-' : value.toFixed(1)
+}
+
 /**
  * Parse one `stream` event message into the running facts. Kept as a fold so a
  * paginated `getDebugEvents` pull can feed events one at a time.
@@ -155,7 +251,14 @@ export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): 
   // is never seen and `completion-verdict` reads UNKNOWN forever (the 1.2.49
   // field report: `stream: promoted … — cache entry complete` arrived on
   // `loader` and the domain guard dropped it).
-  const isStreamLine = domain === 'stream' || (domain === 'loader' && msg.startsWith('stream:'))
+  // The `preload` domain joins the fold for the TRANSFER LADDER's evidence
+  // (2026-10-07): the walk's hold/resume lines are recorded there — they are
+  // the only device-side proof that speculative bytes yielded to the user's
+  // own transfer and came back. No pre-existing preload line matches a fold
+  // pattern, so widening the filter changes nothing else.
+  const isStreamLine = domain === 'stream'
+    || domain === 'preload'
+    || (domain === 'loader' && msg.startsWith('stream:'))
   if (!isStreamLine) return facts
   const next = { ...facts }
 
@@ -170,6 +273,26 @@ export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): 
     next.firstScheduleSeconds = Number(first[2])
     next.firstScheduleHeaderClaimFrames = Number(first[3])
   }
+  // The base rides the same line since Phase 2; captured separately so a
+  // pre-Phase-2 transcript (no `base=`) still folds every other field.
+  const firstBase = /first staged schedule id=\S+ .*?base=([\d.]+)s/.exec(msg)
+  if (firstBase && next.firstScheduleBaseSeconds == null) {
+    next.firstScheduleBaseSeconds = Number(firstBase[1])
+  }
+  // SEEK EPOCHS (Phase 2, 2026-10-07). The verdict line is what proves an
+  // epoch's timeline base was decided BEFORE it entered the graph; an epoch
+  // scheduled at a base > 0 with no honored verdict is exactly the shape the
+  // design forbids (see the `epoch` check).
+  if (/^epoch open /.test(msg)) {
+    next.epochOpenCount += 1
+    const base = /base=(\d+)s/.exec(msg)
+    if (base) next.epochBaseSeconds = Number(base[1])
+  }
+  const verdict = /^epoch verdict (\w+)/.exec(msg)
+  if (verdict) {
+    next.epochVerdict = verdict[1]
+    if (verdict[1] === 'ignored') next.epochRebased = true
+  }
   if (/stall resume at/.test(msg)) next.stallResumeCount += 1
   if (/stall give-up after/.test(msg)) next.stallGiveUpCount += 1
   if (/schedule target past delivered end/.test(msg)) next.schedulePastDeliveredCount += 1
@@ -181,6 +304,32 @@ export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): 
     // writer-failure line now carries: `[err=… kind=… cut=…]`. Last one wins.
     const ev = /\[(err=\S+ kind=\S+(?: under=\S+)? cut=[^\]]+)\]/.exec(msg)
     if (ev) next.writerFailureEvidence = ev[1]
+  }
+  // TRANSFER LADDER (2026-10-07): held ⟺ a user transfer owned the link;
+  // resumed ⟺ the settle edge released the walk. A hold with no resume is the
+  // starvation shape the check below warns about.
+  const held = /^transfer ladder: prefetch walk held \((\w+)\)/.exec(msg)
+  if (held) {
+    next.prefetchHoldCount += 1
+    const reason = held[1]
+    // Replace, never mutate: `{ ...facts }` copies the array REFERENCE, so an
+    // in-place push would rewrite an earlier fold's snapshot too.
+    if (!next.prefetchHoldReasons.includes(reason)) {
+      next.prefetchHoldReasons = [...next.prefetchHoldReasons, reason]
+    }
+  }
+  if (/^transfer ladder: prefetch walk resumed/.test(msg)) next.prefetchResumeCount += 1
+  // SEEK LATENCY (plan Phase 4 item 3, 2026-10-07): one line per seek that
+  // reached playback. Only a COMPLETE report becomes "the number"; an
+  // incomplete probe is counted separately (a paused seek is legitimate).
+  const latency = parseSeekLatencyLine(msg)
+  if (latency) {
+    if (latency.complete) {
+      next.seekLatencyCount += 1
+      next.lastSeekLatency = latency
+    } else {
+      next.seekLatencyIncompleteCount += 1
+    }
   }
   if (/clean early close/.test(msg)) next.cleanEarlyClose = true
   // IN-LOADER CONTINUATION (2026-10-03): the cut recovery. These lines are the
@@ -600,6 +749,74 @@ export function evaluateStreamVerification(input: StreamVerifyInput): StreamVeri
       label: 'Estimate neither starves nor over-promises',
       status: native.stallGiveUpCount > 0 ? 'fail' : native.stallResumeCount <= 1 ? 'pass' : 'warn',
       evidence: `stallResume=${native.stallResumeCount}, giveUp=${native.stallGiveUpCount}, pastDelivered=${native.schedulePastDeliveredCount}`,
+    })
+
+    // --- Seek epochs (Phase 2, 2026-10-07) -------------------------------
+    // The load-bearing invariant: an epoch's timeline base is decided from its
+    // container's own claim BEFORE any schedule exists, so an epoch can never
+    // start without being able to demote itself.
+    const epochScheduledAtBase = (native.firstScheduleBaseSeconds ?? 0) > 0
+    checks.push({
+      id: 'epoch',
+      label: 'Seek epoch: verdict before schedule, rebase never snaps to 0',
+      status:
+        epochScheduledAtBase && native.epochVerdict !== 'honored'
+          ? 'fail'
+          : native.epochVerdict === 'honored'
+            ? 'pass'
+            : native.epochRebased || native.epochVerdict === 'unknown'
+              ? 'warn'
+              : 'unknown',
+      evidence:
+        epochScheduledAtBase && native.epochVerdict !== 'honored'
+          ? `an epoch file was scheduled at base=${native.firstScheduleBaseSeconds}s with NO honored verdict — the unverified-base shape`
+          : native.epochVerdict === 'honored'
+            ? `epoch honored (base=${native.epochBaseSeconds}s, schedules ${native.epochOpenCount} epoch(s))`
+            : native.epochRebased
+              ? 'the server ignored the offset — rebased to base 0, intent kept (never a snap to 0)'
+              : native.epochVerdict === 'unknown'
+                ? 'the container matched neither shape — epoch discarded, Phase-1 wait'
+                : native.epochOpenCount > 0
+                  ? `${native.epochOpenCount} epoch(s) opened, no verdict in the window`
+                  : 'no seek epoch in the capture (seekEpochs off, or no far seek)',
+    })
+
+    // --- Transfer ladder (2026-10-07, Phase 2 follow-up) ------------------
+    // Speculative bytes never start while a user transfer owns the link, and a
+    // hold must END: a held walk that never resumes is the starvation shape
+    // (prefetch stopped for the rest of the window, with no field signal).
+    checks.push({
+      id: 'transfer-priority',
+      label: 'Speculative prefetch yields to the user transfer, then resumes',
+      status:
+        native.prefetchHoldCount === 0
+          ? 'unknown'
+          : native.prefetchResumeCount > 0
+            ? 'pass'
+            : 'warn',
+      evidence:
+        native.prefetchHoldCount === 0
+          ? 'no prefetch hold in the window (no user transfer overlapped the walk, or the ladder never saw one)'
+          : `holds=${native.prefetchHoldCount} (${native.prefetchHoldReasons.join(', ') || '?'}), resumes=${native.prefetchResumeCount}` +
+            (native.prefetchResumeCount > 0 ? '' : ' — a hold with NO resume: prefetch stayed stopped for the window'),
+    })
+
+    // --- Seek latency (plan Phase 4 item 3, 2026-10-07) -------------------
+    // The measurement that turns "seeking feels better" into a number: four
+    // legs from the seek REQUEST (decision → first byte → first schedule →
+    // first playback). UNKNOWN when no complete report exists — absence is
+    // never a pass, and the strategy label is the epoch-vs-wait comparison.
+    const seekLatency = native.lastSeekLatency
+    checks.push({
+      id: 'seek-latency',
+      label: 'Seek latency measured end to end (request → playback)',
+      status: seekLatency ? 'pass' : native.seekLatencyIncompleteCount > 0 ? 'warn' : 'unknown',
+      evidence: seekLatency
+        ? `total=${fmtMs(seekLatency.totalMs)}ms (decision=${fmtMs(seekLatency.decisionMs)}, firstByte=${fmtMs(seekLatency.firstByteMs)}${seekLatency.firstByteInferred ? '*' : ''}, firstSchedule=${fmtMs(seekLatency.firstScheduleMs)}) strategy=${seekLatency.strategy} target=${seekLatency.targetSeconds}s` +
+          (native.seekLatencyCount > 1 ? `, ${native.seekLatencyCount} report(s)` : '')
+        : native.seekLatencyIncompleteCount > 0
+          ? `${native.seekLatencyIncompleteCount} probe(s) never reached playback — a paused seek, or a stranded probe; no total to report`
+          : 'no seek latency line in the window (no user seek in the capture)',
     })
 
     checks.push({
