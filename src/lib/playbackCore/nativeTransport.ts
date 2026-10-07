@@ -34,6 +34,13 @@
  *    consumed on re-apply, cleared on disengage/give-up. The re-apply
  *    condition requires an ACTIVE retry for that track — a plain re-engage
  *    (loop-one restart, user replay) never re-seeks;
+ *  - the PENDING SEEK (2026-10-07, Phase 1 of the seek-intent plan): a seek
+ *    that cannot be delivered when issued — an engage cycle is being applied
+ *    (the engine is still on the OUTGOING row) or the engine is engaged on a
+ *    different row — is parked row-scoped, latest-wins, and replayed once an
+ *    engage settles onto ITS row. The old shape forwarded it immediately and
+ *    it either positioned the outgoing row or was wiped by the incoming
+ *    `loadAndStart`. Cleared on disengage/destroy/engage failure;
  *  - `scheduleSync(factory)` — the queue-tail refresh with microtask
  *    coalescing: same-task bursts collapse to ONE refreshQueue call; the
  *    factory is evaluated AT FIRE TIME (lazy → always the final snapshot) and
@@ -60,7 +67,7 @@
  */
 
 import { RetryPolicy, type RetryPolicyConfig } from './retryPolicy'
-import { trailBridge } from './nativeBridgeTrail'
+import { trailBridge, type StreamEpochTrailEvent } from './nativeBridgeTrail'
 import type { TransportEndedEvent } from './types'
 
 export type NativeLoopMode = 'none' | 'one' | 'all'
@@ -105,10 +112,14 @@ export interface NativePluginClient {
 /** The client wrapper surface — the real `nativeEngine` satisfies it. */
 export interface NativeEngineClient {
   init(callbacks: {
-    onTrackChanged(trackId: string): void
-    onPlaybackStateChanged(playing: boolean): void
-    onQueueEnded(): void
-    onError(message: string): void
+  onTrackChanged(trackId: string): void
+  onPlaybackStateChanged(playing: boolean): void
+  onQueueEnded(): void
+  onError(message: string): void
+  /** Seek-epoch lifecycle (Phase 2, 2026-10-07) — telemetry only, forwarded
+   *  verbatim. Optional so a client without the event still satisfies the
+   *  contract. */
+  onStreamEpoch?(event: StreamEpochTrailEvent): void
     onEngineUnavailable?(): void
     onEngineRecovered?(): void
   }): Promise<void>
@@ -151,6 +162,13 @@ interface SeekMemory {
   position: number
 }
 
+/** A seek that could not be delivered when issued: replayed once an engage
+ *  settles onto its row (see `_replayPendingSeek`). */
+interface PendingSeek {
+  trackId: string
+  position: number
+}
+
 export class NativeTransport {
   private readonly _client: NativeEngineClient
   private readonly _timers: NativeTransportTimers
@@ -164,10 +182,13 @@ export class NativeTransport {
   private _retryTrackId: string | null = null
   private _retryCancel: (() => void) | null = null
   private _seekMemory: SeekMemory | null = null
+  private _pendingSeek: PendingSeek | null = null
   private _engageCycle: Promise<boolean> | null = null
   private _pendingEngage: EngageRequest | null = null
 
   onTrackChanged: ((trackId: string) => void) | null = null
+  /** Seek-epoch lifecycle (Phase 2): forwarded from the engine's event. */
+  onStreamEpoch: ((event: StreamEpochTrailEvent) => void) | null = null
   onTrackEnded: ((event: TransportEndedEvent) => void) | null = null
   onPlaybackState: ((state: 'playing' | 'paused') => void) | null = null
   onRetry: ((trackId: string) => void) | null = null
@@ -186,6 +207,13 @@ export class NativeTransport {
   /** True while a queue snapshot is live in the engine (the `_hasNativeEngaged` analog). */
   get engaged(): boolean {
     return this._engaged
+  }
+
+  /** The row the engine's last SETTLED engage landed on (null when
+   *  disengaged). The manager reads it to decide whether a seek is
+   *  deliverable now — a non-null value implies `engaged`. */
+  get lastTrackId(): string | null {
+    return this._lastTrackId
   }
 
   async init(): Promise<void> {
@@ -208,6 +236,7 @@ export class NativeTransport {
         this.onEngineUnavailable?.()
       },
       onEngineRecovered: () => this.onEngineRecovered?.(),
+      onStreamEpoch: (event) => this.onStreamEpoch?.(event),
     })
   }
 
@@ -276,7 +305,33 @@ export class NativeTransport {
       // gen check inside _doEngage (disengage also clears the slot).
       result = await this._doEngage(pending, this._engagement)
     }
+    // Phase 1: a seek issued while the cycle ran was HELD (its row was not
+    // engaged yet) — replay it now that the cycle settled. Runs before the
+    // cycle promise resolves, so the manager's own continuation cannot
+    // interleave a fresh command ahead of it.
+    this._replayPendingSeek()
     return result
+  }
+
+  /**
+   * Replays a seek that could not be delivered at issue time (an engage cycle
+   * was in flight, or the engine was on another row). The intent is
+   * row-scoped: it is replayed ONLY when the settled row is the one that was
+   * scrubbed — the transport never aims a parked seek at a row the user did
+   * not ask for. A non-matching settle therefore LEAVES it parked for its own
+   * row (the seek that landed while the manager resolved the row's URL must
+   * still apply when that row finally engages); it is dropped only by
+   * disengage/destroy/engage-abort or a newer seek. A replayed seek also
+   * becomes the retry memory (1.7) — it is a delivered position like any
+   * other.
+   */
+  private _replayPendingSeek(): void {
+    const pending = this._pendingSeek
+    if (pending === null) return
+    if (!this._engaged || pending.trackId !== this._lastTrackId) return
+    this._pendingSeek = null
+    this._seekMemory = { trackId: pending.trackId, position: pending.position }
+    void this._client.plugin().seek({ position: pending.position }).catch(() => {})
   }
 
   private async _doEngage(request: EngageRequest, expectedGen: number): Promise<boolean> {
@@ -363,6 +418,7 @@ export class NativeTransport {
     this._syncFactory = null
     this._lastTrackId = null
     this._seekMemory = null
+    this._pendingSeek = null
     this._resetRetry()
     this._client.setPositionPolling(false, () => {})
     if (this._pendingEngage === null) {
@@ -382,6 +438,7 @@ export class NativeTransport {
     }
     this._lastTrackId = null
     this._seekMemory = null
+    this._pendingSeek = null
     this._resetRetry()
     this._client.setPositionPolling(false, () => {})
   }
@@ -449,14 +506,32 @@ export class NativeTransport {
   }
 
   /**
-   * Forwards the clamped position and remembers it for the retry-reload case
-   * (1.7): if this track errors, the retry's reload re-issues the seek after
-   * playTrackAt resolves. Only an engage that IS the retry reload re-applies
-   * it — plain re-engages (loop-one restart, user replay) never re-seek.
+   * Forwards the clamped position — or HOLDS it when the engine cannot take it
+   * yet (2026-10-07, Phase 1). Deliverable = the transport is engaged on the
+   * requested row (or on no row at all, the legacy shape) with no engage cycle
+   * in flight: the command reaches the engine that owns the position, and the
+   * position is remembered for the retry-reload case (1.7) — if this track
+   * errors, the retry's reload re-issues the seek after playTrackAt resolves.
+   * Only an engage that IS the retry reload re-applies that memory — plain
+   * re-engages (loop-one restart, user replay) never re-seek.
+   *
+   * Undeliverable = an engage is being applied (the engine is still on the
+   * outgoing row) or the engine is on a different row: the LATEST intent is
+   * parked with its row and `_replayPendingSeek` fires it once an engage
+   * settles onto that row. `trackId` is the manager's row identity; it
+   * defaults to the last engaged row for legacy callers.
    */
-  seek(position: number): Promise<void> {
-    if (this._lastTrackId !== null) {
-      this._seekMemory = { trackId: this._lastTrackId, position }
+  seek(position: number, trackId: string | null = null): Promise<void> {
+    const target = trackId ?? this._lastTrackId
+    const deliverable =
+      this._engageCycle === null && (target === null || (this._engaged && target === this._lastTrackId))
+    if (!deliverable) {
+      if (target !== null) this._pendingSeek = { trackId: target, position }
+      return Promise.resolve()
+    }
+    this._pendingSeek = null
+    if (target !== null) {
+      this._seekMemory = { trackId: target, position }
     }
     return this._client.plugin().seek({ position })
   }
@@ -481,6 +556,7 @@ export class NativeTransport {
       trailBridge('event', 'retryGiveUp')
       this._resetRetry()
       this._seekMemory = null
+      this._pendingSeek = null
       this.onTrackEnded?.({ kind: 'natural', fromError: true })
       return
     }
@@ -518,6 +594,7 @@ export class NativeTransport {
     }
     this._lastTrackId = null
     this._seekMemory = null
+    this._pendingSeek = null
     this._resetRetry()
     await this._client.destroy()
   }

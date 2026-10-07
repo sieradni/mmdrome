@@ -15,6 +15,7 @@ import {
   evaluateStreamVerification,
   formatStreamVerifyReport,
   formatStreamVerifyBundle,
+  parseSeekLatencyLine,
   emptyNativeStreamFacts,
   type HttpProbeFacts,
   type LabeledHttpProbe,
@@ -577,6 +578,210 @@ test('formatStreamVerifyBundle is a paste-ready block carrying the raw evidence'
   assert.match(text, /RAW EVENTS \(1\)/)
   assert.match(text, /staged load start row 4/)
   assert.ok(text.length > 300, 'a usable bundle is substantial')
+})
+
+// MARK: - Seek epochs (Phase 2, 2026-10-07)
+
+test('foldStreamEvent folds the epoch open/verdict lines and the schedule base', () => {
+  const honored = parseNativeStreamTranscript([
+    { domain: 'stream', msg: 'epoch open #1 row 3 id=abc base=187s target=187.9s autoplay=true' },
+    { domain: 'stream', msg: 'epoch verdict honored #1 id=abc base=187s container=18225000 frames (expected 18225000)' },
+    { domain: 'stream', msg: 'first staged schedule id=abc start=187.9s base=187.0s endable=18225000 frames (413.3s of header claim 18225000)' },
+  ])
+  assert.equal(honored.epochOpenCount, 1)
+  assert.equal(honored.epochVerdict, 'honored')
+  assert.equal(honored.epochBaseSeconds, 187)
+  assert.equal(honored.firstScheduleBaseSeconds, 187)
+  assert.equal(honored.epochRebased, false)
+
+  // A pre-Phase-2 transcript (no `base=` on the schedule line) still folds
+  // every other field — the check must not misread an absent field as base 0.
+  const legacy = parseNativeStreamTranscript([
+    { domain: 'stream', msg: 'first staged schedule id=abc endable=2205000 frames (50.0s of header claim 2205000)' },
+  ])
+  assert.equal(legacy.firstScheduleBaseSeconds, null)
+  assert.equal(legacy.sawFirstStagedSchedule, true)
+})
+
+test('the epoch check FAILS when an epoch is scheduled with no honored verdict', () => {
+  const native = parseNativeStreamTranscript([
+    { domain: 'stream', msg: 'epoch open #1 row 3 id=abc base=300s target=300.5s autoplay=true' },
+    // No verdict line: the schedule went ahead anyway — the one shape the
+    // design forbids (an epoch that can start but cannot demote itself).
+    { domain: 'stream', msg: 'first staged schedule id=abc start=300.5s base=300.0s endable=12000000 frames (272.1s of header claim 12000000)' },
+  ])
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 600, snapshotSize: 40_000_000,
+    http: httpProbe(), native,
+  })
+  const check = report.checks.find((c) => c.id === 'epoch')!
+  assert.equal(check.status, 'fail')
+  assert.match(check.evidence, /NO honored verdict/)
+})
+
+test('the epoch check passes on honored, warns on a rebase, unknown with no epoch', () => {
+  const honored = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 600, snapshotSize: 40_000_000,
+    http: httpProbe(),
+    native: parseNativeStreamTranscript([
+      { domain: 'stream', msg: 'epoch open #1 row 3 id=abc base=300s target=300.5s autoplay=true' },
+      { domain: 'stream', msg: 'epoch verdict honored #1 id=abc base=300s container=13230000 frames (expected 13230000)' },
+      { domain: 'stream', msg: 'first staged schedule id=abc start=300.5s base=300.0s endable=13230000 frames (300.0s of header claim 13230000)' },
+    ]),
+  })
+  assert.equal(honored.checks.find((c) => c.id === 'epoch')!.status, 'pass')
+
+  // The direct-play trap: the offset was ignored — the fail-safe is a REBASE
+  // with the intent kept, never a snap to 0 (so it is a WARN, not a fail).
+  const rebased = evaluateStreamVerification({
+    trackId: 'abc', variant: 'raw', isTranscode: false, metadataDuration: 600, snapshotSize: 40_000_000,
+    http: httpProbe(),
+    native: parseNativeStreamTranscript([
+      { domain: 'stream', msg: 'epoch open #2 row 3 id=abc base=300s target=300.5s autoplay=true' },
+      { domain: 'stream', msg: 'epoch verdict ignored #2 id=abc — rebased to base 0, intent kept at 300.5s (adopted as the row\'s transfer)' },
+      { domain: 'stream', msg: 'first staged schedule id=abc start=300.5s base=0.0s endable=26460000 frames (600.0s of header claim 26460000)' },
+    ]),
+  })
+  const rebaseCheck = rebased.checks.find((c) => c.id === 'epoch')!
+  assert.equal(rebaseCheck.status, 'warn')
+  assert.match(rebaseCheck.evidence, /never a snap to 0/)
+
+  const none = evaluateStreamVerification({
+    trackId: 'abc', variant: 'raw', isTranscode: false, metadataDuration: 600, snapshotSize: 40_000_000,
+    http: httpProbe(),
+    native: parseNativeStreamTranscript([
+      { domain: 'stream', msg: 'first staged schedule id=abc endable=2205000 frames (50.0s of header claim 2205000)' },
+    ]),
+  })
+  assert.equal(none.checks.find((c) => c.id === 'epoch')!.status, 'unknown')
+})
+
+// MARK: - Transfer ladder (2026-10-07, Phase 2 follow-up)
+
+test('foldStreamEvent folds the ladder hold/resume lines from the preload domain', () => {
+  const facts = parseNativeStreamTranscript([
+    { domain: 'preload', msg: 'chain: prefetch row 7 (navidrome-t7)' },
+    { domain: 'preload', msg: 'transfer ladder: prefetch walk held (seekEpoch) — user transfer owns the link' },
+    { domain: 'preload', msg: 'transfer ladder: prefetch walk resumed (was held: seekEpoch)' },
+    { domain: 'preload', msg: 'transfer ladder: prefetch walk held (stagedStream) — user transfer owns the link' },
+    { domain: 'preload', msg: 'transfer ladder: prefetch walk held (stagedStream) — user transfer owns the link' },
+  ])
+  assert.equal(facts.prefetchHoldCount, 3)
+  assert.deepEqual(facts.prefetchHoldReasons, ['seekEpoch', 'stagedStream'])
+  assert.equal(facts.prefetchResumeCount, 1)
+  // Unrelated preload lines are filtered by pattern, not by domain.
+  assert.equal(facts.sawStagedLoadStart, false)
+})
+
+test('the transfer-priority check passes on a released hold, warns when it never resumes', () => {
+  const held = (lines: string[]) => parseNativeStreamTranscript(lines.map((msg) => ({ domain: 'preload', msg })))
+
+  const released = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: httpProbe(),
+    native: held([
+      'transfer ladder: prefetch walk held (seekEpoch) — user transfer owns the link',
+      'transfer ladder: prefetch walk resumed (was held: seekEpoch)',
+    ]),
+  })
+  const pass = released.checks.find((c) => c.id === 'transfer-priority')!
+  assert.equal(pass.status, 'pass')
+  assert.match(pass.evidence, /holds=1 \(seekEpoch\), resumes=1/)
+
+  // The starvation shape: held and nothing released it inside the window.
+  const stuck = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: httpProbe(),
+    native: held(['transfer ladder: prefetch walk held (stagedStream) — user transfer owns the link']),
+  })
+  const warn = stuck.checks.find((c) => c.id === 'transfer-priority')!
+  assert.equal(warn.status, 'warn')
+  assert.match(warn.evidence, /NO resume/)
+
+  // No hold at all is UNKNOWN, never a false pass.
+  const none = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: httpProbe(),
+    native: held(['chain: prefetch row 7 (navidrome-t7)']),
+  })
+  assert.equal(none.checks.find((c) => c.id === 'transfer-priority')!.status, 'unknown')
+})
+
+// MARK: - Seek latency (plan Phase 4 item 3, 2026-10-07)
+
+test('parseSeekLatencyLine reads the native core\'s line, including the inferred byte leg', () => {
+  const report = parseSeekLatencyLine(
+    'seek latency id=navidrome-t7 target=182.4s strategy=parked+epoch decision=0.4ms firstByte=-ms firstSchedule=120.0ms firstPlayback=-ms total=-ms',
+  )!
+  assert.equal(report.trackId, 'navidrome-t7')
+  assert.equal(report.targetSeconds, 182.4)
+  assert.equal(report.strategy, 'parked+epoch')
+  assert.equal(report.decisionMs, 0.4)
+  assert.equal(report.firstByteMs, null)
+  assert.equal(report.firstScheduleMs, 120)
+  assert.equal(report.firstPlaybackMs, null)
+  assert.equal(report.totalMs, null)
+  assert.equal(report.complete, false)
+
+  const complete = parseSeekLatencyLine(
+    'seek latency id=navidrome-t3 target=300.5s strategy=staged-stall+epoch decision=0.9ms firstByte=812.3ms* firstSchedule=834.0ms firstPlayback=861.2ms total=861.2ms',
+  )!
+  assert.equal(complete.firstByteMs, 812.3)
+  assert.equal(complete.firstByteInferred, true)
+  assert.equal(complete.totalMs, 861.2)
+  assert.equal(complete.complete, true)
+
+  // Anything that is not the canonical line is not a report.
+  assert.equal(parseSeekLatencyLine('seek 100.0 → 182.4 crossfade=idle'), null)
+
+  // A star INSIDE the token is the wrong shape (the native emitter shipped it
+  // once): it must degrade to a MISSING leg, never a NaN in the facts.
+  const wrongShape = parseSeekLatencyLine(
+    'seek latency id=navidrome-t9 target=30.0s strategy=unknown decision=1.0ms firstByte=1200.0*ms firstSchedule=1200.0ms firstPlayback=-ms total=-ms',
+  )!
+  assert.equal(wrongShape.firstByteMs, null)
+  assert.equal(wrongShape.firstByteInferred, false)
+  assert.equal(wrongShape.complete, false)
+  assert.equal(wrongShape.firstScheduleMs, 1200)
+})
+
+test('foldStreamEvent keeps the last COMPLETE report and counts the stranded probes', () => {
+  const facts = parseNativeStreamTranscript([
+    // A pause-scrub-and-wait: legitimate, but it yields no total.
+    { domain: 'stream', msg: 'seek latency id=t1 target=10.0s strategy=parked decision=0.2ms firstByte=-ms firstSchedule=-ms firstPlayback=-ms total=-ms' },
+    { domain: 'stream', msg: 'seek latency id=t1 target=300.5s strategy=local decision=0.1ms firstByte=11.0ms firstSchedule=12.0ms firstPlayback=13.0ms total=13.0ms' },
+    { domain: 'stream', msg: 'seek latency id=t1 target=310.0s strategy=local decision=0.3ms firstByte=21.0ms firstSchedule=22.0ms firstPlayback=23.0ms total=23.0ms' },
+  ])
+  assert.equal(facts.seekLatencyCount, 2)
+  assert.equal(facts.seekLatencyIncompleteCount, 1)
+  assert.equal(facts.lastSeekLatency!.targetSeconds, 310)
+  assert.equal(facts.lastSeekLatency!.totalMs, 23)
+})
+
+test('the seek-latency check passes on a complete report, warns on a stranded probe, unknown without one', () => {
+  const fold = (lines: string[]) => parseNativeStreamTranscript(lines.map((msg) => ({ domain: 'stream', msg })))
+  const evaluate = (native: ReturnType<typeof emptyNativeStreamFacts>) =>
+    evaluateStreamVerification({
+      trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+      http: httpProbe(), native,
+    })
+
+  const pass = evaluate(fold([
+    'seek latency id=abc target=300.5s strategy=parked+epoch decision=0.5ms firstByte=700.0ms firstSchedule=720.0ms firstPlayback=760.0ms total=760.0ms',
+  ])).checks.find((c) => c.id === 'seek-latency')!
+  assert.equal(pass.status, 'pass')
+  assert.match(pass.evidence, /total=760.0ms/)
+  assert.match(pass.evidence, /strategy=parked\+epoch/)
+
+  const warn = evaluate(fold([
+    'seek latency id=abc target=300.5s strategy=parked decision=0.5ms firstByte=-ms firstSchedule=-ms firstPlayback=-ms total=-ms',
+  ])).checks.find((c) => c.id === 'seek-latency')!
+  assert.equal(warn.status, 'warn')
+  assert.match(warn.evidence, /never reached playback/)
+
+  const none = evaluate(fold(['first staged schedule id=abc endable=1 frames (1.0s of header claim 2)']))
+    .checks.find((c) => c.id === 'seek-latency')!
+  assert.equal(none.status, 'unknown')
 })
 
 test('formatStreamVerifyReport renders one line per check with its status', () => {

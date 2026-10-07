@@ -45,6 +45,18 @@ class FakeEl {
   currentTime = 0
   duration = 300
   paused = false
+  /** Metadata gate for the Phase-1 parked-position apply (0 = no metadata). */
+  readyState = 0
+  listeners: Record<string, Array<() => void>> = {}
+  addEventListener(type: string, fn: () => void): void {
+    ;(this.listeners[type] ??= []).push(fn)
+  }
+  removeEventListener(type: string, fn: () => void): void {
+    this.listeners[type] = (this.listeners[type] ?? []).filter((f) => f !== fn)
+  }
+  fire(type: string): void {
+    for (const fn of [...(this.listeners[type] ?? [])]) fn()
+  }
   async play(): Promise<void> {
     this.paused = false
   }
@@ -107,11 +119,12 @@ class FakeWebTransport {
 class FakeBgTransport {
   calls: string[] = []
   loadStarted = true
+  bgEl = new FakeEl()
   get engaged(): boolean {
     return true
   }
   get sessionElement(): HTMLAudioElement {
-    return null as unknown as HTMLAudioElement
+    return this.bgEl as unknown as HTMLAudioElement
   }
   async startBgLoad(url: string): Promise<boolean> {
     this.calls.push(`startBgLoad:${url}`)
@@ -189,6 +202,7 @@ class FakeSleepTimer {
 // --- harness ---------------------------------------------------------------
 
 type PrivatePM = {
+  seek(time: number, opts?: { live?: boolean }): void
   _bgLoad(track: Track): Promise<void>
   _handleBgLoad(target: 'fg' | 'bg', decision: LoadDecision): Promise<void>
   _bgFacts(): BgFacts
@@ -430,6 +444,47 @@ test('_handleBgLoad fg advance plays through the full fg load path', async () =>
   assert.ok(h.qm.calls.includes('replenishAutoQueue'))
   assert.ok(h.web.calls.includes('prepareNext:navidrome-t3'))
   assert.ok(h.web.calls.includes('playLoaded'))
+})
+
+// --- Phase 1 (2026-10-07): parked seek intent -------------------------------
+
+test('a web seek before the source exists survives the load and applies on loadedmetadata', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['navidrome-t2'], [t2], 0)
+  setCurrentTrack(t2)
+  const el = h.am.activeElement as unknown as FakeEl
+
+  h.m.seek(120) // no src yet — the intent parks instead of being dropped
+  assert.equal(get(currentTime), 120)
+
+  await h.m._loadAndPlay(t2)
+
+  // The load CONSUMED the intent (never 0:00), and the element position waits
+  // for metadata because a write before then is dropped by the engine.
+  assert.equal(get(currentTime), 120)
+  assert.equal(el.currentTime, 0)
+  el.readyState = 1
+  el.fire('loadedmetadata')
+  assert.equal(el.currentTime, 120)
+  // One-shot: a later re-fire cannot re-seek a moved element.
+  el.currentTime = 7
+  el.fire('loadedmetadata')
+  assert.equal(el.currentTime, 7)
+})
+
+test('a parked web position applies immediately when metadata already exists', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['navidrome-t2'], [t2], 0)
+  setCurrentTrack(t2)
+  const el = h.am.activeElement as unknown as FakeEl
+  el.readyState = 2
+
+  h.m.seek(120)
+  await h.m._loadAndPlay(t2)
+
+  assert.equal(el.currentTime, 120)
 })
 
 test('_handleBgLoad fg load failure clears the track and stops', async () => {

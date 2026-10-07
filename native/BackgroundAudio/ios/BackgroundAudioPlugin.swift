@@ -32,6 +32,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setMasterVolume", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setCrossfade", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setAudioMixing", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setSeekEpochs", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPreloadCount", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSleepTimer", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setEq", returnType: CAPPluginReturnPromise),
@@ -215,6 +216,12 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         engine.onSleepTimerFired = { [weak self] in
             self?.notifyListeners("sleepTimerFired", data: [:])
             self?.refreshNowPlaying()
+        }
+        // Seek-epoch lifecycle (Phase 2, 2026-10-07): an epoch is a third
+        // POSITIONING actor beside engage/refreshQueue — JS records it in the
+        // bridge trail and the self-test folds its verdict.
+        engine.onStreamEpoch = { [weak self] data in
+            self?.notifyListeners("streamEpoch", data: data)
         }
         engine.onPreloadProgress = { [weak self] trackId, state, progress in
             var data: [String: Any] = ["trackId": trackId, "state": state]
@@ -488,6 +495,20 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let self else { call.resolve(); return }
             self.session.setMixingMode(mode)
             self.engine.audioMixingMode = mode
+            call.resolve()
+        }
+    }
+
+    /// The seek-epoch kill switch (Phase 2, 2026-10-07): `auto` (default) lets
+    /// a far seek open a server-offset epoch; `off` reproduces Phase-1
+    /// behavior exactly — the field rollback, no release required. MUST be in
+    /// `pluginMethods` above (the §3.4 getMethod gate silently drops
+    /// unregistered names).
+    @objc func setSeekEpochs(_ call: CAPPluginCall) {
+        let mode = SeekEpochMode(rawValue: call.getString("mode", "auto") ?? "auto") ?? .auto
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.setSeekEpochsMode(mode)
             call.resolve()
         }
     }

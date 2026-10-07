@@ -24,6 +24,10 @@ public struct NativeTrack {
     public let coverUrl: URL?
     public let replayGain: Double?
     public let albumReplayGain: Double?
+    /// Phase 0/2 (2026-10-07): the seek-capability declaration for this row,
+    /// derived by JS from the SAME transcode decision that built `url`. Nil
+    /// (absent or malformed) = the engine takes the Phase-1 wait path.
+    public let seekCapability: SeekCapability?
 
     public init?(from dict: [String: Any], index: Int) {
         guard
@@ -49,6 +53,11 @@ public struct NativeTrack {
         }
         self.replayGain = dict["replayGain"] as? Double
         self.albumReplayGain = dict["albumReplayGain"] as? Double
+        if let cap = dict["seekCapability"] as? [String: Any] {
+            self.seekCapability = SeekCapability(dict: cap)
+        } else {
+            self.seekCapability = nil
+        }
     }
 
     /// Replay gain factor (linear) for the given mode, defaulting to 1.0 when unknown.
@@ -342,6 +351,174 @@ public final class NativeAudioEngine: NSObject {
     private var isPlaying = false
     /// True once a schedule exists that can be resumed (vs. an empty queue).
     private var hasLiveSchedule = false
+    /// Phase 1 (2026-10-07, seek-intent plan): a seek that landed before any
+    /// schedule could be made for the row — the first staged schedule has not
+    /// formed, or the normal download is still in flight. The position is an
+    /// INTENT: it is applied by the first schedule that CAN be made
+    /// (`startFirstStagedSchedule`, the prefetch completion,
+    /// `scheduleStagedFileWhole`) instead of being dropped to 0 or reported as
+    /// "Track not ready" → JS retry → reload from 0. Row-scoped: a load for a
+    /// DIFFERENT row clears it; a same-row restart keeps it.
+    private var pendingSeekSeconds: Double? = nil
+    private var pendingSeekTrackId: String? = nil
+
+    // MARK: - Seek epochs (Phase 2, 2026-10-07)
+
+    /// The GLOBAL kill switch (plan §8). `auto` (default) lets a far forward
+    /// seek open a server-offset epoch; `off` reproduces Phase-1 behavior
+    /// EXACTLY — the position-preserving wait, no extra request — so the
+    /// epoch machinery can be disabled in the field without a release.
+    /// Pushed by the manager (boot + settings change); persisted in the JS
+    /// settings store, so it survives a reload.
+    private var seekEpochMode: SeekEpochMode = .auto
+
+    /// The states a server-offset epoch can be in. The epoch's source is an
+    /// ephemeral offset transfer (`TrackFileLoader.EpochTransfer`); the engine
+    /// owns every AVAudioFile open over it.
+    private struct SeekEpochState {
+        let trackId: String
+        /// The INTEGER second offset actually requested (`timeOffset` is an
+        /// integer parameter) — also the timeline base once the verdict says
+        /// the offset was honored.
+        let baseSeconds: Int
+        /// The user's exact intent (>= base): the first schedule starts at
+        /// `target - base` INSIDE the epoch, so the sub-second part is not
+        /// lost to the integer parameter.
+        let targetSeconds: Double
+        let transfer: TrackFileLoader.EpochTransfer
+        /// The container verdict, evaluated at the first open (nil until a
+        /// delivery is openable).
+        var verdict: SeekEpochVerdict? = nil
+    }
+
+    private var seekEpoch: SeekEpochState? = nil
+    private var seekEpochCounter = 0
+
+    // MARK: - Transfer ladder (2026-10-07, Phase 2 follow-up)
+
+    /// The current hold reason, or nil when the walk is free. Transition-only
+    /// logging: the hold is re-evaluated on every walk entry (queue edges, the
+    /// walk's own recursion, the settle re-arms), and only a CHANGE records an
+    /// event — a churn of calls must not flood the ring.
+    private var prefetchHoldReason: TransferLadder.Hold? = nil
+    private var prefetchHoldCount = 0
+
+    /// The user-transfer state the ladder holds on. ONE derivation for the
+    /// walk's hold AND the network re-arm's skip: an epoch counts explicitly
+    /// through `epochOpen`, never through `hasActiveWriter` incidentally
+    /// including ephemeral epoch writers (pinned by TransferLadderTests).
+    private func currentUserTransfer() -> TransferLadder.UserTransfer {
+        let activeTrack = tracks.indices.contains(activeIndex) ? tracks[activeIndex] : nil
+        let downloading = activeTrack.map { track in
+            loader.inFlightProgress.contains { $0.trackId == track.trackId }
+        } ?? false
+        // A COMPLETE staged file is no longer a bandwidth owner: its writer has
+        // settled and the schedule plays from disk — that is exactly why
+        // `completeStagedSchedule` arms the walk at its own end (holding here
+        // would have silently cancelled that arm).
+        return TransferLadder.UserTransfer(
+            stagedActive: stagedSchedule != nil && !(stagedSchedule?.isComplete ?? true),
+            writerLive: loader.hasActiveWriter,
+            epochOpen: seekEpoch != nil,
+            activeLoadInFlight: downloading)
+    }
+
+    /// The ladder's SETTLE edge: a user transfer just ended, so the speculative
+    /// walk may resume. Safe to call more than once — the loader chains a
+    /// duplicate request for the same key onto the in-flight task.
+    private func rearmPrefetchIfIdle(reason: String) {
+        let userTransfer = currentUserTransfer()
+        guard TransferLadder.mayIssueNextPrefetch(userTransfer) else {
+            // ANOTHER user transfer still owns the link, so this edge stays
+            // quiet: it records no hold/resume transition and increments no
+            // counter (the walk's own entry records the hold once, and the
+            // remaining transfer's settle edge is what finally arms it).
+            eventAdd(.debug, "preload", "\(reason) held (\(TransferLadder.hold(userTransfer).rawValue)) — user transfer owns the link")
+            return
+        }
+        armPrefetchWalk(reason: reason)
+    }
+
+    /// ONE arm edge for the re-arms that fire OUTSIDE a queue edge — the
+    /// network re-arm and the ladder's settle edges. It BUMPS the generation
+    /// first: without the bump a re-arm that lands while an older chain is
+    /// still walking runs a SECOND concurrent chain, double-walking the window
+    /// and amplifying event/tick churn (the discipline
+    /// `rearmPrefetchAfterNetworkChange` has documented since 2026-10-02). The
+    /// bump does NOT cancel the loader's in-flight downloads, so an already-
+    /// fetching row is a no-op rather than a duplicate.
+    private func armPrefetchWalk(reason: String) {
+        guard !tracks.isEmpty else { return }
+        prefetchGeneration += 1
+        eventAdd(.info, "preload", "\(reason): prefetchUpcoming from row \(activeIndex) (gen \(prefetchGeneration))")
+        prefetchUpcoming(from: activeIndex)
+    }
+
+    // MARK: - Seek latency (2026-10-07, plan Phase 4 item 3)
+
+    /// The ONE open latency probe: opened by `seek(to:)`, closed by the leg
+    /// that gets audio actually playing, dropped by supersession or expiry.
+    /// The pure accounting lives in `SeekLatency`; this is only the adapter.
+    private var seekProbe: SeekLatency.Probe? = nil
+    private var seekLatencyLine: String? = nil
+    private var seekLatencyReports = 0
+
+    /// Monotonic clock for the legs — the same source
+    /// `lastFirstScheduleAttemptAt` uses. A wall-clock jump must not author a
+    /// negative or a fantastically long leg.
+    private var nowUptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
+
+    /// Opens the probe for a new seek, reporting the abandoned one at debug
+    /// level (a superseded probe is not an outcome; the completed lines are).
+    private func beginSeekProbe(trackId: String, target: Double) {
+        if let open = seekProbe {
+            eventAdd(.debug, "stream", "seek latency abandoned (superseded): " + SeekLatency.line(open.report()))
+        }
+        seekProbe = SeekLatency.Probe(trackId: trackId, targetSeconds: target, requestedAt: nowUptime)
+    }
+
+    private func noteSeekStrategy(_ strategy: String) {
+        seekProbe?.note(strategy: strategy)
+    }
+
+    /// Marks a leg on the OPEN probe, when the mark provably belongs to it (its
+    /// own row, inside its lifetime). The fourth leg logs the ONE line and
+    /// closes the probe, so a later play of the same row cannot be attributed
+    /// to this seek. First mark wins: a retry must not inflate a leg.
+    private func markSeekLeg(_ leg: SeekLatencyLeg) {
+        guard var probe = seekProbe else { return }
+        let now = nowUptime
+        guard probe.accepts(trackId: currentTrackId, at: now) else {
+            seekProbe = nil
+            eventAdd(.debug, "stream", "seek latency abandoned (not attributable): " + SeekLatency.line(probe.report()))
+            return
+        }
+        guard probe.mark(leg, at: now) else { return }
+        guard probe.isComplete else {
+            seekProbe = probe
+            return
+        }
+        let line = SeekLatency.line(probe.report())
+        seekProbe = nil
+        seekLatencyReports += 1
+        seekLatencyLine = line
+        eventAdd(.info, "stream", line)
+    }
+
+    /// Epoch lifecycle report for the JS bridge trail (plan Phase 2): an
+    /// epoch is a POSITIONING actor, so a future multi-skip dump must be able
+    /// to blame it rather than `engage`/`refreshQueue`.
+    public var onStreamEpoch: (([String: Any]) -> Void)?
+
+    /// The kill-switch setter (persisted setting, pushed by the manager).
+    /// Logged so a dump proves which mode was in effect.
+    public func setSeekEpochsMode(_ mode: SeekEpochMode) {
+        guard mode != seekEpochMode else { return }
+        seekEpochMode = mode
+        eventAdd(.info, "stream", "seekEpochs → \(mode.rawValue)")
+        if mode == .off { discardSeekEpoch() }
+    }
+
     /// Crossfade lifecycle — one value (phase + target index) instead of the
     /// old trio so the two can never drift apart; the pure transition model
     /// lives in BackgroundAudioCore (TODO 1.1/1.8).
@@ -1162,36 +1339,59 @@ public final class NativeAudioEngine: NSObject {
         // its segment is gone, so resume by advancing like a natural next track.
         // This keeps the engine and the JS play state in lockstep (onTrackChanged
         // fires and the wrapper advances currentTrack/activeIndex).
-        if waitingAtTrackEnd {
+        // Phase 1 (2026-10-07): the resume decision is the pure `PlayIntent`
+        // core. ORDER IS THE FIX: a STAGED schedule sitting in the buffering
+        // pause (its old chained schedule already consumed) is tested BEFORE
+        // the no-schedule restart. A seek-induced stall clears
+        // `hasLiveSchedule`, so the old `!hasLiveSchedule → loadAndStart`
+        // order restarted the row at 0:00 — the reported bug. The stalled
+        // position resumes by re-scheduling from it: the delivered estimate
+        // has grown by now and scheduleCurrentTrack re-clamps to the fresh
+        // end. This is ALSO the user's manual resume after pausing during a
+        // stall (userPaused latched) — the auto-resume path never touched
+        // audio.
+        let action = PlayIntent.decide(PlayIntent.State(
+            waitingAtTrackEnd: waitingAtTrackEnd,
+            // A live EPOCH counts as a resumable position holder (Phase 2):
+            // the row's position lives in the epoch until its first schedule
+            // exists, so a play tap must never restart the row.
+            stagedStallResumable: (stagedSchedule?.isStalled == true && stagedSourceURL != nil) || seekEpoch != nil,
+            hasLiveSchedule: hasLiveSchedule,
+            paramsDirty: paramsDirty))
+        switch action {
+        case .advanceAfterSleepPause:
             waitingAtTrackEnd = false
             advanceFromSleepPause()
             return
-        }
-        // Nothing scheduled (fresh queue or finished queue): (re)start the current track.
-        if !hasLiveSchedule {
+        case .resumeStagedStall:
+            if var staged = stagedSchedule {
+                staged.userPaused = false
+                stagedSchedule = staged
+                let resumeAt = cachedPosition
+                eventAdd(.info, "stream", "play() resumes stalled staged schedule at \(String(format: "%.1f", resumeAt))s")
+                cancelScheduled()
+                scheduleCurrentTrack(from: resumeAt, autoPlay: true)
+            } else if seekEpoch != nil {
+                // The epoch has no schedule YET (its header has not landed):
+                // the first epoch schedule carries this autoPlay, so a play
+                // tap asks for audio and the position is already parked.
+                stagedAutoPlay = true
+                eventAdd(.info, "stream", "play() during epoch open — the first epoch schedule plays")
+            }
+            return
+        case .restartTrack:
+            // Nothing scheduled (fresh queue or finished queue): (re)start the
+            // current track. `loadAndStart` itself guards a same-row restart
+            // with live staged state.
             loadAndStart(currentIndex: activeIndex, autoPlay: true)
             return
-        }
-        // A param change happened while paused — resume via a fresh schedule so
-        // the new speed/pitch actually take effect on the (re)started plan.
-        if paramsDirty {
+        case .restartForParams:
+            // A param change happened while paused — resume via a fresh
+            // schedule so the new speed/pitch take effect on the plan.
             restartForParams()
             return
-        }
-        // A15 Phase 2: a STAGED schedule sitting in the buffering pause (its
-        // old chained schedule already consumed) resumes by re-scheduling
-        // from the stalled position — the delivered estimate has grown by
-        // now, and scheduleCurrentTrack re-clamps to the fresh end. This is
-        // ALSO the user's manual resume after pausing during a stall
-        // (userPaused latched) — the auto-resume path never touched audio.
-        if var staged = stagedSchedule, staged.isStalled, stagedSourceURL != nil {
-            staged.userPaused = false
-            stagedSchedule = staged
-            let resumeAt = cachedPosition
-            eventAdd(.info, "stream", "play() resumes stalled staged schedule at \(String(format: "%.1f", resumeAt))s")
-            cancelScheduled()
-            scheduleCurrentTrack(from: resumeAt, autoPlay: true)
-            return
+        case .plainResume:
+            break
         }
         // Window-growth changes made while PAUSED deferred their chain arm
         // (guard isPlaying) — a plain resume never re-arms it, so the deferred
@@ -1204,6 +1404,9 @@ public final class NativeAudioEngine: NSObject {
         activeNode.play()
         standbyNode.play()
         setPlaying(true)
+        // A seek made while PAUSED reaches its playback leg here (the user's
+        // own resume) — inside the probe's lifetime it is still that seek.
+        markSeekLeg(.firstPlayback)
         setupCrossfadeMonitor()
     }
 
@@ -1261,7 +1464,45 @@ public final class NativeAudioEngine: NSObject {
         hasLiveSchedule = false
         positionBias = target
         cachedPosition = target
-        scheduleCurrentTrack(from: target, autoPlay: isPlaying)
+        // Phase 1 (2026-10-07): the position is an INTENT. When the row has no
+        // schedulable source yet, PARK it — the first schedule that can be
+        // made starts here. The old shape fell into the normal path, found no
+        // local file, and reported "Track not ready" → JS retry → the reload
+        // restarted the row at 0 (fact 6 of the seek-intent plan).
+        pendingSeekSeconds = nil
+        pendingSeekTrackId = nil
+        // Phase 4 (2026-10-07): the latency probe opens BEFORE the schedule
+        // attempt — a seek served straight from a local file reaches its
+        // schedule and playback legs INSIDE this call, and they must land on
+        // this seek's probe rather than on nothing.
+        beginSeekProbe(trackId: track.trackId, target: target)
+        let handled = scheduleCurrentTrack(from: target, autoPlay: isPlaying)
+        if !handled {
+            pendingSeekSeconds = target
+            pendingSeekTrackId = track.trackId
+            eventAdd(.info, "stream", "seek parked at \(String(format: "%.1f", target))s id=\(track.trackId) — no source yet, the first schedule honors it")
+        }
+        // Phase 2 (2026-10-07): a FAR forward seek — one the current source
+        // cannot deliver (`!handled`), or one that parked the staged schedule
+        // in the BUFFERING stall (the target is past the delivered end) —
+        // opens a server-offset EPOCH when the server will re-encode from an
+        // offset. The wait then tracks the lead instead of the whole prefix.
+        // Every guard (kill switch, capability, URL shape, trivial-scrub
+        // floor) lives in the helper; a refusal costs only the Phase-1 wait.
+        let epochWanted = !handled || stagedSchedule?.isStalled == true
+        var strategy = handled ? "local" : "parked"
+        if stagedSchedule?.isStalled == true { strategy = handled ? "staged-stall" : "parked-stalled" }
+        if epochWanted {
+            if openSeekEpochIfWorthwhile(track: track, target: target, autoPlay: isPlaying) {
+                strategy += "+epoch"
+            }
+        }
+        // The decision leg CLOSES the probe's opening: from here the seek's
+        // fate is in the transfer/schedule pipeline (firstByte → firstSchedule
+        // → firstPlayback), and a park that never resolves still leaves a
+        // partial line for the dump.
+        noteSeekStrategy(strategy)
+        markSeekLeg(.decision)
     }
 
     public func next() {
@@ -2040,6 +2281,27 @@ public final class NativeAudioEngine: NSObject {
             "streamAnnouncedBytes": stagedSchedule?.announcedBytes ?? 0,
             "streamScheduledEndFrames": stagedSchedule?.scheduledEndFrames ?? 0,
             "streamHeaderClaimedFrames": stagedSchedule?.headerClaimedFrames ?? 0,
+            // Phase 2 (2026-10-07): the epoch's every decision input. The
+            // self-test's `epoch` check reads exactly these, so an epoch that
+            // opened without a verdict (the one shape the design forbids) is
+            // FAIL-visible from a field dump.
+            "seekEpochs": seekEpochMode.rawValue,
+            // Transfer ladder (2026-10-07): the prefetch hold's state — a dump
+            // must show whether speculative bytes yielded to the user's own
+            // transfer, and how many distinct holds happened.
+            "prefetchLadderHeld": prefetchHoldReason?.rawValue ?? "none",
+            "prefetchLadderHolds": prefetchHoldCount,
+            "userTransferActive": TransferLadder.ownsBandwidth(currentUserTransfer()),
+            "streamEpochActive": seekEpoch != nil,
+            "streamEpochBase": seekEpoch?.baseSeconds ?? 0,
+            "streamEpochTarget": seekEpoch?.targetSeconds ?? 0,
+            "streamEpochVerdict": seekEpoch?.verdict?.rawValue ?? "",
+            "streamEpochCount": seekEpochCounter,
+            // Phase 4 (2026-10-07): the last COMPLETE seek-latency line plus
+            // how many were reported — the number the seek work is judged by.
+            "seekLatency": seekLatencyLine ?? "",
+            "seekLatencyReports": seekLatencyReports,
+            "streamTimelineBaseSeconds": stagedSchedule.map { Double($0.timelineBaseFrames) / max(1, $0.sampleRate) } ?? 0,
             // The snapshot duration in frames — the container-shape classifier's
             // second anchor (2026-10-02 self-test): the JS side cannot derive
             // frames from a duration without the file's sample rate.
@@ -2145,6 +2407,31 @@ public final class NativeAudioEngine: NSObject {
             return
         }
         let track = tracks[index]
+        // Phase 1 same-row restart guard (2026-10-07): a row whose staged
+        // state is STILL live must not be torn down and restarted at 0 — that
+        // is the last leg of the reported "play after a seek resets to 0:00"
+        // chain. `play()` can no longer reach here for a stalled row (the
+        // PlayIntent ordering), so this guards every other caller: re-schedule
+        // in place from the held position instead of wiping it. A deliberate
+        // same-row restart goes through `stopPlayback`, which tears the staged
+        // state down first — the guard is inactive there by construction.
+        if index == activeIndex, let staged = stagedSchedule, staged.trackId == track.trackId, stagedSourceURL != nil {
+            let resumeAt = cachedPosition
+            eventAdd(.info, "stream", "restart suppressed position=\(String(format: "%.1f", resumeAt))s row=\(index) — live staged state, re-scheduling in place")
+            scheduleCurrentTrack(from: resumeAt, autoPlay: autoPlay)
+            return
+        }
+        // A load for a DIFFERENT row abandons this row's parked seek intent;
+        // a same-row restart keeps it (the position must survive a play tap on
+        // a row whose source is still missing).
+        if pendingSeekTrackId != nil, pendingSeekTrackId != track.trackId {
+            pendingSeekSeconds = nil
+            pendingSeekTrackId = nil
+        }
+        // Phase 2: a load for a DIFFERENT row abandons an open epoch (its
+        // transfer is superseded and its file discarded); a same-row restart
+        // keeps a live epoch (the position it holds is this row's).
+        if let epoch = seekEpoch, epoch.trackId != track.trackId { discardSeekEpoch() }
         cancelScheduled()
         hasLiveSchedule = false
         positionBias = 0
@@ -2215,7 +2502,15 @@ public final class NativeAudioEngine: NSObject {
                 keepRadius: max(3, self.preloadCount + 1)
             )
             self.prefetchUpcoming(from: currentIndex)
-            self.scheduleCurrentTrack(from: 0, autoPlay: autoPlay)
+            // Phase 1 (2026-10-07): honor a position parked while this download
+            // was in flight (or before it started) — the row's first real
+            // schedule must start at the intent, never at 0.
+            let parked = self.pendingSeekTrackId == track.trackId ? self.pendingSeekSeconds : nil
+            self.pendingSeekSeconds = nil
+            self.pendingSeekTrackId = nil
+            self.scheduleCurrentTrack(
+                from: PlayIntent.firstScheduleStartSeconds(pendingSeekSeconds: parked),
+                autoPlay: autoPlay)
             // NOTE for A15 Phase 2: a staged load (streamDecision said yes in
             // loadAndStart above) never reaches this prefetchUpcoming — its
             // writer owns the bandwidth and the chain arms at the writer's
@@ -2259,6 +2554,28 @@ public final class NativeAudioEngine: NSObject {
         state: PrefetchChain.State? = nil,
         generation: Int? = nil
     ) {
+        // THE HOLD (2026-10-07): speculative bytes never start while a
+        // user-initiated transfer owns the link — a staged stream, a seek
+        // epoch (from the moment its request is on the wire), or the active
+        // row's own download. EVERY such transfer has a terminal edge that
+        // re-arms (`rearmPrefetchIfIdle`): a completion, an error, an epoch
+        // discard, or a row change — so a hold cannot strand the walk; the
+        // reason is logged on the transition only (this method is entered from
+        // queue edges and its own recursion, not a tick).
+        let userTransfer = currentUserTransfer()
+        if !TransferLadder.mayIssueNextPrefetch(userTransfer) {
+            let reason = TransferLadder.hold(userTransfer)
+            if prefetchHoldReason != reason {
+                prefetchHoldReason = reason
+                prefetchHoldCount += 1
+                eventAdd(.info, "preload", "transfer ladder: prefetch walk held (\(reason.rawValue)) — user transfer owns the link")
+            }
+            return
+        }
+        if let held = prefetchHoldReason {
+            prefetchHoldReason = nil
+            eventAdd(.info, "preload", "transfer ladder: prefetch walk resumed (was held: \(held.rawValue))")
+        }
         let totalCount = total ?? (crossfadeDuration > 0 ? max(1, preloadCount) : preloadCount)
         guard totalCount > 0 else { return }
         let gen = generation ?? prefetchGeneration
@@ -2397,14 +2714,12 @@ public final class NativeAudioEngine: NSObject {
     /// walk would run a SECOND concurrent chain, double-walking the window and
     /// amplifying event/tick churn (review finding, 2026-10-02).
     public func rearmPrefetchAfterNetworkChange() {
-        guard stagedSchedule == nil, !loader.hasActiveWriter else {
-            eventAdd(.debug, "preload", "network re-arm skipped (staged stream owns bandwidth)")
-            return
-        }
-        guard !tracks.isEmpty else { return }
-        prefetchGeneration += 1
-        eventAdd(.info, "preload", "network re-arm: prefetchUpcoming from row \(activeIndex) (gen \(prefetchGeneration))")
-        prefetchUpcoming(from: activeIndex)
+        // The SAME hold predicate the walk's own entry uses (2026-10-07): an
+        // epoch in flight is held EXPLICITLY here, not through
+        // `hasActiveWriter` incidentally counting epoch writers. The arm is
+        // the shared one, so this site inherits the generation bump (a fresh
+        // walk SUPERSEDES an older chain — never runs beside it).
+        rearmPrefetchIfIdle(reason: "network re-arm")
     }
 
     /// Schedules the current track on the active node, ready to play.
@@ -2421,62 +2736,86 @@ public final class NativeAudioEngine: NSObject {
     /// the schedule end, eliminating the read-ahead slop the premature gate
     /// previously epsilon-tolerated. The staged path keeps `.dataConsumed`
     /// (chain bookkeeping must not lag one buffer behind).
-    private func scheduleCurrentTrack(from seconds: Double, autoPlay: Bool) {
+    /// Returns `true` when the attempt was HANDLED — either a schedule now
+    /// exists or the position was parked in the staged stall state — and
+    /// `false` when the row has NO schedulable source (nothing in flight, or
+    /// still loading): Phase 1 (2026-10-07) makes that an INTENT to park, and
+    /// `seek(to:)` stores it as `pendingSeekSeconds` for the load's own
+    /// completion to apply.
+    @discardableResult
+    private func scheduleCurrentTrack(from seconds: Double, autoPlay: Bool) -> Bool {
         // Never-judged until this schedule proves its own length: an early
         // return (not-ready, corrupt, zero-frame) must not leave the previous
         // track's segment length behind for the gate to misread.
         scheduledSegmentSeconds = 0
-        guard tracks.indices.contains(activeIndex) else { return }
+        guard tracks.indices.contains(activeIndex) else { return false }
         let track = tracks[activeIndex]
 
         // ---- Staged path: the growing .part is the source ----------------
         if stagedSchedule != nil, let stagedURL = stagedSourceURL {
-            guard var staged = stagedSchedule else { return }
+            guard var staged = stagedSchedule else { return false }
             guard let file = try? AVAudioFile(forReading: stagedURL) else {
                 // The .part vanished or became unreadable mid-stream: treat
                 // like a stream failure (the scratch may still exist for a
                 // Range-continue; the JS retry re-engages).
                 teardownStagedState()
                 onError?("Stream source unreadable: \(track.title)")
-                return
+                return false
             }
             let sr = file.processingFormat.sampleRate
             staged.headerClaimedFrames = file.length
             staged.sampleRate = sr
-            let startFrame = Int64(seconds * sr)
+            // THE COORDINATE CLAUSE (plan §2.2, 2026-10-07): an epoch
+            // transfer's frame 0 is ABSOLUTE `timelineBaseFrames`, so the
+            // frame arguments handed to AVAudioFile/scheduleSegment are
+            // EPOCH-LOCAL while every stored or compared end stays ABSOLUTE.
+            let baseFrames = staged.timelineBaseFrames
+            let startFrame = Int64(max(0, seconds - Double(baseFrames) / max(1, sr)) * sr)
             // COMPLETE → the header claim is FILE TRUTH (gates passed):
             // schedule to the real end. Staged → the delivered-end estimate.
             // CONTAINER-SHAPE-HONEST ESTIMATE (2026-10-02): a transcode's
             // Ogg/Opus partial already reports only the DELIVERED duration, so
             // the legacy header-claim × ratio double-discounts. The
             // metadata-duration ratio capped by the container's own end is
-            // correct under both shapes and never over-promises.
-            let endable = staged.isComplete
+            // correct under both shapes and never over-promises. The byte
+            // denominator is epoch-relative (plan fact 21).
+            let localEndable = staged.isComplete
                 ? file.length
                 : StreamSchedule.stagedEndFramesEstimate(
                     containerFrames: file.length,
                     metadataFrames: staged.metadataFrames,
                     deliveredBytes: staged.deliveredBytes,
-                    announcedBytes: staged.announcedBytes)
-            let endFrames = endable
-            guard StreamSchedule.canSchedule(startFrame: startFrame, endFrames: endFrames) else {
+                    announcedBytes: epochRelativeAnnouncedBytes(
+                        baseFrames: baseFrames,
+                        metadataFrames: staged.metadataFrames,
+                        announcedBytes: staged.announcedBytes,
+                        sampleRate: sr))
+            guard StreamSchedule.canSchedule(startFrame: startFrame, endFrames: localEndable) else {
                 // Seek (or stall resume) at/past the delivered end: the
                 // buffering pause, not an error. autoPlay=false so the stall
                 // resume (or the user's own play tap) restarts audio.
-                eventAdd(.info, "stream", "schedule target past delivered end id=\(track.trackId) (seek \(String(format: "%.1f", seconds))s vs endable \(String(format: "%.1f", Double(endFrames) / sr))s) — buffering")
+                // Both numbers are ABSOLUTE (this source's reach on the row's
+                // timeline), so an epoch's message compares like for like.
+                eventAdd(.info, "stream", "schedule target past delivered end id=\(track.trackId) (seek \(String(format: "%.1f", seconds))s vs endable \(String(format: "%.1f", Double(baseFrames + localEndable) / sr))s) — buffering")
                 staged.userPaused = !autoPlay
                 staged.isStalled = true
-                staged.stalledAtFrames = min(startFrame, endFrames)
+                staged.stalledAtFrames = baseFrames + min(startFrame, localEndable)
                 staged.lastProgressAt = Date()
                 stagedSchedule = staged
                 cachedPosition = seconds
                 positionBias = seconds
                 setPlaying(false)
                 stopCrossfadeMonitor()
-                return
+                // HANDLED: the stall state itself holds the position —
+                // `play()` resumes from `cachedPosition` (PlayIntent).
+                return true
             }
             scheduleGeneration += 1
             let generation = scheduleGeneration
+            // The promise is stored ABSOLUTE; the segment length is a LOCAL
+            // delta (identical under both spaces) and the frame arguments
+            // stay local.
+            let endFrames = baseFrames + localEndable
             staged.scheduledEndFrames = endFrames
             // A successful schedule REPLACES the stall: isStalled/stalledAt
             // described the PREVIOUS promise, and leaving them set made the
@@ -2503,20 +2842,23 @@ public final class NativeAudioEngine: NSObject {
             // segment renders, its data-consumed completion is a SEGMENT end
             // (silently consumed); with no successor it becomes the staged
             // end (buffering pause, or natural advance once COMPLETE).
-            player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(endFrames - startFrame), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
+            player.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(localEndable - startFrame), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
                 self?.handleSegmentCompletion(index: scheduledIndex, generation: generation, trackId: scheduledTrackId, node: scheduledNode, isStagedSegment: true)
             }
             hasLiveSchedule = true
+            markSeekLeg(.firstSchedule)
             positionBias = seconds
             cachedPosition = seconds
             crossfade = .idle
             if autoPlay {
                 guard ensureEngineRunning() else {
-                    // Recovery ladder owns it (see play()); no onError.
-                    return
+                    // Recovery ladder owns it (see play()); no onError. The
+                    // SCHEDULE exists, so there is nothing to park.
+                    return true
                 }
                 player.play()
                 setPlaying(true)
+                markSeekLeg(.firstPlayback)
                 // Phase 3: fade automation rides the schedule's COMPLETENESS,
                 // not its stagedness — a COMPLETE staged track fades like any
                 // other; a streaming schedule keeps automation off (the
@@ -2530,12 +2872,21 @@ public final class NativeAudioEngine: NSObject {
                 setPlaying(false)
                 stopCrossfadeMonitor()
             }
-            return
+            return true
         }
         // ---- Normal path: the completed cache file is the source ---------
         guard let localURL = loader.localURL(for: track) else {
+            // Phase 1 (2026-10-07): no source is an INTENT to park, not an
+            // error, while the row's load is demonstrably in flight — the load
+            // completion re-schedules with `pendingSeekSeconds` applied. Only
+            // when NOTHING is loading is this the old "Track not ready"
+            // report (JS retry ladder owns the recovery).
+            if loadInFlight(for: track) {
+                eventAdd(.info, "stream", "source not ready for \(track.trackId) — parking position \(String(format: "%.1f", seconds))s until the load schedules")
+                return false
+            }
             onError?("Track not ready: \(track.title)")
-            return
+            return false
         }
         guard let file = try? AVAudioFile(forReading: localURL) else {
             // Corrupt or partial download. Evict it so the JS retry loop
@@ -2543,7 +2894,7 @@ public final class NativeAudioEngine: NSObject {
             // Variant-scoped: the good variants of this track survive.
             loader.evict(track.trackId, variant: TrackVariant(url: track.url))
             onError?("Unsupported audio file: \(track.title)")
-            return
+            return false
         }
 
         let sr = file.processingFormat.sampleRate
@@ -2561,14 +2912,15 @@ public final class NativeAudioEngine: NSObject {
                 eventAdd(.danger, "engine", "zero-frame file for \(track.trackId) — evicting for re-fetch")
                 loader.evict(track.trackId, variant: TrackVariant(url: track.url))
                 onError?("Track file unreadable: \(track.title)")
+                return false
             } else {
                 // Seek/metadata landed past the real end of a DECODABLE file
                 // (duration metadata longer than the audio). End THIS track
                 // like a natural completion — not the queue.
                 eventAdd(.info, "engine", "past-end schedule for \(track.trackId) (frames=\(totalFrames), seek=\(seconds)) — ending just this track")
                 handleSegmentCompletion(index: activeIndex, generation: scheduleGeneration, trackId: track.trackId)
+                return true
             }
-            return
         }
 
         scheduleGeneration += 1
@@ -2630,6 +2982,7 @@ public final class NativeAudioEngine: NSObject {
         }
 
         hasLiveSchedule = true
+        markSeekLeg(.firstSchedule)
         positionBias = seconds
         cachedPosition = seconds
         crossfade = .idle
@@ -2638,16 +2991,28 @@ public final class NativeAudioEngine: NSObject {
             // Never play() into a stopped engine — that raises (1.2.14 play
             // crash). Degrade into the engine's own recovery ladder instead.
             guard ensureEngineRunning() else {
-                // Recovery ladder owns it (see play()); no onError.
-                return
+                // Recovery ladder owns it (see play()); no onError. The
+                // schedule exists, so there is nothing to park.
+                return true
             }
             player.play()
             setPlaying(true)
+            markSeekLeg(.firstPlayback)
             setupCrossfadeMonitor()
         } else {
             setPlaying(false)
             stopCrossfadeMonitor()
         }
+        return true
+    }
+
+    /// Phase 1 (2026-10-07): is a load for THIS row demonstrably in flight?
+    /// A schedule attempt that finds no local file while true must PARK the
+    /// position (the load's completion re-schedules) rather than report a
+    /// track error. The staged writer is single-row by construction
+    /// (`startStagedLoad` runs for the active row only).
+    private func loadInFlight(for track: NativeTrack) -> Bool {
+        loader.hasActiveWriter || loader.inFlightProgress.contains { $0.trackId == track.trackId }
     }
 
     // MARK: - Staged streaming (A15 Phase 2)
@@ -2665,8 +3030,19 @@ public final class NativeAudioEngine: NSObject {
         /// The snapshot duration in frames (0 = unknown): the second anchor of
         /// the container-shape-honest staged estimate (2026-10-02). Recorded at
         /// the first schedule; the metadata duration does not change mid-load.
+        /// EPOCH-RELATIVE for an epoch transfer (track duration − base), so
+        /// both anchors of the estimate describe the SAME window.
         var metadataFrames: Int64 = 0
-        var scheduledEndFrames: Int64    // the current chained schedule's end (the promise)
+        var scheduledEndFrames: Int64    // the current chained schedule's end (ABSOLUTE)
+        /// Phase 2 (2026-10-07): the ABSOLUTE frame of this source's frame 0.
+        /// 0 for an ordinary head-first transfer; the epoch's offset in frames
+        /// for an epoch file (and 0 again after an offset-ignored rebase).
+        /// Every frame this struct stores is ABSOLUTE (`scheduledEndFrames`,
+        /// `stalledAtFrames`, `timelineBaseFrames`) while the container's own
+        /// numbers (`headerClaimedFrames`, `metadataFrames`) are LOCAL — the
+        /// two meet only in `stagedSchedulableEndFrames` and the scheduler's
+        /// coordinate clause. Do NOT add the base twice.
+        var timelineBaseFrames: Int64 = 0
         var announcedBytes: Int64        // server's exact body length (raw only)
         var deliveredBytes: Int64        // last known delivered byte count
         var isComplete = false           // the writer promoted (gates passed)
@@ -2760,6 +3136,263 @@ public final class NativeAudioEngine: NSObject {
         })
     }
 
+    // MARK: - Seek epochs (Phase 2, 2026-10-07)
+
+    /// Opens a server-offset EPOCH for a far seek when it is worth one; false
+    /// leaves the Phase-1 wait in place. Every guard is a pure decision (plan
+    /// §2.4–§2.6) and every side effect is either the loader's transfer or the
+    /// engine's own epoch state.
+    ///
+    /// SUPERSESSION ORDER (plan §2.8): the row's own writer is cancelled FIRST
+    /// through the loader's deliberate-cancel helper (flag → silence the legs
+    /// → task.cancel → the delegate's completion records the retained
+    /// prefix), then the staged state is torn down — the epoch becomes the
+    /// only transfer while the retained prefix still backs a later
+    /// Range-continue.
+    @discardableResult
+    private func openSeekEpochIfWorthwhile(track: NativeTrack, target: Double, autoPlay: Bool) -> Bool {
+        // THE KILL SWITCH (plan §8): `off` reproduces Phase-1 behavior
+        // exactly — position-preserving wait, no epoch, no extra request.
+        guard seekEpochMode == .auto else { return false }
+        // JS declares, native executes (plan §2.5): the capability rides the
+        // snapshot, derived from the SAME transcode decision that built the
+        // URL. A wrong "can" costs one request that the verdict demotes.
+        guard track.seekCapability?.canServerOffset == true else { return false }
+        // URL shape: the offset parameter is only honored on the transcode
+        // lane (plan facts 19/20). The runtime verdict owns everything finer.
+        guard StreamEpoch.supportsServerOffset(track.url) else { return false }
+        // Below the floor a seek just waits (a trivial scrub is cheaper than a
+        // fresh server job) — the pure rule.
+        guard let base = StreamEpoch.offsetSeconds(target) else { return false }
+        // A held drag re-seeks to the same second every ~150 ms: reuse the
+        // epoch instead of restarting its transfer.
+        if let epoch = seekEpoch, epoch.trackId == track.trackId, epoch.baseSeconds == base {
+            return true
+        }
+        if seekEpoch != nil { discardSeekEpoch() }
+        guard let transfer = loader.epochTransfer(for: track, offsetSeconds: base) else { return false }
+        if loader.activeWriterIsEpoch { loader.cancelActiveWriterRetainingScratch() }
+        teardownStagedState()
+        seekEpoch = SeekEpochState(
+            trackId: track.trackId,
+            baseSeconds: base,
+            targetSeconds: target,
+            transfer: transfer)
+        // The epoch's first schedule carries this autoPlay (a scrub while
+        // playing keeps playing; a scrub while paused holds the position).
+        stagedAutoPlay = autoPlay
+        // The intent is parked too: if the epoch's first open is deferred
+        // (header not landed yet) the position survives in the ordinary
+        // Phase-1 machinery.
+        pendingSeekSeconds = target
+        pendingSeekTrackId = track.trackId
+        positionBias = target
+        cachedPosition = target
+        seekEpochCounter += 1
+        eventAdd(.info, "stream", "epoch open #\(seekEpochCounter) row=\(activeIndex) id=\(track.trackId) base=\(base)s target=\(String(format: "%.1f", target))s autoplay=\(autoPlay)")
+        onStreamEpoch?([
+            "trackId": track.trackId,
+            "phase": "open",
+            "epoch": seekEpochCounter,
+            "base": base,
+            "target": target,
+        ])
+        // The delivery guard is the ACTIVE ROW, not `seekEpoch != nil`: an
+        // offset-IGNORED epoch is REBASED AND ADOPTED (the verdict clears
+        // `seekEpoch`) while its transfer keeps delivering — that file is now
+        // the row's own source, so its progress must still grow the schedule.
+        // A row change silences the transfer first (`discardSeekEpoch` in
+        // `loadAndStart`), so a stale delivery cannot arrive at all.
+        let guardedTrackId = track.trackId
+        let isActiveRow: () -> Bool = { [weak self] in
+            guard let self = self, self.tracks.indices.contains(self.activeIndex) else { return false }
+            return self.tracks[self.activeIndex].trackId == guardedTrackId
+        }
+        loader.streamLoad(track, epoch: transfer, onProgress: { [weak self] progress in
+            guard let self = self, progress.isEpoch, isActiveRow() else { return }
+            self.extendStagedSchedule(progress: progress)
+        }, onFinished: { [weak self] progress, error in
+            guard let self = self, isActiveRow() else { return }
+            if let progress {
+                self.completeStagedSchedule(progress: progress)
+            } else if let error {
+                // The epoch transfer died: discard it and hand the row to the
+                // bounded retry with the intent still parked — Phase-1
+                // behavior, the worst case of every Phase-2 path.
+                let failure = self.activeLoadFailure(kind: .stream, error: error)
+                self.discardSeekEpoch()
+                self.teardownStagedState()
+                self.handleYieldedActiveLoadFailure(track: track, failure: failure)
+            }
+        }, onArrival: { [weak self] deliveredBytes in
+            guard let self = self, isActiveRow() else { return }
+            self.recordStreamArrival(deliveredBytes: deliveredBytes)
+        })
+        return true
+    }
+
+    /// Ends the epoch: its transfer is cancelled and its ephemeral file
+    /// discarded by the loader (never promoted, never served — plan §2.7).
+    /// The staged state is left alone on purpose — the offset-ignored rebase
+    /// keeps reading the same file as the row's ordinary transfer.
+    private func discardSeekEpoch() {
+        guard let epoch = seekEpoch else { return }
+        seekEpoch = nil
+        eventAdd(.info, "stream", "epoch closed #\(seekEpochCounter) id=\(epoch.trackId) base=\(epoch.baseSeconds)s verdict=\(epoch.verdict?.rawValue ?? "none")")
+        onStreamEpoch?([
+            "trackId": epoch.trackId,
+            "phase": "closed",
+            "base": epoch.baseSeconds,
+            "verdict": epoch.verdict?.rawValue ?? "",
+        ])
+        if loader.activeWriterIsEpoch { loader.cancelActiveWriterRetainingScratch() }
+        // The ladder's settle edge: the epoch no longer owns the link, so the
+        // speculative walk may resume (a no-op when another user transfer, a
+        // staged schedule, still holds it).
+        rearmPrefetchIfIdle(reason: "epoch closed")
+        // A cancelled writer's state clears on a QUEUED completion hop, so the
+        // immediate call above can still see `hasActiveWriter` — one runloop
+        // turn later it is honest. Without this a speculatively held walk could
+        // sit with no remaining edge to release it (the engine's usual
+        // one-turn-after-a-switch discipline).
+        DispatchQueue.main.async { [weak self] in
+            self?.rearmPrefetchIfIdle(reason: "epoch closed (state settled)")
+        }
+    }
+
+    /// The timeline placement a staged delivery must be scheduled with
+    /// (Phase 2): the ABSOLUTE frame of the source's frame 0 and the (for an
+    /// epoch, epoch-relative) metadata duration.
+    private struct StagedPlacement {
+        var timelineBaseFrames: Int64
+        var metadataFrames: Int64
+    }
+
+    /// Runs the runtime verdict ONCE per epoch (plan §2.6) and returns the
+    /// placement to schedule with — or nil when the epoch was DISCARDED (an
+    /// unknown container: the caller must not schedule it). A non-epoch
+    /// delivery always returns the ordinary base-0 placement.
+    ///
+    /// The verdict is read from the epoch container's own claimed length at
+    /// the existing first-schedule open boundary — before audio enters the
+    /// graph — and the fail-safe is a REBASE, never a snap to 0.
+    private func resolveStagedPlacement(
+        track: NativeTrack,
+        progress: TrackFileLoader.StreamProgress,
+        containerFrames: Int64,
+        sampleRate sr: Double
+    ) -> StagedPlacement? {
+        var placement = StagedPlacement(
+            timelineBaseFrames: 0,
+            metadataFrames: Int64(track.duration * sr))
+        guard let epoch = seekEpoch, epoch.trackId == progress.trackId, progress.isEpoch else {
+            return placement
+        }
+        let trackFrames = Int64(track.duration * sr)
+        let expectedEpochFrames = Int64(max(0, track.duration - Double(epoch.baseSeconds)) * sr)
+        let toleranceFrames = StreamEpoch.toleranceSeconds(trackSeconds: track.duration) * sr
+        let verdict = StreamEpoch.offsetHonored(
+            containerFrames: Double(containerFrames),
+            expectedEpochFrames: Double(expectedEpochFrames),
+            trackFrames: Double(trackFrames),
+            toleranceFrames: toleranceFrames)
+        seekEpoch?.verdict = verdict
+        onStreamEpoch?([
+            "trackId": track.trackId,
+            "phase": "verdict",
+            "epoch": seekEpochCounter,
+            "base": epoch.baseSeconds,
+            "verdict": verdict.rawValue,
+            "containerFrames": containerFrames,
+            "expectedFrames": expectedEpochFrames,
+        ])
+        switch verdict {
+        case .honored:
+            // The server re-encoded from the offset: this file's frame 0 is
+            // absolute `base`, and the schedule starts INSIDE the window at
+            // the user's EXACT intent (the integer parameter cannot carry the
+            // sub-second part; the base can).
+            placement.timelineBaseFrames = Int64(Double(epoch.baseSeconds) * sr)
+            placement.metadataFrames = expectedEpochFrames
+            eventAdd(.info, "stream", "epoch verdict honored #\(seekEpochCounter) id=\(track.trackId) base=\(epoch.baseSeconds)s container=\(containerFrames) frames (expected \(expectedEpochFrames))")
+            return placement
+        case .ignored:
+            // The offset was IGNORED: the body is the row's ordinary
+            // head-first transfer. REBASE to base 0 and ADOPT it — the bytes
+            // are the row's own, so nothing is wasted; the intent stays
+            // parked at T and the delivered window reaches it linearly.
+            // NEVER a snap to 0 (plan §2.6/§9).
+            placement.timelineBaseFrames = 0
+            placement.metadataFrames = trackFrames
+            seekEpoch = nil
+            eventAdd(.info, "stream", "epoch verdict ignored #\(seekEpochCounter) id=\(track.trackId) — rebased to base 0, intent kept at \(String(format: "%.1f", epoch.targetSeconds))s (adopted as the row's transfer)")
+            return placement
+        case .unknown:
+            // Neither shape: NEVER schedule an unverified base. Discard the
+            // epoch and fall back to the row's own transfer with the position
+            // parked — exactly the Phase-1 path.
+            let target = epoch.targetSeconds
+            eventAdd(.danger, "stream", "epoch verdict unknown #\(seekEpochCounter) id=\(track.trackId) (container \(containerFrames) frames vs expected \(expectedEpochFrames), track \(trackFrames)) — discarded, Phase-1 wait")
+            discardSeekEpoch()
+            teardownStagedState()
+            hasLiveSchedule = false
+            pendingSeekSeconds = target
+            pendingSeekTrackId = track.trackId
+            positionBias = target
+            cachedPosition = target
+            loadAndStart(currentIndex: activeIndex, autoPlay: stagedAutoPlay)
+            return nil
+        }
+    }
+
+    /// The schedulable end of a staged transfer in ABSOLUTE frames — the ONE
+    /// place the epoch's local container numbers meet the track's absolute
+    /// coordinates (plan §2.2). `isComplete` means the container is file
+    /// truth; otherwise the estimate's byte denominator is epoch-relative.
+    private func stagedSchedulableEndFrames(
+        baseFrames: Int64,
+        containerFrames: Int64,
+        metadataFrames: Int64,
+        deliveredBytes: Int64,
+        announcedBytes: Int64,
+        isComplete: Bool,
+        sampleRate: Double
+    ) -> Int64 {
+        if isComplete { return baseFrames + containerFrames }
+        let announced = epochRelativeAnnouncedBytes(
+            baseFrames: baseFrames,
+            metadataFrames: metadataFrames,
+            announcedBytes: announcedBytes,
+            sampleRate: sampleRate)
+        let local = StreamSchedule.stagedEndFramesEstimate(
+            containerFrames: containerFrames,
+            metadataFrames: metadataFrames,
+            deliveredBytes: deliveredBytes,
+            announcedBytes: announced)
+        return baseFrames + local
+    }
+
+    /// The announced-byte DENOMINATOR for a staged estimate. For an epoch
+    /// transfer it is rescaled to the epoch's own expectation: the server
+    /// computes `estimateContentLength` from the FULL duration even for an
+    /// offset stream (plan fact 21), so the full number would deflate the
+    /// epoch's delivered fraction and starve the lead.
+    private func epochRelativeAnnouncedBytes(
+        baseFrames: Int64,
+        metadataFrames: Int64,
+        announcedBytes: Int64,
+        sampleRate: Double
+    ) -> Int64 {
+        guard baseFrames > 0, announcedBytes > 0, sampleRate > 0 else { return announcedBytes }
+        let trackSeconds = Double(metadataFrames + baseFrames) / sampleRate
+        let baseSeconds = Double(baseFrames) / sampleRate
+        let expected = StreamEpoch.expectedEpochBytes(
+            announcedBytes: Double(announcedBytes),
+            trackSeconds: trackSeconds,
+            offsetSeconds: baseSeconds)
+        return expected > 0 ? Int64(expected) : announcedBytes
+    }
+
     /// MAIN, on every byte arrival (F2): update the progress ledger the
     /// stall machinery reads. The schedule resume itself still rides the
     /// rung-gated deliveries (which carry full StreamProgress) — arrivals
@@ -2799,7 +3432,10 @@ public final class NativeAudioEngine: NSObject {
             url: cached.url,
             stage: cached.stage,
             deliveredBytes: max(deliveredBytes, cached.deliveredBytes),
-            announcedBytes: cached.announcedBytes)
+            announcedBytes: cached.announcedBytes,
+            // The epoch flag must SURVIVE this refresh: dropping it would
+            // schedule an epoch file at base 0 (silent wrong-position audio).
+            isEpoch: cached.isEpoch)
         lastFirstScheduleProgress = refreshed
         startFirstStagedSchedule(progress: refreshed, logDeferral: false)
     }
@@ -2808,6 +3444,10 @@ public final class NativeAudioEngine: NSObject {
     /// Not stalled → maybe chain an extension. Stalled → maybe resume.
     /// First delivery → the first honest schedule.
     private func extendStagedSchedule(progress: TrackFileLoader.StreamProgress) {
+        // Phase 4 (2026-10-07): the first delivered byte after a seek is a
+        // latency leg. Only this lane has byte callbacks at all — the plain
+        // downloadTask lane is covered by the schedule leg's inference.
+        if progress.deliveredBytes > 0 { markSeekLeg(.firstByte) }
         guard let current = stagedSchedule, stagedSourceURL != nil else {
             // Cache the delivery so byte arrivals can re-attempt the open
             // between rungs (workstream C).
@@ -2827,11 +3467,14 @@ public final class NativeAudioEngine: NSObject {
             // Resume decision: ≥ 2 s of NEW audio beyond the stalled position
             // (below the 5 s extension-churn bar: a stall re-schedules
             // everything schedulable, so even a small chunk unblocks).
-            let endable = StreamSchedule.stagedEndFramesEstimate(
+            let endable = stagedSchedulableEndFrames(
+                baseFrames: staged.timelineBaseFrames,
                 containerFrames: staged.headerClaimedFrames,
                 metadataFrames: staged.metadataFrames,
                 deliveredBytes: progress.deliveredBytes,
-                announcedBytes: staged.announcedBytes)
+                announcedBytes: staged.announcedBytes,
+                isComplete: staged.isComplete,
+                sampleRate: staged.sampleRate)
             if StreamSchedule.shouldResumeAfterStall(
                 stalledFrames: staged.stalledAtFrames,
                 schedulableEndFrames: endable,
@@ -2852,11 +3495,16 @@ public final class NativeAudioEngine: NSObject {
             return
         }
         // Not stalled: maybe chain an extension (≥ 5 s newly schedulable).
-        let endable = StreamSchedule.stagedEndFramesEstimate(
+        // Both frames below are ABSOLUTE (the promise and the estimate), so an
+        // epoch's local container numbers meet the schedule in ONE place.
+        let endable = stagedSchedulableEndFrames(
+            baseFrames: staged.timelineBaseFrames,
             containerFrames: staged.headerClaimedFrames,
             metadataFrames: staged.metadataFrames,
             deliveredBytes: progress.deliveredBytes,
-            announcedBytes: staged.announcedBytes)
+            announcedBytes: staged.announcedBytes,
+            isComplete: staged.isComplete,
+            sampleRate: staged.sampleRate)
         let plan = StreamSchedule.extensionPlan(
             currentEndFrames: staged.scheduledEndFrames,
             schedulableEndFrames: endable,
@@ -2884,29 +3532,51 @@ public final class NativeAudioEngine: NSObject {
             return
         }
         let sr = file.processingFormat.sampleRate
-        let metadataFrames = Int64(track.duration * sr)
-        let endable = StreamSchedule.stagedEndFramesEstimate(
-            containerFrames: file.length,
+        let containerFrames = file.length
+        // Phase 2 (2026-10-07): an EPOCH delivery carries its own coordinate
+        // system, and its TIMELINE BASE is decided HERE — from the container's
+        // own claim, BEFORE any schedule exists (plan §2.6). An epoch that
+        // cannot demote itself must never start (plan §3 step 2).
+        guard let placement = resolveStagedPlacement(
+            track: track, progress: progress, containerFrames: containerFrames, sampleRate: sr) else {
+            return
+        }
+        let timelineBaseFrames = placement.timelineBaseFrames
+        let metadataFrames = placement.metadataFrames
+        let endable = stagedSchedulableEndFrames(
+            baseFrames: timelineBaseFrames,
+            containerFrames: containerFrames,
             metadataFrames: metadataFrames,
             deliveredBytes: progress.deliveredBytes,
-            announcedBytes: progress.announcedBytes)
+            announcedBytes: progress.announcedBytes,
+            isComplete: false,
+            sampleRate: sr)
         guard endable > 0 else {
             if logDeferral {
                 eventAdd(.info, "stream", "no schedulable evidence yet id=\(track.trackId) — deferring first schedule")
             }
             return
         }
+        // Phase 1 (2026-10-07): a seek parked before this row's source existed
+        // is honored HERE — the first staged schedule starts at the intent,
+        // not at 0.
+        let parked = pendingSeekTrackId == track.trackId ? pendingSeekSeconds : nil
+        pendingSeekSeconds = nil
+        pendingSeekTrackId = nil
+        let startAt = PlayIntent.firstScheduleStartSeconds(pendingSeekSeconds: parked)
         stagedSourceURL = progress.url
         stagedSchedule = StagedSchedule(
             trackId: track.trackId,
-            headerClaimedFrames: file.length,
+            headerClaimedFrames: containerFrames,
             sampleRate: sr,
             metadataFrames: metadataFrames,
             scheduledEndFrames: 0,
+            timelineBaseFrames: timelineBaseFrames,
             announcedBytes: progress.announcedBytes,
             deliveredBytes: progress.deliveredBytes)
-        eventAdd(.info, "stream", "first staged schedule id=\(track.trackId) endable=\(endable) frames (\(String(format: "%.1f", Double(endable) / sr))s of header claim \(file.length))")
-        scheduleCurrentTrack(from: 0, autoPlay: stagedAutoPlay)
+        markSeekLeg(.firstSchedule)
+        eventAdd(.info, "stream", "first staged schedule id=\(track.trackId) start=\(String(format: "%.1f", startAt))s base=\(String(format: "%.1f", Double(timelineBaseFrames) / sr))s endable=\(endable) frames (\(String(format: "%.1f", Double(endable) / sr))s of header claim \(containerFrames))")
+        scheduleCurrentTrack(from: startAt, autoPlay: stagedAutoPlay)
     }
 
     /// The writer promoted a COMPLETE file but NO staged schedule ever formed
@@ -2929,19 +3599,36 @@ public final class NativeAudioEngine: NSObject {
             return
         }
         let sr = file.processingFormat.sampleRate
+        // Phase 2 (2026-10-07): a whole-file completion can equally be an
+        // EPOCH's (its container never opened at the lead crossing) — the
+        // verdict runs here instead, and an unknown container falls back to
+        // the row's own transfer with the intent parked (Phase-1 behavior).
+        guard let placement = resolveStagedPlacement(
+            track: track, progress: progress, containerFrames: file.length, sampleRate: sr) else {
+            return
+        }
+        // Phase 1 (2026-10-07): this IS the row's first real schedule — honor
+        // a position parked while the stream was maturing.
+        let parked = pendingSeekTrackId == track.trackId ? pendingSeekSeconds : nil
+        pendingSeekSeconds = nil
+        pendingSeekTrackId = nil
         stagedSourceURL = progress.url
         stagedSchedule = StagedSchedule(
             trackId: track.trackId,
             headerClaimedFrames: file.length,
             sampleRate: sr,
-            metadataFrames: Int64(track.duration * sr),
+            metadataFrames: placement.metadataFrames,
             scheduledEndFrames: 0,
+            timelineBaseFrames: placement.timelineBaseFrames,
             announcedBytes: progress.announcedBytes,
             deliveredBytes: progress.deliveredBytes,
             isComplete: true) // the byte/duration gates already passed
-        eventAdd(.info, "stream", "completed stream scheduled whole id=\(track.trackId) frames=\(file.length) (no staged schedule had formed)")
+        markSeekLeg(.firstSchedule)
+        eventAdd(.info, "stream", "completed stream scheduled whole id=\(track.trackId) frames=\(file.length) base=\(String(format: "%.1f", Double(placement.timelineBaseFrames) / sr))s (no staged schedule had formed)")
         prefetchUpcoming(from: activeIndex)
-        scheduleCurrentTrack(from: 0, autoPlay: stagedAutoPlay)
+        scheduleCurrentTrack(
+            from: PlayIntent.firstScheduleStartSeconds(pendingSeekSeconds: parked),
+            autoPlay: stagedAutoPlay)
     }
 
     /// The writer promoted a COMPLETE file: the byte gates passed, so the
@@ -2967,7 +3654,10 @@ public final class NativeAudioEngine: NSObject {
         // by the 2 % slack).
         if let file = try? AVAudioFile(forReading: progress.url) {
             staged.headerClaimedFrames = file.length
-            let endable = StreamSchedule.schedulableEndFrames(
+            // ABSOLUTE (Phase 2): for an epoch the container's end is local,
+            // so the base is added once, here — `scheduledEndFrames` and the
+            // completion tail plan both live in track coordinates.
+            let endable = staged.timelineBaseFrames + StreamSchedule.schedulableEndFrames(
                 deliveredEndFrames: file.length,
                 headerClaimedFrames: file.length)
             // The COMPLETION tail (F3, design review): no 5 s churn bar —
@@ -2978,7 +3668,7 @@ public final class NativeAudioEngine: NSObject {
                 currentEndFrames: staged.scheduledEndFrames,
                 schedulableEndFrames: endable,
                 sampleRate: staged.sampleRate,
-                headerClaimedFrames: staged.headerClaimedFrames) {
+                headerClaimedFrames: endable) {
                 chainStagedSegment(staged: &staged, toFrames: tail)
             }
         }
@@ -3016,9 +3706,14 @@ public final class NativeAudioEngine: NSObject {
     private func chainStagedSegment(staged: inout StagedSchedule, toFrames: Int64) {
         guard stagedSourceURL != nil,
               let file = try? AVAudioFile(forReading: stagedSourceURL!) else { return }
-        let start = staged.scheduledEndFrames
-        let frames = toFrames - start
-        guard StreamSchedule.canSchedule(startFrame: start, endFrames: toFrames), frames > 0 else { return }
+        // EPOCH-LOCAL frame arguments (Phase 2): the source file's frame 0 is
+        // `timelineBaseFrames`, while `toFrames`/`scheduledEndFrames` are
+        // absolute. The LENGTH is a delta — identical under both spaces — so
+        // only the segment's start converts.
+        let start = staged.scheduledEndFrames - staged.timelineBaseFrames
+        let localEnd = toFrames - staged.timelineBaseFrames
+        let frames = toFrames - staged.scheduledEndFrames
+        guard StreamSchedule.canSchedule(startFrame: start, endFrames: localEnd), frames > 0 else { return }
         let sr = staged.sampleRate
         let player = activeNode
         let nodeId = ObjectIdentifier(player)
@@ -3032,7 +3727,7 @@ public final class NativeAudioEngine: NSObject {
         }
         staged.scheduledEndFrames = toFrames
         scheduledSegmentSeconds = Double(toFrames) / sr
-        eventAdd(.debug, "stream", "chained segment \(start)→\(toFrames) frames (\(String(format: "%.1f", Double(frames) / sr))s) id=\(staged.trackId)")
+        eventAdd(.debug, "stream", "chained segment \(start) local → \(toFrames) absolute frames (\(String(format: "%.1f", Double(frames) / sr))s) id=\(staged.trackId) base=\(String(format: "%.1f", Double(staged.timelineBaseFrames) / sr))s")
     }
 
     /// The buffering pause: the playhead reached the delivered end while the
@@ -3103,7 +3798,8 @@ public final class NativeAudioEngine: NSObject {
                     url: url,
                     stage: .complete,
                     deliveredBytes: staged.deliveredBytes,
-                    announcedBytes: staged.announcedBytes)
+                    announcedBytes: staged.announcedBytes,
+                    isEpoch: staged.timelineBaseFrames > 0)
                 let rescuedTrackId = staged.trackId
                 // The completion path (completeStagedSchedule) cancels and
                 // re-schedules — defer one runloop turn so this tick unwinds
@@ -3516,8 +4212,13 @@ public final class NativeAudioEngine: NSObject {
         hasLiveSchedule = false
         // A session teardown also ends the staged state (the writer itself
         // keeps running — its completion is dropped by the generation guard
-        // or finishes into cache, both harmless).
+        // or finishes into cache, both harmless) and the parked seek intent.
         teardownStagedState()
+        // Phase 2: an epoch is session-scoped too — its transfer is discarded
+        // (the loader removes the ephemeral file).
+        discardSeekEpoch()
+        pendingSeekSeconds = nil
+        pendingSeekTrackId = nil
         if engine.isRunning {
             engine.pause()
         }

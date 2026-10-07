@@ -137,6 +137,17 @@ class EngineFacade {
   }
 
   /**
+   * The seek-epoch kill switch (Phase 2, 2026-10-07). 'auto' (default) lets a
+   * far seek open a server-offset epoch; 'off' reproduces Phase-1 behavior
+   * exactly (position-preserving wait, no extra request) — the field rollback
+   * for Phases 2-3. No-op on web: the web lane never opens an epoch.
+   */
+  setSeekEpochs(mode: 'auto' | 'off'): void {
+    if (!this.isNative) return
+    BackgroundAudio.setSeekEpochs({ mode }).catch(() => {})
+  }
+
+  /**
    * Explicit native audio-engine restart (2026-10-04). Called from the
    * engine-unavailable banner after the recovery ladder surfaced. Clears the
    * surfaced state and rebuilds the AVAudioEngine graph. No-op on web — the
