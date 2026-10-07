@@ -517,7 +517,14 @@ host, and the server-capability checks require a real Navidrome.
 | **Web virtual-timeline adapter** | Optimization window is self-closing: once the server finishes encoding, the cached transcode is seekable and the browser ranges freely. Blast radius is app-wide (`activeLineIndex`, scrobble thresholds, sleep timer, MediaSession, SeekBar/`bufferMonitor`, preloader semantics) and Mobile Safari requires drag-release-only execution. | A measurement spike on the real deployment; the fixture harness could also settle whether mid-production cache items are seekable |
 | **MP4/M4A `stco`/`co64` rewriting** | The `moov` describes the whole file's byte layout; a subset sample table is a real project, and the failing-header-probe case is already an A15 non-goal. | — |
 | **Cache stitching** (gap prefix + fetched tail → one complete offline file) | Needed to restore the offline-advance contract after a bounded-window raw epoch. Byte-identical concatenation is feasible for raw, but must handle bounded windows and promotion timing. | Phase 3 |
-| **Offset-ignored epoch adoption** (§2.6 refinement) | Avoids discarding a byte-identical head-first transfer, but only matters if the wasted-request cost shows up in measurement. | Phase 2 data |
+| ~~**Offset-ignored epoch adoption** (§2.6 refinement)~~ | **LANDED 2026-10-07** — see the note below. | — |
+
+Landed from this register (2026-10-07): **offset-ignored epoch adoption** — a
+rebased epoch continues as the row's own source at base 0 instead of being
+discarded, so its bytes are never wasted and the intent reaches T linearly. Only
+the artifact's PROMOTION stays permanently quarantined (§2.7, acceptance 6). The
+register row stayed here after the verdict work made adoption the default, which
+is exactly the kind of stale entry this document's anti-rot rule forbids.
 
 ## 7. Risks & limitations
 
