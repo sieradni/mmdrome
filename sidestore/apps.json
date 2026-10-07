@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.55",
-      "versionDate": "2026-10-06T09:02:53.161Z",
-      "versionDescription": "Applying a filter or sort to the queue now continues from the current track instead of restarting at the top of the sort order.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.55/mmdrome.ipa",
+      "version": "1.2.56",
+      "versionDate": "2026-10-07T11:06:15.028Z",
+      "versionDescription": "Seeking into a streaming track that has not loaded yet now keeps your position instead of restarting at 0:00, and a far seek on a transcoded track starts from an offset stream so audio arrives sooner. Prefetch now yields to your own transfers, and seeks log their latency for diagnostics.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.56/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.56",
+          "buildVersion": "60",
+          "date": "2026-10-07T11:06:15.028Z",
+          "localizedDescription": "Seeking into a streaming track that has not loaded yet now keeps your position instead of restarting at 0:00, and a far seek on a transcoded track starts from an offset stream so audio arrives sooner. Prefetch now yields to your own transfers, and seeks log their latency for diagnostics.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.56/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.55",
           "buildVersion": "59",
@@ -548,6 +556,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.56",
+      "identifier": "ios-v1.2.56",
+      "appID": "com.mmdrome.player",
+      "caption": "Seeking into a streaming track that has not loaded yet now keeps your position instead of restarting at 0:00, and a far seek on a transcoded",
+      "date": "2026-10-07T11:06:15.028Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.55",
       "identifier": "ios-v1.2.55",
       "appID": "com.mmdrome.player",
@@ -580,15 +597,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Native stream recovery: an active transcode now continues in place through a hard transport cut instead of restarting from 0:00, and a Range",
       "date": "2026-10-03T09:28:51.407Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.51",
-      "identifier": "ios-v1.2.51",
-      "appID": "com.mmdrome.player",
-      "caption": "Defer the stream self-test probe while a transcode is live, recover partial transcodes on writer error, attribute transfer cuts (churn vs st",
-      "date": "2026-10-03T00:43:50.168Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
