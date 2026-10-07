@@ -18,6 +18,12 @@ import BackgroundAudioCore
 //     ledgers (accumulatedBytes, maturationByteFloor, pendingParts) and runs
 //     on the loader's tick — it belongs with the bytes it observes, not in the
 //     engine. The pure `Maturation` policy lives in BackgroundAudioCore.
+//   • the EPHEMERAL seek-epoch transfer (Phase 2, 2026-10-07): `streamLoad`
+//     with an `epoch` descriptor writes a server-offset window into its OWN
+//     key/file namespace, never promotes, never records a cache entry, never
+//     feeds the preload/maturation ledgers, and is swept by
+//     `discardEpochArtifacts`. The pure base/verdict math lives in
+//     BackgroundAudioCore's `StreamEpoch`.
 //
 // Deliberately NOT here (2026-10-03b): the native codec probe moved to
 // `DecodeProbeRunner.swift` — it shares the loader's URLSession habits but
@@ -183,6 +189,10 @@ final class TrackFileLoader {
     /// True while a staged stream writer owns a key (the engine's retry
     /// consults it before restarting a staged load).
     var hasActiveWriter: Bool { streamWriter != nil }
+    /// True while the active writer is an EPHEMERAL epoch transfer (Phase 2):
+    /// the engine cancels precisely this one on supersession/discard, so a
+    /// row's own writer is never torn down by an epoch operation.
+    var activeWriterIsEpoch: Bool { streamWriter?.isEpoch == true }
     /// Dump-visible scratch count: keys with a retained clean-close prefix
     /// or an opaque resumeData offer (a stuck resume shows up here as a
     /// nonzero count that never drains).
@@ -211,6 +221,10 @@ final class TrackFileLoader {
             resumeDataByCacheKey[key] = nil
         }
         rangeUnsupportedKeys = rangeUnsupportedKeys.filter { destinationByKey[$0] != nil }
+        // Epoch artifacts are ephemeral by construction (plan §2.7): a boot
+        // sweep guarantees a stale offset window can never be reused, and
+        // the sweep runs here because this is the loader's boot/cleanup hook.
+        discardEpochArtifacts()
     }
     /// Fired on the MAIN thread the moment a download's bookkeeping settles:
     /// (trackId, succeeded). The engine's 1 s sampler only sees downloads
@@ -309,6 +323,11 @@ final class TrackFileLoader {
         /// rule out Wi-Fi data assist / proxies (`Connection: close` from a
         /// path that should keep-alive is the verdict signal).
         var responseFingerprint: DownloadResume.ResponseFingerprint? = nil
+        /// EPOCH transfer (Phase 2, 2026-10-07): ephemeral, never promoted,
+        /// never Range-continued, and judged by the ENGINE's container
+        /// verdict — a raw byte gate cannot judge an offset window (the
+        /// server announces the FULL duration's bytes, plan fact 21).
+        var isEpoch: Bool = false
     }
 
     private var streamWriter: StreamWriter? = nil
@@ -356,6 +375,69 @@ final class TrackFileLoader {
         let stage: StreamSchedule.Stage
         let deliveredBytes: Int64
         let announcedBytes: Int64
+        /// True when these bytes belong to an EPHEMERAL seek-epoch transfer
+        /// (Phase 2, 2026-10-07). The engine keys its epoch state on this —
+        /// never on a path comparison (the loader owns the file naming).
+        var isEpoch: Bool = false
+    }
+
+    /// An EPHEMERAL seek-epoch transfer (Phase 2, 2026-10-07). Descriptor
+    /// only: the ENGINE owns every AVAudioFile open (plan §2.4 §9); the
+    /// loader owns the bytes. `key` lives in the loader's own namespace
+    /// (`<trackId>|<variant>|epoch-<offset>`), so the row's cache entry,
+    /// scratch, maturation and promotion ledgers are untouched by
+    /// construction — and an epoch artifact can never be served as the row's
+    /// file (`servingURL` reads only `state.cache`).
+    struct EpochTransfer {
+        let key: String
+        let requestURL: URL
+        let file: URL
+    }
+
+    // The epoch key namespace rule lives in the PURE core (`StreamEpoch`):
+    // `epochKey(_:offsetSeconds:)` derives it and `isEpochKey` recognizes it,
+    // so an epoch key can never equal the row's key (pinned by
+    // StreamEpochTests). Never re-implement the marker here.
+
+    /// The live EPOCH transfer's key + file. Set by `streamLoad(epoch:)`,
+    /// cleared when its writer settles; the quarantine sweep never removes
+    /// the ACTIVE epoch's file (the engine is reading it).
+    private var activeEpochKey: String? = nil
+    private var activeEpochPart: URL? = nil
+
+    /// Builds the descriptor for a server-offset epoch of `track` starting at
+    /// `offsetSeconds`: the row's own stream URL with the offset parameter,
+    /// written to an isolated `<hash>.epoch-<offset>.part` file. Nil when the
+    /// offset is not epoch-worthy (the pure rule lives in `StreamEpoch`).
+    func epochTransfer(for track: NativeTrack, offsetSeconds: Int) -> EpochTransfer? {
+        let variant = TrackVariant(url: track.url)
+        guard let url = StreamEpoch.offsetURL(track.url, seconds: Double(offsetSeconds)) else { return nil }
+        let base = transcodeCacheKey(trackId: track.trackId, variant: variant)
+        let key = StreamEpoch.epochKey(base, offsetSeconds: offsetSeconds)
+        let dir = Self.destinationURL(for: track, variant: variant).deletingLastPathComponent()
+        let name = "\(StableID.fnv1a64(key).description).epoch-\(offsetSeconds).part"
+        return EpochTransfer(key: key, requestURL: url, file: dir.appendingPathComponent(name))
+    }
+
+    /// Quarantine sweep (plan §2.7): an epoch artifact is EPHEMERAL — never
+    /// promoted, never a cache entry, never served, and its bytes are the
+    /// TAIL of a raw file (feeding them as row progress would drive the queue
+    /// tint and seek-bar loaded layer with a meaningless percentage).
+    /// Removed on supersession, on evict, and at boot; the ACTIVE epoch's
+    /// file is skipped.
+    func discardEpochArtifacts() {
+        // Snapshot the entries: mutating a dictionary while iterating its own
+        // view is a Swift hazard (the same reason `prunePhantomResumeState`
+        // snapshots its keys).
+        let epochs = destinationByKey.filter { StreamEpoch.isEpochKey($0.key) }
+        for (key, url) in epochs {
+            guard url != activeEpochPart else { continue }
+            destinationByKey[key] = nil
+            pendingParts[key] = nil
+            maturationByteFloor[key] = nil
+            resumeDataByCacheKey[key] = nil
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     /// The full streaming policy gate: should THIS direct tap stream instead
@@ -405,14 +487,19 @@ final class TrackFileLoader {
     /// Range-continue path).
     func streamLoad(
         _ track: NativeTrack,
+        epoch: EpochTransfer? = nil,
         onProgress: @escaping (StreamProgress) -> Void,
         onFinished: @escaping (StreamProgress?, Error?) -> Void,
         onArrival: @escaping (Int64) -> Void
     ) {
         let requested = TrackVariant(url: track.url)
-        let cacheKey = transcodeCacheKey(trackId: track.trackId, variant: requested)
-        let destination = Self.destinationURL(for: track, variant: requested)
-        let part = partURL(for: destination)
+        // An EPOCH transfer gets its own key + file (Phase 2, 2026-10-07):
+        // the row's cache key, destination and scratch are never touched, so
+        // no ledger (serve/cache/promote/maturation) can confuse an offset
+        // window with the row's own transfer.
+        let cacheKey = epoch?.key ?? transcodeCacheKey(trackId: track.trackId, variant: requested)
+        let destination = epoch?.file ?? Self.destinationURL(for: track, variant: requested)
+        let part = epoch?.file ?? partURL(for: destination)
         let requestID = UUID()
         // A pre-existing .part from a previous retention must not be appended
         // onto (the writer writes from scratch — a pendingPart here would
@@ -425,7 +512,12 @@ final class TrackFileLoader {
             part: part,
             requestID: requestID,
             claimedAt: Date(),
-            announcedBytes: requested == .raw ? Int64(track.size) : 0)
+            announcedBytes: epoch == nil && requested == .raw ? Int64(track.size) : 0)
+        writer.isEpoch = epoch != nil
+        if let epoch {
+            activeEpochKey = epoch.key
+            activeEpochPart = epoch.file
+        }
         let handle: FileHandle
         do {
             let parent = destination.deletingLastPathComponent()
@@ -446,7 +538,7 @@ final class TrackFileLoader {
         deliberatelyCancelledWriterKey = nil
         claimAt[cacheKey] = writer.claimedAt
         destinationByKey[cacheKey] = destination
-        var request = URLRequest(url: track.url)
+        var request = URLRequest(url: epoch?.requestURL ?? track.url)
         request.timeoutInterval = 120
         // Materialize the session FIRST (F2, 2026-09-22 field dump): the
         // lazy init is what creates `streamWriterDelegate`. The old order —
@@ -629,7 +721,11 @@ final class TrackFileLoader {
             url: writer.part,
             stage: .playable,
             deliveredBytes: merged,
-            announcedBytes: writer.announcedBytes))
+            announcedBytes: writer.announcedBytes,
+            // The engine keys its epoch state on this flag — an epoch
+            // delivery that lost it would be scheduled at base 0 (silent
+            // wrong-position audio), so it rides EVERY delivery.
+            isEpoch: writer.isEpoch))
     }
 
     /// NETWORK EVIDENCE: the attempt's response fingerprint arrived on main
@@ -696,6 +792,44 @@ final class TrackFileLoader {
             streamArrivalHandler = nil
             claimAt.removeValue(forKey: writer.cacheKey)
             deliberatelyCancelledWriterKey = nil
+        }
+        // ---- EPOCH TRANSFER (Phase 2, 2026-10-07) -------------------------
+        // An ephemeral offset window. It NEVER promotes, never records a
+        // cache entry, never feeds the preload/maturation ledgers and is
+        // never Range-continued: its honesty is judged by the ENGINE's
+        // container verdict (`StreamEpoch.offsetHonored`), because a raw byte
+        // gate cannot judge an offset stream (the server announces the FULL
+        // duration's bytes — plan fact 21). A clean close delivers the epoch
+        // file as COMPLETE (the growth stops here; the engine re-opens it and
+        // chains its tail); a failure discards the scratch and delivers the
+        // error.
+        if writer.isEpoch {
+            let part = writer.part
+            let accumulated = writer.accumulatedBytes
+            let announced = writer.announcedBytes
+            let trackId = writer.track.trackId
+            if activeEpochPart == part {
+                activeEpochKey = nil
+                activeEpochPart = nil
+            }
+            destinationByKey[writer.cacheKey] = nil
+            clearWriterState()
+            if let error {
+                try? FileManager.default.removeItem(at: part)
+                event(.danger, "stream: epoch transfer failed for \(trackId) — discarded: \(error.localizedDescription) \(transferEvidence(error))")
+                onFinished?(nil, error)
+                return
+            }
+            event(.info, "stream: epoch transfer complete for \(trackId) (\(accumulated)B of announced \(announced)B) — never promoted")
+            let final = StreamProgress(
+                trackId: trackId,
+                url: part,
+                stage: .complete,
+                deliveredBytes: accumulated,
+                announcedBytes: announced,
+                isEpoch: true)
+            onFinished?(final, nil)
+            return
         }
         if let error {
             // NEAR-COMPLETE RECOVERY (2026-10-02b): a late transient failure
@@ -1238,6 +1372,23 @@ final class TrackFileLoader {
         // non-cancel error (the queued-error race — cancel() is then a no-op
         // and the surfaced error is not -999).
         deliberatelyCancelledWriterKey = streamWriter?.cacheKey
+        // An EPOCH writer is EPHEMERAL (Phase 2): its file is discarded with
+        // the transfer — no scratch is retained and no continuation is
+        // planned (the engine opens a fresh epoch at the new position
+        // instead), so a superseded epoch can never be resumed or promoted.
+        if streamWriter?.isEpoch == true {
+            if let part = activeEpochPart {
+                try? FileManager.default.removeItem(at: part)
+            }
+            if let key = activeEpochKey {
+                destinationByKey[key] = nil
+                pendingParts[key] = nil
+                maturationByteFloor[key] = nil
+                resumeDataByCacheKey[key] = nil
+            }
+            activeEpochKey = nil
+            activeEpochPart = nil
+        }
         // Silence the ENGINE legs first (nil both handlers): the completion
         // that cancel() triggers must not deliver to onFinished/onProgress —
         // the monitor already reported, and a second report would double-
@@ -1903,6 +2054,10 @@ final class TrackFileLoader {
     /// ALL variants go (queue cleanup); pass the scheduled variant to drop one
     /// (the corrupt-file path must not nuke the good variants).
     func evict(_ trackId: String, variant: TrackVariant? = nil) {
+        // Epoch artifacts are never cache entries (plan §2.7), so the keyed
+        // eviction below can never reach them — sweep them explicitly. The
+        // ACTIVE epoch is skipped by the sweep itself.
+        discardEpochArtifacts()
         var keys: [String]
         if let variant = variant {
             keys = [transcodeCacheKey(trackId: trackId, variant: variant)]
@@ -1984,7 +2139,11 @@ final class TrackFileLoader {
     /// seek-bar loaded layer, for the entire stream (the "no visual for
     /// loaded/buffered" report). Nil when no writer is live.
     var writerProgress: (key: String, trackId: String, received: Int64, expected: Int64?)? {
-        guard let writer = streamWriter else { return nil }
+        // An EPOCH writer is EXCLUDED (plan §2.7): its bytes are a tail
+        // window, so presenting them as the row's download progress would
+        // drive the tint and the seek-bar loaded layer with a meaningless
+        // percentage.
+        guard let writer = streamWriter, !writer.isEpoch else { return nil }
         return (writer.cacheKey, writer.track.trackId, writer.accumulatedBytes,
                 writer.announcedBytes > 0 ? writer.announcedBytes : nil)
     }
