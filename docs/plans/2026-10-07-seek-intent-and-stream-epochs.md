@@ -1,8 +1,10 @@
 # Seek Intent & Stream Epochs (2026-10-07)
 
 **Status**: Phases 0–2 implemented + pinned, plus the transfer-ladder HOLD half of the
-deferred cross-row item (2026-10-07; JS suite 1262/1262 and svelte-check green, Swift
-cores/engine await CI). Phases 3–4 not started; cross-row PREEMPTION and same-row
+deferred cross-row item (2026-10-07; JS suite 1265/1265 and svelte-check green, and the
+native side COMPILE- and CORE-TEST-verified in `ios.yml` — `Swift package tests (pure
+core, macOS host)` + `Build unsigned app` green; runtime behavior still needs a field
+dump). Phases 3–4 not started; cross-row PREEMPTION and same-row
 supersession remain deferred (§6). This document is the single source of truth for the
 work; every phase below is independently shippable and every phase's failure mode
 degrades into Phase 1 behavior.
