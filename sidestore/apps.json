@@ -27,7 +27,8 @@
           "date": "2026-10-07T11:06:15.028Z",
           "localizedDescription": "Seeking into a streaming track that has not loaded yet now keeps your position instead of restarting at 0:00, and a far seek on a transcoded track starts from an offset stream so audio arrives sooner. Prefetch now yields to your own transfers, and seeks log their latency for diagnostics.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.56/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5173819
         },
         {
           "version": "1.2.55",
