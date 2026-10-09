@@ -10,8 +10,9 @@ import XCTest
 ///
 /// The contract that matters: retries are bounded, a rebuild happens exactly
 /// once per run before surfacing, media-services resets skip straight to a
-/// rebuild, and an ACTIVE interruption suppresses both rebuild and surface
-/// (nothing works until it ends).
+/// rebuild, and a GENUINELY active interruption (`sessionNotActive`) suppresses
+/// both rebuild and surface. A stale flag must never suppress them — see
+/// `interruptionBlocksRecovery` (rule changed 2026-10-08).
 final class EngineRecoveryPolicyTests: XCTestCase {
 
     // MARK: - Classification
@@ -106,24 +107,48 @@ final class EngineRecoveryPolicyTests: XCTestCase {
 
     // MARK: - interruption-active
 
-    func testInterruptionActiveAlwaysWaits() {
-        // While interrupted, re-activating can only fail — never rebuild
-        // (wasted graph churn) and never surface (the fix is the interruption
-        // ending, not a user action).
-        for kind in [EngineFailureKind.sessionNotActive, .startFailed, .mediaServicesReset] {
-            for count in [1, 2, 3, 4, 10] {
-                XCTAssertEqual(
-                    EngineRecoveryPolicy.decide(failure: kind, interruptionActive: true, consecutiveFailures: count),
-                    .retryLater(delaySeconds: EngineRecoveryPolicy.interruptionRetryDelaySeconds),
-                    "kind=\(kind) count=\(count)")
-            }
+    func testInterruptionWaitsOnlyForSessionNotActive() {
+        // The legitimate interruption shape: ACTIVATION is what fails, so
+        // waiting is right — never rebuild (wasted graph churn) and never
+        // surface (the fix is the interruption ending, not a user action).
+        for count in [1, 2, 3, 4, 10] {
+            XCTAssertEqual(
+                EngineRecoveryPolicy.decide(failure: .sessionNotActive, interruptionActive: true, consecutiveFailures: count),
+                .retryLater(delaySeconds: EngineRecoveryPolicy.interruptionRetryDelaySeconds),
+                "count=\(count)")
         }
+        XCTAssertTrue(EngineRecoveryPolicy.interruptionBlocksRecovery(
+            failure: .sessionNotActive, interruptionActive: true))
     }
 
-    func testInterruptionActiveOutranksMediaServicesReset() {
-        // Even a media-services reset cannot be rebuilt while an interruption
-        // owns the session; the ended handler will rebuild afterwards.
-        XCTAssertNotEqual(
+    func testStartFailedEscalatesWhileTheInterruptionFlagIsStale() {
+        // Rule change 2026-10-08 (field dump: 9 `.began`, 0 `.ended`, while
+        // playback continued ~1 h): a `startFailed` failure means `setActive`
+        // SUCCEEDED, so the interruption is provably over even while the flag
+        // still reads true. The old unconditional-wait branch turned this into
+        // `retryLater` forever and disarmed the ladder.
+        XCTAssertFalse(EngineRecoveryPolicy.interruptionBlocksRecovery(
+            failure: .startFailed, interruptionActive: true))
+
+        let actions = (1...EngineRecoveryPolicy.maximumConsecutiveFailures).map {
+            EngineRecoveryPolicy.decide(failure: .startFailed, interruptionActive: true, consecutiveFailures: $0)
+        }
+        XCTAssertEqual(actions, [
+            .retryLater(delaySeconds: EngineRecoveryPolicy.firstRetryDelaySeconds),
+            .retryLater(delaySeconds: EngineRecoveryPolicy.secondRetryDelaySeconds),
+            .rebuild,
+            .surfaceUnavailable,
+        ])
+    }
+
+    func testMediaServicesResetRebuildsEvenWhileTheInterruptionFlagIsStale() {
+        // Deliberate rule change (2026-10-08): an interruption cannot survive a
+        // media-services reset — the stack was torn down. The old "interruption
+        // outranks a reset" rule is exactly the wait-forever shape the stale
+        // flag produced (the 2026-10-04 failure class).
+        XCTAssertFalse(EngineRecoveryPolicy.interruptionBlocksRecovery(
+            failure: .mediaServicesReset, interruptionActive: true))
+        XCTAssertEqual(
             EngineRecoveryPolicy.decide(failure: .mediaServicesReset, interruptionActive: true, consecutiveFailures: 1),
             .rebuild)
     }

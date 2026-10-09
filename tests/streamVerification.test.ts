@@ -12,6 +12,8 @@ import {
   parseNativeStreamTranscript,
   selectStreamWindow,
   selectProbeTargets,
+  stagedStreamInFlight,
+  classifyRangeOutcome,
   evaluateStreamVerification,
   formatStreamVerifyReport,
   formatStreamVerifyBundle,
@@ -33,6 +35,7 @@ function httpProbe(over: Partial<HttpProbeFacts> = {}): HttpProbeFacts {
     contentRange: 'bytes 0-262143/3000000',
     bytesRead: 262_144,
     sniffed: 'ogg-opus',
+    requestedRangeBytes: 262_144,
     ...over,
   }
 }
@@ -247,6 +250,97 @@ test('range-support: a 206 proves range support even when the headers are CORS-h
   assert.equal(ignored.checks.find((c) => c.id === 'range-support')?.status, 'warn')
 })
 
+test('classifyRangeOutcome separates a fresh transcode from an ignored Range', () => {
+  // 2026-10-09: a cold app (nothing cached yet) reported "1/3 probes honored a
+  // Range request", which reads as a server defect but is Navidrome's normal
+  // in-progress behavior — it serves an unfinished transcode job WHOLE (200),
+  // so that answer cannot testify about Range at all.
+  const whole = httpProbe({ status: 200, acceptRanges: null, contentRange: null, contentLength: 3_482_952, sniffed: 'mp3' })
+  assert.equal(classifyRangeOutcome(whole, false), 'fresh-transcode', 'transcode URL + whole body = unready job')
+  assert.equal(classifyRangeOutcome({ ...whole, contentLength: null }, false), 'fresh-transcode', 'an in-progress job streams chunked too')
+  assert.equal(classifyRangeOutcome(whole, true), 'ignored', 'the same answer on a raw/static URL IS a Range gap')
+  assert.equal(
+    classifyRangeOutcome({ ...whole, contentLength: 262_144 }, false),
+    'ignored',
+    'a body no larger than the range we asked for is not a whole-body answer',
+  )
+  assert.equal(
+    classifyRangeOutcome({ ...whole, status: 206 }, false),
+    'honored',
+    'a 206 survives the CORS-hidden headers — it must be trusted first',
+  )
+  assert.equal(
+    classifyRangeOutcome({ ...whole, requestedRangeBytes: null }, false),
+    'not-sent',
+    'the plain-GET fallback produced no Range evidence either way',
+  )
+})
+
+test('evaluate: a cold-cache matrix PASSES Range on the ready probe and names the fresh ones', () => {
+  // The exact 2026-10-09 cold-app bundle shape: opus answered 206 (ready),
+  // mp3/aac answered whole-body 200s (their transcode jobs had not finished).
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,
+    http: null,
+    httpProbes: [
+      matrixProbe('opus', { status: 206, contentLength: 262_144, acceptRanges: null, contentRange: null, sniffed: 'ogg-opus' }),
+      matrixProbe('mp3', { status: 200, contentLength: 3_482_952, acceptRanges: null, contentRange: null, sniffed: 'mp3' }),
+      matrixProbe('aac', { status: 200, contentLength: 4_230_512, acceptRanges: null, contentRange: null, sniffed: 'aac-adts' }),
+    ],
+    native: null,
+  })
+  const range = report.checks.find((c) => c.id === 'range-support')!
+  assert.equal(range.status, 'pass', 'the server does support Range; the cold probes were data gaps')
+  assert.match(range.evidence, /1\/1 probes honored a Range request/)
+  assert.match(range.evidence, /2 fresh \(uncached\) transcode probes answered a whole body with 200/)
+  assert.match(range.evidence, /expected on a cold cache/)
+  assert.doesNotMatch(range.evidence, /status 200, Range ignored/, 'a fresh transcode is never called an ignored Range')
+})
+
+test('evaluate: an all-fresh matrix is UNKNOWN with the cache reason, never a defect', () => {
+  const report = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 40_000_000,
+    http: null,
+    httpProbes: [
+      matrixProbe('opus', { status: 200, contentLength: 2_000_000, acceptRanges: null, contentRange: null }),
+      matrixProbe('mp3', { status: 200, contentLength: 3_482_952, acceptRanges: null, contentRange: null }),
+    ],
+    native: null,
+  })
+  const range = report.checks.find((c) => c.id === 'range-support')!
+  assert.equal(range.status, 'unknown', 'nothing was measurable — not a warn')
+  assert.match(range.evidence, /no probe could measure Range/)
+  assert.match(range.evidence, /fresh \(uncached\) transcode probes/)
+  assert.match(range.evidence, /cannot distinguish an unready job from a server that ignores Range/)
+})
+
+test('evaluate: a probe that sent no Range GET contributes no Range evidence', () => {
+  // The plain-GET fallback: a 200 with no Range header says nothing about
+  // Range support, so it must neither pass nor warn.
+  const honored = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: null,
+    httpProbes: [
+      matrixProbe('opus', { status: 206, contentLength: 262_144, acceptRanges: null, contentRange: null }),
+      matrixProbe('mp3', { status: 200, contentLength: 3_482_952, acceptRanges: null, contentRange: null, requestedRangeBytes: null }),
+    ],
+    native: null,
+  })
+  const range = honored.checks.find((c) => c.id === 'range-support')!
+  assert.equal(range.status, 'pass')
+  assert.match(range.evidence, /sent no Range header \(plain-GET fallback\)/)
+
+  const alone = evaluateStreamVerification({
+    trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
+    http: null,
+    httpProbes: [matrixProbe('mp3', { status: 200, contentLength: 3_482_952, acceptRanges: null, contentRange: null, requestedRangeBytes: null })],
+    native: null,
+  })
+  const only = alone.checks.find((c) => c.id === 'range-support')!
+  assert.equal(only.status, 'unknown', 'no Range GET → no verdict')
+  assert.match(only.evidence, /no probe could measure Range/)
+})
+
 test('evaluate: a rejected short transcode FAILS the completion check', () => {
   const native = parseNativeStreamTranscript([
     { domain: 'stream', msg: 'first staged schedule id=abc endable=100 frames (0.0s of header claim 100)' },
@@ -456,10 +550,17 @@ test('evaluate: the same-stream probe and the matrix share the server checks', (
   const report = evaluateStreamVerification({
     trackId: 'abc', variant: 'opus@128', isTranscode: true, metadataDuration: 100, snapshotSize: 1,
     http: httpProbe({ status: 206 }),
+    // The matrix probe's whole-body 200 is a TRANSCODE URL answer, so it is a
+    // cold-cache data gap, not a Range verdict (rule updated 2026-10-09 — the
+    // old reading, "one probe ignored Range", was the false alarm this fix
+    // exists to kill).
     httpProbes: [matrixProbe('mp3', { status: 200, acceptRanges: null, contentRange: null })],
     native: null,
   })
-  assert.equal(report.checks.find((c) => c.id === 'range-support')?.status, 'warn', 'one probe ignored Range')
+  const range = report.checks.find((c) => c.id === 'range-support')!
+  assert.equal(range.status, 'pass', 'the honored same-stream probe decides')
+  assert.match(range.evidence, /1\/1 probes honored a Range request/)
+  assert.match(range.evidence, /fresh \(uncached\) transcode probe answered a whole body with 200/)
 })
 
 test('formatStreamVerifyBundle renders the server-capability matrix', () => {
@@ -479,6 +580,9 @@ test('formatStreamVerifyBundle renders the server-capability matrix', () => {
   })
   assert.match(text, /SERVER PROBE MATRIX \(1\)/)
   assert.match(text, /opus\s+navidrome-opus "opus track"/)
+  // The raw bundle names the Range outcome per probe, so a reader can tell a
+  // fresh (uncached) transcode from an ignored Range without the verdict text.
+  assert.match(text, /range=honored/)
 })
 
 test('evaluate: reports the transfer cut as churn-unlikely (server / proxy lead)', () => {
@@ -593,6 +697,15 @@ test('foldStreamEvent folds the epoch open/verdict lines and the schedule base',
   assert.equal(honored.epochBaseSeconds, 187)
   assert.equal(honored.firstScheduleBaseSeconds, 187)
   assert.equal(honored.epochRebased, false)
+  // The Phase-2 line carries `start=`/`base=` between the id and `endable=`;
+  // the fold regex must absorb them (2026-10-09 field fix — the old exact
+  // `id=\S+ endable=` form silently left `sawFirstStagedSchedule: false` on
+  // every live bundle, misreporting the staged-stream check and starving the
+  // container-shape classifier of its schedule evidence).
+  assert.equal(honored.sawFirstStagedSchedule, true)
+  assert.equal(honored.firstScheduleEndableFrames, 18225000)
+  assert.equal(honored.firstScheduleSeconds, 413.3)
+  assert.equal(honored.firstScheduleHeaderClaimFrames, 18225000)
 
   // A pre-Phase-2 transcript (no `base=` on the schedule line) still folds
   // every other field — the check must not misread an absent field as base 0.
@@ -601,6 +714,18 @@ test('foldStreamEvent folds the epoch open/verdict lines and the schedule base',
   ])
   assert.equal(legacy.firstScheduleBaseSeconds, null)
   assert.equal(legacy.sawFirstStagedSchedule, true)
+})
+
+test('stagedStreamInFlight treats a COMPLETED schedule as settled', () => {
+  // 2026-10-09 field fix: a completed schedule keeps `streamActive` true for
+  // the life of the current track, so the old predicate (active alone) never
+  // settled and every field bundle skipped the same-stream probe.
+  assert.equal(stagedStreamInFlight({ streamActive: true, streamComplete: false }), true)
+  assert.equal(stagedStreamInFlight({ streamActive: true, streamComplete: true }), false)
+  assert.equal(stagedStreamInFlight({ streamActive: true }), true)
+  assert.equal(stagedStreamInFlight({ streamActive: false, streamComplete: true }), false)
+  assert.equal(stagedStreamInFlight(null), false)
+  assert.equal(stagedStreamInFlight(undefined), false)
 })
 
 test('the epoch check FAILS when an epoch is scheduled with no honored verdict', () => {

@@ -192,6 +192,22 @@ final class SessionController {
         }
     }
 
+    /// The engine proved an interruption flag was STALE — a start succeeded
+    /// while we still believed an interruption was in progress because iOS
+    /// never delivered the `.ended` edge (2026-10-08 dump: 9 `.began`, 0
+    /// `.ended`, playback continuing ~1 h). Reset the LOCAL flag WITHOUT
+    /// firing `onInterruptionStateChanged` (the engine already cleared its own
+    /// copy; firing would be a no-op edge): the edge guard must stay honest so
+    /// the NEXT genuine `.began` still emits. `wasPlayingBeforeInterruption`
+    /// is cleared too — otherwise a stray later `.ended` would auto-resume a
+    /// session the user never left playing.
+    func clearStaleInterruption() {
+        guard isInterrupted else { return }
+        isInterrupted = false
+        wasPlayingBeforeInterruption = false
+        self.event(.info, "interruption flag cleared as stale — no ended edge was delivered")
+    }
+
     /// The audio services were reset/lost: the session and the engine graph are
     /// both invalid. Re-point the session at our category, then hand off to the
     /// engine to rebuild (it owns the graph).
@@ -206,15 +222,30 @@ final class SessionController {
         onSessionInvalidated?()
     }
 
+    /// The greppable identity of an output port. The 2026-10-08 storm had 10
+    /// indistinguishable route-change lines and no way to name the flapping
+    /// device; every line now carries the previous and current port.
+    private func portTag(_ port: AVAudioSessionPortDescription?) -> String {
+        guard let port else { return "none" }
+        return "\(port.portName)[\(port.portType.rawValue)]"
+    }
+
+    /// Every route change is logged at INFO with the reason and both port
+    /// identities — the pause policy is untouched (`oldDeviceUnavailable`
+    /// still pauses); only the evidence grows (2026-10-08 storm diagnosis).
     private func handleRouteChange(_ note: Notification) {
         guard let info = note.userInfo,
               let rawReason = info[AVAudioSessionRouteChangeReasonKey] as? UInt,
               let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else { return }
+        let previous = (info[AVAudioSessionRouteChangePreviousRouteKey]
+                        as? AVAudioSessionRouteDescription)?.outputs.first
+        let current = AVAudioSession.sharedInstance().currentRoute.outputs.first
+        let fate = reason == .oldDeviceUnavailable ? " → pause" : " (no action)"
+        self.event(
+            .info,
+            "route change reason=\(reason.rawValue) prev=\(portTag(previous)) now=\(portTag(current))\(fate)")
         if reason == .oldDeviceUnavailable {
-            self.event(.info, "route change oldDeviceUnavailable → pause")
             onPause?()
-        } else {
-            self.event(.debug, "route change reason=\(reason.rawValue) (no action)")
         }
     }
 }

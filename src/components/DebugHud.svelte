@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { Capacitor } from '@capacitor/core'
   import { get } from 'svelte/store'
-  import { currentTrack, playbackState, queue, currentTime, effectiveDuration, settings, library, loopMode, shuffleEnabled } from '../stores/appState'
+  import { currentTrack, playbackState, queue, currentTime, effectiveDuration, settings, library, loopMode, shuffleEnabled, updateSetting } from '../stores/appState'
   import { effectiveLowData, networkStatusStore, networkStabilitySnapshot } from '../lib/networkMode'
   import { transcodeParams } from '../lib/transcodePolicy'
   import { getCachedConfig } from '../lib/navidromeApi'
@@ -26,6 +26,13 @@
   import { audioManager } from '../lib/audioManager'
 
   let { onclose }: { onclose?: () => void } = $props()
+
+  /** The seekEpochs kill switch (2026-10-08, plan A1): the HUD is the
+   *  deliberate home — an internal epoch rollback is not a product setting,
+   *  but S4 and the §8 rollback promise need it reachable on a phone-only
+   *  session. `as const` keeps `mode` the literal union the typed
+   *  `updateSetting` requires. */
+  const seekEpochModes = ['auto', 'off'] as const
 
   let nativeState: any = $state(null)
   let nativeDebug: any = $state(null)
@@ -601,6 +608,16 @@
           <span>{openSections.verify ? '▾' : '▸'} STREAM SELF-TEST</span>
         </button>
         {#if openSections.verify}
+          <!-- seekEpochs kill switch (2026-10-08, plan A1): the field rollback
+               for the epoch lane — the manager's settings subscription pushes
+               the value live, so there is no new wiring here. -->
+          <div class="mb-1 flex items-center gap-1 text-[10px]">
+            <span class="text-white/50">seekEpochs</span>
+            {#each seekEpochModes as mode}
+              <button onclick={() => updateSetting('seekEpochs', mode)}
+                class="rounded px-2 py-0.5 {($settings.seekEpochs ?? 'auto') === mode ? 'bg-cyan-500/40' : 'bg-white/10 hover:bg-white/20'}">{mode}</button>
+            {/each}
+          </div>
           <div class="mb-1 flex items-center gap-2">
             <button onclick={runVerify} disabled={verifyBusy} class="rounded bg-cyan-500/30 px-2 py-0.5 hover:bg-cyan-500/50 disabled:opacity-40">
               {verifyBusy ? 'running…' : 'Run test'}

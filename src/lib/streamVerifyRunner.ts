@@ -33,12 +33,14 @@ import {
   type NativeEventLike,
   type LabeledHttpProbe,
   emptyNativeStreamFacts,
+  stagedStreamInFlight,
   foldStreamEvent,
   selectStreamWindow,
   selectProbeTargets,
   evaluateStreamVerification,
   sniffContainer,
   formatStreamVerifyBundle,
+  PROBE_RANGE_BYTES,
 } from './streamVerification'
 
 /** The exact transcode decision the manager uses (mirrors
@@ -68,7 +70,8 @@ export function currentStreamProbeUrl(): { url: string; variant: string } | null
   return { url, variant }
 }
 
-const PROBE_MAX_BYTES = 262_144
+/** The probe's Range length comes from the pure core (`PROBE_RANGE_BYTES`) so
+ *  the facts and the Range classifier share one yardstick for "whole body". */
 
 /** Bounded body read: never let a Range-ignoring server pull a whole file. */
 async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array> {
@@ -111,9 +114,9 @@ async function readBounded(res: Response, maxBytes: number): Promise<Uint8Array>
 export async function probeTranscodeHttp(url: string): Promise<HttpProbeFacts | null> {
   const attempt = async (withRange: boolean): Promise<HttpProbeFacts> => {
     const res = withRange
-      ? await fetch(url, { headers: { Range: `bytes=0-${PROBE_MAX_BYTES - 1}` } })
+      ? await fetch(url, { headers: { Range: `bytes=0-${PROBE_RANGE_BYTES - 1}` } })
       : await fetch(url)
-    const body = await readBounded(res, PROBE_MAX_BYTES)
+    const body = await readBounded(res, PROBE_RANGE_BYTES)
     const cl = res.headers.get('content-length')
     return {
       status: res.status,
@@ -123,6 +126,10 @@ export async function probeTranscodeHttp(url: string): Promise<HttpProbeFacts | 
       contentRange: res.headers.get('content-range'),
       bytesRead: body.length,
       sniffed: sniffContainer(body),
+      // Record WHICH attempt produced these facts: a plain-GET answer says
+      // nothing about Range, so the evaluator must not read its 200 as a
+      // verdict (2026-10-09).
+      requestedRangeBytes: withRange ? PROBE_RANGE_BYTES : null,
     }
   }
   try {
@@ -139,6 +146,7 @@ export async function probeTranscodeHttp(url: string): Promise<HttpProbeFacts | 
         contentRange: null,
         bytesRead: 0,
         sniffed: 'other',
+        requestedRangeBytes: null,
         note: String((e as Error)?.message ?? e),
       }
     }
@@ -182,11 +190,16 @@ function fmtRawEv(ev: RawEvent, base: number): string {
  * and it would read Navidrome's IN-PROGRESS output, which it serves whole
  * (200), so the Range verdict would describe the moment rather than the server
  * (the same server answered 206 once its transcode had completed and cached).
+ *
+ * 2026-10-09 field fix: "settled" means NOT IN FLIGHT — the schedule is gone
+ * OR complete (`stagedStreamInFlight`). `streamActive` alone stays true for
+ * the life of a completed current-track schedule, so the old predicate never
+ * settled and every bundle skipped this probe.
  */
-async function stagedStreamActive(): Promise<boolean> {
+async function stagedStreamInFlightNow(): Promise<boolean> {
   try {
     const d = await (BackgroundAudio as unknown as { getDebugState?: () => Promise<Record<string, unknown>> }).getDebugState?.()
-    return d?.streamActive === true
+    return stagedStreamInFlight(d)
   } catch {
     return false
   }
@@ -238,7 +251,7 @@ function matrixFormats(): string[] {
 async function waitForStagedStreamToSettle(timeoutMs: number, pollMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   for (;;) {
-    if (!(await stagedStreamActive())) return true
+    if (!(await stagedStreamInFlightNow())) return true
     if (Date.now() >= deadline) return false
     await new Promise((r) => setTimeout(r, pollMs))
   }
@@ -361,7 +374,7 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
   let http: HttpProbeFacts | null = null
   let sameStreamPending = false
   if (probe) {
-    if (native && (await stagedStreamActive())) sameStreamPending = true
+    if (native && (await stagedStreamInFlightNow())) sameStreamPending = true
     else http = await probeTranscodeHttp(probe.url)
   }
   let probeNote: string | null = null

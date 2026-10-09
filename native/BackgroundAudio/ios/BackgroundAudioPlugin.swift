@@ -173,6 +173,15 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         session.onSessionInvalidated = { [weak self] in
             self?.performOnMain { self?.engine.rebuildAudioStack() }
         }
+        // Stale-flag correction (2026-10-08): the engine PROVED a start
+        // succeeded while the controller still believed an interruption was
+        // active (iOS skipped the `.ended` edge — 9 begins / 0 ends in the
+        // field dump). Mirror the clear back so the controller's copy cannot
+        // diverge: its edge guard would otherwise swallow the NEXT genuine
+        // `.began` and the engine would silently stop believing interruptions.
+        engine.onStaleInterruptionCleared = { [weak self] in
+            self?.performOnMain { self?.session.clearStaleInterruption() }
+        }
 
         session.configure(
             onPause: { [weak self] in self?.performOnMain { self?.engine.pause() } },

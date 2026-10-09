@@ -45,6 +45,27 @@ describe the moment, not the server. If the stream is still live after ~30 s
 the same-stream probe is skipped and the report says so; the matrix above still
 carries the server facts.
 
+**How to read the Range verdict** (`Server supports Range`). Four outcomes per
+probe, only two of which are evidence:
+
+- `honored` — a `206` (or `Content-Range`; those headers are CORS-hidden in a
+  webview, so the status line is what carries it): recovery can resume.
+- `ignored` — a whole-body `200` on a RAW/static URL, or a body no larger than
+  the range asked for: a genuine gap, reported as a warn.
+- `fresh-transcode` — a whole-body `200` on a TRANSCODE URL. Navidrome serves an
+  unfinished transcode job whole, so this is the **cache state, not a Range
+  verdict**. These probes are excluded from the ratio and named in the
+  evidence; on a just-reset app the ready probe decides and the fresh ones are
+  listed beside it.
+- `not-sent` — the Range header never went out (plain-GET fallback): no Range
+  evidence either way, excluded.
+
+So a cold app is no longer a warning: if every probe was fresh the check reads
+**UNKNOWN** with the cold-cache reason (re-run once a transcode is ready) — a
+whole-body `200` cannot distinguish an unready job from a server that ignores
+Range, and the evidence says so. The matrix lines carry the outcome per probe
+(`range=honored|fresh-transcode|ignored|not-sent`).
+
 ---
 
 ## The scenarios
@@ -138,7 +159,7 @@ it is the same button, arranged so ONE session judges all three evidence streams
 
 ## Seek / epoch / ladder validation (S1–S6)
 
-One session, five runnable scenarios (S4 is blocked — see below). Each scenario is
+One session, six runnable scenarios. Each scenario is
 ONE `Run test` press and ONE pasted block, so the three new evidence streams are
 judged together instead of from three separate hunts:
 
@@ -200,12 +221,16 @@ judged together instead of from three separate hunts:
 - Expect `seek … → …` and **no** `epoch open`; `strategy=` reads `local` or `parked`,
   never `+epoch`. This falsifies a floor that is not applied.
 
-### S4 — Kill switch off (BLOCKED — no control in the UI)
-- `seekEpochs` is pushed by the manager from persisted settings, but there is **no
-  Settings toggle** yet, so a phone-only session cannot flip it. Until that control
-  exists (recorded in the plan's deferred register), run this only if you can write
-  the setting (`seekEpochs: 'off'`) and reload: expect `seekEpochs → off` at boot and
-  ZERO `epoch open` lines for the same far seek as S1.
+### S4 — Kill switch off (the rollback path)
+- Flip it in the Debug HUD: **STREAM SELF-TEST → `seekEpochs` → off** (Settings →
+  About → Debug HUD on a phone-only session). The chips write the persisted setting
+  (`updateSetting`) and the manager pushes it to the engine live — no relaunch
+  needed; there is deliberately no Settings toggle, because an internal epoch
+  rollback is not a product feature.
+- Repeat S1's far seek: expect `seekEpochs → off` on the engine and **ZERO
+  `epoch open` lines** for the same far seek as S1; `strategy=` never ends in
+  `+epoch`.
+- Flip back to **auto** afterwards (the chip is the whole rollback surface).
 
 ### S5 — Ladder hold while a user transfer owns the link
 - Queue a few UNCACHED tracks so the speculative walk starts (watch for `chain:

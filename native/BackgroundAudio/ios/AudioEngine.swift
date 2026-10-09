@@ -131,6 +131,12 @@ public final class NativeAudioEngine: NSObject {
     public var onEngineUnavailable: (() -> Void)?
     /// Fired when the engine starts successfully after having surfaced.
     public var onEngineRecovered: (() -> Void)?
+    /// Fired when the engine proved an interruption flag was STALE and cleared
+    /// it (2026-10-08): a start succeeded, or a failure only a usable session
+    /// can produce, while `interruptionActive` still read true. The plugin
+    /// mirrors the clear onto `SessionController` so its edge guard cannot
+    /// swallow the NEXT genuine `.began`.
+    public var onStaleInterruptionCleared: (() -> Void)?
     // (loader hook wired in setup, below)
 
     // MARK: - Nodes
@@ -197,9 +203,17 @@ public final class NativeAudioEngine: NSObject {
     // MARK: - Engine recovery (2026-10-04)
 
     /// Mirrors `SessionController.isInterrupted`. While true the recovery
-    /// policy only ever waits — re-activating the session mid-interruption
-    /// always fails, so a rebuild would be wasted graph churn.
+    /// policy waits ONLY for a `sessionNotActive` activation failure — the one
+    /// shape a genuine interruption produces. Any other failure proves the
+    /// session was activatable and clears the flag as stale (2026-10-08).
     public var interruptionActive = false
+    /// Interruption EDGE counters (2026-10-08): the cheapest field evidence.
+    /// `begins > ends` in a dump means iOS skipped an `.ended` — the shape
+    /// that used to leave the flag stale-true for the rest of the session.
+    private var interruptionBeginCount = 0
+    private var interruptionEndCount = 0
+    /// How many times a start proved the flag stale and it was cleared.
+    private var staleInterruptionClears = 0
     /// 1-based count of consecutive failed start attempts, fed to the pure
     /// `EngineRecoveryPolicy`. Reset by any successful start, by an
     /// interruption ending, and by an explicit user restart.
@@ -783,6 +797,9 @@ public final class NativeAudioEngine: NSObject {
         engineRecoveryTimer?.invalidate()
         engineRecoveryTimer = nil
         consecutiveEngineStartFailures = 0
+        // A start that SUCCEEDED while the flag reads true is itself proof the
+        // interruption is over (2026-10-08 stale-flag fix).
+        clearStaleInterruptionFlag(reason: "engine start succeeded")
         if engineUnavailable {
             engineUnavailable = false
             eventAdd(.info, "engine", "engine recovered — clearing engineUnavailable")
@@ -796,6 +813,14 @@ public final class NativeAudioEngine: NSObject {
         // intended: remember to resume once recovery succeeds.
         resumeAfterEngineRecovery = true
         consecutiveEngineStartFailures += 1
+        // Only `sessionNotActive` is consistent with a genuinely active
+        // interruption; any other kind proves the session was activatable, so
+        // a still-true flag is STALE and must not disarm the ladder
+        // (2026-10-08). Clear it before deciding.
+        if !EngineRecoveryPolicy.interruptionBlocksRecovery(
+            failure: failure, interruptionActive: interruptionActive) {
+            clearStaleInterruptionFlag(reason: "failure=\(failure.rawValue) proves the session was activatable")
+        }
         let action = EngineRecoveryPolicy.decide(
             failure: failure,
             interruptionActive: interruptionActive,
@@ -856,6 +881,20 @@ public final class NativeAudioEngine: NSObject {
 
     // MARK: - Session / interruption recovery
 
+    /// The interruption flag can go STALE (2026-10-08 field dump: 9 `.began`
+    /// edges, 0 `.ended`, while playback provably continued for ~1 h — iOS
+    /// never delivered the end edge). A successful start, or a failure only a
+    /// usable session can produce, is positive proof the interruption is over:
+    /// clear the flag, leave a named trail, and tell the session controller so
+    /// its own copy cannot diverge (a later genuine `.began` must still emit).
+    private func clearStaleInterruptionFlag(reason: String) {
+        guard interruptionActive else { return }
+        interruptionActive = false
+        staleInterruptionClears += 1
+        eventAdd(.info, "engine", "interruption flag cleared as STALE — \(reason); no ended edge was delivered")
+        onStaleInterruptionCleared?()
+    }
+
     /// Mirrors the session controller's interruption state (main thread). On
     /// the falling edge the session may be usable again, so the ladder gets a
     /// fresh run and a surfaced engine is un-surfaced (the recovery timer, or
@@ -863,6 +902,11 @@ public final class NativeAudioEngine: NSObject {
     public func setInterruptionActive(_ active: Bool) {
         guard interruptionActive != active else { return }
         interruptionActive = active
+        if active {
+            interruptionBeginCount += 1
+        } else {
+            interruptionEndCount += 1
+        }
         guard !active else { return }
         eventAdd(.info, "engine", "interruption ended — resetting recovery ladder")
         engineRecoveryTimer?.invalidate()
@@ -2222,6 +2266,12 @@ public final class NativeAudioEngine: NSObject {
             // Recovery (2026-10-04): the ladder's live state, so a dump shows
             // whether an engine failure is being handled or has given up.
             "interruptionActive": interruptionActive,
+            // Interruption BEGIN/END edges + stale clears (2026-10-08): the
+            // next dump reads `9 begins / 0 ends` at a glance instead of
+            // mining the ring for the shape that left the flag stale.
+            "interruptionBegins": interruptionBeginCount,
+            "interruptionEnds": interruptionEndCount,
+            "staleInterruptionClears": staleInterruptionClears,
             "consecutiveEngineStartFailures": consecutiveEngineStartFailures,
             "engineUnavailable": engineUnavailable,
             "activeIndex": activeIndex,

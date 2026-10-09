@@ -30,6 +30,10 @@ export interface HttpProbeFacts {
   bytesRead: number
   /** Container magic sniffed from the head of the body. */
   sniffed: ContainerSniff
+  /** The Range length this probe asked for, or `null` when no Range header
+   *  went out (the plain-GET fallback). `undefined` = a capture predating the
+   *  field, when every probe sent the Range GET (2026-10-09). */
+  requestedRangeBytes?: number | null
   /** A human-readable note when the probe could not complete (network). */
   note?: string
 }
@@ -137,6 +141,20 @@ export interface NativeStreamFacts {
    *  (an older native build). The self-test reports it verbatim; the LABEL is
    *  a convenience, the numbers are the evidence. */
   writerFailureEvidence: string | null
+}
+
+/**
+ * Whether a staged stream still needs bytes — the SETTLE predicate for the
+ * same-stream probe (2026-10-09 field fix). `streamActive` alone is not
+ * enough: a COMPLETED schedule stays non-nil for the life of the current
+ * track, so the old predicate never settled and the probe was skipped in every
+ * field bundle. A completed (or absent) schedule is settled — the
+ * completed/cached server job is exactly the state the probe wants to measure.
+ */
+export function stagedStreamInFlight(
+  state: { streamActive?: unknown; streamComplete?: unknown } | null | undefined,
+): boolean {
+  return state?.streamActive === true && state?.streamComplete !== true
 }
 
 export function emptyNativeStreamFacts(): NativeStreamFacts {
@@ -273,7 +291,13 @@ export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): 
   if (/partial not openable yet/.test(msg) || /no schedulable evidence yet/.test(msg)) {
     next.deferredFirstScheduleCount += 1
   }
-  const first = /first staged schedule id=\S+ endable=(\d+) frames \(([\d.]+)s of header claim (\d+)\)/.exec(msg)
+  // `.*?` absorbs the Phase-2 `start=…s base=…s` tokens between the id and
+  // `endable=` (2026-10-09 field fix: the old exact `id=\S+ endable=` form
+  // stopped matching when Phase 2 inserted them, so every live bundle folded
+  // `sawFirstStagedSchedule: false` — misreporting the staged-stream check and
+  // permanently starving the container-shape classifier of its schedule
+  // evidence). Legacy lines without the extra tokens still match.
+  const first = /first staged schedule id=\S+ .*?endable=(\d+) frames \(([\d.]+)s of header claim (\d+)\)/.exec(msg)
   if (first) {
     next.sawFirstStagedSchedule = true
     next.firstScheduleEndableFrames = Number(first[1])
@@ -596,22 +620,62 @@ export interface StreamVerifyInput {
   } | null
 }
 
-/** Per-probe verdicts for the three server-side assumptions, keyed by the
- *  SAME check ids the report has always used. */
-type ProbeVerdict = { 'server-total': CheckStatus; 'range-support': CheckStatus; 'progressive-container': CheckStatus }
+/** Per-probe verdicts for the server-side assumptions that ARE a yes/no per
+ *  probe, keyed by the SAME check ids the report has always used. Range is NOT
+ *  here: it is a four-way outcome (`RangeOutcome`) rolled up separately, so a
+ *  fresh/uncached probe can be a data gap rather than a verdict. */
+type ProbeVerdict = { 'server-total': CheckStatus; 'progressive-container': CheckStatus }
 
-function probeRangesOk(f: HttpProbeFacts): boolean {
-  // Accept-Ranges/Content-Range are NOT CORS-safelisted, so a webview fetch
-  // cannot read them even when present — a 206 to our Range GET is the direct
-  // proof and must be trusted first.
-  return (f.acceptRanges ?? '').toLowerCase().includes('bytes') || f.status === 206 || !!f.contentRange
+/**
+ * What a Range GET actually told us. Only two of the four outcomes are
+ * evidence, and collapsing them cost a recurring false alarm (2026-10-09
+ * field report): a cold app — every transcode uncached — read
+ * `1/3 probes honored a Range request`, which looks like a server defect but is
+ * Navidrome's normal in-progress behavior.
+ *
+ *  - `honored` — `206` / `Content-Range` / `Accept-Ranges: bytes`: recovery
+ *    can resume. (Accept-Ranges/Content-Range are NOT CORS-safelisted, so a
+ *    webview fetch cannot read them; the `206` status is the proof that
+ *    survives, and it is trusted first.)
+ *  - `fresh-transcode` — a TRANSCODE URL answered a WHOLE BODY with `200`:
+ *    Navidrome serves an in-progress job whole (2026-10-02b), so this says the
+ *    job was not ready yet, NOT that Range is unsupported. Excluded from the
+ *    verdict and named in the evidence.
+ *  - `ignored` — a Range GET answered `200` with no whole-body explanation (a
+ *    raw/static URL, or a body no larger than the range we asked for): the
+ *    server really did not honor it — a genuine warn.
+ *  - `not-sent` — the Range request never went out (plain-GET fallback), so
+ *    there is no Range evidence either way.
+ */
+export type RangeOutcome = 'honored' | 'fresh-transcode' | 'ignored' | 'not-sent'
+
+/** The byte count the probe's Range GET asks for — exported so the adapter and
+ *  this classifier can never disagree about what "whole body" means. */
+export const PROBE_RANGE_BYTES = 262_144
+
+export function classifyRangeOutcome(f: HttpProbeFacts, isRaw: boolean): RangeOutcome {
+  if ((f.acceptRanges ?? '').toLowerCase().includes('bytes') || f.status === 206 || !!f.contentRange) {
+    return 'honored'
+  }
+  // `null` = the Range GET never happened, so there is nothing to judge.
+  // `undefined` = a capture predating the field; every probe back then sent the
+  // Range GET, so treat it as sent rather than inventing a `not-sent`.
+  if (f.requestedRangeBytes === null) return 'not-sent'
+  if (f.status !== 200) return 'ignored'
+  const asked = f.requestedRangeBytes ?? PROBE_RANGE_BYTES
+  const wholeBody = f.contentLength == null || f.contentLength > asked
+  // A whole-body 200 on a transcode URL is Navidrome serving an unready job;
+  // on a raw/static URL the same answer is a genuine "Range not honored".
+  // LIMIT: on a transcode URL an unready job and a server that ignores Range
+  // are indistinguishable from one answer — the evidence says so out loud.
+  if (!isRaw && wholeBody) return 'fresh-transcode'
+  return 'ignored'
 }
 
 function probeVerdict(f: HttpProbeFacts): ProbeVerdict {
   const progressive = isProgressiveContainer(f.sniffed)
   return {
     'server-total': f.contentLength && f.contentLength > 0 ? 'pass' : 'warn',
-    'range-support': probeRangesOk(f) ? 'pass' : 'warn',
     'progressive-container': progressive === true ? 'pass' : progressive === false ? 'fail' : 'unknown',
   }
 }
@@ -634,13 +698,54 @@ function matrixEvidence(id: keyof ProbeVerdict, probes: LabeledHttpProbe[], verd
         const cl = p.facts.contentLength && p.facts.contentLength > 0 ? String(p.facts.contentLength) : 'chunked'
         return `${p.format}:${cl}`
       }
-      if (id === 'range-support') return `${p.format}:${p.facts.status === 206 ? '206' : `status ${p.facts.status}`}`
       return `${p.format}:${p.facts.sniffed}`
     })
     .join(', ')
   if (id === 'server-total') return `${passed}/${n} probes announce a total — ${detail}`
-  if (id === 'range-support') return `${passed}/${n} probes honored a Range request — ${detail} (Accept-Ranges/Content-Range may be CORS-hidden)`
   return `first bytes sniffed — ${detail}`
+}
+
+function rangeOutcomeLabel(o: RangeOutcome): string {
+  switch (o) {
+    case 'honored': return '206 honored'
+    case 'fresh-transcode': return 'status 200 whole body (fresh/uncached transcode)'
+    case 'ignored': return 'status 200, Range ignored'
+    case 'not-sent': return 'no Range sent'
+  }
+}
+
+/**
+ * The Range evidence names every probe's OUTCOME and keeps the two
+ * non-evidence shapes (a fresh/uncached whole-body 200, a probe that sent no
+ * Range GET) out of the ratio — so a cold-cache run can no longer read as a
+ * server defect (2026-10-09).
+ */
+function rangeEvidence(probes: LabeledHttpProbe[], outcomes: RangeOutcome[]): string {
+  const detail = probes.map((p, i) => `${p.format}:${rangeOutcomeLabel(outcomes[i])}`).join(', ')
+  const honored = outcomes.filter((o) => o === 'honored').length
+  const ignored = outcomes.filter((o) => o === 'ignored').length
+  const fresh = outcomes.filter((o) => o === 'fresh-transcode').length
+  const notSent = outcomes.filter((o) => o === 'not-sent').length
+  const judged = honored + ignored
+  const head = judged === 0
+    ? `no probe could measure Range — ${detail}`
+    : `${honored}/${judged} probes honored a Range request — ${detail} (Accept-Ranges/Content-Range may be CORS-hidden)`
+  const tail: string[] = []
+  if (fresh > 0) {
+    tail.push(
+      `${fresh} fresh (uncached) transcode probe${fresh === 1 ? '' : 's'} answered a whole body with 200 — Navidrome serves an in-progress job whole, so this is the cache state, not a Range verdict; expected on a cold cache (re-run with a ready transcode to measure it)`,
+    )
+  }
+  if (notSent > 0) {
+    tail.push(`${notSent} probe${notSent === 1 ? '' : 's'} sent no Range header (plain-GET fallback) — no Range evidence`)
+  }
+  if (ignored > 0) {
+    tail.push(`${ignored} probe${ignored === 1 ? '' : 's'} ignored Range on a non-transcode URL — a genuine gap`)
+  }
+  if (judged === 0 && notSent === 0) {
+    tail.push('a whole-body 200 on a transcode cannot distinguish an unready job from a server that ignores Range')
+  }
+  return tail.length > 0 ? `${head} — ${tail.join('; ')}` : head
 }
 
 function countStatus(checks: VerifyCheck[]): string {
@@ -698,6 +803,11 @@ export function evaluateStreamVerification(input: StreamVerifyInput): StreamVeri
     })
   } else {
     const verdicts = usable.map((p) => probeVerdict(p.facts))
+    const rangeOutcomes = usable.map((p) => classifyRangeOutcome(p.facts, p.format === 'raw'))
+    // Only honored/ignored probes vote on Range: a fresh-transcode whole-body
+    // 200 and a probe that sent no Range GET are data gaps, not verdicts
+    // (2026-10-09) — counting them made a cold cache look like a broken server.
+    const rangeJudged = rangeOutcomes.filter((o) => o === 'honored' || o === 'ignored')
     checks.push({
       id: 'server-total',
       label: 'Server announces a total (Content-Length)',
@@ -707,8 +817,10 @@ export function evaluateStreamVerification(input: StreamVerifyInput): StreamVeri
     checks.push({
       id: 'range-support',
       label: 'Server supports Range (stream recovery can resume)',
-      status: rollUp(verdicts.map((v) => v['range-support'])),
-      evidence: matrixEvidence('range-support', usable, verdicts),
+      status: rangeJudged.length === 0
+        ? 'unknown'
+        : rollUp(rangeJudged.map((o) => (o === 'honored' ? 'pass' : 'warn'))),
+      evidence: rangeEvidence(usable, rangeOutcomes),
     })
     checks.push({
       id: 'progressive-container',
@@ -993,7 +1105,7 @@ export function formatStreamVerifyBundle(input: StreamVerifyBundleInput): string
     rows.push(`--- SERVER PROBE MATRIX (${matrix.length}) ------------------------------------------`)
     for (const p of matrix) {
       rows.push(
-        `  ${p.format.padEnd(6)} ${p.trackId} "${p.title}"  status=${p.facts.status} cl=${p.facts.contentLength ?? 'absent'} ar=${p.facts.acceptRanges ?? 'absent'} magic=${p.facts.sniffed}${p.facts.note ? ` note=${p.facts.note}` : ''}`,
+        `  ${p.format.padEnd(6)} ${p.trackId} "${p.title}"  status=${p.facts.status} cl=${p.facts.contentLength ?? 'absent'} ar=${p.facts.acceptRanges ?? 'absent'} magic=${p.facts.sniffed} range=${classifyRangeOutcome(p.facts, p.format === 'raw')}${p.facts.note ? ` note=${p.facts.note}` : ''}`,
       )
     }
   }

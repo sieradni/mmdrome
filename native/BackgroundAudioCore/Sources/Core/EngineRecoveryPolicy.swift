@@ -50,9 +50,11 @@ public enum EngineRecoveryAction: Equatable, Sendable {
 /// relaunch recovered — and the JS retry ladder walked row after row, each
 /// failing the same way. This core encodes the missing ladder:
 ///
-///   - While an interruption is ACTIVE, never rebuild and never surface —
-///     nothing will succeed until the interruption ends, so wait. (The
-///     interruption-ended handler resets the counter and retries.)
+///   - While an interruption ACTUALLY owns the session (the activation
+///     itself fails with `sessionNotActive`), never rebuild and never surface —
+///     nothing will succeed until the interruption ends, so wait. Other
+///     failure kinds PROVE the interruption is over and must escalate; see
+///     `interruptionBlocksRecovery` for the 2026-10-08 stale-flag why.
 ///   - Otherwise: retry a couple of times with a short backoff (a transient
 ///     session failure often clears on its own), then REBUILD once (the
 ///     `mediaServicesReset` kind rebuilds on the first failure, because the
@@ -104,13 +106,35 @@ public enum EngineRecoveryPolicy {
 
     // MARK: - The decision
 
+    /// Whether an active interruption is a legitimate reason to keep WAITING.
+    ///
+    /// Only `sessionNotActive` is consistent with a genuinely active
+    /// interruption: re-activating the session mid-interruption is exactly the
+    /// thing that fails with `'!ses'`. The other kinds PROVE the interruption
+    /// is over — `startFailed` means `setActive` had already SUCCEEDED (the
+    /// session was activatable), and `mediaServicesReset` invalidates the
+    /// whole stack and wants a rebuild regardless of any flag.
+    ///
+    /// WHY this is not `interruptionActive` alone (2026-10-08 field dump): the
+    /// flag can go STALE — the dump shows 9 `.began` edges with 0 `.ended`
+    /// while playback provably continued for ~1 h (iOS simply never delivered
+    /// the end edge). The old unconditional wait branch then turned every
+    /// later failure into `retryLater(1 s)` forever, silently disarming the
+    /// ladder on exactly the session that most needed a rebuild.
+    public static func interruptionBlocksRecovery(
+        failure: EngineFailureKind,
+        interruptionActive: Bool
+    ) -> Bool {
+        return interruptionActive && failure == .sessionNotActive
+    }
+
     /// The action for one failure.
     ///
     /// - Parameters:
     ///   - failure: what failed (see `EngineFailureKind`).
     ///   - interruptionActive: whether an AVAudioSession interruption is
-    ///     currently in progress. While true the only sensible action is to
-    ///     wait — re-activating mid-interruption always fails.
+    ///     currently in progress. It blocks recovery only for a
+    ///     `sessionNotActive` failure — see `interruptionBlocksRecovery`.
     ///   - consecutiveFailures: 1-based count of consecutive start failures
     ///     INCLUDING this one.
     public static func decide(
@@ -118,7 +142,7 @@ public enum EngineRecoveryPolicy {
         interruptionActive: Bool,
         consecutiveFailures: Int
     ) -> EngineRecoveryAction {
-        if interruptionActive {
+        if interruptionBlocksRecovery(failure: failure, interruptionActive: interruptionActive) {
             return .retryLater(delaySeconds: interruptionRetryDelaySeconds)
         }
         if consecutiveFailures >= maximumConsecutiveFailures {
