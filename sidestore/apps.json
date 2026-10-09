@@ -27,7 +27,8 @@
           "date": "2026-10-09T07:31:05.695Z",
           "localizedDescription": "Interruption recovery: a stale flag can no longer block the rebuild path, and route changes name their audio port. The Debug HUD can flip the seek-epoch kill switch, and the stream self-test no longer reads a cold transcode cache as a broken server.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.57/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5176321
         },
         {
           "version": "1.2.56",
