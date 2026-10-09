@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.56",
-      "versionDate": "2026-10-07T11:06:15.028Z",
-      "versionDescription": "Seeking into a streaming track that has not loaded yet now keeps your position instead of restarting at 0:00, and a far seek on a transcoded track starts from an offset stream so audio arrives sooner. Prefetch now yields to your own transfers, and seeks log their latency for diagnostics.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.56/mmdrome.ipa",
+      "version": "1.2.57",
+      "versionDate": "2026-10-09T07:31:05.695Z",
+      "versionDescription": "Interruption recovery: a stale flag can no longer block the rebuild path, and route changes name their audio port. The Debug HUD can flip the seek-epoch kill switch, and the stream self-test no longer reads a cold transcode cache as a broken server.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.57/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.57",
+          "buildVersion": "61",
+          "date": "2026-10-09T07:31:05.695Z",
+          "localizedDescription": "Interruption recovery: a stale flag can no longer block the rebuild path, and route changes name their audio port. The Debug HUD can flip the seek-epoch kill switch, and the stream self-test no longer reads a cold transcode cache as a broken server.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.57/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5176321
+        },
         {
           "version": "1.2.56",
           "buildVersion": "60",
@@ -557,6 +566,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.57",
+      "identifier": "ios-v1.2.57",
+      "appID": "com.mmdrome.player",
+      "caption": "Interruption recovery: a stale flag can no longer block the rebuild path, and route changes name their audio port. The Debug HUD can flip th",
+      "date": "2026-10-09T07:31:05.695Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.56",
       "identifier": "ios-v1.2.56",
       "appID": "com.mmdrome.player",
@@ -589,15 +607,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Recovery and streaming reliability: the audio engine rebuilds after an invalidated audio session instead of dying until relaunch (with a tap",
       "date": "2026-10-04T21:44:55.507Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.52",
-      "identifier": "ios-v1.2.52",
-      "appID": "com.mmdrome.player",
-      "caption": "Native stream recovery: an active transcode now continues in place through a hard transport cut instead of restarting from 0:00, and a Range",
-      "date": "2026-10-03T09:28:51.407Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
