@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.58",
-      "versionDate": "2026-10-13T10:09:23.770Z",
-      "versionDescription": "Fix queue history replay and recycled-song continuation, preserve native queue occurrence identity, prioritize fresh songs before repeats, and improve queue persistence and scrobble failure reporting.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.58/mmdrome.ipa",
+      "version": "1.2.59",
+      "versionDate": "2026-10-13T21:29:55.601Z",
+      "versionDescription": "Recover dead IndexedDB connections transparently and make failed storage recovery actionable",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.59/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.59",
+          "buildVersion": "63",
+          "date": "2026-10-13T21:29:55.601Z",
+          "localizedDescription": "Recover dead IndexedDB connections transparently and make failed storage recovery actionable",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.59/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5181292
+        },
         {
           "version": "1.2.58",
           "buildVersion": "62",
@@ -575,6 +584,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.59",
+      "identifier": "ios-v1.2.59",
+      "appID": "com.mmdrome.player",
+      "caption": "Recover dead IndexedDB connections transparently and make failed storage recovery actionable",
+      "date": "2026-10-13T21:29:55.601Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.58",
       "identifier": "ios-v1.2.58",
       "appID": "com.mmdrome.player",
@@ -607,15 +625,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Applying a filter or sort to the queue now continues from the current track instead of restarting at the top of the sort order.",
       "date": "2026-10-06T09:02:53.161Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.54",
-      "identifier": "ios-v1.2.54",
-      "appID": "com.mmdrome.player",
-      "caption": "Fixes a crash when dragging rows in the queue, and adds a 'Recently added' library sort.",
-      "date": "2026-10-06T08:24:56.219Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
