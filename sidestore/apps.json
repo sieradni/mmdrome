@@ -27,7 +27,8 @@
           "date": "2026-10-13T10:09:23.770Z",
           "localizedDescription": "Fix queue history replay and recycled-song continuation, preserve native queue occurrence identity, prioritize fresh songs before repeats, and improve queue persistence and scrobble failure reporting.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.58/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5179806
         },
         {
           "version": "1.2.57",
