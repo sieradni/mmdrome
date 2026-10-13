@@ -240,7 +240,8 @@ switch (decision.phase) {
     if (!notes) die('release notes are required for the bump phase (they land in three description fields + news)')
     if (!f.cleanTree) die('working tree is dirty — commit or stash first')
     runFileSafe(['scripts/release-ios.mjs', version, notes])
-    run(`git add package.json ios/App/App.xcodeproj/project.pbxproj sidestore/apps.json`)
+    runFileSafe(['scripts/validate-ios-release.mjs', version])
+    run(`git add package.json ios/App/App.xcodeproj/project.pbxproj ios/App/App/Info.plist sidestore/apps.json`)
     if (out('git status --porcelain') !== '') {
       run(`git commit -m ${JSON.stringify(`Release ${version}: ${notes.slice(0, 72)}`)}`)
       run('git push origin main')

@@ -6,13 +6,37 @@ on:
     tags: ['ios-v*']
   workflow_dispatch:
 
+# A tag release must not be cancelled by an unrelated main push. Keep the
+# branch/tag runs isolated and let same-ref builds finish rather than silently
+# dropping an IPA publication midway through release.
 concurrency:
-  group: ios-build
-  cancel-in-progress: true
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  validate-release:
+    name: Validate iOS release ref and versions
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release tag format and version sources
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_REF" != refs/tags/ios-v* ]]; then
+            echo "::error::iOS release tags must use ios-vX.Y.Z (received ${RELEASE_REF#refs/tags/})"
+            exit 1
+          fi
+          VERSION="${RELEASE_REF#refs/tags/ios-v}"
+          node scripts/validate-ios-release.mjs "$VERSION"
+
   build-ios:
     name: Build unsigned .ipa
+    needs: validate-release
     runs-on: macos-14
     steps:
       - name: Checkout
@@ -26,6 +50,20 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Validate SideStore manifest is prepared for finalize
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs'
+          const version = process.env.RELEASE_VERSION.replace(/^ios-v/, '')
+          const entry = JSON.parse(readFileSync('sidestore/apps.json', 'utf8')).apps?.[0]?.versions?.[0]
+          if (entry?.version !== version) throw new Error(`manifest newest version ${entry?.version} does not match ${version}`)
+          if ('size' in entry) throw new Error('tag tree contains a size; finalize must stamp the published IPA byte size')
+          console.log(`Manifest is prepared for ${version}; finalize will stamp the actual IPA size.`)
+          NODE
 
       - name: Swift package tests (pure core, macOS host)
         # BackgroundAudioCore is its own dependency-free SPM package; swift test
@@ -261,3 +299,19 @@ jobs:
             exit 1
           fi
           echo "Release asset mmdrome.ipa: $ASSET_SIZE bytes - OK"
+
+      - name: Write release summary
+        env:
+          RELEASE_VERSION: ${{ steps.ver.outputs.version }}
+          IPA_SIZE: ${{ steps.size.outputs.size }}
+        run: |
+          {
+            echo "## iOS release finalized: ${RELEASE_VERSION}"
+            echo
+            echo "- Tag: [ios-v${RELEASE_VERSION}](https://github.com/${GITHUB_REPOSITORY}/releases/tag/ios-v${RELEASE_VERSION})"
+            echo "- Asset: [mmdrome.ipa](https://github.com/${GITHUB_REPOSITORY}/releases/download/ios-v${RELEASE_VERSION}/mmdrome.ipa) (${IPA_SIZE} bytes)"
+            echo "- SideStore manifest: https://sieradni.github.io/mmdrome/sidestore/apps.json"
+            echo "- jsDelivr mirror: https://cdn.jsdelivr.net/gh/${GITHUB_REPOSITORY}@main/sidestore/apps.json"
+            echo
+            echo "Verified: release asset, manifest byte size, Pages mirror, and jsDelivr mirror."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,13 +1,14 @@
 import { writable, get, derived } from 'svelte/store'
 import type { LocalMetadataStore } from '$lib/db'
 import type { NoMatchReason } from '$lib/metadataCore'
-import { getSetting, setSetting, getQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
+import { getSetting, setSetting, getQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata, reopenDatabase } from '$lib/db'
+import { describeStorageError, planStorageInitAttempt, STORAGE_INIT_MAX_ATTEMPTS } from '$lib/storageHealth'
 import { persistQueue } from '$lib/queuePersistence'
 import { persisted, type PersistedValue } from '$lib/persistedStore'
 import { sanitizeRecent } from '$lib/recentWindow'
 import type { LibrarySortKey } from '$lib/libraryFilters'
 import { planPendingRelink } from '$lib/pendingRelink'
-import { dbgAlways } from '$lib/debugLog'
+import { dbgAlways, dbgDanger } from '$lib/debugLog'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
 
@@ -558,9 +559,14 @@ export async function relinkPendingMetadata(tracks: Track[], currentBaseKey: str
 
 let initialized = false
 
-export async function initStores(): Promise<void> {
-  if (initialized) return
-
+/**
+ * The init READ phase, extracted so `initStores` can retry it after a
+ * connection recovery (2026-10-13). Safe to re-run: every leg is a read or an
+ * idempotent `restore()` (`persistedStore` keeps `restored` false when its
+ * read throws, so a retry re-reads instead of trusting a default), and
+ * nothing is written before the phase completes.
+ */
+async function restoreLocalState(): Promise<void> {
   const [q, allMeta] = await Promise.all([
     getQueue(),
     getAllMetadata(),
@@ -613,8 +619,44 @@ export async function initStores(): Promise<void> {
     _autoQueueFilterFields.restore(),
     _autoQueueSort.restore(),
   ])
+}
 
-  initialized = true
+/**
+ * Boots the local stores. A DEAD IndexedDB connection (iOS WebKit invalidating
+ * the handle under memory pressure — `UnknownError: Attempt to get a record
+ * from database without an in-progress transaction`) must not brick the whole
+ * session: the first read failure earns a bounded reopen-and-retry through the
+ * pure `planStorageInitAttempt` (`storageHealth.ts`) before the error is
+ * surfaced. Every attempt is logged at danger level — without it a recovery is
+ * invisible in a field dump (`jsEvents` stayed empty in the 2026-10-13 report).
+ * On a permanent failure `initialized` stays false, so a later retry (a reload,
+ * or a future in-place retry) can still complete the boot.
+ */
+export async function initStores(): Promise<void> {
+  if (initialized) return
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await restoreLocalState()
+      initialized = true
+      return
+    } catch (err) {
+      const action = planStorageInitAttempt(err, attempt, STORAGE_INIT_MAX_ATTEMPTS)
+      dbgDanger(
+        'storage',
+        `local storage init failed on attempt ${attempt}/${STORAGE_INIT_MAX_ATTEMPTS}: ${describeStorageError(err)} → ${action}`,
+      )
+      if (action === 'abort') throw err
+      try {
+        await reopenDatabase()
+        dbgAlways('storage', `reopened the local database connection after the attempt-${attempt} failure`)
+      } catch (reopenErr) {
+        // Surface the ORIGINAL failure — the reopen's error is a consequence,
+        // and it is not the shape the user's report is about.
+        dbgDanger('storage', `storage connection reopen failed: ${describeStorageError(reopenErr)}`)
+        throw err
+      }
+    }
+  }
 }
 
 async function loadSettings(): Promise<void> {

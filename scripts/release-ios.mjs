@@ -14,9 +14,14 @@
 //     whose downloadURL points at the GitHub Release asset the ios.yml
 //     release job publishes when the ios-v<version> tag is pushed.
 //
-// After running: commit, push the branch, then tag + push the tag SEPARATELY
-// (a joint `git push origin main <tag>` fires two ios.yml runs into one
-// concurrency group and cancels the tag run before it publishes), e.g.
+// This is a version-preparation tool, not a release publisher. Prefer the
+// guarded `npm run release:full` driver or the resumable `release:phases`
+// driver. Manual fallback: commit and push the branch, wait for branch CI,
+// then tag + push the ios-v tag separately; never claim shipped until finalize
+// confirms the published IPA and exact manifest size, plus the distribution
+// surfaces (see docs/RELEASING.md). A joint main+tag push can race the build.
+//
+// Older manual sequence example (not the preferred release path):
 //   git add -A && git commit -m "..." && git push origin main
 //   git tag ios-v1.1.0 && git push origin ios-v1.1.0
 
@@ -154,16 +159,8 @@ console.log(`sidestore/apps.json -> ${version} (build ${build}), ${versions.leng
 
 // 4. Next steps
 console.log('\nnext:')
-console.log('  npm run check && npm test')
-console.log(`  git add -A && git commit -m "<msg>" && git push origin main`)
-console.log(`  (tag separately, AFTER the branch CI is green — never together:`)
-console.log(`  a joint push fires two ios.yml runs into one concurrency group`)
-console.log(`  and cancels the tag run: git tag ${tag} && git push origin ${tag})`)
-console.log('  ios.yml builds the unsigned IPA and publishes the GitHub Release.')
-console.log('  SideStore source URL: https://cdn.jsdelivr.net/gh/sieradni/mmdrome@main/sidestore/apps.json')
-console.log('  AFTER the release publishes: re-run this script for the same')
-console.log('  version with --size <asset bytes> (SideStore hard-fails without')
-console.log('  size), commit, push, then purge the CDN. Through npm the flag')
-console.log('  needs the -- separator: npm run release:ios 1.2.7 "notes" -- --size N')
-console.log('  (a bare --size is eaten by npm and its value lands in the notes).')
-console.log('  https://purge.jsdelivr.net/gh/sieradni/mmdrome@main/sidestore/apps.json')
+console.log('  Preferred: npm run release:full -- <version> "release notes"')
+console.log('  Resumable: npm run release:phases -- <version> "release notes"')
+console.log('  This script only prepares the version; it does NOT build or publish.')
+console.log('  See docs/RELEASING.md for preflight, CI, tag, finalize and verification.')
+console.log(`  Manual tag (only after branch CI succeeds): git tag ${tag} && git push origin ${tag}`)

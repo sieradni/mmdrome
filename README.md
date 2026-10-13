@@ -41,7 +41,7 @@ The native iOS build (background audio engine, lock-screen controls) is distribu
 
 The same manifest is also served via jsDelivr at `https://cdn.jsdelivr.net/gh/sieradni/mmdrome@main/sidestore/apps.json`, but jsDelivr has repeatedly served stale versions after releases (three consecutive releases in 2026-09) even after cache purges — prefer the Pages URL.
 
-Each release is built in CI from a version tag as an unsigned IPA attached to a GitHub Release; the source file points at it.
+Each iOS release is built in CI from an `ios-vX.Y.Z` tag as an unsigned IPA attached to a GitHub Release; the source file points at it. A tag or green build alone does not mean an update is available: CI must publish the IPA and finalize the manifest with its exact byte size before SideStore can install it. See the [release operator guide](docs/RELEASING.md) for the end-to-end procedure and verification checklist. Browse the [documentation index](docs/README.md) for the plans and engineering references.
 
 ## Architecture
 

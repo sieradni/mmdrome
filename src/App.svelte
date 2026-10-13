@@ -72,11 +72,27 @@
   })
   let view = $state<'songs' | 'albums' | 'artists' | 'settings'>('songs')
   let initError = $state('')
+  /** The failure is the LOCAL STORAGE layer — the banner then explains it and
+   *  offers the Reload recovery (2026-10-13). */
+  let storageBootFailed = $state(false)
   /** Set only after onMount's async boot chain resolves — the deterministic
    *  "ready" signal for the e2e smoke test (tests/e2e/smoke.spec.ts). Stays
    *  false on a boot failure, which the smoke test treats as a failed boot. */
   let appReady = $state(false)
   let debugHudEnabled = $state(false)
+
+  /** Hard recovery from a boot-bricking failure: a reload creates a fresh
+   *  document, and with it a fresh IndexedDB connection — the one reliable fix
+   *  once WebKit has invalidated the handle (initStores' in-process reopen
+   *  normally gets there first, see `storageHealth.ts`). Native playback is
+   *  unaffected (the engine lives in the plugin, outside the webview) and the
+   *  reloaded app re-adopts the playing track through the reload reconcile
+   *  (E10). */
+  function reloadApp() {
+    try {
+      window.location.reload()
+    } catch {}
+  }
 
   function checkDebugHud() {
     try {
@@ -113,7 +129,12 @@
     try {
       await initStores()
     } catch (err) {
+      // A dead IndexedDB connection (iOS WebKit) that survived initStores'
+      // own reopen-and-retry: the boot cannot continue — no settings means no
+      // server, and no queue/metadata means an empty UI — so surface it with
+      // the Reload affordance instead of a dead red line (2026-10-13).
       initError = 'Failed to initialize local storage: ' + (err instanceof Error ? err.message : String(err))
+      storageBootFailed = true
       return
     }
     try {
@@ -393,8 +414,21 @@
   {/if}
 
   {#if initError}
-    <div class="mx-4 mt-2 rounded-lg bg-red-900/40 px-4 py-3 text-xs text-red-300 ring-1 ring-red-800/50">
-      {initError}
+    <div class="mx-4 mt-2 rounded-lg bg-red-900/40 px-4 py-3 text-xs text-red-300 ring-1 ring-red-800/50" role="alert">
+      <p class="break-words">{initError}</p>
+      {#if storageBootFailed}
+        <p class="mt-1.5 text-red-200/80">
+          iOS occasionally drops the local database connection under memory pressure. Reloading
+          reconnects it — playback continues and your queue, settings and library are restored.
+        </p>
+      {/if}
+      <button
+        type="button"
+        onclick={reloadApp}
+        class="mt-2 rounded-full bg-red-300/20 px-3.5 py-1.5 font-semibold text-red-100 ring-1 ring-red-300/30 transition-colors hover:bg-red-300/30 active:scale-95"
+      >
+        Reload app
+      </button>
     </div>
   {/if}
 

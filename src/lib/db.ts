@@ -4,6 +4,8 @@ import type { ScrobbleKind } from './lastfmCore'
 import { isSecretSettingKey } from './secretKeys'
 import { isDuplicateEnqueueError } from './scrobbleEnqueuePolicy'
 import { dbgDanger } from './debugLog'
+import { installOperationRecovery } from './dbOperationRecovery'
+import { REOPEN_TIMEOUT_MS } from './storageHealth'
 
 export interface LocalMetadataStore {
   trackId: string
@@ -231,6 +233,64 @@ db.version(7).stores({
 })
 
 export { db }
+
+/**
+ * Discard the cached IndexedDB handle and open a FRESH connection — the
+ * recovery for a DEAD connection (2026-10-13; see `storageHealth.ts` for the
+ * full root cause). iOS WebKit invalidates the handle when its network process
+ * crashes, every request then throws `UnknownError: Attempt to get a record
+ * from database without an in-progress transaction`, and `idbdb.onclose` is
+ * frequently never delivered — so Dexie keeps the dead handle and never runs
+ * its own `db.close({disableAutoOpen:false})` reset. This is that reset,
+ * called deliberately: `disableAutoOpen: false` restores `autoOpen` and clears
+ * `dbOpenError`, so the next operation (here, an explicit `open()`) creates a
+ * new `indexedDB.open()` request instead of failing on the stale one.
+ *
+ * Throws when the reopen itself fails — callers keep the ORIGINAL error and
+ * surface it, never the recovery's. Bounded by REOPEN_TIMEOUT_MS: a WebKit
+ * `indexedDB.open()` that never settles must not turn a recoverable failure
+ * into a hang (see that constant for the trade-off). The abandoned open is left
+ * in flight, so if it lands late Dexie's auto-open serves the next operation
+ * without another close/open cycle.
+ */
+export async function reopenDatabase(): Promise<void> {
+  db.close({ disableAutoOpen: false })
+  await withTimeout(db.open(), REOPEN_TIMEOUT_MS, 'local database reopen')
+}
+
+/** Rejects if `p` has not settled within `ms` (the original promise is left
+ *  running — nothing here can cancel an IndexedDB open). */
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms} ms`)), ms)
+    p.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      },
+    )
+  })
+}
+
+// Transparent per-operation recovery (2026-10-13): every store read/write that
+// hits the dead-handle signature reopens the connection and re-runs instead of
+// surfacing (see `dbOperationRecovery.ts` for the layer choice and bounds).
+// `Table`/`Collection` are runtime-only properties on a Dexie instance — they
+// are not in Dexie's type surface, hence the cast; a missing one is tolerated
+// (the installer just wraps nothing) so a Dexie upgrade can never break the
+// BOOT by throwing at module evaluation.
+const dexieRuntime = db as unknown as {
+  Table?: { prototype: object }
+  Collection?: { prototype: object }
+}
+installOperationRecovery([dexieRuntime.Table?.prototype, dexieRuntime.Collection?.prototype], {
+  recover: reopenDatabase,
+  isOpen: () => db.isOpen(),
+})
 
 export async function getAllMetadata(): Promise<LocalMetadataStore[]> {
   return db.localMetadata.toArray()

@@ -14,6 +14,7 @@
     "release:ios": "node scripts/release-ios.mjs",
     "release:full": "node scripts/release-full.mjs",
     "release:phases": "node scripts/release-phases.mjs",
+    "release:validate": "node scripts/validate-ios-release.mjs",
     "sync:ios": "npm run build:ios && cap sync ios && node scripts/fix-spm-path.mjs",
     "predeploy": "npm run build",
     "deploy": "node scripts/deploy-web.mjs"

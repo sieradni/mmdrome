@@ -83,7 +83,7 @@ export function isDebugEnabled(domain: string): boolean {
  *  + JS domain taxonomy) — the HUD toggle row renders from this. */
 export function knownDomains(): string[] {
   const native = ['loader', 'crossfade', 'queue', 'preload', 'engine', 'session', 'artwork', 'network']
-  const js = ['tags', 'sync', 'playback', 'bg', 'global']
+  const js = ['tags', 'sync', 'playback', 'bg', 'global', 'storage']
   const extras = [...readPersisted()]
   const query = readQueryDomains()
   if (Array.isArray(query)) extras.push(...query)
