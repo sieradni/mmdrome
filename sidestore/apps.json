@@ -27,7 +27,8 @@
           "date": "2026-10-13T21:29:55.601Z",
           "localizedDescription": "Recover dead IndexedDB connections transparently and make failed storage recovery actionable",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.59/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5181292
         },
         {
           "version": "1.2.58",
