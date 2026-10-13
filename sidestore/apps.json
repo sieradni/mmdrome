@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.57",
-      "versionDate": "2026-10-09T07:31:05.695Z",
-      "versionDescription": "Interruption recovery: a stale flag can no longer block the rebuild path, and route changes name their audio port. The Debug HUD can flip the seek-epoch kill switch, and the stream self-test no longer reads a cold transcode cache as a broken server.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.57/mmdrome.ipa",
+      "version": "1.2.58",
+      "versionDate": "2026-10-13T10:09:23.770Z",
+      "versionDescription": "Fix queue history replay and recycled-song continuation, preserve native queue occurrence identity, prioritize fresh songs before repeats, and improve queue persistence and scrobble failure reporting.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.58/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.58",
+          "buildVersion": "62",
+          "date": "2026-10-13T10:09:23.770Z",
+          "localizedDescription": "Fix queue history replay and recycled-song continuation, preserve native queue occurrence identity, prioritize fresh songs before repeats, and improve queue persistence and scrobble failure reporting.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.58/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.57",
           "buildVersion": "61",
@@ -566,6 +574,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.58",
+      "identifier": "ios-v1.2.58",
+      "appID": "com.mmdrome.player",
+      "caption": "Fix queue history replay and recycled-song continuation, preserve native queue occurrence identity, prioritize fresh songs before repeats, a",
+      "date": "2026-10-13T10:09:23.770Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.57",
       "identifier": "ios-v1.2.57",
       "appID": "com.mmdrome.player",
@@ -598,15 +615,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Fixes a crash when dragging rows in the queue, and adds a 'Recently added' library sort.",
       "date": "2026-10-06T08:24:56.219Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.53",
-      "identifier": "ios-v1.2.53",
-      "appID": "com.mmdrome.player",
-      "caption": "Recovery and streaming reliability: the audio engine rebuilds after an invalidated audio session instead of dying until relaunch (with a tap",
-      "date": "2026-10-04T21:44:55.507Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
