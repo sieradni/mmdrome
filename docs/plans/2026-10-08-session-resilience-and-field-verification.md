@@ -1,7 +1,8 @@
 # Session Resilience & Field Verification (2026-10-08)
 
 **Status**: **A1, B1 and B2 LANDED 2026-10-08** (source complete; iOS behavior still
-awaits the §8 field session — no local Swift toolchain, E5). A2/A3/A4 remain proposed.
+awaits the §8 field session — no local Swift toolchain, E5). **A3 LANDED 2026-10-09.**
+A2/A4 remain proposed.
 This document is the single source of truth for the work; each item is independently
 shippable, and every native item's runtime behavior is judged in the field (protocol:
 `docs/STREAMING-SELF-TEST.md` S1–S6 + the new I-series below).
@@ -336,7 +337,7 @@ here and behavior-verified in Phase C.
 
 - Tests: compile-only (E5); the field evidence is the next storm's lines (I2).
 
-### 7.4 A3 — Dexie write hygiene
+### 7.4 A3 — Dexie write hygiene — **LANDED 2026-10-09**
 
 - **New** `src/lib/queuePersistence.ts` (keeps db.ts store-free and gives ONE
   once-per-source-per-session log):

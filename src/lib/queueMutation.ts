@@ -20,15 +20,12 @@
  * dedupe-moves into the user section and drops the dragged id from the
  * converted prefix; `applyDragDrop` normalizes again at the write boundary.
  *
- * Anchor rule: normally the re-anchor targets the (unique) user occurrence of
- * the pre-mutation active id. ONE sanctioned exception — the promoteActive
- * repeat-collapse (2026-09-27): a tier-3 duplicate of an already-played row
- * consumes the auto copy WITHOUT a new user append, so the active id vanishes
- * from both sections. Re-anchoring by id there would resurrect the row's OLD
- * played-pile slot — the playhead teleporting mid-queue and replaying history
- * in first-play order. Instead the anchor moves FORWARD to the surviving auto
- * continuation (or past the end when none survives); the next advance plays
- * the continuation row / refills, never the pile.
+ * Anchor rule: preserve the active SECTION occurrence, not just its song id.
+ * Promotion moves a recycled song's existing user row to the tail and consumes
+ * the auto prefix. The audible song stays at the boundary, with the untouched
+ * auto continuation immediately after it. Never anchor on the next song while
+ * the previous one is still audible: native reconciliation would follow the
+ * audible id back into history (2026-10-13 field regression).
  */
 
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
@@ -57,20 +54,24 @@ function uniqueFirst(ids: string[]): string[] {
  * re-anchoring from the pre-mutation active id (single source of truth for the
  * anchor invariant).
  */
-export type QueueMutation = Partial<Pick<QueueState, 'userQueue' | 'autoQueue' | 'recentTrackIds'>> & {
-  /**
-   * Anchor override for the promoteActiveTrack repeat-collapse (2026-09-27).
-   * When the playing AUTO row collapses onto an existing USER-PILE copy, the
-   * id is still "in the queue" — the default id re-anchor would find the OLD
-   * pile slot and teleport the playhead mid-queue (the next advance then
-   * replayed the pile in first-play order). With this flag the re-anchor
-   * moves FORWARD from the pre-mutation active index instead: every row the
-   * old combined array held AFTER the collapsed copy survives unchanged and
-   * in order, so the anchor lands on the auto continuation (or one past the
-   * end when none survives — the next replenish refills under it). Stripped
-   * before the state spread — it never lands in QueueState.
-   */
-  anchorForward?: true
+export type QueueMutation = Partial<Pick<QueueState, 'userQueue' | 'autoQueue' | 'recentTrackIds'>>
+
+/** Stable within a section (section-scoped uniqueness); independent of index. */
+export function queueEntryId(trackId: string, section: 'user' | 'auto'): string {
+  return `${section}:${trackId}`
+}
+
+/** Resolve the exact reported occurrence when available; otherwise preserve
+ * a matching selection, prefer forward playback, then allow wraps/re-adoption.
+ * Never trust numeric indexes from an engine's older snapshot. */
+export function resolveQueueOccurrence(combined: string[], trackId: string, activeIndex: number, occurrence?: { entryId: string; userLength: number }): number {
+  if (occurrence) {
+    const exact = combined.findIndex((id, i) => id === trackId && queueEntryId(id, i < occurrence.userLength ? 'user' : 'auto') === occurrence.entryId)
+    if (exact >= 0) return exact
+  }
+  if (activeIndex >= 0 && combined[activeIndex] === trackId) return activeIndex
+  const forward = combined.indexOf(trackId, Math.max(0, activeIndex + 1))
+  return forward >= 0 ? forward : combined.indexOf(trackId)
 }
 
 /**
@@ -79,10 +80,9 @@ export type QueueMutation = Partial<Pick<QueueState, 'userQueue' | 'autoQueue' |
  * store then).
  *
  * Anchor rule: the active id is captured from `combined[activeIndex]` BEFORE
- * the sections change, then re-anchored to `indexOf(activeId)` on the rebuilt
- * combined queue. Under the uniqueness invariant every builder below preserves
- * the active id, so the re-anchor always resolves — a violation fails loudly
- * in DEV (assert) and degrades to −1 (safe stop, never a wrong row) in prod.
+ * the sections change, then re-anchored within the same section when possible,
+ * or to its promoted user occurrence. A removed active row keeps position
+ * semantics; DEV records an invariant violation when a user occurrence is lost.
  * No active id (empty queue, or an out-of-range pre-mutation index) → −1.
  *
  * Invariant: `combined[activeIndex]` points at the playing track whenever it
@@ -98,8 +98,7 @@ export function applyQueueMutation(
   const activeWasAuto = activeId !== undefined && activeIdx >= q.userQueue.length
   const mutation = mutate(q)
   if (mutation === null) return null
-  const { anchorForward, ...sections } = mutation
-  const updated: QueueState = { ...q, ...sections }
+  const updated: QueueState = { ...q, ...mutation }
   if (DEV && (hasWithinSectionDuplicate(updated.userQueue) || hasWithinSectionDuplicate(updated.autoQueue))) {
     // A within-section duplicate is a fatal Svelte each-key collision
     // (`u-${trackId}` / `a-${trackId}` in QueueView) — the effect flush aborts
@@ -112,21 +111,15 @@ export function applyQueueMutation(
   }
   if (activeId !== undefined) {
     const newCombined = [...updated.userQueue, ...updated.autoQueue]
-    const foundIdx = newCombined.indexOf(activeId)
-    const forward = (anchorForward === true && activeWasAuto) || (foundIdx < 0 && activeWasAuto)
+    // An unrelated edit must not follow an AUTO occurrence into its old
+    // user copy. Promotion removes that auto occurrence and moves the user
+    // copy to the boundary, so only then do we anchor in the user section.
+    const autoIdx = activeWasAuto ? updated.autoQueue.indexOf(activeId) : -1
+    const foundIdx = autoIdx >= 0 ? updated.userQueue.length + autoIdx : newCombined.indexOf(activeId)
+    const forward = foundIdx < 0 && activeWasAuto
     if (forward) {
-      // Forward re-anchor — the sanctioned repeat-collapse exception (see the
-      // anchor rule above and the QueueMutation.anchorForward doc): the active
-      // id either vanished (auto copy consumed, no user append) or must NOT be
-      // followed to its old pile copy (the collapse with a pile slot — the
-      // 2026-09-27 history-replay bug). Every row the old combined array held
-      // AFTER the collapsed row survives unchanged and in order, so it now
-      // ends the new combined array — the continuation is exactly
-      // `len - suffixCount`. One past the end (no suffix) is the honest
-      // no-highlight anchor (mirroring the removeFromUserQueue active-last
-      // semantics): the always-following replenish refills under it and the
-      // next advance plays the first fresh row. A repeat play must NEVER
-      // rewind the session.
+      // Defensive position fallback for an auto row that actually vanished.
+      // Normal promotion always retains the audible id at the user tail.
       const suffixCount = combined.length - activeIdx - 1
       updated.activeIndex = newCombined.length - suffixCount
     } else if (foundIdx >= 0) {
@@ -229,27 +222,17 @@ export function moveToEnd(q: QueueState, trackId: string): QueueMutation | null 
 }
 
 /**
- * Promotes the active track out of the auto queue — the post-load success
- * path. The auto queue is sliced from the active id's first occurrence (rows
- * up to it are consumed; auto holds no internal duplicates), and the id gains
- * a user slot ONLY when it has none — a tier-3 cross-section duplicate
- * collapses instead of appending a repeat (which would have replayed the
- * just-finished track). No-op (null) when the active row isn't in auto
- * (already promoted, or the id lives only in the user queue).
- *
- * On the collapse the active id VANISHES from the combined queue —
- * `applyQueueMutation` re-anchors FORWARD to the surviving auto continuation
- * (or one past the end), never back to the old played-pile slot. The old
- * id-based re-anchor teleported the playhead mid-queue on every repeat play
- * and the advance then replayed the pile in first-play order (the
- * 2026-09-27 "queue goes back and plays in the same order" report).
+ * Promote ONLY the active AUTO occurrence. A recycled song dedupe-MOVES its
+ * user copy to the tail; no duplicate keys, no history replay, and the active
+ * index continues to name the audible song. Explicit user-row replay leaves
+ * its independent upcoming auto occurrence untouched. The consumed skipped
+ * auto prefix cools down atomically with the move.
  */
 export function promoteActiveTrack(q: QueueState): QueueMutation | null {
   const combined = [...q.userQueue, ...q.autoQueue]
   const activeId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : undefined
-  if (!activeId) return null
-  const autoIdx = q.autoQueue.indexOf(activeId)
-  if (autoIdx < 0) return null
+  if (!activeId || q.activeIndex < q.userQueue.length) return null
+  const autoIdx = q.activeIndex - q.userQueue.length
   // The CONSUMED prefix cools down in the same write (2026-09-12): tapping
   // an auto row deep in the queue discards every row before it — rows the
   // user never played. Without a recency mark they re-enter the fresh fill
@@ -263,12 +246,8 @@ export function promoteActiveTrack(q: QueueState): QueueMutation | null {
     recentTrackIds = inscribeRecent(recentTrackIds, skippedId, RECENT_LIMIT)
   }
   return {
-    userQueue: q.userQueue.includes(activeId) ? q.userQueue : [...q.userQueue, activeId],
+    userQueue: [...q.userQueue.filter((id) => id !== activeId), activeId],
     autoQueue: q.autoQueue.slice(autoIdx + 1),
-    // The collapse re-anchors FORWARD (applyQueueMutation): the id still has
-    // a pile slot, so the default id anchor would teleport the playhead to
-    // the OLD copy and the advance would replay history in first-play order.
-    ...(q.userQueue.includes(activeId) ? { anchorForward: true as const } : {}),
     ...(recentTrackIds !== q.recentTrackIds ? { recentTrackIds } : {}),
   }
 }

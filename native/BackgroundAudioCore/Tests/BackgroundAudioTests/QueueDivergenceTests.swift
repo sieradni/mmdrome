@@ -129,6 +129,43 @@ final class QueueDivergenceTests: XCTestCase {
         )
     }
 
+    func testRefreshDecisionRemotePreviousUsesOccurrenceNotForwardDuplicate() {
+        XCTAssertEqual(queueRefreshDecision(
+            snapshotActiveId: "prev", engineCurrentId: "repeat", requestedIndex: 1,
+            trackCount: 4, snapshotTrackIds: ["repeat", "prev", "repeat", "next"],
+            engineEntryId: "user:repeat", snapshotEntryIds: ["user:repeat", "user:prev", "auto:repeat", "auto:next"]
+        ), .containsCurrent(index: 0))
+    }
+
+    func testRefreshDecisionAutoOccurrenceSurvivesOldHistoryAnchor() {
+        XCTAssertEqual(queueRefreshDecision(
+            snapshotActiveId: "repeat", engineCurrentId: "repeat", requestedIndex: 0,
+            trackCount: 4, snapshotTrackIds: ["repeat", "prev", "repeat", "next"],
+            engineEntryId: "auto:repeat", snapshotEntryIds: ["user:repeat", "user:prev", "auto:repeat", "auto:next"]
+        ), .containsCurrent(index: 2))
+    }
+
+    func testRefreshDecisionPreservesExplicitHistoryReplay() {
+        XCTAssertEqual(queueRefreshDecision(
+            snapshotActiveId: "repeat", engineCurrentId: "repeat", requestedIndex: 0,
+            trackCount: 4, snapshotTrackIds: ["repeat", "prev", "repeat", "next"]
+        ), .synced(index: 0))
+    }
+
+    func testRefreshDecisionAfterPromotionAnchorsAtBoundary() {
+        XCTAssertEqual(queueRefreshDecision(
+            snapshotActiveId: "prev", engineCurrentId: "repeat", requestedIndex: 0,
+            trackCount: 3, snapshotTrackIds: ["prev", "repeat", "next"]
+        ), .containsCurrent(index: 1))
+    }
+
+    func testRefreshDecisionWrapFallsBackWhenNoForwardOccurrence() {
+        XCTAssertEqual(queueRefreshDecision(
+            snapshotActiveId: "last", engineCurrentId: "first", requestedIndex: 2,
+            trackCount: 3, snapshotTrackIds: ["first", "middle", "last"]
+        ), .containsCurrent(index: 0))
+    }
+
     func testRefreshDecisionDivergentWhenEngineIdle() {
         // A snapshot claiming a current track while the engine plays nothing:
         // no live row exists to find in the snapshot — reset case.
@@ -144,18 +181,17 @@ final class QueueDivergenceTests: XCTestCase {
         )
     }
 
-    func testRefreshDecisionReanchorsToFirstDuplicateOccurrence() {
-        // Duplicate ids re-anchor to the FIRST occurrence — every guard
-        // compares id strings, so instance identity is not load-bearing.
+    func testRefreshDecisionPrefersForwardDuplicateOccurrence() {
+        // The live auto occurrence must not re-anchor into the played pile.
         XCTAssertEqual(
             queueRefreshDecision(
                 snapshotActiveId: "t1",
                 engineCurrentId: "t2",
-                requestedIndex: 0,
+                requestedIndex: 2,
                 trackCount: 4,
                 snapshotTrackIds: ["t1", "t2", "t1", "t2"]
             ),
-            .containsCurrent(index: 1)
+            .containsCurrent(index: 3)
         )
     }
 }

@@ -9,6 +9,7 @@ import BackgroundAudioCore
 public struct NativeTrack {
     public let index: Int
     public let trackId: String
+    public let queueEntryId: String?
     public let title: String
     public let artist: String
     public let album: String
@@ -40,6 +41,7 @@ public struct NativeTrack {
         else { return nil }
         self.index = index
         self.trackId = trackId
+        self.queueEntryId = dict["queueEntryId"] as? String
         self.title = title
         self.artist = artist
         self.album = album
@@ -114,7 +116,7 @@ public struct NativeEngineState {
 /// handling, and reports track changes via `onTrackChanged`.
 public final class NativeAudioEngine: NSObject {
 
-    public var onTrackChanged: ((String) -> Void)?
+    public var onTrackChanged: ((String, String?) -> Void)?
     public var onPlaybackStateChanged: ((Bool) -> Void)?
     public var onQueueEnded: (() -> Void)?
     public var onError: ((String) -> Void)?
@@ -1144,6 +1146,7 @@ public final class NativeAudioEngine: NSObject {
     /// leaving the lock-screen on the previous track while JS showed the new one).
     public func setQueueAndPlay(tracks: [NativeTrack], activeIndex: Int, loopMode: NativeLoopMode, autoPlay: Bool = true) {
         let oldId = currentTrackId
+        let oldEntryId = currentQueueEntryId
         stopPlayback()
         self.tracks = tracks
         self.loopMode = loopMode
@@ -1155,8 +1158,8 @@ public final class NativeAudioEngine: NSObject {
         let clamped = self.activeIndex
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
         let newId = tracks.indices.contains(clamped) ? tracks[clamped].trackId : ""
-        if autoPlay && newId != oldId && !newId.isEmpty {
-            onTrackChanged?(newId)
+        if autoPlay && !newId.isEmpty && (newId != oldId || tracks[clamped].queueEntryId != oldEntryId) {
+            onTrackChanged?(newId, tracks[clamped].queueEntryId)
         }
     }
 
@@ -1178,6 +1181,7 @@ public final class NativeAudioEngine: NSObject {
         eventAdd(.info, "engine", "playTrack \(activeIndex)→\(index) autoPlay=\(autoPlay) id=\(tracks.indices.contains(index) ? tracks[index].trackId : "-")")
         let clamped = max(0, min(index, tracks.count - 1))
         let oldTrackId = currentTrackId
+        let oldEntryId = currentQueueEntryId
         // 2026-09-21 field detector (the "queue jumped BACKWARD 5-10 rows and
         // repeated" report, shape unconfirmed): a NATURAL advance (the engine
         // moving itself forward, loop-none) that lands on a row RECENTLY
@@ -1223,8 +1227,8 @@ public final class NativeAudioEngine: NSObject {
         syncPreloadWindow()
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
         let newTrackId = tracks.indices.contains(clamped) ? tracks[clamped].trackId : ""
-        if autoPlay && newTrackId != oldTrackId && !newTrackId.isEmpty {
-            onTrackChanged?(newTrackId)
+        if autoPlay && !newTrackId.isEmpty && (newTrackId != oldTrackId || tracks[clamped].queueEntryId != oldEntryId) {
+            onTrackChanged?(newTrackId, tracks[clamped].queueEntryId)
         }
     }
 
@@ -1239,7 +1243,9 @@ public final class NativeAudioEngine: NSObject {
             engineCurrentId: currentTrackId,
             requestedIndex: activeIndex,
             trackCount: tracks.count,
-            snapshotTrackIds: tracks.map { $0.trackId }
+            snapshotTrackIds: tracks.map { $0.trackId },
+            engineEntryId: self.tracks.indices.contains(self.activeIndex) ? self.tracks[self.activeIndex].queueEntryId : nil,
+            snapshotEntryIds: tracks.map { $0.queueEntryId }
         )
         let synchronizedIndex: Int
         switch decision {
@@ -1282,12 +1288,14 @@ public final class NativeAudioEngine: NSObject {
             eventAdd(.info, "crossfade", "queue-refresh preserves fade phase=\(crossfade.phase) target=\(self.tracks[crossfade.targetIndex].trackId)")
             return self.tracks[crossfade.targetIndex].trackId
         }()
+        let liveTrackId = currentTrackId
+        let oldActiveIndex = self.activeIndex
         self.tracks = tracks
         // The active track ID stayed the same, but its position may have moved
         // after a queue mutation. Keep the native clock attached to that ID by
         // re-anchoring the index before rebuilding any crossfade tail.
-        if synchronizedIndex != activeIndex {
-            eventAdd(.info, "queue", "refreshQueue re-anchor \(activeIndex)→\(synchronizedIndex) (\(currentTrackId))")
+        if synchronizedIndex != oldActiveIndex {
+            eventAdd(.info, "queue", "refreshQueue re-anchor \(oldActiveIndex)→\(synchronizedIndex) requested=\(activeIndex) (\(liveTrackId))")
         }
         self.activeIndex = synchronizedIndex
         lastPreloadEmitted = [:]
@@ -1302,8 +1310,8 @@ public final class NativeAudioEngine: NSObject {
         // duplicate download); the fresh generation re-diffs the sampler.
         prefetchUpcoming(from: synchronizedIndex)
         let newTargetIndex: Int? = oldTargetId.flatMap { targetId -> Int? in
-            guard let candidate = tracks.firstIndex(where: { $0.trackId == targetId }),
-                  self.nextIndex(after: synchronizedIndex) == candidate else { return nil }
+            guard let candidate = self.nextIndex(after: synchronizedIndex),
+                  tracks.indices.contains(candidate), tracks[candidate].trackId == targetId else { return nil }
             return candidate
         }
         // Preserve an in-flight fade when its audible target survived the queue
@@ -2238,6 +2246,7 @@ public final class NativeAudioEngine: NSObject {
     public var isCurrentlyPlaying: Bool { isPlaying }
     public var queueCount: Int { tracks.count }
     public var currentTrackId: String { currentTrack()?.trackId ?? "" }
+    public var currentQueueEntryId: String? { currentTrack()?.queueEntryId }
 
     public func currentTrack() -> NativeTrack? {
         tracks.indices.contains(activeIndex) ? tracks[activeIndex] : nil
@@ -2277,6 +2286,7 @@ public final class NativeAudioEngine: NSObject {
             "activeIndex": activeIndex,
             "queueCount": tracks.count,
             "activeTrackId": track?.trackId ?? "",
+            "activeQueueEntryId": track?.queueEntryId ?? "",
             "activeTitle": track?.title ?? "",
             "cachedPosition": cachedPosition,
             "positionBias": positionBias,
@@ -4679,7 +4689,7 @@ public final class NativeAudioEngine: NSObject {
         let formattedPosition = String(format: "%.2f", currentPosition)
         eventAdd(.info, "crossfade", "fade complete track=\(tracks[activeIndex].trackId) position=\(formattedPosition)")
 
-        onTrackChanged?(tracks[activeIndex].trackId)
+        onTrackChanged?(tracks[activeIndex].trackId, tracks[activeIndex].queueEntryId)
         setupCrossfadeMonitor()
         // The chain re-arm runs LAST and DEFERRED one runloop turn (2026-09-21,
         // the "next track restarts after the crossfade" root cause): the

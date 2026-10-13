@@ -76,12 +76,14 @@ export type NativeLoopMode = 'none' | 'one' | 'all'
 export interface NativeSnapshotTrack {
   index: number
   trackId: string
+  queueEntryId?: string
   url: string
 }
 
 /** The engine-state surface the poll handler reads (NativeEngineState satisfies it). */
 export interface NativePollState {
   trackId: string
+  queueEntryId?: string
   position: number
   playing: boolean
 }
@@ -112,7 +114,7 @@ export interface NativePluginClient {
 /** The client wrapper surface — the real `nativeEngine` satisfies it. */
 export interface NativeEngineClient {
   init(callbacks: {
-  onTrackChanged(trackId: string): void
+  onTrackChanged(trackId: string, queueEntryId?: string): void
   onPlaybackStateChanged(playing: boolean): void
   onQueueEnded(): void
   onError(message: string): void
@@ -186,7 +188,7 @@ export class NativeTransport {
   private _engageCycle: Promise<boolean> | null = null
   private _pendingEngage: EngageRequest | null = null
 
-  onTrackChanged: ((trackId: string) => void) | null = null
+  onTrackChanged: ((trackId: string, queueEntryId?: string) => void) | null = null
   /** Seek-epoch lifecycle (Phase 2): forwarded from the engine's event. */
   onStreamEpoch: ((event: StreamEpochTrailEvent) => void) | null = null
   onTrackEnded: ((event: TransportEndedEvent) => void) | null = null
@@ -218,12 +220,12 @@ export class NativeTransport {
 
   async init(): Promise<void> {
     await this._client.init({
-      onTrackChanged: (trackId) => {
+      onTrackChanged: (trackId, entryId) => {
         // Engine-truth: while engaged, trackChanged is the authoritative last
         // track for retry validity and seek-memory targeting. Gated on
         // `_engaged` so a stray event after a stop can't resurrect state.
         if (this._engaged) this._lastTrackId = trackId
-        this.onTrackChanged?.(trackId)
+        this.onTrackChanged?.(trackId, entryId)
       },
       onPlaybackStateChanged: (playing) => this.onPlaybackState?.(playing ? 'playing' : 'paused'),
       onQueueEnded: () => this.onTrackEnded?.({ kind: 'natural', fromError: false }),
@@ -460,40 +462,43 @@ export class NativeTransport {
   /**
    * Coalesced queue-tail refresh: same-task bursts collapse into ONE
    * refreshQueue call for the final snapshot. The factory is evaluated at
-   * microtask fire time (live state, never stale); returning null skips the
-   * refresh. Ignored while disengaged.
+   * send time AFTER any engage settles (live state, never stale); returning
+   * null skips the refresh. Refreshes serialize and coalesce while in flight.
+   * Ignored while disengaged.
    */
   scheduleSync(factory: () => NativeRefreshPayload | null): void {
     if (!this._engaged) return
     this._syncFactory = factory
     if (this._syncScheduled) return
     this._syncScheduled = true
-    queueMicrotask(() => {
-      this._syncScheduled = false
-      if (!this._engaged) return
-      const pending = this._syncFactory
-      this._syncFactory = null
-      const payload = pending ? pending() : null
-      if (!payload) return
-      void this._refreshQueue(payload)
-    })
+    queueMicrotask(() => { void this._flushQueueSync() })
   }
 
-  private async _refreshQueue(payload: NativeRefreshPayload): Promise<void> {
-    // Serialize against engage: the tail refresh must never land between an
-    // engage's setQueue and playTrackAt. Engage cycles drain one pending
-    // request at a time and null the cycle flag in their finally, so waiting
-    // until the flag clears is bounded.
-    while (this._engageCycle !== null) {
-      await this._engageCycle
-    }
-    if (!this._engaged) return
+  private async _flushQueueSync(): Promise<void> {
+    const generation = this._engagement
     try {
-      // Bridge trail: the other arbitrary-row positioning command.
-      trailBridge('cmd', `refreshQueue[${payload.tracks.length}]@${payload.activeIndex}`)
-      await this._client.plugin().refreshQueue({ tracks: payload.tracks, activeIndex: payload.activeIndex })
-    } catch (err) {
-      console.error('[native] refreshQueue failed:', err)
+      while (this._engaged && generation === this._engagement && this._syncFactory !== null) {
+        // Do not materialize a payload before awaiting engage: promotion and
+        // newer selections can change both sections while the bridge settles.
+        while (this._engageCycle !== null) await this._engageCycle
+        if (!this._engaged || generation !== this._engagement) return
+        const factory = this._syncFactory
+        this._syncFactory = null
+        try {
+          const payload = factory ? factory() : null
+          if (!payload) continue
+          trailBridge('cmd', `refreshQueue[${payload.tracks.length}]@${payload.activeIndex}`)
+          await this._client.plugin().refreshQueue(payload)
+        } catch (err) {
+          console.error('[native] refreshQueue failed:', err)
+        }
+        // A write during the bridge call queues ONE latest factory. Drain it
+        // serially, rather than allowing older refreshes to overtake newer ones.
+      }
+    } finally {
+      this._syncScheduled = false
+      const pending = this._syncFactory
+      if (this._engaged && pending) this.scheduleSync(pending)
     }
   }
 

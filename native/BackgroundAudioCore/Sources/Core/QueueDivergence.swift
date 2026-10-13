@@ -57,10 +57,9 @@ public enum QueueRefreshDecision: Equatable {
     /// engine is actually playing EXISTS in the snapshot. Re-anchor to
     /// `index` — where the live row lives in the snapshot — and rebuild the
     /// tail. Playback is never disturbed: the engine's active row stays the
-    /// row its node is rendering (the identity invariant the completion
-    /// guards key on), only the tail is re-synced. Duplicate ids re-anchor
-    /// to the first occurrence — every guard compares track-id STRINGS, so
-    /// instance identity is not load-bearing.
+    /// row its node is rendering, only the tail is re-synced. When a song
+    /// occurs in history AND upcoming, prefer the occurrence ahead of the
+    /// snapshot playhead. Song equality is not queue-occurrence equality.
     case containsCurrent(index: Int)
     /// True divergence — full reset and `ended` so JS re-snapshots.
     case divergent
@@ -81,9 +80,20 @@ public func queueRefreshDecision(
     engineCurrentId: String,
     requestedIndex: Int,
     trackCount: Int,
-    snapshotTrackIds: [String]
+    snapshotTrackIds: [String],
+    engineEntryId: String? = nil,
+    snapshotEntryIds: [String?] = []
 ) -> QueueRefreshDecision {
     let inRange = requestedIndex >= 0 && requestedIndex < trackCount
+    // An occurrence key survives index shifts and distinguishes remote
+    // Previous from forward auto playback. After promotion the AUTO key is
+    // gone; fall back to the retained audible song's USER boundary slot.
+    if let entryId = engineEntryId, !entryId.isEmpty,
+       let exact = snapshotEntryIds.indices.first(where: {
+           snapshotEntryIds[$0] == entryId && snapshotTrackIds.indices.contains($0) && snapshotTrackIds[$0] == engineCurrentId
+       }) {
+        return exact == requestedIndex ? .synced(index: exact) : .containsCurrent(index: exact)
+    }
     // Synced: snapshot names the live row (or both sides are idle).
     if queueDivergence(snapshotActiveId: snapshotActiveId, engineCurrentId: engineCurrentId) == .synced {
         return inRange ? .synced(index: requestedIndex) : .divergent
@@ -92,6 +102,10 @@ public func queueRefreshDecision(
     // claiming a current track while the engine plays nothing is a reset case.
     guard !engineCurrentId.isEmpty else { return .divergent }
     // Lag-tolerated: the live row exists in the snapshot (view one behind).
+    let start = requestedIndex < 0 ? 0 : (requestedIndex >= snapshotTrackIds.count ? snapshotTrackIds.count : requestedIndex + 1)
+    if let forward = snapshotTrackIds.indices.dropFirst(start).first(where: { snapshotTrackIds[$0] == engineCurrentId }) {
+        return .containsCurrent(index: forward)
+    }
     if let found = snapshotTrackIds.firstIndex(of: engineCurrentId) {
         return .containsCurrent(index: found)
     }

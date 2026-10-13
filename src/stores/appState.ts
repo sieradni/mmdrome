@@ -1,7 +1,8 @@
 import { writable, get, derived } from 'svelte/store'
 import type { LocalMetadataStore } from '$lib/db'
 import type { NoMatchReason } from '$lib/metadataCore'
-import { getSetting, setSetting, getQueue, saveQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
+import { getSetting, setSetting, getQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata } from '$lib/db'
+import { persistQueue } from '$lib/queuePersistence'
 import { persisted, type PersistedValue } from '$lib/persistedStore'
 import { sanitizeRecent } from '$lib/recentWindow'
 import type { LibrarySortKey } from '$lib/libraryFilters'
@@ -422,7 +423,7 @@ function reconcileQueueWithLibrary(tracks: Track[]): void {
     }
 
     const updated = { userQueue, autoQueue, recentTrackIds, activeIndex }
-    saveQueue(updated)
+    persistQueue('initReconcile', updated)
     return updated
   })
 }
@@ -636,7 +637,7 @@ export function setPlaybackState(state: PlaybackState): void {
 
 export function setActiveQueueIndex(index: number): void {
   queue.update((q) => {
-    saveQueue({ ...q, activeIndex: index })
+    persistQueue('setActiveQueueIndex', { ...q, activeIndex: index })
     return { ...q, activeIndex: index }
   })
 }

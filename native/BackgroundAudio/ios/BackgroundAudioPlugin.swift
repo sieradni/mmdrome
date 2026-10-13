@@ -189,9 +189,11 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             isPlaying: { [weak self] in self?.performOnMainSync { self?.engine.isCurrentlyPlaying ?? false } ?? false }
         )
 
-        engine.onTrackChanged = { [weak self] trackId in
+        engine.onTrackChanged = { [weak self] trackId, entryId in
             guard let self = self else { return }
-            self.notifyListeners("trackChanged", data: ["trackId": trackId])
+            var data: [String: Any] = ["trackId": trackId]
+            if let entryId { data["queueEntryId"] = entryId }
+            self.notifyListeners("trackChanged", data: data)
             self.refreshNowPlaying()
         }
         engine.onPlaybackStateChanged = { [weak self] playing in
@@ -560,6 +562,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             call.resolve([
                 "index": state.index,
                 "trackId": state.trackId,
+                "queueEntryId": self.engine.currentQueueEntryId ?? "",
                 "position": state.position,
                 "duration": state.duration,
                 "playing": state.playing,

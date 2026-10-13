@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { Capacitor } from '@capacitor/core'
   import { get } from 'svelte/store'
-  import { currentTrack, playbackState, queue, currentTime, effectiveDuration, settings, library, loopMode, shuffleEnabled, updateSetting } from '../stores/appState'
+  import { currentTrack, playbackState, queue, currentTime, effectiveDuration, settings, library, loopMode, shuffleEnabled, autoQueueFilters, autoQueueSort, metadataCache, updateSetting } from '../stores/appState'
   import { effectiveLowData, networkStatusStore, networkStabilitySnapshot } from '../lib/networkMode'
   import { transcodeParams } from '../lib/transcodePolicy'
   import { getCachedConfig } from '../lib/navidromeApi'
@@ -22,6 +22,7 @@
   import { runStreamSelfTest, getLastStreamVerifyBundle } from '../lib/streamVerifyRunner'
   import { thumbLoaderDebugSnapshot } from '../lib/thumbLoader'
   import { fillProvenanceGroups } from '../lib/queueProvenance'
+  import { matchesAutoQueueFilters } from '../lib/autoQueuePlan'
   import { coverStatsSummary } from '../lib/coverStats'
   import { audioManager } from '../lib/audioManager'
 
@@ -236,6 +237,8 @@
     const st = get(playbackState)
     const lib = get(library)
     const st8 = get(settings)
+    const queueFilters = get(autoQueueFilters)
+    const queueMeta = get(metadataCache)
     // The manager's EXACT transcode decision (same pure function, same live
     // inputs) — "what the app believed the stream params were" for this copy.
     const tp = transcodeParams(
@@ -271,6 +274,16 @@
         // without a fill (Dexie restore, drag-convert). A tier-3-heavy dump is
         // the exhausted-pool signature. Read-only diagnostic mirror.
         queueProvenance: fillProvenanceGroups(q.autoQueue),
+        queueContext: {
+          filters: queueFilters,
+          sort: get(autoQueueSort),
+          eligibleCount: lib.filter(t => matchesAutoQueueFilters(t, queueFilters, queueMeta)).length,
+          // IDs only: enough to attribute mutations/repeats, no URLs or credentials.
+          userQueue: q.userQueue,
+          autoQueue: q.autoQueue,
+          recentTrackIds: q.recentTrackIds,
+          atUserBoundary: q.activeIndex >= 0 && q.activeIndex === q.userQueue.length - 1,
+        },
         activeId: q.activeIndex >=0 ? [...q.userQueue, ...q.autoQueue][q.activeIndex] : null,
         librarySize: lib.length,
         isNative: Capacitor.isNativePlatform(),

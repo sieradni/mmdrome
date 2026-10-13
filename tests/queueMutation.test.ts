@@ -165,12 +165,10 @@ test('promoteActiveTrack: active row in auto at auto[0] promotes to the user tai
   assert.equal(r.activeIndex, 2)
 })
 
-test('promoteActiveTrack collapses a tier-3 cross-section duplicate (no second user copy)', () => {
+test('explicit USER replay never consumes its independent upcoming auto copy', () => {
   const s = q(['a', 'b', 'c'], ['c', 'd'], 2)
-  const r = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
-  assert.deepEqual(r.userQueue, ['a', 'b', 'c'])
-  assert.deepEqual(r.autoQueue, ['d'])
-  assert.equal(r.activeIndex, 2)
+  assert.equal(applyQueueMutation(s, promoteActiveTrack), null)
+  assert.deepEqual(s.autoQueue, ['c', 'd'])
 })
 
 test('promoteActiveTrack works in the transition window (active row deep in auto)', () => {
@@ -181,36 +179,33 @@ test('promoteActiveTrack works in the transition window (active row deep in auto
   assert.equal(r.activeIndex, 1)
 })
 
-// --- repeat-collapse forward re-anchor (2026-09-27) --------------------------
-// A tier-3 duplicate of an already-played row collapses on promote: the auto
-// copy is consumed and NO new user append happens (the id already has a pile
-// slot). The old id-based re-anchor then found the OLD pile copy and the
-// playhead teleported mid-queue — the next advance replayed the pile in
-// first-play order (the "queue goes back and plays in the same order" bug).
-// The re-anchor must land FORWARD on the surviving auto continuation.
+// Recycled AUTO songs move their user copy to the boundary. The old
+// continuation-anchor tests missed native refresh following the audible id
+// back into its history slot. Pin audible identity AND continuation together.
 
-test('promoteActiveTrack repeat-collapse re-anchors FORWARD to the auto continuation (history-replay regression)', () => {
+test('recycled auto promotion moves the audible song to the boundary (native history-replay regression)', () => {
   // Pile [a,b,c,d,e] (played earlier); auto [b-copy, x, y]; b-copy plays.
   // Old behavior: anchor teleported to pile slot 1 (b) → advance replayed
-  // c,d,e in first-play order. New: anchor = x (the auto continuation).
+  // c,d,e in first-play order. New: audible b at tail, then x.
   const s = q(['a', 'b', 'c', 'd', 'e'], ['b', 'x', 'y'], 5)
   const r = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
-  assert.deepEqual(r.userQueue, ['a', 'b', 'c', 'd', 'e'], 'pile untouched')
+  assert.deepEqual(r.userQueue, ['a', 'c', 'd', 'e', 'b'], 'existing user copy moves, never duplicates')
   assert.deepEqual(r.autoQueue, ['x', 'y'], 'consumed prefix gone, tail intact')
-  assert.equal(r.activeIndex, 5, 'anchor = the continuation row x (combined index 5), not pile slot 1')
-  assert.equal(combined(r)[r.activeIndex], 'x')
+  assert.equal(r.activeIndex, 4, 'audible song at user tail, not history or continuation')
+  assert.equal(combined(r)[r.activeIndex], 'b')
+  assert.equal(combined(r)[advanceTargetIndex(r, combined(r), 'b')], 'x')
 })
 
-test('promoteActiveTrack repeat-collapse with no surviving tail anchors past the end (refill path)', () => {
+test('recycled promotion with no surviving auto tail keeps the audible song queued', () => {
   // Pile [a,b,c]; auto [c-copy]; c-copy plays → nothing survives after it.
-  // Anchor lands one past the end (the removeFromUserQueue active-last
-  // semantics): the next advance falls into the end-of-queue refill path.
+  // Audible c stays queued; its next advance enters the refill path.
   const s = q(['a', 'b', 'c'], ['c'], 3)
   const r = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
   assert.deepEqual(r.userQueue, ['a', 'b', 'c'])
   assert.deepEqual(r.autoQueue, [])
-  assert.equal(r.activeIndex, 3, 'one past the combined end')
-  assert.ok(r.activeIndex >= combined(r).length)
+  assert.equal(r.activeIndex, 2, 'audible c stays at the boundary')
+  assert.equal(combined(r)[r.activeIndex], 'c')
+  assert.equal(advanceTargetIndex(r, combined(r), 'c'), 3, 'next advance enters refill path')
 })
 
 test('a repeat play never rewinds: chained auto plays with a collapsed duplicate keep moving forward', () => {
@@ -225,15 +220,14 @@ test('a repeat play never rewinds: chained auto plays with a collapsed duplicate
   assert.deepEqual(s.autoQueue, ['b', 'e', 'f'])
   assert.equal(combined(s)[s.activeIndex], 'd')
   // d ends → advance lands on b-copy (combined[4]); it loads + plays, then
-  // promotes → COLLAPSE: anchor must be e (the continuation), never pile b.
+  // promotes → MOVE: audible b moves to tail, immediately before e.
   s = { ...s, activeIndex: advanceTargetIndex(s, combined(s), 'd') }
   s = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
-  assert.deepEqual(s.userQueue, ['a', 'b', 'c', 'd'], 'pile untouched by the collapse')
+  assert.deepEqual(s.userQueue, ['a', 'c', 'd', 'b'], 'recycled b moves to tail')
   assert.deepEqual(s.autoQueue, ['e', 'f'])
-  assert.equal(combined(s)[s.activeIndex], 'e', 'anchor is the continuation, never pile b')
-  // b ends → advance: the playing row (b) is gone from the queue, so
-  // advanceTargetIndex returns activeIndex itself — e IS the next row, no
-  // skip, no rewind. e loads + promotes normally:
+  assert.equal(combined(s)[s.activeIndex], 'b', 'anchor is audible b at boundary')
+  assert.equal(combined(s)[advanceTargetIndex(s, combined(s), 'b')], 'e')
+  // b ends → +1 advances into e, never b's old history neighbors.
   s = { ...s, activeIndex: advanceTargetIndex(s, combined(s), 'b') }
   s = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
   assert.equal(combined(s)[s.activeIndex], 'e')
@@ -251,8 +245,8 @@ test('a repeat play never rewinds: chained auto plays with a collapsed duplicate
  *  `promoteActiveTrack`. Asserts the played sequence equals the AUTO ORDER
  *  exactly (no pile row is ever replayed — the history-replay bug) and that
  *  the anchor after every promote sits on the just-appended pile tail (normal
- *  promote) or on the surviving auto continuation (collapse) — never on an
- *  old pile row. Duplicates collapse; `dupCount` is asserted at the end. */
+ *  or recycled promote) — never on an old pile row or a not-yet-playing
+ *  continuation. Recycled copies move; `dupCount` is asserted at the end. */
 function simulateAutoSession(pile: string[], auto: string[]): { played: string[]; dupCount: number } {
   const pileSet = new Set(pile)
   let s = q(pile, auto, pile.length - 1) // anchor on the last pile row (playing)
@@ -260,9 +254,7 @@ function simulateAutoSession(pile: string[], auto: string[]): { played: string[]
   let dupCount = 0
   let playingId: string | undefined = pile[pile.length - 1]
   for (let i = 0; i < auto.length; i++) {
-    // advanceQueue: the playing-track-aware target — after a collapse the
-    // vanished playing row makes advanceTargetIndex return activeIndex
-    // itself (the continuation plays next); otherwise +1.
+    // Advance follows the audible boundary into the untouched auto tail.
     const target = advanceTargetIndex(s, combined(s), playingId)
     s = { ...s, activeIndex: target }
     const id = combined(s)[s.activeIndex]
@@ -274,8 +266,11 @@ function simulateAutoSession(pile: string[], auto: string[]): { played: string[]
     assert.ok(next, `promote returned null at step ${i} (playing ${id})`)
     s = next
     playingId = id
-    if (wasDup && auto[i + 1] !== undefined) {
-      assert.equal(combined(s)[s.activeIndex], auto[i + 1], `collapse anchor should be the continuation ${auto[i + 1]} (step ${i})`)
+    assert.equal(s.activeIndex, s.userQueue.length - 1, `audible row stays at boundary at step ${i}`)
+    assert.equal(combined(s)[s.activeIndex], id, `active identity at step ${i}`)
+    assert.equal(new Set(s.userQueue).size, s.userQueue.length)
+    if (auto[i + 1] !== undefined) {
+      assert.equal(combined(s)[advanceTargetIndex(s, combined(s), id)], auto[i + 1], `continuation at step ${i}`)
     }
   }
   return { played, dupCount }

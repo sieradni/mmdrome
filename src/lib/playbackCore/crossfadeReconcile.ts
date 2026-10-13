@@ -30,6 +30,7 @@
  */
 
 import type { LoopMode } from './advanceDecider'
+import { resolveQueueOccurrence } from '../queueMutation'
 
 export type CrossfadeReconcileResult =
   | { kind: 'none' }
@@ -55,7 +56,7 @@ export function reconcileCrossfadeTarget(input: CrossfadeReconcileInput): Crossf
   const { targetId, combined, activeIndex, userQueue, advanced, loopMode } = input
   if (targetId === null) return { kind: 'none' }
 
-  const playingIdx = combined.indexOf(targetId)
+  const playingIdx = resolveQueueOccurrence(combined, targetId, activeIndex)
   const rescue = playingIdx < 0
   const userQueueAfter = rescue ? [targetId, ...userQueue] : userQueue
 

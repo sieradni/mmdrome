@@ -1,6 +1,6 @@
 import { get } from 'svelte/store'
-import { saveQueue } from './db'
-import { planAutoQueueFill, type AutoQueuePlanState } from './autoQueuePlan'
+import { persistQueue } from './queuePersistence'
+import { planAutoQueueFill, selectAutoQueueFill, type AutoQueuePlanState } from './autoQueuePlan'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import { syncFillProvenance } from './queueProvenance'
 import * as queueMutation from './queueMutation'
@@ -18,17 +18,6 @@ import {
 import type { Track, QueueState } from '../stores/appState'
 
 const MAX_AUTO_QUEUE = 50
-
-/** Fisher–Yates in place. The fill plan returns `shuffle` as data; the
- *  manager permutes the FULL pool here, BEFORE slicing — slicing a
- *  pre-permuted pool is a uniform sample, slicing first is not (parity). */
-function shuffleInPlace<T>(arr: T[]): T[] {
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[arr[i], arr[j]] = [arr[j], arr[i]]
-  }
-  return arr
-}
 
 class QueueManager {
   getCombinedQueue(): string[] {
@@ -78,7 +67,7 @@ class QueueManager {
     queue.update((q) => {
       const updated = queueMutation.applyQueueMutation(q, mutate)
       if (updated === null) return q
-      saveQueue(updated)
+      persistQueue('mutateQueue', updated)
       return updated
     })
   }
@@ -134,10 +123,8 @@ class QueueManager {
   /**
    * Promotes the active track out of the auto queue — the post-load success
    * path. The auto tail is sliced from the active id's first occurrence and
-   * the id gains a user slot only when it has none (a tier-3 cross-section
-   * duplicate collapses instead of appending a repeat). No-op (null, no write)
-   * when the active row isn't in auto (already promoted, or the id lives only
-   * in the user queue).
+   * an existing user copy moves to the tail so the audible row stays at the
+   * boundary. No-op (null, no write) when the active occurrence isn't in auto.
    */
   promoteActiveTrack(): void {
     this._mutateQueue((q) => queueMutation.promoteActiveTrack(q))
@@ -152,7 +139,7 @@ class QueueManager {
   markRecent(trackId: string): void {
     queue.update((q) => {
       const updated = { ...q, recentTrackIds: inscribeRecent(q.recentTrackIds, trackId, RECENT_LIMIT) }
-      saveQueue(updated)
+      persistQueue('markRecent', updated)
       return updated
     })
   }
@@ -170,7 +157,7 @@ class QueueManager {
         activeIndex: index,
         recentTrackIds: markRecentId ? inscribeRecent(q.recentTrackIds, markRecentId, RECENT_LIMIT) : q.recentTrackIds,
       }
-      saveQueue(updated)
+      persistQueue('advanceTo', updated)
       return updated
     })
   }
@@ -183,7 +170,7 @@ class QueueManager {
     queue.update((q) => {
       if (q.recentTrackIds.length === 0) return q
       const updated = { ...q, recentTrackIds: [] }
-      saveQueue(updated)
+      persistQueue('resetRecentWindow', updated)
       return updated
     })
   }
@@ -223,7 +210,7 @@ class QueueManager {
     queue.update((q) => {
       const updated = queueMutation.removeFromUserQueue(q, index)
       if (updated === null) return q
-      saveQueue(updated)
+      persistQueue('removeFromUserQueue', updated)
       return updated
     })
     return removedId
@@ -283,7 +270,7 @@ class QueueManager {
   playAll(trackIds: string[]): void {
     const updated: QueueState = { ...get(queue), userQueue: trackIds, autoQueue: [], activeIndex: 0 }
     queue.set(updated)
-    saveQueue(updated)
+    persistQueue('playAll', updated)
     this.resetRecentWindow()
   }
 
@@ -335,7 +322,7 @@ class QueueManager {
       autoQueueEmptyNotice.set(false)
       return
     }
-    const fill = (plan.shuffle ? shuffleInPlace(plan.pool) : plan.pool).slice(0, needed)
+    const fill = selectAutoQueueFill(plan, needed)
     if (fill.length === 0 && plan.kept.length === state.autoQueue.length) {
       autoQueueEmptyNotice.set(true)
       return
@@ -350,7 +337,7 @@ class QueueManager {
       // arrays cover every candidate; only the SLICED fillIds land here, and
       // syncFillProvenance keeps kept-prefix rows on their older tier.
       syncFillProvenance(updated.autoQueue, plan.tiers)
-      saveQueue(updated)
+      persistQueue('replenishAutoQueue', updated)
       return updated
     })
   }
@@ -365,13 +352,12 @@ class QueueManager {
     const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
     queueWrapNotice.set(plan.wrapNotice)
     autoQueueEmptyNotice.set(plan.pool.length === 0)
-    const ordered = plan.shuffle ? shuffleInPlace(plan.pool) : plan.pool
-    const fillIds = ordered.slice(0, MAX_AUTO_QUEUE).map((t) => t.trackId)
+    const fillIds = selectAutoQueueFill(plan, MAX_AUTO_QUEUE).map((t) => t.trackId)
 
     queue.update((q) => {
       const updated = { ...q, autoQueue: fillIds }
       syncFillProvenance(updated.autoQueue, plan.tiers)
-      saveQueue(updated)
+      persistQueue('rebuildAutoQueue', updated)
       return updated
     })
   }

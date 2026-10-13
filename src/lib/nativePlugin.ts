@@ -7,6 +7,8 @@ import type { SeekCapability } from './playbackCore/seekCapability'
 export interface NativeTrackSnapshot {
   index: number
   trackId: string
+  /** Stable section/song occurrence identity; never a snapshot index. */
+  queueEntryId?: string
   title: string
   artist: string
   album: string
@@ -45,6 +47,7 @@ export interface NativeFilterSnapshot {
 export interface NativeEngineState {
   index: number
   trackId: string
+  queueEntryId?: string
   position: number
   duration: number
   playing: boolean
@@ -132,7 +135,7 @@ interface BackgroundAudioPlugin {
   secureDelete(options: { key: string }): Promise<void>
   addListener(
     eventName: 'trackChanged',
-    listenerFunc: (data: { trackId: string }) => void
+    listenerFunc: (data: { trackId: string; queueEntryId?: string }) => void
   ): Promise<PluginListenerHandle>
   addListener(
     eventName: 'playbackStateChanged',
@@ -186,7 +189,7 @@ export interface NativeEventsPage {
 }
 
 export interface NativeEngineCallbacks {
-  onTrackChanged: (trackId: string) => void
+  onTrackChanged: (trackId: string, queueEntryId?: string) => void
   onPlaybackStateChanged: (playing: boolean) => void
   onQueueEnded: () => void
   onError: (message: string) => void
@@ -293,8 +296,8 @@ export class NativeAudioEngineApp {
     // engine-side double-advance from a JS-positioned skip.
     this.listeners.push(
       await plugin.addListener('trackChanged', (data) => {
-        trailBridge('event', `trackChanged ${data.trackId}`)
-        this.callbacks?.onTrackChanged(data.trackId)
+        trailBridge('event', `trackChanged ${data.trackId}${data.queueEntryId ? ` entry=${data.queueEntryId}` : ''}`)
+        this.callbacks?.onTrackChanged(data.trackId, data.queueEntryId)
       }),
     )
     this.listeners.push(

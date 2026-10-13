@@ -2,6 +2,8 @@ import Dexie, { type EntityTable } from 'dexie'
 import type { FileMetadata } from './metadataReader'
 import type { ScrobbleKind } from './lastfmCore'
 import { isSecretSettingKey } from './secretKeys'
+import { isDuplicateEnqueueError } from './scrobbleEnqueuePolicy'
+import { dbgDanger } from './debugLog'
 
 export interface LocalMetadataStore {
   trackId: string
@@ -369,13 +371,33 @@ export async function updateWebdavFileTagFingerprint(
 
 // ── Pending scrobble/heart queue (direct Last.fm + ListenBrainz) ──────────
 
-/** Returns false when the unique compound index already holds this event. */
+/**
+ * Returns false when the unique compound index already holds this event.
+ *
+ * Only a ConstraintError means "duplicate" (A3, 2026-10-09): the old catch-all
+ * read EVERY failure as a duplicate — including the AbortError the 2026-10-08
+ * dump showed on ordinary advances — so a dropped Listen was indistinguishable
+ * from a deliberate no-op and left no trace. A non-duplicate failure is retried
+ * once (aborts are timing-shaped and often clear) and, if it still fails, names
+ * itself in the danger ring: the event was NOT queued.
+ */
 export async function enqueuePendingScrobble(row: Omit<PendingScrobbleRow, 'seq'>): Promise<boolean> {
   try {
     await db.pendingScrobbles.add({ ...row })
     return true
-  } catch {
-    return false
+  } catch (err) {
+    if (isDuplicateEnqueueError(err)) return false
+    try {
+      await db.pendingScrobbles.add({ ...row })
+      return true
+    } catch (err2) {
+      // Another producer may have committed this event while our first write
+      // aborted. A retry's unique-index violation is still a deliberate no-op.
+      if (isDuplicateEnqueueError(err2)) return false
+      const name = (err2 as { name?: string })?.name ?? 'Error'
+      dbgDanger('sync', `pending scrobble enqueue failed: ${name} — event NOT queued`)
+      return false
+    }
   }
 }
 

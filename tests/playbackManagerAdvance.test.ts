@@ -122,6 +122,7 @@ class FakeSleepTimer {
 
 type PrivatePM = {
   _onTrackEnded(fromError?: boolean): Promise<void>
+  _handleCrossfadeEnd(targetId: string | null): Promise<void>
   next(): Promise<void>
   handleQueueRowRemoved(removedId: string): Promise<void>
   _setupNextTrack(): Promise<void>
@@ -166,6 +167,22 @@ async function flush(): Promise<void> {
 }
 
 // --- tests ---------------------------------------------------------------
+
+test('web crossfade completion of a recycled AUTO occurrence keeps audible identity and continuation', async () => {
+  const h = makeHarness()
+  resetStores()
+  library.set([t0, t1, t2])
+  queue.set({ userQueue: [t1.trackId, t0.trackId], autoQueue: [t1.trackId, t2.trackId], recentTrackIds: [], activeIndex: 1 })
+  setCurrentTrack(t0)
+  setPlaybackState('playing')
+  await h.m._handleCrossfadeEnd(t1.trackId)
+  const q = get(queue)
+  assert.deepEqual(q.userQueue, [t0.trackId, t1.trackId])
+  assert.equal(q.activeIndex, 1)
+  assert.equal(get(currentTrack)?.trackId, t1.trackId)
+  assert.equal(q.autoQueue[0], t2.trackId)
+  assert.ok(h.web.calls.includes(`prepareNext:${t2.trackId}`))
+})
 
 test('end-of-track after removing the ACTIVE row advances to the next row (not stop/wrap)', async () => {
   const h = makeHarness()

@@ -11,13 +11,14 @@ import type { LocalMetadataStore } from './db'
  * writes — `queueManager` is a thin interpreter that applies the returned
  * plan (queue update + saveQueue + queueWrapNotice from the plan's flag).
  *
- * Parity notes (must not drift from the pre-extraction behavior):
+ * Fill contract:
  *  - tier 3 (rotation) deliberately admits USER-QUEUED tracks (B4 — a
  *    starvation tradeoff, not a bug);
  *  - the `activeId` (playing track) is excluded from tier 3 only;
- *  - the shuffle branch does NOT permute here — it returns `shuffle: true`
- *    and the caller permutes the FULL pool BEFORE slicing (slicing first
- *    would change the sampled subset);
+ *  - tier admission compares against VACANCIES, not total queue capacity;
+ *  - shuffle sampling (`selectAutoQueueFill`) and sort/rotation preserve
+ *    tier priority: fresh → cool-down → recycling; shuffle is uniform WITHIN
+ *    a full tier before slicing, never across tiers;
  *  - `wrapNotice` is false whenever the pool is empty, so a caller's no-op
  *    guard can never leave a stale wrap hint behind.
  */
@@ -41,14 +42,14 @@ export interface AutoQueueFillPlan {
   kept: string[]
   /** The full ordered candidate pool (tiers 1–3, sorted + anchor-rotated). */
   pool: Track[]
-  /** When true, the caller must permute the FULL pool before slicing (shuffle mode). */
+  /** When true, selectAutoQueueFill samples full tiers before slicing. */
   shuffle: boolean
   /** The non-shuffle rotation wrapped back to the top of the sort order (queueWrapNotice). */
   wrapNotice: boolean
   /**
    * Per-TIER membership at pool-build time (2026-09-27): which stage admitted
    * each candidate — tier 1 fresh / tier 2 cool-down / tier 3 rotation.
-   * Diagnostic only: the manager mirrors it into `queueProvenance` for the
+   * Selection priority AND provenance: the manager mirrors it into `queueProvenance` for the
    * HUD Copy dump (a tier-3-heavy dump is the exhausted-pool signature).
    * Stage arrays are DISJOINT; the anchor rotation reorders but never moves
    * rows between stages, so the tiering stays valid for the sliced fill.
@@ -300,12 +301,13 @@ export function planAutoQueueFill(
     }
   }
 
+  const vacancies = Math.max(0, needed - kept.length)
   // Tier 1: fresh — matching, not queued anywhere, not cooling down.
   let pool = lib.filter((t) => matches(t) && !inUser.has(t.trackId) && !inAuto.has(t.trackId) && !recent.has(t.trackId))
   const tier1 = pool.map((t) => t.trackId)
   // Tier 2: top-up — cooling-down tracks, admitted when the fresh pool is short.
   let tier2: string[] = []
-  if (pool.length < needed) {
+  if (pool.length < vacancies) {
     const tier2Rows = lib.filter((t) => matches(t) && !inUser.has(t.trackId) && !inAuto.has(t.trackId) && recent.has(t.trackId))
     tier2 = tier2Rows.map((t) => t.trackId)
     pool = pool.concat(tier2Rows)
@@ -314,7 +316,7 @@ export function planAutoQueueFill(
   // queue and not the actively playing one. Deliberately admits user-queued
   // and recent tracks (B4): the session recycles instead of the queue dying.
   let tier3: string[] = []
-  if (pool.length < needed) {
+  if (pool.length < vacancies) {
     const poolIds = new Set(pool.map((t) => t.trackId))
     const tier3Rows = lib.filter((t) => matches(t) && !inAuto.has(t.trackId) && t.trackId !== activeId && !poolIds.has(t.trackId))
     tier3 = tier3Rows.map((t) => t.trackId)
@@ -326,14 +328,40 @@ export function planAutoQueueFill(
       return { kept, pool, shuffle: true, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
     }
     const orderRank = buildOrderRank(lib, sort, meta)
-    pool.sort((a, b) => (orderRank.get(a.trackId) ?? 0) - (orderRank.get(b.trackId) ?? 0))
-    // ALWAYS rotate after the anchor (the last user-queue entry — the point
-    // playback is headed from), including an explicit sort change: the fill
-    // must CONTINUE from the current position in the new order, not restart
-    // at the top of the sorted pool (the 2026-10-06 field report). The arrow
-    // is still visible at the head — it lands on the anchor's OTHER neighbor.
-    const rotated = rotateAfterAnchor(pool, orderRank, userQueue[userQueue.length - 1])
-    return { kept, pool: rotated.pool, shuffle: false, wrapNotice: rotated.wrapNotice, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
+    // Sort/rotate WITHIN each priority tier. Recycling must never overtake a
+    // fresh candidate merely because its rating or library position is earlier.
+    const byId = new Map(pool.map((t) => [t.trackId, t]))
+    let wrapNotice = false
+    let orderedHeadUnset = true
+    const ordered = [tier1, tier2, tier3].flatMap((ids) => {
+      const rows = ids.map((id) => byId.get(id)!)
+      rows.sort((a, b) => (orderRank.get(a.trackId) ?? 0) - (orderRank.get(b.trackId) ?? 0))
+      const rotated = rotateAfterAnchor(rows, orderRank, userQueue[userQueue.length - 1])
+      if (rows.length > 0 && orderedHeadUnset) {
+        wrapNotice = rotated.wrapNotice
+        orderedHeadUnset = false
+      }
+      return rotated.pool
+    })
+    return { kept, pool: ordered, shuffle: false, wrapNotice, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
   }
   return { kept, pool, shuffle: false, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
+}
+
+/** Uniform sampling within each tier, strict priority across tiers. Injectable
+ * randomness keeps selection deterministic in tests; never mutate a plan. */
+export function selectAutoQueueFill(plan: AutoQueueFillPlan, count: number, random: () => number = Math.random): Track[] {
+  if (!plan.shuffle) return plan.pool.slice(0, count)
+  const byId = new Map(plan.pool.map((t) => [t.trackId, t]))
+  const selected: Track[] = []
+  for (const tier of [1, 2, 3] as const) {
+    if (selected.length >= count) break
+    const rows = plan.tiers[tier].map((id) => byId.get(id)!)
+    for (let i = rows.length - 1; i > 0; i--) {
+      const j = Math.floor(random() * (i + 1))
+      ;[rows[i], rows[j]] = [rows[j], rows[i]]
+    }
+    selected.push(...rows.slice(0, count - selected.length))
+  }
+  return selected
 }

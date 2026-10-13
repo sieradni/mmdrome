@@ -25,6 +25,7 @@ class FakePlugin implements NativePluginClient {
   failSetQueueOnce = false
   failPlayTrackAt = false
   setQueueGate: Promise<void> | null = null
+  refreshGate: Promise<void> | null = null
 
   async setQueue(options: { tracks: NativeSnapshotTrack[]; activeIndex: number; loopMode: NativeLoopMode }): Promise<void> {
     this.setQueueCalls.push(options)
@@ -45,6 +46,7 @@ class FakePlugin implements NativePluginClient {
   async refreshQueue(options: { tracks: NativeSnapshotTrack[]; activeIndex: number }): Promise<void> {
     this.refreshCalls.push(options)
     this.order.push('refreshQueue')
+    if (this.refreshGate) await this.refreshGate
   }
 
   async play(): Promise<void> {
@@ -74,7 +76,7 @@ class FakePlugin implements NativePluginClient {
 class FakeClient implements NativeEngineClient {
   pluginInst: FakePlugin
   callbacks: {
-    onTrackChanged(trackId: string): void
+    onTrackChanged(trackId: string, queueEntryId?: string): void
     onPlaybackStateChanged(playing: boolean): void
     onQueueEnded(): void
     onError(message: string): void
@@ -89,7 +91,7 @@ class FakeClient implements NativeEngineClient {
   }
 
   async init(callbacks: {
-    onTrackChanged(trackId: string): void
+    onTrackChanged(trackId: string, queueEntryId?: string): void
     onPlaybackStateChanged(playing: boolean): void
     onQueueEnded(): void
     onError(message: string): void
@@ -185,6 +187,16 @@ test('init registers engine callbacks that forward policy events', async () => {
   assert.deepEqual(changed, ['t2'])
   assert.deepEqual(states, ['playing', 'paused'])
   assert.deepEqual(ended, [{ kind: 'natural', fromError: false }])
+})
+
+test('track-change forwarding preserves section occurrence identity without numeric indexes', async () => {
+  const { transport, client } = setup()
+  const seen: Array<[string, string | undefined]> = []
+  transport.onTrackChanged = (id, entryId) => seen.push([id, entryId])
+  await transport.init()
+  client.callbacks!.onTrackChanged('repeat', 'auto:repeat')
+  client.callbacks!.onTrackChanged('repeat', 'user:repeat')
+  assert.deepEqual(seen, [['repeat', 'auto:repeat'], ['repeat', 'user:repeat']])
 })
 
 test('init without callbacks assigned is safe (no throw)', async () => {
@@ -894,4 +906,78 @@ test('a tail sync waits for an in-flight engage to settle before refreshing', as
   await tick()
   assert.equal(plugin.refreshCalls.length, 1)
   assert.deepEqual(plugin.order, ['setQueue:0', 'playTrackAt:0', 'setQueue:1', 'playTrackAt:1', 'refreshQueue'])
+})
+
+test('refresh factories coalesce until engage settles, never sending pre-promotion payloads', async () => {
+  const { transport, plugin } = setup()
+  await transport.engage(tracks, 0, 'none')
+  let release!: () => void
+  plugin.setQueueGate = new Promise<void>(r => { release = r })
+  const engage = transport.engage(tracks3, 2, 'none')
+  let evaluated = 0
+  let activeIndex = 2
+  transport.scheduleSync(() => { evaluated++; return { tracks: tracks3, activeIndex } })
+  await tick()
+  assert.equal(evaluated, 0, 'do not snapshot while engage is pending')
+  activeIndex = 1 // promotion moved the audible song to its unique user slot
+  transport.scheduleSync(() => { evaluated++; return { tracks: tracks3, activeIndex } })
+  release()
+  await engage
+  await tick()
+  assert.equal(evaluated, 1)
+  assert.deepEqual(plugin.refreshCalls.map(p => p.activeIndex), [1])
+})
+
+test('in-flight refresh serializes a burst into one latest follow-up', async () => {
+  const { transport, plugin } = setup()
+  await transport.engage(tracks, 0, 'none')
+  let release!: () => void
+  plugin.refreshGate = new Promise<void>(r => { release = r })
+  transport.scheduleSync(() => ({ tracks: tracks3, activeIndex: 0 }))
+  await tick()
+  transport.scheduleSync(() => ({ tracks: tracks3, activeIndex: 1 }))
+  await tick()
+  transport.scheduleSync(() => ({ tracks: tracks3, activeIndex: 2 }))
+  await tick()
+  assert.equal(plugin.refreshCalls.length, 1, 'no concurrent bridge refreshes')
+  plugin.refreshGate = null
+  release()
+  await tick()
+  assert.deepEqual(plugin.refreshCalls.map(p => p.activeIndex), [0, 2])
+})
+
+test('a throwing snapshot factory reports its failure and leaves later syncs usable', async () => {
+  const { transport, plugin } = setup()
+  await transport.engage(tracks, 0, 'none')
+  const errors: unknown[][] = []
+  const original = console.error
+  console.error = (...args: unknown[]) => { errors.push(args) }
+  try {
+    transport.scheduleSync(() => { throw new Error('snapshot failed') })
+    await tick()
+    assert.equal(errors.length, 1)
+    assert.match(String(errors[0][1]), /snapshot failed/)
+    assert.equal(plugin.refreshCalls.length, 0)
+    transport.scheduleSync(() => ({ tracks, activeIndex: 0 }))
+    await tick()
+    assert.equal(plugin.refreshCalls.length, 1)
+  } finally {
+    console.error = original
+    transport.disengage()
+  }
+})
+
+test('disengage invalidates a refresh waiting on an engage', async () => {
+  const { transport, plugin } = setup()
+  await transport.engage(tracks, 0, 'none')
+  let release!: () => void
+  plugin.setQueueGate = new Promise<void>(r => { release = r })
+  const engage = transport.engage(tracks, 1, 'none')
+  transport.scheduleSync(() => ({ tracks, activeIndex: 1 }))
+  await tick()
+  transport.disengage()
+  release()
+  await engage
+  await tick()
+  assert.equal(plugin.refreshCalls.length, 0)
 })

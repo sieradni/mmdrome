@@ -4,7 +4,7 @@ import { audioManager } from './audioManager'
 import { engine } from './engineFacade'
 import { nativeEngine, BackgroundAudio, type NativeTrackSnapshot } from './nativePlugin'
 import { queueManager } from './queueManager'
-import { advanceTargetIndex } from './queueMutation'
+import { advanceTargetIndex, resolveQueueOccurrence, queueEntryId } from './queueMutation'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc, sweepStaleTranscodeEntries } from './preloader'
 import { mapNativePreloadEvent } from './loadStatus'
@@ -22,7 +22,7 @@ import { WebBgTransport, type BgFacts, type LoadDecision } from './playbackCore/
 import { NativeTransport } from './playbackCore/nativeTransport'
 import { trailBridge } from './playbackCore/nativeBridgeTrail'
 import { deriveSeekCapability } from './playbackCore/seekCapability'
-import { dbgDanger, enabledDomainsList } from './debugLog'
+import { dbgAlways, dbgDanger, enabledDomainsList } from './debugLog'
 import { reconcileReload } from './playbackCore/nativeReconcile'
 import { decideAdvance, type LoopMode } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
@@ -51,7 +51,7 @@ import {
   autoQueueFilters,
   autoQueueSort,
 } from '../stores/appState'
-import { saveQueue } from './db'
+import { persistQueue } from './queuePersistence'
 import { currentEqState, eqBypassed } from './eq/eqStore'
 import { cancelScan, cancelTagProbeIfActive } from './metadataScanner'
 import type { Track } from '../stores/appState'
@@ -321,7 +321,7 @@ export class PlaybackManager {
   private async _initNative(): Promise<void> {
     const transport = this._nativeTransport ?? new NativeTransport(nativeEngine)
     this._nativeTransport = transport
-    transport.onTrackChanged = (trackId) => { this._onNativeTrackChanged(trackId) }
+    transport.onTrackChanged = (trackId, entryId) => { this._onNativeTrackChanged(trackId, entryId) }
     transport.onTrackEnded = (event) => {
       if (event.kind === 'natural') void this._onNativeTrackEnded(event.fromError)
     }
@@ -697,11 +697,13 @@ export class PlaybackManager {
     // One transcode decision per snapshot build — every row shares the same
     // mode/format/bitrate (the mode is per-session, not per-track).
     const transcode = this._activeTranscode()
+    const userLength = get(queue).userQueue.length
     const snapshot = combined.map((id, index) => {
       const track = this._qm.findTrack(id)
       const row: NativeTrackSnapshot = {
         index,
         trackId: id,
+        queueEntryId: queueEntryId(id, index < userLength ? 'user' : 'auto'),
         title: track?.title ?? id,
         artist: track?.artist ?? '',
         album: track?.album ?? '',
@@ -792,6 +794,10 @@ export class PlaybackManager {
     // Track is now playing — promote it from auto to user queue
     this._qm.promoteActiveTrack()
     this._qm.replenishAutoQueue()
+    // The initial bridge event can promote BEFORE engage marks the transport
+    // live. Those store writes cannot schedule a refresh, and the post-engage
+    // promotion may now be a no-op. Always sync the settled, promoted snapshot.
+    this._scheduleNativeQueueSync()
   }
 
   /**
@@ -818,7 +824,7 @@ export class PlaybackManager {
     )
     if (decision.kind === 'resync') {
       transport.adopt(decision.trackId)
-      this._onNativeTrackChanged(decision.trackId)
+      this._onNativeTrackChanged(decision.trackId, state.queueEntryId || undefined)
       currentTime.set(decision.position)
       setPlaybackState('playing')
     } else if (decision.kind === 'stop') {
@@ -833,7 +839,7 @@ export class PlaybackManager {
     // 'idle' — the engine has no audible track; nothing to resync.
   }
 
-  private _onNativeTrackChanged(trackId: string): void {
+  private _onNativeTrackChanged(trackId: string, entryId?: string): void {
     if (this._handlingNativeEnd) return
     trailBridge('event', `jsTrackChanged ${trackId}`)
     // The cycle counter is PER-TRACK: a genuine row CHANGE (different id than
@@ -854,7 +860,11 @@ export class PlaybackManager {
     // re-entering window row is re-diffed against the loader cache every
     // sampler tick (a cached row re-announces `done` once).
     const combined = this._qm.getCombinedQueue()
-    let idx = combined.indexOf(trackId)
+    const beforeIndex = get(queue).activeIndex
+    let idx = resolveQueueOccurrence(combined, trackId, beforeIndex, entryId ? { entryId, userLength: get(queue).userQueue.length } : undefined)
+    if (idx >= 0 && combined.indexOf(trackId) !== idx) {
+      dbgAlways('queue', `native occurrence ${trackId}: history=${combined.indexOf(trackId)} selected=${idx} from=${beforeIndex}`)
+    }
     const track = this._qm.findTrack(trackId)
     if (!track) {
       console.warn('[native] trackChanged for unknown track:', trackId)
@@ -873,7 +883,7 @@ export class PlaybackManager {
           activeIndex: userQueue.length - 1,
           recentTrackIds: prevId ? inscribeRecent(q.recentTrackIds, prevId, RECENT_LIMIT) : q.recentTrackIds,
         }
-        saveQueue(updated)
+        persistQueue('setQueueAndPlay', updated)
         return updated
       })
       idx = get(queue).activeIndex
@@ -894,6 +904,8 @@ export class PlaybackManager {
     if (trackChanged) this._resetErrorCycle()
     this._qm.promoteActiveTrack()
     this._qm.replenishAutoQueue()
+    const after = get(queue)
+    dbgAlways('queue', `native transition ${trackId}: ${beforeIndex}→${after.activeIndex} user=${after.userQueue.length} auto=${after.autoQueue.length}`)
   }
 
   /**
@@ -1504,7 +1516,7 @@ export class PlaybackManager {
         // `_mutateQueue`'s id re-anchor (B1 scope boundary).
         queue.update((q) => {
           const updated = { ...q, userQueue: result.userQueue, activeIndex: 0 }
-          saveQueue(updated)
+          persistQueue('rescue', updated)
           return updated
         })
       } else if (result.kind === 'wrap') {
@@ -1543,7 +1555,7 @@ export class PlaybackManager {
         if (prevId) {
           updated.recentTrackIds = inscribeRecent(q.recentTrackIds, prevId, RECENT_LIMIT)
         }
-        saveQueue(updated)
+        persistQueue('selectTrack', updated)
         return updated
       })
       await this._loadTrack(track)
