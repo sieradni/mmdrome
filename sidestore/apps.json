@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.59",
-      "versionDate": "2026-10-13T21:29:55.601Z",
-      "versionDescription": "Recover dead IndexedDB connections transparently and make failed storage recovery actionable",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.59/mmdrome.ipa",
+      "version": "1.2.60",
+      "versionDate": "2026-10-17T23:03:34.376Z",
+      "versionDescription": "Prevent queue skipping during server failures. Reject non-audio responses, correct playback status and cover timing, and improve interruption recovery.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.60/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.60",
+          "buildVersion": "64",
+          "date": "2026-10-17T23:03:34.376Z",
+          "localizedDescription": "Prevent queue skipping during server failures. Reject non-audio responses, correct playback status and cover timing, and improve interruption recovery.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.60/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.59",
           "buildVersion": "63",
@@ -584,6 +592,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.60",
+      "identifier": "ios-v1.2.60",
+      "appID": "com.mmdrome.player",
+      "caption": "Prevent queue skipping during server failures. Reject non-audio responses, correct playback status and cover timing, and improve interruptio",
+      "date": "2026-10-17T23:03:34.376Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.59",
       "identifier": "ios-v1.2.59",
       "appID": "com.mmdrome.player",
@@ -616,15 +633,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Seeking into a streaming track that has not loaded yet now keeps your position instead of restarting at 0:00, and a far seek on a transcoded",
       "date": "2026-10-07T11:06:15.028Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.55",
-      "identifier": "ios-v1.2.55",
-      "appID": "com.mmdrome.player",
-      "caption": "Applying a filter or sort to the queue now continues from the current track instead of restarting at the top of the sort order.",
-      "date": "2026-10-06T09:02:53.161Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
