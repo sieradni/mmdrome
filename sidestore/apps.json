@@ -27,7 +27,8 @@
           "date": "2026-10-17T23:03:34.376Z",
           "localizedDescription": "Prevent queue skipping during server failures. Reject non-audio responses, correct playback status and cover timing, and improve interruption recovery.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.60/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5193050
         },
         {
           "version": "1.2.59",
