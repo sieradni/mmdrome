@@ -7,6 +7,7 @@
   import { effectiveThumbSize, shouldSwapThumbSize } from '../lib/transcodePolicy'
 import { thumbFlowGestureActive } from '../lib/thumbFlow'
   import { coverStatsRecord } from '../lib/coverStats'
+  import { createCoverLoadTiming } from '../lib/coverLoadTiming'
   import type { Track } from '../stores/appState'
 
   let { track, wrapperClass = '', size = 128, windowed = false }: { track: Track; wrapperClass?: string; size?: 96 | 128 | 256 | 512; windowed?: boolean } = $props()
@@ -169,6 +170,7 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
   $effect(() => {
     if (currentUrl !== lastRevealUrl) {
       lastRevealUrl = currentUrl
+      coverTiming.begin(visible ? currentUrl : null)
       microFailed = false
       armedCached = false
       mainLoaded = false
@@ -179,10 +181,7 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
    *  keeps same-URL effect re-runs from washing a loaded cover. */
   let lastRevealUrl: string | null = null
 
-  /** Arm timestamp for the cover-stats loadMs (set by EVERY arm callback —
-   *  the IO path and the windowed loader path alike; NOT component init, or
-   *  pre-roll time would count). */
-  let armedAt = 0
+  const coverTiming = createCoverLoadTiming()
 
   // Gesture-time DOM freeze (2026-09-28, the "songs tab lags when scrolling"
   // report): mid-gesture the unlatch observer used to unmount covers the
@@ -233,7 +232,7 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
       // claims (session memory) ride the frame-cadence cached lane.
       const cached = hasCoverBeenLoaded(currentUrl)
       armedCached = cached
-      requestThumb(container, () => { visible = true; armedAt = performance.now() }, cached)
+      requestThumb(container, () => { visible = true; coverTiming.begin(currentUrl) }, cached)
       return () => cancelThumb(container)
     }
     const req = new IntersectionObserver(
@@ -241,7 +240,7 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
         if (entry.isIntersecting && !visible) {
           const cached = hasCoverBeenLoaded(currentUrl)
           armedCached = cached
-          requestThumb(container, () => { visible = true; armedAt = performance.now() }, cached)
+          requestThumb(container, () => { visible = true; coverTiming.begin(currentUrl) }, cached)
         }
       },
       // 2000px pre-roll (widened 2026-09-17 from 800px, the "far scroll takes
@@ -352,13 +351,13 @@ import { thumbFlowGestureActive } from '../lib/thumbFlow'
         class="h-full w-full object-cover {mainLoaded ? 'opacity-100' : 'opacity-0'}"
         decoding="async"
         onerror={handleImgError}
-        onload={() => {
-          noteCoverLoaded(currentUrl)
+        onload={(event) => {
+          const url = event.currentTarget.getAttribute('src')
+          if (url !== currentUrl) return
+          noteCoverLoaded(url)
           mainLoaded = true
-          const loadMs = performance.now() - armedAt
-          // armedAt is set in the SAME arm callback that flips `visible`, so
-          // a pre-arm load is impossible; the floor guards a reset-order edge.
-          if (loadMs >= 0) noteMainCover(attemptIndex, loadMs, 'ok')
+          const loadMs = coverTiming.finish(url)
+          if (loadMs !== null) noteMainCover(attemptIndex, loadMs, 'ok')
         }}
       />
     {:else}

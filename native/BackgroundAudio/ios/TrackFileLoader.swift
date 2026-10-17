@@ -831,6 +831,19 @@ final class TrackFileLoader {
             onFinished?(final, nil)
             return
         }
+        if let error, (error as NSError).domain == AudioResponsePolicy.errorDomain {
+            // An HTTP/document rejection is never a resumable audio prefix.
+            try? FileManager.default.removeItem(at: writer.part)
+            dropPending(cacheKey: writer.cacheKey, destination: writer.destination)
+            resumeDataByCacheKey[writer.cacheKey] = nil
+            maturationByteFloor[writer.cacheKey] = nil
+            event(.danger, "stream: response rejected for \(writer.track.trackId): \(error.localizedDescription)")
+            flushWriterChains(key: writer.cacheKey, url: nil, error: error)
+            clearWriterState()
+            onFinished?(nil, error)
+            onDownloadFinished?(writer.track.trackId, false)
+            return
+        }
         if let error {
             // NEAR-COMPLETE RECOVERY (2026-10-02b): a late transient failure
             // can leave a body that already carries the whole track — judge it
@@ -1687,7 +1700,22 @@ final class TrackFileLoader {
             // delegate queue is applied to the main-thread state maps in the
             // main hop below (the loader's maps are main-thread-only).
             var retainPending: DownloadResume.Pending? = nil
-            if let temp = tempURL, error == nil {
+            var responseRejection = response.flatMap {
+                AudioResponsePolicy.rejection(status: ($0 as? HTTPURLResponse)?.statusCode ?? 0, contentType: $0.mimeType)
+            }
+            if responseRejection == nil, error == nil, let temp = tempURL,
+               let reader = try? FileHandle(forReadingFrom: temp) {
+                let prefix = (try? reader.read(upToCount: 512)) ?? Data()
+                try? reader.close()
+                responseRejection = AudioResponsePolicy.rejection(
+                    status: (response as? HTTPURLResponse)?.statusCode ?? 0,
+                    contentType: response?.mimeType, prefix: prefix,
+                    contentRangeStart: (response as? HTTPURLResponse).flatMap {
+                        DownloadResume.parseContentRangeStart($0.value(forHTTPHeaderField: "Content-Range"))
+                    })
+            }
+            moveError = responseRejection
+            if let temp = tempURL, error == nil, responseRejection == nil {
                 // RESUMABLE: when this attempt was a Range continuation, the
                 // delivered body is the REMAINDER — append it onto the
                 // retained prefix BEFORE any validation, then judge only the
@@ -2197,15 +2225,32 @@ private final class StreamWriterDelegate: NSObject, URLSessionDataDelegate {
     weak var owner: TrackFileLoader?
     private var handle: FileHandle?
     private var totalReceived: Int64 = 0
+    private var responseError: Error?
+    private var responseStatus = 0
+    private var responseType: String?
+    private var responseRangeStart: Int64?
+    private var prefix = Data()
 
     func attach(_ handle: FileHandle) {
         self.handle = handle
         totalReceived = 0
+        responseError = nil
+        prefix = Data()
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
                     didReceive response: URLResponse,
                     completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+        responseStatus = (response as? HTTPURLResponse)?.statusCode ?? 0
+        responseType = response.mimeType
+        responseRangeStart = (response as? HTTPURLResponse).flatMap {
+            DownloadResume.parseContentRangeStart($0.value(forHTTPHeaderField: "Content-Range"))
+        }
+        responseError = AudioResponsePolicy.rejection(status: responseStatus, contentType: responseType)
+        guard responseError == nil else {
+            completionHandler(.cancel)
+            return
+        }
         completionHandler(.allow)
         // The server's own announcement (when it sends Content-Length) is
         // more precise than the snapshot's size — update the writer's
@@ -2241,7 +2286,15 @@ private final class StreamWriterDelegate: NSObject, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let handle else { return }
+        guard responseError == nil, let handle else { return }
+        if prefix.count < 512 {
+            prefix.append(data.prefix(512 - prefix.count))
+            if let rejection = AudioResponsePolicy.rejection(status: responseStatus, contentType: responseType, prefix: prefix, contentRangeStart: responseRangeStart) {
+                responseError = rejection
+                dataTask.cancel()
+                return
+            }
+        }
         handle.write(data)
         totalReceived += Int64(data.count)
         let total = totalReceived
@@ -2253,8 +2306,9 @@ private final class StreamWriterDelegate: NSObject, URLSessionDataDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         try? handle?.close()
         handle = nil
+        let finalError = responseError ?? error
         DispatchQueue.main.async { [weak self] in
-            self?.owner?.writerDidComplete(error)
+            self?.owner?.writerDidComplete(finalError)
         }
     }
 }

@@ -786,7 +786,7 @@ export class PlaybackManager {
       return
     }
 
-    setPlaybackState('playing')
+    setPlaybackState(this._nativeTransport!.loadFailed ? 'paused' : 'playing')
     // setQueue stopped the engine, which also cancelled any armed sleep timer
     // (native `stopPlayback` invalidates the Timer + end-of-track flag). Re-arm
     // the mirror so the sleep intent survives this snapshot (0.2).

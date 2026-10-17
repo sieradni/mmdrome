@@ -211,6 +211,9 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self.notifyListeners("ended", data: [:])
             self.refreshNowPlaying()
         }
+        engine.onPlaybackBlocked = { [weak self] message in
+            self?.notifyListeners("error", data: ["message": message, "recovery": "stop"])
+        }
         engine.onError = { [weak self] message in
             self?.notifyListeners("error", data: ["message": message])
         }

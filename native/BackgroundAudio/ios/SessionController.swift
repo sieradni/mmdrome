@@ -17,7 +17,7 @@ final class SessionController {
     private var onPause: (() -> Void)?
     private var onResume: (() -> Void)?
     private var isPlaying: () -> Bool = { false }
-    private var wasPlayingBeforeInterruption = false
+    private var interruption = InterruptionState()
     /// True while an AVAudioSession interruption is in progress. The engine's
     /// recovery policy reads this (via `onInterruptionStateChanged` →
     /// `NativeAudioEngine.setInterruptionActive`): re-activating the session
@@ -143,29 +143,21 @@ final class SessionController {
               let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
         switch type {
         case .began:
-            wasPlayingBeforeInterruption = isPlaying()
+            guard interruption.begin(isPlaying: isPlaying()) else { return }
             // Flip the interruption flag BEFORE pausing: the engine's recovery
             // policy keys on it, and a play() racing the pause must already see
             // "interrupted" so it waits instead of rebuilding a doomed graph.
             setInterrupted(true)
-            self.event(.info, "interruption BEGAN wasPlaying=\(wasPlayingBeforeInterruption) → pause")
+            self.event(.info, "interruption BEGAN wasPlaying=\(interruption.wasPlaying) → pause")
             onPause?()
         case .ended:
             setInterrupted(false)
-            // Re-activate the session NOW. The interruption released it, and
-            // the engine may have been left with an inactive session (the
-            // 2026-10-04 dump: `setActive` failed with `'!ses'` and every
-            // `engine.start()` then failed with -50 forever). This attempt is
-            // best-effort; the engine's own ladder owns retries if it fails.
-            reactivateSessionAfterInterruption()
-            guard wasPlayingBeforeInterruption else {
-                self.event(.info, "interruption ended wasPlaying=false → stay paused")
-                break
-            }
             let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
                 .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? false
-            self.event(.info, "interruption ended shouldResume=\(shouldResume) → \(shouldResume ? "resume" : "stay paused")")
-            if shouldResume {
+            let resume = interruption.end(shouldResume: shouldResume)
+            self.event(.info, "interruption ended shouldResume=\(shouldResume) → \(resume ? "resume" : "stay paused")")
+            if resume {
+                reactivateSessionAfterInterruption()
                 onResume?()
             }
         @unknown default:
@@ -198,13 +190,13 @@ final class SessionController {
     /// `.ended`, playback continuing ~1 h). Reset the LOCAL flag WITHOUT
     /// firing `onInterruptionStateChanged` (the engine already cleared its own
     /// copy; firing would be a no-op edge): the edge guard must stay honest so
-    /// the NEXT genuine `.began` still emits. `wasPlayingBeforeInterruption`
+    /// the NEXT genuine `.began` still emits. the stored resume intent
     /// is cleared too — otherwise a stray later `.ended` would auto-resume a
     /// session the user never left playing.
     func clearStaleInterruption() {
         guard isInterrupted else { return }
         isInterrupted = false
-        wasPlayingBeforeInterruption = false
+        interruption.clear()
         self.event(.info, "interruption flag cleared as stale — no ended edge was delivered")
     }
 

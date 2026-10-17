@@ -142,7 +142,7 @@ interface BackgroundAudioPlugin {
     listenerFunc: (data: { playing: boolean }) => void
   ): Promise<PluginListenerHandle>
   addListener(eventName: 'ended', listenerFunc: () => void): Promise<PluginListenerHandle>
-  addListener(eventName: 'error', listenerFunc: (data: { message: string }) => void): Promise<PluginListenerHandle>
+  addListener(eventName: 'error', listenerFunc: (data: { message: string; recovery?: 'stop' }) => void): Promise<PluginListenerHandle>
   addListener(eventName: 'sleepTimerFired', listenerFunc: () => void): Promise<PluginListenerHandle>
   addListener(
     eventName: 'networkStateChanged',
@@ -192,7 +192,7 @@ export interface NativeEngineCallbacks {
   onTrackChanged: (trackId: string, queueEntryId?: string) => void
   onPlaybackStateChanged: (playing: boolean) => void
   onQueueEnded: () => void
-  onError: (message: string) => void
+  onError: (message: string, recovery?: 'stop') => void
   /** The native audio engine surfaced as UNAVAILABLE — the recovery ladder
    *  ran out of retries/rebuilds. The manager shows a restart affordance and
    *  stops advancing the queue (2026-10-04). */
@@ -315,7 +315,7 @@ export class NativeAudioEngineApp {
     this.listeners.push(
       await plugin.addListener('error', (data) => {
         trailBridge('event', `error ${data.message}`)
-        this.callbacks?.onError(data.message)
+        this.callbacks?.onError(data.message, data.recovery)
       }),
     )
     this.listeners.push(

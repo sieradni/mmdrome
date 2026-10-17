@@ -117,7 +117,7 @@ export interface NativeEngineClient {
   onTrackChanged(trackId: string, queueEntryId?: string): void
   onPlaybackStateChanged(playing: boolean): void
   onQueueEnded(): void
-  onError(message: string): void
+  onError(message: string, recovery?: 'stop'): void
   /** Seek-epoch lifecycle (Phase 2, 2026-10-07) — telemetry only, forwarded
    *  verbatim. Optional so a client without the event still satisfies the
    *  contract. */
@@ -181,6 +181,10 @@ export class NativeTransport {
   /** Bumped by disengage/destroy — a stale engage settle must never re-engage. */
   private _engagement = 0
   private _lastTrackId: string | null = null
+  private _failedTracks = new Set<string>()
+  private _loadFailed = false
+  get loadFailed(): boolean { return this._loadFailed }
+
   private _retryTrackId: string | null = null
   private _retryCancel: (() => void) | null = null
   private _seekMemory: SeekMemory | null = null
@@ -211,9 +215,9 @@ export class NativeTransport {
     return this._engaged
   }
 
-  /** The row the engine's last SETTLED engage landed on (null when
-   *  disengaged). The manager reads it to decide whether a seek is
-   *  deliverable now — a non-null value implies `engaged`. */
+  /** The current load target (null when disengaged). Set before bridge
+   *  commands so early errors have a row identity. Seek delivery additionally
+   *  requires an engaged transport with no engage cycle in flight. */
   get lastTrackId(): string | null {
     return this._lastTrackId
   }
@@ -227,9 +231,12 @@ export class NativeTransport {
         if (this._engaged) this._lastTrackId = trackId
         this.onTrackChanged?.(trackId, entryId)
       },
-      onPlaybackStateChanged: (playing) => this.onPlaybackState?.(playing ? 'playing' : 'paused'),
+      onPlaybackStateChanged: (playing) => {
+        if (playing) this._loadFailed = false
+        this.onPlaybackState?.(playing ? 'playing' : 'paused')
+      },
       onQueueEnded: () => this.onTrackEnded?.({ kind: 'natural', fromError: false }),
-      onError: (message) => this._handleEngineError(message),
+      onError: (message, recovery) => this._handleEngineError(message, recovery),
       onEngineUnavailable: () => {
         // Stop the per-track retry ladder: the engine is down, so retrying the
         // row or advancing to the next one cannot help (2026-10-04).
@@ -343,6 +350,13 @@ export class NativeTransport {
       request.resolve(false)
       return false
     }
+    this._loadFailed = false
+    this._lastTrackId = active.trackId
+    const retryTarget = this._retryTrackId
+    const mem = this._seekMemory
+    // Establish identity and retry ownership before issuing commands: native
+    // can deliver a load error before the command's promise settles.
+    if (retryTarget === null || retryTarget !== active.trackId) this._resetRetry()
     try {
       const plugin = this._client.plugin()
       // Bridge trail (2026-09-16): engage is one of the TWO commands that can
@@ -382,22 +396,8 @@ export class NativeTransport {
       return false
     }
     this._engaged = true
-    this._client.setPositionPolling(true, (state) => this.onTick?.(state.position))
+    this._client.setPositionPolling(true, (state) => this._receivePoll(state))
     this._lastTrackId = active.trackId
-    const retryTarget = this._retryTrackId
-    const mem = this._seekMemory
-    // 2026-09-19, the unbounded-retry fix: a retry's own reload engage must
-    // NOT reset the attempt counter. Resetting on every engage made the
-    // give-up unreachable — the doc's "bounded — a failed reload keeps the
-    // backoff" claim was false — so any systematic per-track error (a
-    // truncated file the loader kept re-serving, a persistently failing row)
-    // looped the SAME track forever: play → error → 1 s → reload → play → …
-    // Reset only when this engage is NOT the retry's reload; a track change
-    // or give-up still resets (and a user re-engage of another row hits the
-    // `retryTarget !== active.trackId` branch).
-    if (retryTarget === null || retryTarget !== active.trackId) {
-      this._resetRetry()
-    }
     if (mem && retryTarget !== null && retryTarget === mem.trackId && retryTarget === this._lastTrackId) {
       // 1.7: this engage IS the retry's reload — re-issue the clamped seek
       // (Swift's loadAndStart wiped positionBias).
@@ -431,6 +431,7 @@ export class NativeTransport {
   /** Marks the engine idle: poll stops, retry/seek state dropped, later
    *  queue writes are ignored. */
   disengage(): void {
+    this._failedTracks.clear()
     this._engagement++
     this._engaged = false
     this._syncFactory = null
@@ -456,7 +457,7 @@ export class NativeTransport {
   adopt(trackId: string): void {
     this._engaged = true
     this._lastTrackId = trackId
-    this._client.setPositionPolling(true, (state) => this.onTick?.(state.position))
+    this._client.setPositionPolling(true, (state) => this._receivePoll(state))
   }
 
   /**
@@ -503,10 +504,12 @@ export class NativeTransport {
   }
 
   play(): Promise<void> {
+    this._failedTracks.clear()
     return this._client.plugin().play()
   }
 
   pause(): Promise<void> {
+    this._resetRetry()
     return this._client.plugin().pause()
   }
 
@@ -549,10 +552,17 @@ export class NativeTransport {
     return this._client.plugin().getState()
   }
 
-  private _handleEngineError(message: string): void {
+  private _handleEngineError(message: string, recovery?: 'stop'): void {
     console.error('[native] engine error:', message)
+    this._loadFailed = true
     const last = this._lastTrackId
+    if (recovery === 'stop') {
+      this._resetRetry()
+      this.onPlaybackState?.('paused')
+      return
+    }
     if (last === null) return
+    this.onPlaybackState?.('paused')
     if (this._retryTrackId !== last) this._resetRetry()
     const decision = this._retry.onError()
     if (decision.kind === 'give-up') {
@@ -562,6 +572,14 @@ export class NativeTransport {
       this._resetRetry()
       this._seekMemory = null
       this._pendingSeek = null
+      this._failedTracks.add(last)
+      if (this._failedTracks.size >= 3) {
+        // Three distinct rows exhausted retries with no confirmed playback.
+        // A shared outage must not consume the rest of the listening queue.
+        trailBridge('event', 'retryCircuitOpen')
+        this.onPlaybackState?.('paused')
+        return
+      }
       this.onTrackEnded?.({ kind: 'natural', fromError: true })
       return
     }
@@ -579,6 +597,13 @@ export class NativeTransport {
     })
   }
 
+  private _receivePoll(state: NativePollState): void {
+    if (state.trackId === this._lastTrackId && state.playing && state.position >= 1 && !this._loadFailed) {
+      this._failedTracks.clear()
+    }
+    this.onTick?.(state.position)
+  }
+
   private _resetRetry(): void {
     this._retry.reset()
     this._retryTrackId = null
@@ -589,6 +614,7 @@ export class NativeTransport {
   }
 
   async destroy(): Promise<void> {
+    this._failedTracks.clear()
     this._engagement++
     this._engaged = false
     this._syncScheduled = false

@@ -120,6 +120,7 @@ public final class NativeAudioEngine: NSObject {
     public var onPlaybackStateChanged: ((Bool) -> Void)?
     public var onQueueEnded: (() -> Void)?
     public var onError: ((String) -> Void)?
+    public var onPlaybackBlocked: ((String) -> Void)?
     /// Fired when the native sleep timer expires (playback has been paused).
     public var onSleepTimerFired: (() -> Void)?
     /// Preload download progress (queue-row tint parity with web): fired by
@@ -290,7 +291,8 @@ public final class NativeAudioEngine: NSObject {
         return ActiveLoadFailure(
             kind: kind,
             detail: "\(error.localizedDescription) \(classified.evidence)",
-            cut: classified.cut)
+            cut: classified.cut,
+            stopsQueue: AudioResponsePolicy.stopsQueue(error))
     }
     /// Opt-in verbose domains (HUD toggles → bridge → here). NOT persisted
     /// natively — the HUD re-pushes them whenever it opens, so a fresh
@@ -1463,6 +1465,7 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func pause() {
+        cancelActiveLoadRetries()
         guard isPlaying else { return }
         eventAdd(.info, "engine", "pause() position=\(String(format: "%.1f", currentPosition)) crossfade=\(crossfade.phase)")
         cachedPosition = currentPosition
@@ -1883,6 +1886,7 @@ public final class NativeAudioEngine: NSObject {
         /// (a non-transport failure, or a record built from a bare string)
         /// leaves the ladder's behavior unchanged.
         var cut: CutAttribution? = nil
+        var stopsQueue = false
     }
     /// Generous for a backgrounded stream: six × (timeout-bounded attempt +
     /// 3 s spacing) ≈ 12+ minutes of autonomous recovery per phase.
@@ -2021,7 +2025,7 @@ public final class NativeAudioEngine: NSObject {
                     // row fall would see the JS retry aim its ladder at the
                     // NEXT row (the counter reset bug) — the native retry
                     // owns the loop until the cap yields (one report there).
-                    self.scheduleActiveLoadRetry(track: track, failure: failure)
+                    self.handleYieldedActiveLoadFailure(track: track, failure: error.map { self.activeLoadFailure(kind: .download, error: $0) } ?? failure)
                 }
             }
         }
@@ -2102,6 +2106,14 @@ public final class NativeAudioEngine: NSObject {
     /// report (the JS machine is suspended). Every yield site routes through
     /// here — that is what keeps the sites from drifting.
     private func handleYieldedActiveLoadFailure(track: NativeTrack, failure: ActiveLoadFailure) {
+        if failure.stopsQueue {
+            cancelActiveLoadRetries()
+            pause()
+            setPlaying(false)
+            eventAdd(.danger, "loader", "playback blocked; preserving queue: \(failure.detail)")
+            onPlaybackBlocked?(failure.detail)
+            return
+        }
         let owner = ActiveLoadRetryOwnership.owner(isBackground: isApplicationBackground)
         // Observed, not assumed: a dump can tell WHICH machine took the yield,
         // so the single-owner rule is verifiable from the field log alone.

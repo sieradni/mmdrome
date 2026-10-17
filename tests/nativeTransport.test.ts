@@ -79,7 +79,7 @@ class FakeClient implements NativeEngineClient {
     onTrackChanged(trackId: string, queueEntryId?: string): void
     onPlaybackStateChanged(playing: boolean): void
     onQueueEnded(): void
-    onError(message: string): void
+    onError(message: string, recovery?: 'stop'): void
     onEngineUnavailable?(): void
     onEngineRecovered?(): void
   } | null = null
@@ -94,7 +94,7 @@ class FakeClient implements NativeEngineClient {
     onTrackChanged(trackId: string, queueEntryId?: string): void
     onPlaybackStateChanged(playing: boolean): void
     onQueueEnded(): void
-    onError(message: string): void
+    onError(message: string, recovery?: 'stop'): void
     onEngineUnavailable?(): void
     onEngineRecovered?(): void
   }): Promise<void> {
@@ -980,4 +980,98 @@ test('disengage invalidates a refresh waiting on an engage', async () => {
   await engage
   await tick()
   assert.equal(plugin.refreshCalls.length, 0)
+})
+
+test('server response failure cancels retries and preserves the current queue row', async () => {
+  const { transport, client, timers } = setupTimed()
+  const ended: TransportEndedEvent[] = []
+  const states: string[] = []
+  const retried: string[] = []
+  transport.onTrackEnded = (e) => ended.push(e)
+  transport.onPlaybackState = (s) => states.push(s)
+  transport.onRetry = (id) => retried.push(id)
+  await transport.init()
+  await transport.engage(tracks, 0, 'none')
+  client.callbacks!.onError('temporary cut')
+  client.callbacks!.onError('Server returned HTML', 'stop')
+  timers.fireAll()
+  assert.deepEqual(ended, [])
+  assert.deepEqual(retried, [])
+  assert.equal(transport.lastTrackId, 't1')
+  assert.equal(states.at(-1), 'paused')
+  assert.equal(transport.loadFailed, true)
+  await transport.engage(tracks, 0, 'none')
+  assert.equal(transport.loadFailed, false)
+})
+
+test('a server error before engage settles remains paused', async () => {
+  const { transport, client, plugin, timers } = setupTimed()
+  await transport.init()
+  let release!: () => void
+  plugin.setQueueGate = new Promise<void>((resolve) => { release = resolve })
+  const engaging = transport.engage(tracks, 0, 'none')
+  client.callbacks!.onError('Server returned a login page', 'stop')
+  release()
+  assert.equal(await engaging, true)
+  assert.equal(transport.loadFailed, true)
+  assert.equal(timers.entries.length, 0)
+})
+
+test('pause cancels a pending retry instead of restarting playback later', async () => {
+  const { transport, client, timers } = setupTimed()
+  const retried: string[] = []
+  transport.onRetry = (id) => retried.push(id)
+  await transport.init()
+  await transport.engage(tracks, 0, 'none')
+  client.callbacks!.onError('temporary cut')
+  await transport.pause()
+  timers.fireAll()
+  assert.deepEqual(retried, [])
+})
+
+
+test('a shared outage stops after three failed rows instead of consuming the queue', async () => {
+  const { transport, client, timers } = setupTimed()
+  const ended: TransportEndedEvent[] = []
+  transport.onTrackEnded = (e) => ended.push(e)
+  await transport.init()
+  for (let index = 0; index < 3; index++) {
+    await transport.engage(tracks3, index, 'none')
+    if (index > 0) client.polling.at(-1)!.handler!({ trackId: 't1', position: 99, playing: true })
+    for (let error = 0; error < 3; error++) client.callbacks!.onError('undecodable response')
+  }
+  assert.equal(ended.length, 2)
+  assert.equal(transport.lastTrackId, 't3')
+  assert.equal(timers.entries.filter((e) => !e.cancelled).length, 0)
+})
+
+test('confirmed playback resets the cross-track failure streak', async () => {
+  const { transport, client } = setupTimed()
+  const ended: TransportEndedEvent[] = []
+  transport.onTrackEnded = (e) => ended.push(e)
+  await transport.init()
+  for (let index = 0; index < 3; index++) {
+    await transport.engage(tracks3, index, 'none')
+    const poll = client.polling.at(-1)!.handler!
+    poll({ trackId: tracks3[index].trackId, position: 2, playing: true })
+    for (let error = 0; error < 3; error++) client.callbacks!.onError('broken file')
+  }
+  assert.equal(ended.length, 3)
+})
+
+
+test('a retryable error before engage settles keeps its timer and failure state', async () => {
+  const { transport, client, plugin, timers } = setupTimed()
+  const retried: string[] = []
+  transport.onRetry = (id) => retried.push(id)
+  await transport.init()
+  let release!: () => void
+  plugin.setQueueGate = new Promise<void>((resolve) => { release = resolve })
+  const engaging = transport.engage(tracks, 0, 'none')
+  client.callbacks!.onError('connection lost')
+  release()
+  await engaging
+  assert.equal(transport.loadFailed, true)
+  timers.fireAll()
+  assert.deepEqual(retried, ['t1'])
 })
