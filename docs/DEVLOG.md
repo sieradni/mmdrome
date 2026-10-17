@@ -1915,3 +1915,5 @@ InterruptionState preserves original resume intent across duplicate begin notifi
 Regression coverage: AudioResponsePolicyTests and InterruptionStateTests on the Swift CI host; nativeTransport and coverLoadTiming Node tests locally. Native compilation and all Swift tests remain mandatory in ios.yml before the release tag.
 
 Local validation: 59 production-bundle browser tests passed, including offline advance, queue manipulation, thumbnail stress/landing, and boot smoke; type checks reported zero warnings/errors. Prefix inspection explicitly excludes nonzero/unknown-start 206 remainders, which begin inside compressed audio and may coincidentally resemble document delimiters. Missing-file 404 responses keep ordinary bounded per-track recovery even when the server returns an HTML error page.
+
+Final adapter review: interruption pauses preserve a pending native load retry; explicit user/lock-screen/route pauses cancel it. Cancelling a retry for an idle interruption would strand an in-flight load because its interruption snapshot correctly has no playing intent to auto-resume. The session pause callback now carries that distinction explicitly.

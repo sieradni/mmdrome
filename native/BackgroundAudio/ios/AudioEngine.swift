@@ -1464,8 +1464,8 @@ public final class NativeAudioEngine: NSObject {
         setupCrossfadeMonitor()
     }
 
-    public func pause() {
-        cancelActiveLoadRetries()
+    public func pause(cancelRetries: Bool = true) {
+        if cancelRetries { cancelActiveLoadRetries() }
         guard isPlaying else { return }
         eventAdd(.info, "engine", "pause() position=\(String(format: "%.1f", currentPosition)) crossfade=\(crossfade.phase)")
         cachedPosition = currentPosition

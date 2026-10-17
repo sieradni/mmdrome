@@ -184,7 +184,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         session.configure(
-            onPause: { [weak self] in self?.performOnMain { self?.engine.pause() } },
+            onPause: { [weak self] cancelRetries in self?.performOnMain { self?.engine.pause(cancelRetries: cancelRetries) } },
             onResume: { [weak self] in self?.performOnMain { self?.engine.play() } },
             isPlaying: { [weak self] in self?.performOnMainSync { self?.engine.isCurrentlyPlaying ?? false } ?? false }
         )

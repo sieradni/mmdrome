@@ -14,7 +14,9 @@ import BackgroundAudioCore
 /// restart can never silently clobber the user's choice back to exclusive.
 /// System interruptions (calls/Siri) and route changes fire in every mode.
 final class SessionController {
-    private var onPause: (() -> Void)?
+    /// User/route pauses cancel retries; interruptions preserve a pending
+    /// load so its native recovery can continue when the session returns.
+    private var onPause: ((Bool) -> Void)?
     private var onResume: (() -> Void)?
     private var isPlaying: () -> Bool = { false }
     private var interruption = InterruptionState()
@@ -82,7 +84,7 @@ final class SessionController {
         }
     }
 
-    func configure(onPause: @escaping () -> Void, onResume: @escaping () -> Void, isPlaying: @escaping () -> Bool) {
+    func configure(onPause: @escaping (Bool) -> Void, onResume: @escaping () -> Void, isPlaying: @escaping () -> Bool) {
         self.onPause = onPause
         self.onResume = onResume
         self.isPlaying = isPlaying
@@ -149,7 +151,7 @@ final class SessionController {
             // "interrupted" so it waits instead of rebuilding a doomed graph.
             setInterrupted(true)
             self.event(.info, "interruption BEGAN wasPlaying=\(interruption.wasPlaying) → pause")
-            onPause?()
+            onPause?(false)
         case .ended:
             setInterrupted(false)
             let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
@@ -237,7 +239,7 @@ final class SessionController {
             .info,
             "route change reason=\(reason.rawValue) prev=\(portTag(previous)) now=\(portTag(current))\(fate)")
         if reason == .oldDeviceUnavailable {
-            onPause?()
+            onPause?(true)
         }
     }
 }
