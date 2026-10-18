@@ -1917,3 +1917,33 @@ Regression coverage: AudioResponsePolicyTests and InterruptionStateTests on the 
 Local validation: 59 production-bundle browser tests passed, including offline advance, queue manipulation, thumbnail stress/landing, and boot smoke; type checks reported zero warnings/errors. Prefix inspection explicitly excludes nonzero/unknown-start 206 remainders, which begin inside compressed audio and may coincidentally resemble document delimiters. Missing-file 404 responses keep ordinary bounded per-track recovery even when the server returns an HTML error page.
 
 Final adapter review: interruption pauses preserve a pending native load retry; explicit user/lock-screen/route pauses cancel it. Cancelling a retry for an idle interruption would strand an in-flight load because its interruption snapshot correctly has no playing intent to auto-resume. The session pause callback now carries that distinction explicitly.
+
+
+## 2026-10-17 — Growing Opus schedule, readable startup lead, and percentage-first progress
+
+The 03:34:33Z field dump captured a native Opus@128 track playing briefly, then
+resuming only at download completion (6.0s held position). Growth decisions
+reused the initial partial container length, so increased bytes could never
+outgrow that cap. Byte-based startup lead and 512 KiB scheduling deliveries also
+failed to establish actual readable headroom on slow links. The native progress
+mapper separately emitted percentage-first updates which the shared reducer
+ignored until completion; that shape is reproduced through the real store and
+rendered SeekBar.
+
+StreamGrowth/StreamGrowthPump provide pure decisions and a coalesced trailing
+200 ms clock, consumed by fresh AVAudioFile observations in the engine. Startup
+checks real lead at playback speed, low scheduled headroom permits small safe
+extensions, and partial growth can resume buffering before completion. User
+pause survives buffering/first-open waits, and estimated transcode bytes cannot
+trigger completion rescue. Final dataConsumed bookkeeping now waits for the
+remaining scheduled audible tail before acting on its last completion, while
+new successors and generation changes remain guarded.
+
+Native progress has an atomic absent-to-fetching path with terminal stale-event
+guards. The self-test captures bounded readable-growth history, distinguishes
+partial versus completion-triggered recovery, treats absent/incomplete evidence
+as unknown, and defers all HTTP probes while the user stream owns the link.
+The Apple reader package tests real appended Opus/FLAC fixtures independently of
+Capacitor; ios.yml also compiles the plugin. Device validation remains separate
+and must be recorded in the implementation plan; compile success cannot replace
+real iOS playback/background/interrupt evidence.

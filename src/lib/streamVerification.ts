@@ -15,6 +15,58 @@
  */
 
 /** The container magic-byte read from the head of the transcode body. */
+export interface StreamGrowthSample {
+  t: number
+  trackId: string
+  generation: number
+  reason: string
+  complete: boolean
+  schedulableEndSeconds: number
+  scheduledEndSeconds: number
+  positionSeconds: number
+  speed: number
+  stalled: boolean
+  userPaused: boolean
+  interrupted: boolean
+}
+
+export interface StreamGrowthEvidence {
+  samples: StreamGrowthSample[]
+  extensions: number
+  stalls: number
+  partialResumes: number
+  completionResumes: number
+  stallSeconds: number
+  observationComplete: boolean
+}
+
+/** A completed download and zero resume events cannot prove healthy streaming.
+ * Judge fresh readable headroom and intent, scoped to the same schedule. */
+export function evaluateStreamGrowth(trackId: string, growth?: StreamGrowthEvidence | null): {
+  status: CheckStatus; evidence: string
+} {
+  if (!growth) return { status: 'unknown', evidence: 'no readable-growth trace (older build or capture unavailable)' }
+  const samples = growth.samples.filter((s) => s.trackId === trackId &&
+    [s.t, s.generation, s.schedulableEndSeconds, s.scheduledEndSeconds, s.positionSeconds, s.speed].every(Number.isFinite) && s.speed > 0)
+  let eligibleSince: StreamGrowthSample | null = null
+  for (const sample of samples) {
+    const headroom = (sample.schedulableEndSeconds - sample.positionSeconds) / sample.speed
+    if (sample.reason !== 'observe' || sample.complete || !sample.stalled || sample.userPaused || sample.interrupted || headroom < 2) {
+      eligibleSince = null
+      continue
+    }
+    if (!eligibleSince || sample.generation !== eligibleSince.generation) eligibleSince = sample
+    else if (sample.t - eligibleSince.t >= 1.2) {
+      return { status: 'fail', evidence: 'stalled despite readable resume headroom across successive observations' }
+    }
+  }
+  const detail = `extensions=${growth.extensions}, stalls=${growth.stalls}, partialResumes=${growth.partialResumes}, completionResumes=${growth.completionResumes}, stalled=${growth.stallSeconds.toFixed(1)}s`
+  if (growth.completionResumes > 0) return { status: 'warn', evidence: `${detail}; completion unblocked playback; partial recovery not established for that stall` }
+  if (!growth.observationComplete || samples.length < 2) return { status: 'unknown', evidence: `${detail}; observation incomplete or too short` }
+  if (growth.extensions > 0 && (growth.stalls === 0 || growth.partialResumes > 0)) return { status: 'pass', evidence: detail }
+  return { status: 'unknown', evidence: `${detail}; no demonstrated extension while incomplete` }
+}
+
 export type ContainerSniff = 'ogg-opus' | 'ogg-vorbis' | 'ogg' | 'mp3' | 'aac-adts' | 'flac' | 'mp4' | 'other'
 
 /** Facts read from a bounded GET of the real transcode URL. */
@@ -609,6 +661,7 @@ export interface StreamVerifyInput {
   probeNote?: string | null
   /** Parsed native transcript, or null on web / when no capture ran. */
   native: NativeStreamFacts | null
+  growth?: StreamGrowthEvidence | null
   /** A live getDebugState() sample taken during the capture, used to classify
    *  the container shape (needs the delivered/announced fraction plus the
    *  engine's own metadata-frames figure — the JS side cannot derive it). */
@@ -866,8 +919,8 @@ export function evaluateStreamVerification(input: StreamVerifyInput): StreamVeri
     checks.push({
       id: 'estimate-health',
       label: 'Estimate neither starves nor over-promises',
-      status: native.stallGiveUpCount > 0 ? 'fail' : native.stallResumeCount <= 1 ? 'pass' : 'warn',
-      evidence: `stallResume=${native.stallResumeCount}, giveUp=${native.stallGiveUpCount}, pastDelivered=${native.schedulePastDeliveredCount}`,
+      ...evaluateStreamGrowth(input.trackId, input.growth),
+      ...(native.stallGiveUpCount > 0 ? { status: 'fail' as const, evidence: 'stream gave up after inactivity' } : {}),
     })
 
     // --- Seek epochs (Phase 2, 2026-10-07) -------------------------------
@@ -1063,6 +1116,7 @@ export interface StreamVerifyBundleInput {
   /** The decoupled server-capability matrix (see `LabeledHttpProbe`). */
   httpProbes?: LabeledHttpProbe[]
   native: NativeStreamFacts | null
+  growth?: StreamGrowthEvidence | null
   stateSample?: {
     deliveredBytes: number
     announcedBytes: number
@@ -1087,6 +1141,7 @@ export interface StreamVerifyBundleInput {
  */
 export function formatStreamVerifyBundle(input: StreamVerifyBundleInput): string {
   const { report, context, http, native, stateSample, rawLines } = input
+  const growthLines = input.growth ? ['READABLE GROWTH TRACE', JSON.stringify(input.growth)] : []
   const rows: string[] = []
   rows.push('=== MMDROME STREAM SELF-TEST ========================================')
   rows.push(`when: ${report.at}   platform: ${context.platform}   app: ${context.appVersion}`)
@@ -1124,5 +1179,6 @@ export function formatStreamVerifyBundle(input: StreamVerifyBundleInput): string
   rows.push(`--- RAW EVENTS (${rawLines.length}) ----------------------------------------`)
   rows.push(...rawLines.map((l) => `  ${l}`))
   rows.push('====================================================================')
+  rows.push(...growthLines)
   return rows.join('\n')
 }

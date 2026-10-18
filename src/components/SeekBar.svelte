@@ -165,6 +165,7 @@
       <div class="absolute inset-0 overflow-hidden rounded-sm">
         {#if loadedPct > 0}
           <div
+            data-testid="seek-loaded"
             class="absolute inset-y-0 left-0 rounded-sm bg-white/20"
             style="width: {loadedPct}%;"
           ></div>

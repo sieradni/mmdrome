@@ -28,6 +28,8 @@ import { nativeEngine, BackgroundAudio } from './nativePlugin'
 import { appVersion } from './version'
 import {
   type HttpProbeFacts,
+  type StreamGrowthEvidence,
+  type StreamGrowthSample,
   type NativeStreamFacts,
   type StreamVerifyReport,
   type NativeEventLike,
@@ -301,6 +303,7 @@ export interface StreamSelfTestBundle {
   httpProbes: LabeledHttpProbe[]
   native: NativeStreamFacts | null
   stateSample: StateSample | null
+  growth?: StreamGrowthEvidence | null
   rawLines: string[]
 }
 
@@ -315,7 +318,7 @@ export function clearStreamVerifyReport(): void {
 }
 
 export interface RunStreamSelfTestOptions {
-  /** How long to keep polling forward after the look-back (default 25 s;
+  /** How long to keep polling forward after the look-back (default 90 s;
    *  0 = HTTP probe only). */
   captureMs?: number
   /** How far back into the event ring to mine (default 20 s). */
@@ -340,7 +343,7 @@ export interface RunStreamSelfTestOptions {
  * early on a terminal verdict → evaluate → format.
  */
 export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Promise<StreamSelfTestBundle> {
-  const captureMs = opts.captureMs ?? 25_000
+  const captureMs = opts.captureMs ?? 90_000
   const lookbackMs = opts.lookbackMs ?? 20_000
   const pollMs = opts.pollMs ?? 500
 
@@ -360,7 +363,8 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
   // ever needing playback stopped — and because the targets are DIFFERENT
   // tracks, the requests cannot attach to the playing track's live transcode
   // job (the reason the old same-track probe had to defer).
-  const httpProbes = await probeServerCapabilityMatrix({
+  const deferProbes = native && await stagedStreamInFlightNow()
+  let httpProbes = deferProbes ? [] : await probeServerCapabilityMatrix({
     formats: opts.matrixFormats ?? matrixFormats(),
     perFormat: matrixPerFormat,
     track,
@@ -382,6 +386,19 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
   let facts = emptyNativeStreamFacts()
   const raw: RawEvent[] = []
   let stateSample: StateSample | null = null
+  let growth: StreamGrowthEvidence | null = null
+  const sampleGrowth = async () => {
+    try {
+      const d = await (BackgroundAudio as unknown as { getDebugState?: () => Promise<Record<string, unknown>> }).getDebugState?.()
+      if (!d || d.activeTrackId !== track?.trackId || !Array.isArray(d.streamGrowthSamples)) return
+      growth = {
+        samples: d.streamGrowthSamples.filter((s): s is StreamGrowthSample => !!s && typeof s === 'object' && s.trackId === track?.trackId),
+        extensions: Number(d.streamExtensionCount ?? 0), stalls: Number(d.streamStallCount ?? 0),
+        partialResumes: Number(d.streamPartialResumeCount ?? 0), completionResumes: Number(d.streamCompletionResumeCount ?? 0),
+        stallSeconds: Number(d.streamStallSeconds ?? 0), observationComplete: d.streamComplete === true,
+      }
+    } catch { /* unavailable evidence stays unknown */ }
+  }
 
   if (native) {
     // 1. Look-back: read the ring and keep the CURRENT stream's events so a
@@ -407,6 +424,7 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
       /* bridge unavailable */
     }
     stateSample = await readStateSample()
+    await sampleGrowth()
 
     // 2. Forward poll until terminal, the deadline, or captureMs == 0.
     const deadline = Date.now() + captureMs
@@ -415,6 +433,7 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
       try {
         const page = await nativeEngine.getDebugEvents(seq)
         seq = page.nextSeq
+        if (get(currentTrack)?.trackId !== currentTrackId) break
         for (const ev of page.events as RawEvent[]) {
           if (ev.domain && RAW_DOMAINS.has(ev.domain)) raw.push(ev)
           facts = foldStreamEvent(facts, ev)
@@ -423,6 +442,7 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
         /* keep polling */
       }
       if (!stateSample) stateSample = await readStateSample()
+      await sampleGrowth()
       const terminal =
         facts.promoted || facts.completedWhole || facts.rejectedTranscodeShort || facts.writerFailed || facts.stallGiveUpCount > 0
       if (terminal && stateSample) break
@@ -440,9 +460,16 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
     if (settled) {
       http = await probeTranscodeHttp(probe.url)
     } else {
-      probeNote = `same-stream probe skipped — the staged stream was still live ${Math.round(sameStreamWaitMs / 1000)}s after the capture; the server-capability matrix probed different tracks, so it never attached to the live transcode job`
+      probeNote = `same-stream probe skipped — the staged stream was still live ${Math.round(sameStreamWaitMs / 1000)}s after the capture; all capability probes were deferred to avoid competing with playback`
     }
   }
+
+  // Capability probes are deferred for ALL active user transfers, including
+  // other-track probes: different jobs still compete for the same link.
+  if (deferProbes && !(await stagedStreamInFlightNow())) {
+    httpProbes = await probeServerCapabilityMatrix({ formats: opts.matrixFormats ?? matrixFormats(), perFormat: matrixPerFormat, track })
+  }
+  if (deferProbes && httpProbes.length === 0) probeNote ??= 'capability matrix deferred while the user stream owned the link'
 
   const report = evaluateStreamVerification({
     trackId: track?.trackId ?? 'unknown',
@@ -455,6 +482,7 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
     probeNote,
     native: native ? facts : null,
     stateSample,
+    growth,
   })
 
   // Raw lines read forward from the oldest captured event (a compact timeline
@@ -482,9 +510,10 @@ export async function runStreamSelfTest(opts: RunStreamSelfTestOptions = {}): Pr
     probeNote,
     native: native ? facts : null,
     stateSample,
+    growth,
     rawLines,
   })
 
-  lastBundle = { report, text, http, httpProbes, native: native ? facts : null, stateSample, rawLines }
+  lastBundle = { report, text, http, httpProbes, native: native ? facts : null, stateSample, growth, rawLines }
   return lastBundle
 }

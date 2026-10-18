@@ -7,8 +7,7 @@ import { queueManager } from './queueManager'
 import { advanceTargetIndex, resolveQueueOccurrence, queueEntryId } from './queueMutation'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc, sweepStaleTranscodeEntries } from './preloader'
-import { mapNativePreloadEvent } from './loadStatus'
-import { emitPreloadEvent } from '../stores/loadStatus'
+import { forwardNativePreloadProgress } from './nativeLoadStatus'
 import { setupMediaSession } from './mediaSession'
 import { getCoverUrl } from './coverArtCache'
 import { getCachedConfig, buildStreamUrl, buildCoverArtUrl, requestableCoverArtId } from './navidromeApi'
@@ -343,9 +342,7 @@ export class PlaybackManager {
     // (indeterminate when the response carries no length), "done" → cached,
     // "gone" → evict. The reducer's same-reference early-outs keep unchanged
     // re-emits harmless.
-    nativeEngine.initPreloadForwarding((event) => {
-      emitPreloadEvent(mapNativePreloadEvent(event))
-    })
+    nativeEngine.initPreloadForwarding(forwardNativePreloadProgress)
     // Seek-epoch telemetry (Phase 2, 2026-10-07): the plugin's listener writes
     // the bridge-trail line (so it exists even with no manager interest); the
     // manager's callback is the extension point (nothing here drives playback).

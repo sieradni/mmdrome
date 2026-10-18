@@ -76,10 +76,10 @@
     if (verifyBusy) return
     verifyBusy = true
     verifyText = verifyArmed
-      ? 'probing server + watching the event ring for 25s (play a transcoded track now)…'
+      ? 'probing server + watching the event ring for 90s (play a transcoded track now)…'
       : 'probing server…'
     try {
-      const bundle = await runStreamSelfTest({ captureMs: verifyArmed ? 25_000 : 0 })
+      const bundle = await runStreamSelfTest({ captureMs: verifyArmed ? 90_000 : 0 })
       verifyText = bundle.text
       // Auto-copy: the whole point is paste-ready output.
       try {
@@ -638,14 +638,14 @@
             <button onclick={copyVerify} disabled={!verifyText} class="rounded bg-white/10 px-2 py-0.5 hover:bg-white/20 disabled:opacity-30">Copy</button>
             <label class="flex items-center gap-1 text-[10px] text-white/60">
               <input type="checkbox" checked={verifyArmed} onchange={(e) => (verifyArmed = (e.currentTarget as HTMLInputElement).checked)} />
-              + watch 25s
+              + watch 90s
             </label>
           </div>
           {#if verifyText}
             <pre class="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[9px]">{verifyText}</pre>
           {:else}
             <div class="text-[10px] text-white/30">
-              Press Run test: probes the real transcode URL now and, with “watch 25s” ticked,
+              Press Run test: probes the real transcode URL now and, with “watch 90s” ticked,
               captures the native stream events (a track already playing is still picked up).
               The report is copied to the clipboard automatically.
             </div>

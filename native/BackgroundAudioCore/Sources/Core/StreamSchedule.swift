@@ -329,8 +329,9 @@ public enum StreamSchedule {
     /// complete the schedule from the on-disk file.
     /// `announcedBytes == 0` (no Content-Length evidence) never rescues —
     /// equality with zero means nothing.
-    public static func stallRescueEligible(deliveredBytes: Int64, announcedBytes: Int64) -> Bool {
-        announcedBytes > 0 && deliveredBytes >= announcedBytes
+    public static func stallRescueEligible(deliveredBytes: Int64, announcedBytes: Int64, transcode: Bool = false) -> Bool {
+        // Transcode totals are estimates: crossing one is not completion.
+        !transcode && announcedBytes > 0 && deliveredBytes >= announcedBytes
     }
 
     // MARK: - Dead-air watchdog (D1, 2026-09-23 field dumps)

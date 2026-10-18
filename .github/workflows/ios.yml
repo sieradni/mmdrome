@@ -34,6 +34,17 @@ jobs:
           VERSION="${RELEASE_REF#refs/tags/ios-v}"
           node scripts/validate-ios-release.mjs "$VERSION"
 
+  stream-reader-tests:
+    name: Growing-file reader tests (AVFoundation)
+    # Use the current host decoder; the older build host predates Ogg/Opus
+    # support even though the plugin can target newer iOS devices.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test the production growing-file observation adapter
+        working-directory: native/StreamFileSupport
+        run: swift test
+
   build-ios:
     name: Build unsigned .ipa
     needs: validate-release
@@ -74,6 +85,8 @@ jobs:
         run: swift test
 
       - name: Build web bundle + sync Capacitor (SPM package)
+        # Reader tests exercise the same AVAudioFile adapter the plugin uses.
+        # This separate host package deliberately has no Capacitor dependency.
         # VITE_BASE=./ (via build:ios) so asset URLs resolve under capacitor://localhost
         # (the /mmdrome/ base used for gh-pages would 404 on native -> white screen).
         # macOS produces POSIX paths, so fix-spm-path is a no-op here.

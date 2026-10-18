@@ -7,7 +7,7 @@ exactly which scenarios to run so the reports can be adjudicated.
 ## Pre-flight (once)
 
 1. Settings → About → **Debug HUD** (ribbon appears).
-2. Expand it → **STREAM SELF-TEST** → confirm **“+ watch 25s”** is ticked.
+2. Expand it → **STREAM SELF-TEST** → confirm **“+ watch 90s”** is ticked.
 3. Know how to set the mode under test:
    - Settings → **Data & Network** → **Low data mode** (manual toggle is enough —
      you do NOT need cellular).
@@ -20,7 +20,7 @@ exactly which scenarios to run so the reports can be adjudicated.
 ## How to run each test
 
 For every row below: get the track playing, press **Run test**, wait for
-“running…” to clear (~25 s), then paste the auto-copied block. The block is
+“running…” to clear (~90 s), then paste the auto-copied block. The block is
 delimited by `=== MMDROME STREAM SELF-TEST ===` and includes the HTTP probe, the
 server-probe matrix, the mid-stream state sample, the verdict table and the raw
 events.
@@ -172,8 +172,8 @@ judged together instead of from three separate hunts:
 ### Pre-flight (once per session)
 - Build/install the branch under test.
 - Debug HUD on (`?debug`, or Settings → About → Debug HUD). Open the **STREAM
-  SELF-TEST** section and tick **“+ watch 25s”** — the press then probes the server
-  AND keeps polling native events for ~25 s, and a stream already in flight is still
+  SELF-TEST** section and tick **“+ watch 90s”** — the press then probes the server
+  AND keeps polling native events for ~90 s, and a stream already in flight is still
   picked up (the look-back prefers the current track's `staged load start`).
 - **VERBOSE DOMAINS:** switch `preload` on. `info`/`danger` are ALWAYS recorded, so
   the ladder's hold/resume lines arrive without it; only the debug-level
@@ -282,3 +282,32 @@ still stream; does transcode stream at all; is a cut stream safe; does a streame
 track end cleanly. Add **T9** when the question is seek latency rather than
 streaming health. For the seek/epoch/ladder branch, run the **S1–S6** track
 instead and start with **S1, S5, S2**.
+
+
+## Growing audio and loaded progress (2026-10-17)
+
+Use an uncached progressive Opus@128 track long enough that the transfer runs
+for at least 60 seconds at 1.25x playback consumption. A fast LAN run cannot
+establish slow-link continuity. Repeat at 2x delivery, bursty delivery, and after
+actual starvation followed by restored bandwidth; repeat with 2x playback speed.
+
+The 90-second watch now includes a bounded READABLE GROWTH TRACE. Observe
+multiple increasing scheduled ends before `complete`, and a `partialResume`
+after forced starvation while still incomplete. The seek bar must show
+intermediate loaded fractions. Unknown-total output stays indeterminate until
+completion. A percentage is transfer progress, not proof that the same fraction
+of audio is seekable; transcoded totals are estimates.
+
+A completion-triggered resume warns rather than passing. Successive stalled
+samples with usable resume headroom fail. Missing traces, an observation deadline,
+or a run without demonstrated growth are UNKNOWN; zero resume/give-up events
+alone no longer establish healthy streaming. All HTTP capability probes defer
+while a native user stream is in flight, including probes of different songs.
+
+Also verify Pause during buffering stays paused after bytes/completion arrive,
+Play resumes at the held position, short/non-progressive tracks retain their safe
+fallback, seeks/epochs retain absolute position, and the complete final tail and
+crossfade advance exactly once. Check foreground/background and interruptions.
+Record the build SHA, format, response-total provenance, speed, and delivery
+profile with every result. The full acceptance matrix lives in
+`plans/2026-10-17-streaming-growth-and-progress.md`.
