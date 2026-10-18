@@ -1917,3 +1917,85 @@ Regression coverage: AudioResponsePolicyTests and InterruptionStateTests on the 
 Local validation: 59 production-bundle browser tests passed, including offline advance, queue manipulation, thumbnail stress/landing, and boot smoke; type checks reported zero warnings/errors. Prefix inspection explicitly excludes nonzero/unknown-start 206 remainders, which begin inside compressed audio and may coincidentally resemble document delimiters. Missing-file 404 responses keep ordinary bounded per-track recovery even when the server returns an HTML error page.
 
 Final adapter review: interruption pauses preserve a pending native load retry; explicit user/lock-screen/route pauses cancel it. Cancelling a retry for an idle interruption would strand an in-flight load because its interruption snapshot correctly has no playing intent to auto-resume. The session pause callback now carries that distinction explicitly.
+
+
+## 2026-10-17 — Growing Opus schedule, readable startup lead, and percentage-first progress
+
+The 03:34:33Z field dump captured a native Opus@128 track playing briefly, then
+resuming only at download completion (6.0s held position). Growth decisions
+reused the initial partial container length, so increased bytes could never
+outgrow that cap. Byte-based startup lead and 512 KiB scheduling deliveries also
+failed to establish actual readable headroom on slow links. The native progress
+mapper separately emitted percentage-first updates which the shared reducer
+ignored until completion; that shape is reproduced through the real store and
+rendered SeekBar.
+
+StreamGrowth/StreamGrowthPump provide pure decisions and a coalesced trailing
+200 ms clock, consumed by fresh AVAudioFile observations in the engine. Startup
+checks real lead at playback speed, low scheduled headroom permits small safe
+extensions, and partial growth can resume buffering before completion. User
+pause survives buffering/first-open waits, and estimated transcode bytes cannot
+trigger completion rescue. Final dataConsumed bookkeeping now waits for the
+remaining scheduled audible tail before acting on its last completion, while
+new successors and generation changes remain guarded.
+
+Native progress has an atomic absent-to-fetching path with terminal stale-event
+guards. The self-test captures bounded readable-growth history, distinguishes
+partial versus completion-triggered recovery, treats absent/incomplete evidence
+as unknown, and defers all HTTP probes while the user stream owns the link.
+The Apple reader package tests real appended Opus/FLAC fixtures independently of
+Capacitor; ios.yml also compiles the plugin. Device validation remains separate
+and must be recorded in the implementation plan; compile success cannot replace
+real iOS playback/background/interrupt evidence.
+
+
+Follow-up edge review: an explicit Pause during first-open/buffering waits must
+not be confused with an interruption pause; completion during an interruption
+retains the stream's automatic-resume intent until the interruption clears.
+`StreamGrowth.endAction` pins the final audible-tail wait and pause decision;
+queued work is cancellable and generation-guarded. A real native re-download
+following `done` emits `gone` before its next percentage to establish the new
+lifecycle without permitting stale JS updates to reopen a terminal entry.
+Self-test extension counts exclude completion tails and paused-only schedules.
+The generated Opus fixture is now 120 seconds and a dedicated rate/chunk/gap
+fixture server makes slow transport profiles reproducible. Initial Apple CI run
+39095447743 passed core, actual-reader, and iOS app build gates; final revision
+verification and physical-device acceptance are recorded in the plan.
+
+
+The final completion audit found a late-extension race in deferring dataConsumed
+until audible render end: if a new segment was appended after the prior final
+callback had already been handled, incrementing the old successor count waited
+for a predecessor callback which had already fired. A fast new final callback
+could then be swallowed. `StreamSegmentLedger` models that distinction in the
+production path and tests both callback orders. Deferred handlers carry the
+specific consumed end promise, so a later extension supersedes them without
+consuming the new segment's callback slot.
+
+
+Probe deferral also consults native `userTransferActive`/epoch state, including
+the interval before the first readable schedule exists. Unavailable bridge
+state does not establish an idle link. This closes the startup window where
+HTTP matrix requests could otherwise compete with the audio being measured.
+Local final gates: 1,338 Node tests, clean check/build, nine relevant browser
+regressions; exact final Apple/JS CI revisions are linked from draft PR #12.
+Physical-device acceptance is deliberately still outstanding.
+
+
+## 2026-10-17 — Discard queued first-schedule work before stream recovery
+
+The review of the streaming-growth branch found that a terminal writer error
+could arrive after a playable delivery queued the growth pump but before the
+first schedule existed. The direct-load error callback only tore down state
+when `stagedSchedule != nil`, so its pending evaluation and cached prefix could
+survive the handoff to retry recovery. A later main-queue evaluation could start
+that failed prefix alongside the native background retry.
+
+`startStagedLoad` now calls `teardownStagedState()` unconditionally before
+`handleYieldedActiveLoadFailure`, matching the retry and epoch error callbacks.
+This cancels the pump, invalidates callbacks through its generation, and clears
+`lastFirstScheduleProgress` even before any AVAudioFile schedule exists. The
+pump regression exercises failure before its first evaluation and both orders
+of the cancelled callback racing a new retry callback, including protection of
+the retry's pending slot. The engine callback wiring still requires the iOS
+compile/device boundary; the pump ordering itself runs in the Swift core tests.

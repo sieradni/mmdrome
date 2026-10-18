@@ -69,4 +69,10 @@ final class PreloadProgressTests: XCTestCase {
         let cached = PreloadProgress(state: "cached", progress: 1.0)
         XCTAssertNotNil(PreloadProgress.event(lastEmitted: cached, observed: fetching(0.0)))
     }
+    func testNewNativeTransferResetsTerminalLifecycleOnly() {
+        XCTAssertTrue(PreloadProgress.startsNewTransfer(lastEmitted: PreloadProgress(state: "done", progress: 1)))
+        XCTAssertFalse(PreloadProgress.startsNewTransfer(lastEmitted: nil))
+        XCTAssertFalse(PreloadProgress.startsNewTransfer(lastEmitted: PreloadProgress(state: "fetching", progress: 0.3)))
+    }
+
 }

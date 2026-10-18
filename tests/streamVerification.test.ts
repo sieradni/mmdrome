@@ -7,6 +7,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   sniffContainer,
+  evaluateStreamGrowth,
+  type StreamGrowthEvidence,
+  type StreamGrowthSample,
   isProgressiveContainer,
   classifyContainerShape,
   parseNativeStreamTranscript,
@@ -206,7 +209,7 @@ test('evaluate: a healthy transcode streams, classifies honest and promotes', ()
   assert.equal(byId['range-support'], 'pass')
   assert.equal(byId['progressive-container'], 'pass')
   assert.equal(byId['streaming-engaged'], 'pass')
-  assert.equal(byId['estimate-health'], 'pass')
+  assert.equal(byId['estimate-health'], 'unknown', 'resume counts alone cannot prove healthy buffering')
   assert.equal(byId['completion-verdict'], 'pass')
   // 2.205M claimed of a 4.41M-frame track at 50 % bytes → honest.
   assert.equal(report.containerShape, 'honest')
@@ -918,4 +921,53 @@ test('formatStreamVerifyReport renders one line per check with its status', () =
   assert.match(text, /stream self-test @/)
   assert.match(text, /\[PASS\s*\] Server announces a total/)
   assert.match(text, /\[UNKNOWN\] Native staged stream engaged/)
+})
+
+
+function growthSample(over: Partial<StreamGrowthSample> = {}): StreamGrowthSample {
+  return { t: 1, trackId: 'a', generation: 1, reason: 'observe', complete: false,
+    schedulableEndSeconds: 30, scheduledEndSeconds: 10, positionSeconds: 10,
+    speed: 1, stalled: true, playing: true, userPaused: false, interrupted: false, ...over }
+}
+function growthEvidence(over: Partial<StreamGrowthEvidence> = {}): StreamGrowthEvidence {
+  return { samples: [growthSample(), growthSample({ t: 3 })], extensions: 2,
+    stalls: 1, partialResumes: 0, completionResumes: 1, stallSeconds: 15,
+    observationComplete: true, ...over }
+}
+test('growth trace detects readable audio stranded until completion', () => {
+  assert.equal(evaluateStreamGrowth('a', growthEvidence()).status, 'fail')
+  assert.equal(evaluateStreamGrowth('a', growthEvidence({ samples: [growthSample()] })).status, 'warn')
+})
+test('growth trace passes demonstrated complete healthy growth and partial recovery', () => {
+  const samples = [growthSample({ stalled: false }), growthSample({ t: 3, reason: 'partialResume' })]
+  assert.equal(evaluateStreamGrowth('a', growthEvidence({ samples, partialResumes: 1, completionResumes: 0 })).status, 'pass')
+  assert.equal(evaluateStreamGrowth('a', growthEvidence({ samples, stalls: 0, completionResumes: 0 })).status, 'pass')
+})
+test('growth trace respects starvation, pause, interruption, generation and observation limits', () => {
+  for (const patch of [{ userPaused: true }, { interrupted: true }, { schedulableEndSeconds: 11 }]) {
+    const samples = [growthSample(patch), growthSample({ ...patch, t: 3 })]
+    assert.notEqual(evaluateStreamGrowth('a', growthEvidence({ samples })).status, 'fail')
+  }
+  assert.equal(evaluateStreamGrowth('a').status, 'unknown')
+  assert.equal(evaluateStreamGrowth('b', growthEvidence({ completionResumes: 0 })).status, 'unknown')
+  const samples = [growthSample({ stalled: false }), growthSample({ t: 3, stalled: false })]
+  assert.equal(evaluateStreamGrowth('a', growthEvidence({ samples, completionResumes: 0, observationComplete: false })).status, 'unknown')
+  const generations = [growthSample(), growthSample({ t: 3, generation: 2 })]
+  assert.notEqual(evaluateStreamGrowth('a', growthEvidence({ samples: generations })).status, 'fail')
+})
+
+
+test('growth trace cannot pass on completion-tail chaining or paused-only evidence', () => {
+  const samples = [growthSample({ playing: false }), growthSample({ t: 3, playing: false })]
+  assert.equal(evaluateStreamGrowth('a', growthEvidence({ samples, completionResumes: 0, stalls: 0 })).status, 'fail', 'eligible stalled samples still establish a failure')
+  const paused = samples.map((s) => ({ ...s, userPaused: true }))
+  assert.equal(evaluateStreamGrowth('a', growthEvidence({ samples: paused, completionResumes: 0, stalls: 0 })).status, 'unknown')
+  assert.equal(evaluateStreamGrowth('a', growthEvidence({ extensions: NaN })).status, 'unknown')
+})
+
+
+test('probe deferral includes a writer before its first readable schedule and active epochs', () => {
+  assert.equal(stagedStreamInFlight({ streamActive: false, userTransferActive: true }), true)
+  assert.equal(stagedStreamInFlight({ streamActive: false, streamEpochActive: true }), true)
+  assert.equal(stagedStreamInFlight({ streamActive: true, streamComplete: true, userTransferActive: false }), false)
 })

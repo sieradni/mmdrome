@@ -106,6 +106,7 @@ function clampProgress(p: number): number {
 export type PreloadEvent =
   | { type: 'start'; trackId: string }
   | { type: 'progress'; trackId: string; progress: number }
+  | { type: 'nativeProgress'; trackId: string; progress: number | null }
   | { type: 'done'; trackId: string }
   | { type: 'dead'; trackId: string }
   | { type: 'evict'; trackId: string }
@@ -116,6 +117,7 @@ export type PreloadEvent =
  * - `start` (re)opens a fetching entry with indeterminate progress.
  * - `progress` only advances a fetching entry (stale events after done/dead
  *   are ignored by construction).
+ * - `nativeProgress` opens absent entries and updates fetching entries only.
  * - `done` → cached with progress 1; `dead` sticks until evicted/reset.
  * - `evict` removes the entry (row left the window / retry reset / cleanup).
  */
@@ -126,6 +128,16 @@ export function applyPreloadEvent(
   if (event.type === 'reset') return {}
   const next: Record<string, PreloadEntry> = { ...map }
   switch (event.type) {
+    case 'nativeProgress': {
+      const cur = next[event.trackId]
+      // A native first observation may already carry a ratio. Initialize
+      // atomically, while terminal entries still reject stale observations.
+      if (cur && cur.state !== 'fetching') return map
+      const progress = event.progress === null ? null : clampProgress(event.progress)
+      if (cur?.progress === progress) return map
+      next[event.trackId] = { state: 'fetching', progress }
+      break
+    }
     case 'start': {
       const cur = next[event.trackId]
       // Same-reference early-outs: Svelte skips notifying when `update`
@@ -207,7 +219,7 @@ export interface NativePreloadProgressEvent {
  * the web preloader writes — queue-row tints render identically on both
  * platforms (A14 contract; the reducer's early-outs make repeated native
  * re-emits harmless). "done" → cached, "gone" → evict (stale tint must
- * clear), "progress" with a ratio → progress, without → start
+ * clear), "progress" → atomic nativeProgress (known ratio or null)
  * (indeterminate, the honest no-Content-Length state).
  */
 export function mapNativePreloadEvent(event: NativePreloadProgressEvent): PreloadEvent {
@@ -217,8 +229,7 @@ export function mapNativePreloadEvent(event: NativePreloadProgressEvent): Preloa
     case 'gone':
       return { type: 'evict', trackId: event.trackId }
     default:
-      return typeof event.progress === 'number'
-        ? { type: 'progress', trackId: event.trackId, progress: event.progress }
-        : { type: 'start', trackId: event.trackId }
+      return { type: 'nativeProgress', trackId: event.trackId,
+        progress: typeof event.progress === 'number' ? event.progress : null }
   }
 }

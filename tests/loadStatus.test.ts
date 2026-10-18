@@ -169,12 +169,12 @@ test('native event mapping: done → cached, gone → evict, ratio → progress,
   assert.deepEqual(mapNativePreloadEvent({ trackId: 'a', state: 'done' }), { type: 'done', trackId: 'a' })
   assert.deepEqual(mapNativePreloadEvent({ trackId: 'b', state: 'gone' }), { type: 'evict', trackId: 'b' })
   assert.deepEqual(mapNativePreloadEvent({ trackId: 'c', state: 'progress', progress: 0.55 }), {
-    type: 'progress',
+    type: 'nativeProgress',
     trackId: 'c',
     progress: 0.55,
   })
   // No Content-Length → honest indeterminate start (never a fake percent).
-  assert.deepEqual(mapNativePreloadEvent({ trackId: 'd', state: 'progress' }), { type: 'start', trackId: 'd' })
+  assert.deepEqual(mapNativePreloadEvent({ trackId: 'd', state: 'progress' }), { type: 'nativeProgress', trackId: 'd', progress: null })
 })
 
 test('native event mapping composes with the reducer (round trip)', () => {
@@ -200,4 +200,36 @@ test('currentLoadedFraction: fetching ratio passes through, cached is 1, else nu
   assert.equal(currentLoadedFraction({ state: 'fetching', progress: 0.35 }), 0.35)
   assert.equal(currentLoadedFraction({ state: 'cached', progress: 1 }), 1)
   assert.equal(currentLoadedFraction({ state: 'dead', progress: null }), null)
+})
+
+
+test('native percentage-first sequence initializes and fills before completion', () => {
+  let map: Record<string, PreloadEntry> = {}
+  for (const progress of [0.1, 0.5, 0.9]) {
+    map = applyPreloadEvent(map, mapNativePreloadEvent({ trackId: 'a', state: 'progress', progress }))
+    assert.equal(currentLoadedFraction(map.a), progress)
+  }
+  map = applyPreloadEvent(map, mapNativePreloadEvent({ trackId: 'a', state: 'done' }))
+  for (const progress of [0.2, undefined]) {
+    map = applyPreloadEvent(map, mapNativePreloadEvent({ trackId: 'a', state: 'progress', progress }))
+    assert.equal(currentLoadedFraction(map.a), 1, 'terminal entry rejects both stale native shapes')
+  }
+  map = applyPreloadEvent(map, mapNativePreloadEvent({ trackId: 'a', state: 'gone' }))
+  map = applyPreloadEvent(map, mapNativePreloadEvent({ trackId: 'a', state: 'progress', progress: 0.3 }))
+  assert.equal(currentLoadedFraction(map.a), 0.3, 'eviction opens the next lifecycle')
+})
+
+test('native forwarding into the real store preserves intermediate loaded fractions', async () => {
+  const { get } = await import('svelte/store')
+  const { preloadEntries, resetLoadStatusForTests } = await import('../src/stores/loadStatus')
+  const { forwardNativePreloadProgress } = await import('../src/lib/nativeLoadStatus')
+  resetLoadStatusForTests()
+  for (const progress of [0.1, 0.5, 0.9]) {
+    forwardNativePreloadProgress({ trackId: 'active', state: 'progress', progress })
+    assert.equal(currentLoadedFraction(get(preloadEntries).active), progress)
+  }
+  forwardNativePreloadProgress({ trackId: 'other', state: 'progress' })
+  assert.equal(currentLoadedFraction(get(preloadEntries).other), null)
+  assert.equal(currentLoadedFraction(get(preloadEntries).active), 0.9)
+  resetLoadStatusForTests()
 })

@@ -26,6 +26,12 @@ public struct PreloadProgress: Equatable, Sendable {
         self.progress = progress
     }
 
+    /// A real native fetching observation after a terminal event is a new
+    /// transfer (e.g. another codec variant), not a late JS progress message.
+    public static func startsNewTransfer(lastEmitted: PreloadProgress?) -> Bool {
+        lastEmitted?.state == "done" || lastEmitted?.state == "cached"
+    }
+
     /// Returns the snapshot to emit when `observed` differs from the last
     /// EMITTED snapshot for this track, else nil (nothing to send).
     public static func event(

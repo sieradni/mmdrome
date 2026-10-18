@@ -11,7 +11,8 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ionic-team/capacitor-swift-pm.git", exact: "8.5.0"),
-        .package(name: "BackgroundAudioCore", path: "../BackgroundAudioCore")
+        .package(name: "BackgroundAudioCore", path: "../BackgroundAudioCore"),
+        .package(name: "StreamFileSupport", path: "../StreamFileSupport")
     ],
     targets: [
         // Capacitor-bound iOS plugin. The pure core lives in the sibling
@@ -22,6 +23,7 @@ let package = Package(
             name: "BackgroundAudio",
             dependencies: [
                 .product(name: "BackgroundAudioCore", package: "BackgroundAudioCore"),
+                .product(name: "StreamFileSupport", package: "StreamFileSupport"),
                 .product(name: "Capacitor", package: "capacitor-swift-pm"),
                 .product(name: "Cordova", package: "capacitor-swift-pm")
             ],
