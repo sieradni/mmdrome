@@ -964,3 +964,10 @@ test('growth trace cannot pass on completion-tail chaining or paused-only eviden
   assert.equal(evaluateStreamGrowth('a', growthEvidence({ samples: paused, completionResumes: 0, stalls: 0 })).status, 'unknown')
   assert.equal(evaluateStreamGrowth('a', growthEvidence({ extensions: NaN })).status, 'unknown')
 })
+
+
+test('probe deferral includes a writer before its first readable schedule and active epochs', () => {
+  assert.equal(stagedStreamInFlight({ streamActive: false, userTransferActive: true }), true)
+  assert.equal(stagedStreamInFlight({ streamActive: false, streamEpochActive: true }), true)
+  assert.equal(stagedStreamInFlight({ streamActive: true, streamComplete: true, userTransferActive: false }), false)
+})

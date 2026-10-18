@@ -1971,3 +1971,12 @@ could then be swallowed. `StreamSegmentLedger` models that distinction in the
 production path and tests both callback orders. Deferred handlers carry the
 specific consumed end promise, so a later extension supersedes them without
 consuming the new segment's callback slot.
+
+
+Probe deferral also consults native `userTransferActive`/epoch state, including
+the interval before the first readable schedule exists. Unavailable bridge
+state does not establish an idle link. This closes the startup window where
+HTTP matrix requests could otherwise compete with the audio being measured.
+Local final gates: 1,338 Node tests, clean check/build, nine relevant browser
+regressions; exact final Apple/JS CI revisions are linked from draft PR #12.
+Physical-device acceptance is deliberately still outstanding.

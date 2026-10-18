@@ -201,9 +201,10 @@ function fmtRawEv(ev: RawEvent, base: number): string {
 async function stagedStreamInFlightNow(): Promise<boolean> {
   try {
     const d = await (BackgroundAudio as unknown as { getDebugState?: () => Promise<Record<string, unknown>> }).getDebugState?.()
-    return stagedStreamInFlight(d)
+    return !d || stagedStreamInFlight(d)
   } catch {
-    return false
+    // An unreadable bridge cannot establish that the user link is idle.
+    return true
   }
 }
 

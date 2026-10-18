@@ -208,9 +208,10 @@ export interface NativeStreamFacts {
  * completed/cached server job is exactly the state the probe wants to measure.
  */
 export function stagedStreamInFlight(
-  state: { streamActive?: unknown; streamComplete?: unknown } | null | undefined,
+  state: { streamActive?: unknown; streamComplete?: unknown; userTransferActive?: unknown; streamEpochActive?: unknown } | null | undefined,
 ): boolean {
-  return state?.streamActive === true && state?.streamComplete !== true
+  return state?.userTransferActive === true || state?.streamEpochActive === true ||
+    (state?.streamActive === true && state?.streamComplete !== true)
 }
 
 export function emptyNativeStreamFacts(): NativeStreamFacts {

@@ -1,15 +1,17 @@
 # Native streaming growth, buffering, and progress recovery
 
 Date: 2026-10-17 (America/Los_Angeles)
-Status: implementation and local JS/browser gates complete; Apple CI passes for
-initial implementation 3e8cc23. Follow-up edge cases and longer fixtures are under
-verification. Actual device acceptance remains outstanding.
+Status: implementation complete; physical iOS acceptance outstanding. Automated
+verification of the final revision is tracked by draft PR #12:
+https://github.com/sieradni/mmdrome/pull/12
 
-Implementation evidence (updated during work): 1,337 Node tests; clean type/Svelte
-checks; production build; real SeekBar native-progress browser regression and
-production boot smoke and seven offline-advance browser regressions pass. Apple CI run 39095447743 passes growing Opus/FLAC
-reader tests, pure Swift core tests, and unsigned iOS plugin/app build. No device
-playback claim follows from these automated results.
+Local evidence: 1,338 Node tests, clean type/Svelte checks, production build,
+real SeekBar native-progress browser regression, production boot smoke, and
+seven offline/preload compatibility regressions pass. Initial Apple CI run
+39095447743 passed real Opus/FLAC reader tests, pure Swift tests, and unsigned
+iOS app build; subsequent runs cover completion-ledger regressions and the
+120-second Opus fixture. Exact final CI status and run links live on the PR.
+No device playback claim follows from these automated results.
 
 ## Outcome
 
