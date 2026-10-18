@@ -27,7 +27,8 @@
           "date": "2026-10-18T04:49:13.291Z",
           "localizedDescription": "Improve streaming startup and buffering recovery, show loading progress during downloads, and prevent failed streams from restarting during retry.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.61/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5207278
         },
         {
           "version": "1.2.60",
