@@ -84,4 +84,36 @@ final class StreamGrowthTests: XCTestCase {
         tasks.removeFirst().1()
         XCTAssertEqual(probes, 3)
     }
+
+    func testFailureBeforeFirstScheduleCannotRunFailedPrefixBesideRetry() {
+        // The writer delivered a playable prefix, but its first evaluation
+        // has not run when the terminal error hands ownership to recovery.
+        // Exercise both orders of the old callback racing the retry callback.
+        for oldCallbackRunsFirst in [true, false] {
+            var tasks: [() -> Void] = []
+            var recoveryOwnsLoad = false
+            var evaluatedByRecovery: [Bool] = []
+            let pump = StreamGrowthPump(now: { 0 }, schedule: { _, action in
+                tasks.append(action)
+                return {} // Cancellation can race an already dequeued callback.
+            }, evaluate: { evaluatedByRecovery.append(recoveryOwnsLoad) })
+            pump.request()
+            let failedPrefixCallback = tasks.removeFirst()
+            pump.cancel() // teardown must run even with NO staged schedule
+            recoveryOwnsLoad = true
+            pump.request()
+            let retryCallback = tasks.removeFirst()
+            if oldCallbackRunsFirst {
+                failedPrefixCallback()
+                // A stale callback must not clear the retry's pending slot.
+                pump.request()
+                XCTAssertTrue(tasks.isEmpty)
+                retryCallback()
+            } else {
+                retryCallback()
+                failedPrefixCallback()
+            }
+            XCTAssertEqual(evaluatedByRecovery, [true], "only recovery's first schedule may run")
+        }
+    }
 }

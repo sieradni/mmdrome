@@ -3236,9 +3236,10 @@ public final class NativeAudioEngine: NSObject {
                 // defect: the loser fired after the winner's reload and
                 // re-engaged the track from 0:00 a second time.
                 let failure = self.activeLoadFailure(kind: .stream, error: error)
-                if self.stagedSchedule != nil {
-                    self.teardownStagedState()
-                }
+                // A playable delivery can still be queued in the growth pump
+                // before stagedSchedule exists. Discard it before yielding to
+                // recovery, or the failed prefix can start beside the retry.
+                self.teardownStagedState()
                 self.handleYieldedActiveLoadFailure(track: track, failure: failure)
             }
         }, onArrival: { [weak self] deliveredBytes in

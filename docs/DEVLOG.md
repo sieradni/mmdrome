@@ -1980,3 +1980,22 @@ HTTP matrix requests could otherwise compete with the audio being measured.
 Local final gates: 1,338 Node tests, clean check/build, nine relevant browser
 regressions; exact final Apple/JS CI revisions are linked from draft PR #12.
 Physical-device acceptance is deliberately still outstanding.
+
+
+## 2026-10-17 — Discard queued first-schedule work before stream recovery
+
+The review of the streaming-growth branch found that a terminal writer error
+could arrive after a playable delivery queued the growth pump but before the
+first schedule existed. The direct-load error callback only tore down state
+when `stagedSchedule != nil`, so its pending evaluation and cached prefix could
+survive the handoff to retry recovery. A later main-queue evaluation could start
+that failed prefix alongside the native background retry.
+
+`startStagedLoad` now calls `teardownStagedState()` unconditionally before
+`handleYieldedActiveLoadFailure`, matching the retry and epoch error callbacks.
+This cancels the pump, invalidates callbacks through its generation, and clears
+`lastFirstScheduleProgress` even before any AVAudioFile schedule exists. The
+pump regression exercises failure before its first evaluation and both orders
+of the cancelled callback racing a new retry callback, including protection of
+the retry's pending slot. The engine callback wiring still requires the iOS
+compile/device boundary; the pump ordering itself runs in the Swift core tests.
