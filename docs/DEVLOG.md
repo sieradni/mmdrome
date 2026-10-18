@@ -1961,3 +1961,13 @@ The generated Opus fixture is now 120 seconds and a dedicated rate/chunk/gap
 fixture server makes slow transport profiles reproducible. Initial Apple CI run
 39095447743 passed core, actual-reader, and iOS app build gates; final revision
 verification and physical-device acceptance are recorded in the plan.
+
+
+The final completion audit found a late-extension race in deferring dataConsumed
+until audible render end: if a new segment was appended after the prior final
+callback had already been handled, incrementing the old successor count waited
+for a predecessor callback which had already fired. A fast new final callback
+could then be swallowed. `StreamSegmentLedger` models that distinction in the
+production path and tests both callback orders. Deferred handlers carry the
+specific consumed end promise, so a later extension supersedes them without
+consuming the new segment's callback slot.

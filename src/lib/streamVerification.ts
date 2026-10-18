@@ -67,7 +67,7 @@ export function evaluateStreamGrowth(trackId: string, growth?: StreamGrowthEvide
   const detail = `extensions=${growth.extensions}, stalls=${growth.stalls}, partialResumes=${growth.partialResumes}, completionResumes=${growth.completionResumes}, stalled=${growth.stallSeconds.toFixed(1)}s`
   if (growth.completionResumes > 0) return { status: 'warn', evidence: `${detail}; completion unblocked playback; partial recovery not established for that stall` }
   if (!growth.observationComplete || samples.length < 2 || !samples.some((s) => !s.complete && s.playing)) return { status: 'unknown', evidence: `${detail}; observation incomplete or too short` }
-  if (growth.extensions > 0 && (growth.stalls === 0 || growth.partialResumes > 0)) return { status: 'pass', evidence: detail }
+  if (growth.extensions > 0 && (growth.stalls === 0 || growth.partialResumes >= growth.stalls)) return { status: 'pass', evidence: detail }
   return { status: 'unknown', evidence: `${detail}; no demonstrated extension while incomplete` }
 }
 

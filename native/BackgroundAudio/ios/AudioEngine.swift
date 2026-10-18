@@ -1463,7 +1463,7 @@ public final class NativeAudioEngine: NSObject {
         standbyNode.play()
         setPlaying(true)
         if let deferred = deferredStagedEnd {
-            handleStagedCompletion(index: deferred.index, generation: deferred.generation, trackId: deferred.trackId, node: deferred.node)
+            handleStagedCompletion(index: deferred.index, generation: deferred.generation, trackId: deferred.trackId, node: deferred.node, consumedEndFrames: deferred.endFrames)
         }
         // A seek made while PAUSED reaches its playback leg here (the user's
         // own resume) — inside the probe's lifetime it is still that seek.
@@ -2403,7 +2403,7 @@ public final class NativeAudioEngine: NSObject {
             "streamPartialResumeCount": streamPartialResumeCount,
             "streamCompletionResumeCount": streamCompletionResumeCount,
             "streamStallSeconds": streamStallSeconds + (streamStallStartedAt.map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0),
-            "streamChainedPending": pendingChainedSegments.values.reduce(0, +),
+            "streamChainedPending": pendingChainedSegments.values.reduce(0) { $0 + $1.successors },
             "streamRecentRate": loader.recentTransferRate ?? 0,
             "standbyScheduleGeneration": standbyScheduleGeneration,
             "standbyGenerationCaptured": standbyGeneration,
@@ -3181,7 +3181,7 @@ public final class NativeAudioEngine: NSObject {
     private var streamStallStartedAt: Double?
     private var streamStallSeconds = 0.0
     private var stagedEndWork: DispatchWorkItem?
-    private var deferredStagedEnd: (index: Int, generation: Int, trackId: String?, node: AVAudioPlayerNode)?
+    private var deferredStagedEnd: (index: Int, generation: Int, trackId: String?, node: AVAudioPlayerNode, endFrames: Int64)?
     /// The file the staged schedule reads from: the growing `.part` while
     /// the writer streams, the promoted destination once COMPLETE. `nil` =
     /// normal cache-served playback (the overwhelmingly common path).
@@ -3191,7 +3191,7 @@ public final class NativeAudioEngine: NSObject {
     /// consumed completion can be classified segmentEnd (consume silently)
     /// vs trackEnd (natural end). Keyed by node identity, decremented as
     /// completions consume. Cleared on every teardown/cancel.
-    private var pendingChainedSegments: [ObjectIdentifier: Int] = [:]
+    private var pendingChainedSegments: [ObjectIdentifier: StreamSegmentLedger] = [:]
 
     /// Starts a staged load for the CURRENT track (direct-tap path only —
     /// `streamDecision` already said yes). The writer delivers at the
@@ -3827,7 +3827,13 @@ public final class NativeAudioEngine: NSObject {
         let chainedTrackId = staged.trackId
         let generation = scheduleGeneration
         let chainedNode = player
-        pendingChainedSegments[nodeId, default: 0] += 1
+        var ledger = pendingChainedSegments[nodeId] ?? StreamSegmentLedger()
+        if ledger.chain() {
+            stagedEndWork?.cancel()
+            stagedEndWork = nil
+            deferredStagedEnd = nil
+        }
+        pendingChainedSegments[nodeId] = ledger
         player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(frames), at: nil, completionCallbackType: .dataConsumed) { [weak self] _ in
             self?.handleSegmentCompletion(index: chainedIndex, generation: generation, trackId: chainedTrackId, node: chainedNode, standbyGenerationAtStart: nil, isStagedSegment: true)
         }
@@ -4040,16 +4046,17 @@ public final class NativeAudioEngine: NSObject {
                     return
                 }
                 let nodeId = ObjectIdentifier(node)
-                let remaining = self.pendingChainedSegments[nodeId] ?? 0
-                if remaining > 0 {
-                    self.pendingChainedSegments[nodeId] = remaining - 1
-                    eventAdd(.debug, "stream", "staged segment completion consumed silently (\(remaining - 1) chained successors left)")
+                var ledger = self.pendingChainedSegments[nodeId] ?? StreamSegmentLedger()
+                let verdict = ledger.consume()
+                self.pendingChainedSegments[nodeId] = ledger
+                if verdict == .segmentEnd {
+                    eventAdd(.debug, "stream", "staged segment completion consumed silently (\(ledger.successors) chained successors left)")
                     return
                 }
-                // Last segment on the node: the staged end handler decides
-                // (buffering pause while staged; natural advance once
-                // COMPLETE).
-                self.handleStagedCompletion(index: completedIndex, generation: generation, trackId: trackId, node: node)
+                // Capture the promise THIS callback ended. A late extension
+                // can arrive before the next main hop or audible-tail timer.
+                let consumedEnd = self.stagedSchedule?.scheduledEndFrames ?? 0
+                self.handleStagedCompletion(index: completedIndex, generation: generation, trackId: trackId, node: node, consumedEndFrames: consumedEnd)
                 return
             }
             guard generation == self.scheduleGeneration else {
@@ -4370,7 +4377,7 @@ public final class NativeAudioEngine: NSObject {
     ///    playback (≥ 2 s of new audio), the monitor gives up after 10 s.
     /// 2. The file is COMPLETE (the writer promoted; `isComplete` latched)
     ///    → a REAL natural end: the full advance chain runs unchanged.
-    private func handleStagedCompletion(index completedIndex: Int, generation: Int, trackId: String?, node: AVAudioPlayerNode?) {
+    private func handleStagedCompletion(index completedIndex: Int, generation: Int, trackId: String?, node: AVAudioPlayerNode?, consumedEndFrames: Int64) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             guard generation == self.scheduleGeneration else {
@@ -4381,27 +4388,22 @@ public final class NativeAudioEngine: NSObject {
                 eventAdd(.info, "stream", "staged completion dropped: state moved on (row \(completedIndex) id \(trackId ?? "-"))")
                 return
             }
+            guard staged.scheduledEndFrames == consumedEndFrames else { return }
             self.stagedEndWork?.cancel()
             self.stagedEndWork = nil
             if let node, node === self.activeNode {
                 switch StreamGrowth.endAction(playing: self.isPlaying, measured: self.isNodeTimeMeasured,
                     position: self.currentPosition, scheduledEnd: staged.scheduledEndSeconds, speed: self.speed) {
                 case .park:
-                    self.deferredStagedEnd = (completedIndex, generation, trackId, node)
+                    self.deferredStagedEnd = (completedIndex, generation, trackId, node, consumedEndFrames)
                     return
                 case .awaitRender(let delay):
-                    self.deferredStagedEnd = (completedIndex, generation, trackId, node)
-                    let endAtCallback = staged.scheduledEndFrames
+                    self.deferredStagedEnd = (completedIndex, generation, trackId, node, consumedEndFrames)
                     let work = DispatchWorkItem { [weak self] in
                         guard let self, generation == self.scheduleGeneration,
                               let live = self.stagedSchedule, live.trackId == trackId else { return }
-                        if live.scheduledEndFrames > endAtCallback {
-                            let key = ObjectIdentifier(node)
-                            self.pendingChainedSegments[key] = max(0, (self.pendingChainedSegments[key] ?? 0) - 1)
-                            self.deferredStagedEnd = nil
-                            return // Its successor owns the next completion.
-                        }
-                        self.handleStagedCompletion(index: completedIndex, generation: generation, trackId: trackId, node: node)
+                        guard live.scheduledEndFrames == consumedEndFrames else { return }
+                        self.handleStagedCompletion(index: completedIndex, generation: generation, trackId: trackId, node: node, consumedEndFrames: consumedEndFrames)
                     }
                     self.stagedEndWork = work
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
