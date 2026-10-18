@@ -1999,3 +1999,21 @@ pump regression exercises failure before its first evaluation and both orders
 of the cancelled callback racing a new retry callback, including protection of
 the retry's pending slot. The engine callback wiring still requires the iOS
 compile/device boundary; the pump ordering itself runs in the Swift core tests.
+
+
+## 2026-10-17 — Release 1.2.61: streaming growth and loaded progress
+
+Release 1.2.61 packages PR #12: fresh readable-file observations, startup
+headroom, time-based schedule growth and buffering recovery, percentage-first
+native loaded progress, and terminal failure cleanup before retry recovery.
+Completion-tail and late-extension bookkeeping have dedicated Swift regressions;
+the self-test records bounded growth evidence and avoids competing with active
+user transfers. Generated Opus/FLAC fixtures cover the real Apple reader adapter.
+
+Automated validation before merge passed 1,338 Node tests, type checks, browser
+CI, Swift core/reader tests, and the unsigned iOS build. The release follows the
+canonical version writer and solo iOS tag, with CI owning IPA publication,
+manifest-size backfill, Pages deployment, CDN purge and exact-size verification.
+Physical iPhone slow-network/background/route/interruption acceptance remains
+outstanding in the streaming implementation plan; this release does not claim
+that those device scenarios were exercised automatically.
