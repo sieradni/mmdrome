@@ -45,6 +45,17 @@ final class StreamGrowthTests: XCTestCase {
         XCTAssertTrue(StreamSchedule.stallRescueEligible(deliveredBytes: 1000, announcedBytes: 1000))
     }
 
+    func testFinalConsumedSegmentWaitsForAudibleTailAndPreservesPause() {
+        XCTAssertEqual(StreamGrowth.endAction(playing: true, measured: true, position: 14,
+            scheduledEnd: 15, speed: 1), .awaitRender(delay: 0.2))
+        XCTAssertEqual(StreamGrowth.endAction(playing: false, measured: true, position: 14,
+            scheduledEnd: 15, speed: 1), .park)
+        XCTAssertEqual(StreamGrowth.endAction(playing: true, measured: true, position: 15,
+            scheduledEnd: 15, speed: 1), .finish)
+        XCTAssertEqual(StreamGrowth.endAction(playing: true, measured: false, position: 0,
+            scheduledEnd: 15, speed: 1), .finish, "an unavailable clock cannot spin forever")
+    }
+
     func testPumpCoalescesAndRunsTrailingArrivalAndInvalidatesOldSource() {
         var now = 0.0
         var tasks: [(Double, () -> Void)] = []

@@ -311,3 +311,15 @@ crossfade advance exactly once. Check foreground/background and interruptions.
 Record the build SHA, format, response-total provenance, speed, and delivery
 profile with every result. The full acceptance matrix lives in
 `plans/2026-10-17-streaming-growth-and-progress.md`.
+
+
+For a repeatable fixture endpoint, run `node scripts/stream-fixture-server.mjs`
+on the development computer and use its LAN address on the test device. It
+serves only the generated Opus/FLAC fixtures, supports Range, and accepts
+`rate` (bytes/sec), `chunk` (bytes), `pauseAt` (absolute byte offset),
+`pauseMs` (one deliberate gap), and `length=0` (unknown total). The generated
+Opus fixture is 120 seconds long. Measure its average encoded bytes/sec before
+choosing 1.25x/2x profiles; 24,000 bytes/sec is an example, not a universal
+real-time ratio. The endpoint supplies transport fixtures for a test harness;
+it does not create a Navidrome library entry or bypass the normal stream gate.
+Stop the server after testing. Do not route production credentials through it.

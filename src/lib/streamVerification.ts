@@ -26,6 +26,7 @@ export interface StreamGrowthSample {
   positionSeconds: number
   speed: number
   stalled: boolean
+  playing: boolean
   userPaused: boolean
   interrupted: boolean
 }
@@ -45,9 +46,12 @@ export interface StreamGrowthEvidence {
 export function evaluateStreamGrowth(trackId: string, growth?: StreamGrowthEvidence | null): {
   status: CheckStatus; evidence: string
 } {
-  if (!growth) return { status: 'unknown', evidence: 'no readable-growth trace (older build or capture unavailable)' }
+  if (!growth || ![growth.extensions, growth.stalls, growth.partialResumes, growth.completionResumes, growth.stallSeconds].every(Number.isFinite)) {
+    return { status: 'unknown', evidence: 'no usable readable-growth trace (older build or capture unavailable)' }
+  }
   const samples = growth.samples.filter((s) => s.trackId === trackId &&
-    [s.t, s.generation, s.schedulableEndSeconds, s.scheduledEndSeconds, s.positionSeconds, s.speed].every(Number.isFinite) && s.speed > 0)
+    [s.t, s.generation, s.schedulableEndSeconds, s.scheduledEndSeconds, s.positionSeconds, s.speed].every(Number.isFinite) && s.speed > 0 &&
+    [s.complete, s.stalled, s.playing, s.userPaused, s.interrupted].every((value) => typeof value === 'boolean'))
   let eligibleSince: StreamGrowthSample | null = null
   for (const sample of samples) {
     const headroom = (sample.schedulableEndSeconds - sample.positionSeconds) / sample.speed
@@ -62,7 +66,7 @@ export function evaluateStreamGrowth(trackId: string, growth?: StreamGrowthEvide
   }
   const detail = `extensions=${growth.extensions}, stalls=${growth.stalls}, partialResumes=${growth.partialResumes}, completionResumes=${growth.completionResumes}, stalled=${growth.stallSeconds.toFixed(1)}s`
   if (growth.completionResumes > 0) return { status: 'warn', evidence: `${detail}; completion unblocked playback; partial recovery not established for that stall` }
-  if (!growth.observationComplete || samples.length < 2) return { status: 'unknown', evidence: `${detail}; observation incomplete or too short` }
+  if (!growth.observationComplete || samples.length < 2 || !samples.some((s) => !s.complete && s.playing)) return { status: 'unknown', evidence: `${detail}; observation incomplete or too short` }
   if (growth.extensions > 0 && (growth.stalls === 0 || growth.partialResumes > 0)) return { status: 'pass', evidence: detail }
   return { status: 'unknown', evidence: `${detail}; no demonstrated extension while incomplete` }
 }

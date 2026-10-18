@@ -1,10 +1,10 @@
 # Growing-file fixtures
 
-These generated 40-second, mono 48 kHz sine waves contain no third-party media.
+These generated 120-second Opus and 40-second FLAC, mono 48 kHz sine waves contain no third-party media.
 Reproduce with FFmpeg (tests check readable growth, not exact encoded bytes):
 
 ```sh
-ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=40' -ac 1 -c:a libopus -b:a 128k growth.opus
+ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=120' -ac 1 -c:a libopus -b:a 128k growth.opus
 ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=40' -ac 1 -c:a flac header.flac
 ```
 

@@ -1947,3 +1947,17 @@ The Apple reader package tests real appended Opus/FLAC fixtures independently of
 Capacitor; ios.yml also compiles the plugin. Device validation remains separate
 and must be recorded in the implementation plan; compile success cannot replace
 real iOS playback/background/interrupt evidence.
+
+
+Follow-up edge review: an explicit Pause during first-open/buffering waits must
+not be confused with an interruption pause; completion during an interruption
+retains the stream's automatic-resume intent until the interruption clears.
+`StreamGrowth.endAction` pins the final audible-tail wait and pause decision;
+queued work is cancellable and generation-guarded. A real native re-download
+following `done` emits `gone` before its next percentage to establish the new
+lifecycle without permitting stale JS updates to reopen a terminal entry.
+Self-test extension counts exclude completion tails and paused-only schedules.
+The generated Opus fixture is now 120 seconds and a dedicated rate/chunk/gap
+fixture server makes slow transport profiles reproducible. Initial Apple CI run
+39095447743 passed core, actual-reader, and iOS app build gates; final revision
+verification and physical-device acceptance are recorded in the plan.

@@ -1,7 +1,15 @@
 # Native streaming growth, buffering, and progress recovery
 
 Date: 2026-10-17 (America/Los_Angeles)
-Status: planned; implementation and device validation outstanding.
+Status: implementation and local JS/browser gates complete; Apple CI passes for
+initial implementation 3e8cc23. Follow-up edge cases and longer fixtures are under
+verification. Actual device acceptance remains outstanding.
+
+Implementation evidence (updated during work): 1,337 Node tests; clean type/Svelte
+checks; production build; real SeekBar native-progress browser regression and
+production boot smoke and seven offline-advance browser regressions pass. Apple CI run 39095447743 passes growing Opus/FLAC
+reader tests, pure Swift core tests, and unsigned iOS plugin/app build. No device
+playback claim follows from these automated results.
 
 ## Outcome
 

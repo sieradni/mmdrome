@@ -1807,6 +1807,9 @@ public final class NativeAudioEngine: NSObject {
                 guard let expected = expected, expected > 0 else { return nil }
                 return min(max(Double(received) / Double(expected), 0), 1)
             }()
+            if PreloadProgress.startsNewTransfer(lastEmitted: lastPreloadEmitted[trackId]) {
+                emitPreload(trackId, "gone", nil)
+            }
             if let snapshot = PreloadProgress.event(lastEmitted: lastPreloadEmitted[trackId],
                                                     observed: PreloadProgress(state: "fetching", progress: ratio)) {
                 emitPreload(trackId, "progress", snapshot.progress)
@@ -2945,6 +2948,11 @@ public final class NativeAudioEngine: NSObject {
             cachedPosition = seconds
             crossfade = .idle
             if autoPlay {
+                if interruptionActive {
+                    stagedSchedule?.isStalled = true
+                    setPlaying(false)
+                    return true
+                }
                 guard ensureEngineRunning() else {
                     // Recovery ladder owns it (see play()); no onError. The
                     // SCHEDULE exists, so there is nothing to park.
@@ -3155,11 +3163,8 @@ public final class NativeAudioEngine: NSObject {
     /// Workstream C (2026-10-04): the latest delivery while the FIRST staged
     /// schedule is still pending, cached so the open can be re-attempted on
     /// byte ARRIVALS (already main-hopped) instead of only on the next
-    /// rung-gated delivery — see `StreamSchedule.firstScheduleRetryDue`.
+    /// rung-gated delivery — `StreamGrowthPump` owns the coalesced cadence.
     private var lastFirstScheduleProgress: TrackFileLoader.StreamProgress? = nil
-    /// Monotonic stamp of the last first-schedule OPEN attempt (the retry
-    /// throttle). Cleared with the rest of the staged state.
-    private var lastFirstScheduleAttemptAt: Double? = nil
     private lazy var streamGrowthPump = StreamGrowthPump(
         now: { ProcessInfo.processInfo.systemUptime },
         schedule: { delay, action in
@@ -3175,6 +3180,7 @@ public final class NativeAudioEngine: NSObject {
     private var streamCompletionResumeCount = 0
     private var streamStallStartedAt: Double?
     private var streamStallSeconds = 0.0
+    private var stagedEndWork: DispatchWorkItem?
     private var deferredStagedEnd: (index: Int, generation: Int, trackId: String?, node: AVAudioPlayerNode)?
     /// The file the staged schedule reads from: the growing `.part` while
     /// the writer streams, the promoted destination once COMPLETE. `nil` =
@@ -3565,10 +3571,12 @@ public final class NativeAudioEngine: NSObject {
             chainStagedSegment(staged: &staged, toFrames: to, observedFile: file)
             stagedSchedule = staged
         case .resume:
-            finishStreamStall(completion: false)
-            eventAdd(.info, "stream", "stall resume at \(String(format: "%.1f", position))s — fresh partial audio (autoPlay=true)")
             cancelScheduled()
             scheduleCurrentTrack(from: position, autoPlay: true)
+            if isPlaying {
+                finishStreamStall(completion: false)
+                eventAdd(.info, "stream", "stall resume at \(String(format: "%.1f", position))s — fresh partial audio (autoPlay=true)")
+            }
         case .wait, .start:
             break
         }
@@ -3588,7 +3596,7 @@ public final class NativeAudioEngine: NSObject {
             "containerEndSeconds": Double(staged.timelineBaseFrames + staged.headerClaimedFrames) / staged.sampleRate,
             "schedulableEndSeconds": Double(endable) / staged.sampleRate,
             "scheduledEndSeconds": staged.scheduledEndSeconds, "positionSeconds": position,
-            "speed": speed, "stalled": staged.isStalled,
+            "speed": speed, "playing": isPlaying, "stalled": staged.isStalled,
             "userPaused": staged.userPaused, "interrupted": interruptionActive])
         if streamGrowthSamples.count > 120 { streamGrowthSamples.removeFirst(streamGrowthSamples.count - 120) }
     }
@@ -3824,7 +3832,7 @@ public final class NativeAudioEngine: NSObject {
             self?.handleSegmentCompletion(index: chainedIndex, generation: generation, trackId: chainedTrackId, node: chainedNode, standbyGenerationAtStart: nil, isStagedSegment: true)
         }
         staged.scheduledEndFrames = toFrames
-        streamExtensionCount += 1
+        if !staged.isComplete && isPlaying { streamExtensionCount += 1 }
         scheduledSegmentSeconds = Double(toFrames) / sr
         eventAdd(.debug, "stream", "chained segment \(start) local → \(toFrames) absolute frames (\(String(format: "%.1f", Double(frames) / sr))s) id=\(staged.trackId) base=\(String(format: "%.1f", Double(staged.timelineBaseFrames) / sr))s")
     }
@@ -3858,7 +3866,6 @@ public final class NativeAudioEngine: NSObject {
     /// schedule below covers).
     private func resumeStalledAfterComplete() {
         guard var staged = stagedSchedule, staged.isStalled, !staged.userPaused, !interruptionActive else { return }
-        finishStreamStall(completion: true)
         staged.isStalled = false
         stagedSchedule = staged
         let resumeAt = cachedPosition
@@ -3867,6 +3874,7 @@ public final class NativeAudioEngine: NSObject {
         // schedules the REAL end.
         cancelScheduled()
         scheduleCurrentTrack(from: resumeAt, autoPlay: true)
+        if isPlaying { finishStreamStall(completion: true) }
     }
 
     /// All staged state gone: fresh cache-served playback rules apply.
@@ -3882,11 +3890,12 @@ public final class NativeAudioEngine: NSObject {
         stagedSchedule = nil
         stagedSourceURL = nil
         pendingChainedSegments.removeAll()
+        stagedEndWork?.cancel()
+        stagedEndWork = nil
         deferredStagedEnd = nil
         // Workstream C: the first-schedule retry cache dies with the state it
         // belongs to (a new load must never re-open the previous row's .part).
         lastFirstScheduleProgress = nil
-        lastFirstScheduleAttemptAt = nil
     }
 
     /// 1 s monitor (rides the preload sampler): the stalled schedule's GIVE-UP
@@ -3894,6 +3903,13 @@ public final class NativeAudioEngine: NSObject {
     /// tick only fires when NO bytes arrived for `stallGiveUpSeconds`.
     private func streamMonitorTick() {
         guard let staged = stagedSchedule, staged.isStalled else { return }
+        // Completion can arrive during an interruption which began while
+        // already buffering (no audible-playing intent in SessionController).
+        // The stream still owns its automatic resume intent after it clears.
+        if staged.isComplete {
+            resumeStalledAfterComplete()
+            return
+        }
         // F3 rescue (2026-09-22 field dump): delivered == announced while
         // stalled is a LOST COMPLETION (the F1 class), not slow bandwidth —
         // a live writer would have promoted the file and un-stalled the
@@ -4365,27 +4381,34 @@ public final class NativeAudioEngine: NSObject {
                 eventAdd(.info, "stream", "staged completion dropped: state moved on (row \(completedIndex) id \(trackId ?? "-"))")
                 return
             }
-            if let node, node === self.activeNode, !self.isPlaying {
-                self.deferredStagedEnd = (completedIndex, generation, trackId, node)
-                return
-            }
-            if self.isPlaying, let node, node === self.activeNode,
-               self.isNodeTimeMeasured, self.currentPosition + 0.02 < staged.scheduledEndSeconds {
-                self.deferredStagedEnd = (completedIndex, generation, trackId, node)
-                let endAtCallback = staged.scheduledEndFrames
-                let remaining = (staged.scheduledEndSeconds - self.currentPosition) / max(0.25, self.speed)
-                DispatchQueue.main.asyncAfter(deadline: .now() + min(0.2, max(0.02, remaining))) { [weak self] in
-                    guard let self, generation == self.scheduleGeneration,
-                          let live = self.stagedSchedule, live.trackId == trackId else { return }
-                    if live.scheduledEndFrames > endAtCallback {
-                        let key = ObjectIdentifier(node)
-                        self.pendingChainedSegments[key] = max(0, (self.pendingChainedSegments[key] ?? 0) - 1)
-                        self.deferredStagedEnd = nil
-                        return // Its successor owns the next completion.
+            self.stagedEndWork?.cancel()
+            self.stagedEndWork = nil
+            if let node, node === self.activeNode {
+                switch StreamGrowth.endAction(playing: self.isPlaying, measured: self.isNodeTimeMeasured,
+                    position: self.currentPosition, scheduledEnd: staged.scheduledEndSeconds, speed: self.speed) {
+                case .park:
+                    self.deferredStagedEnd = (completedIndex, generation, trackId, node)
+                    return
+                case .awaitRender(let delay):
+                    self.deferredStagedEnd = (completedIndex, generation, trackId, node)
+                    let endAtCallback = staged.scheduledEndFrames
+                    let work = DispatchWorkItem { [weak self] in
+                        guard let self, generation == self.scheduleGeneration,
+                              let live = self.stagedSchedule, live.trackId == trackId else { return }
+                        if live.scheduledEndFrames > endAtCallback {
+                            let key = ObjectIdentifier(node)
+                            self.pendingChainedSegments[key] = max(0, (self.pendingChainedSegments[key] ?? 0) - 1)
+                            self.deferredStagedEnd = nil
+                            return // Its successor owns the next completion.
+                        }
+                        self.handleStagedCompletion(index: completedIndex, generation: generation, trackId: trackId, node: node)
                     }
-                    self.handleStagedCompletion(index: completedIndex, generation: generation, trackId: trackId, node: node)
+                    self.stagedEndWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+                    return
+                case .finish:
+                    break
                 }
-                return
             }
             self.deferredStagedEnd = nil
             let consumeQuietly: (String) -> Void = { reason in
@@ -4456,6 +4479,8 @@ public final class NativeAudioEngine: NSObject {
         // cancel voids the outstanding chain counts. A stale chained
         // completion can no longer misclassify a later schedule.
         pendingChainedSegments.removeAll()
+        stagedEndWork?.cancel()
+        stagedEndWork = nil
         deferredStagedEnd = nil
     }
 

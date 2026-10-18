@@ -13,6 +13,22 @@ public enum StreamGrowth {
         case resume
     }
 
+    public enum EndAction: Equatable {
+        case park
+        case awaitRender(delay: Double)
+        case finish
+    }
+
+    /// dataConsumed is chain bookkeeping, not proof the final audible tail
+    /// rendered. Recheck on the same bounded clock, preserving user pause.
+    public static func endAction(playing: Bool, measured: Bool, position: Double,
+                                 scheduledEnd: Double, speed: Double) -> EndAction {
+        guard playing else { return .park }
+        guard measured, position.isFinite, scheduledEnd.isFinite,
+              position + 0.02 < scheduledEnd else { return .finish }
+        return .awaitRender(delay: min(evaluationInterval, max(0.02, (scheduledEnd - position) / max(0.25, speed))))
+    }
+
     public static func decide(
         firstSchedule: Bool,
         stalled: Bool,

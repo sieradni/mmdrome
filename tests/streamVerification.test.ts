@@ -927,7 +927,7 @@ test('formatStreamVerifyReport renders one line per check with its status', () =
 function growthSample(over: Partial<StreamGrowthSample> = {}): StreamGrowthSample {
   return { t: 1, trackId: 'a', generation: 1, reason: 'observe', complete: false,
     schedulableEndSeconds: 30, scheduledEndSeconds: 10, positionSeconds: 10,
-    speed: 1, stalled: true, userPaused: false, interrupted: false, ...over }
+    speed: 1, stalled: true, playing: true, userPaused: false, interrupted: false, ...over }
 }
 function growthEvidence(over: Partial<StreamGrowthEvidence> = {}): StreamGrowthEvidence {
   return { samples: [growthSample(), growthSample({ t: 3 })], extensions: 2,
@@ -954,4 +954,13 @@ test('growth trace respects starvation, pause, interruption, generation and obse
   assert.equal(evaluateStreamGrowth('a', growthEvidence({ samples, completionResumes: 0, observationComplete: false })).status, 'unknown')
   const generations = [growthSample(), growthSample({ t: 3, generation: 2 })]
   assert.notEqual(evaluateStreamGrowth('a', growthEvidence({ samples: generations })).status, 'fail')
+})
+
+
+test('growth trace cannot pass on completion-tail chaining or paused-only evidence', () => {
+  const samples = [growthSample({ playing: false }), growthSample({ t: 3, playing: false })]
+  assert.equal(evaluateStreamGrowth('a', growthEvidence({ samples, completionResumes: 0, stalls: 0 })).status, 'fail', 'eligible stalled samples still establish a failure')
+  const paused = samples.map((s) => ({ ...s, userPaused: true }))
+  assert.equal(evaluateStreamGrowth('a', growthEvidence({ samples: paused, completionResumes: 0, stalls: 0 })).status, 'unknown')
+  assert.equal(evaluateStreamGrowth('a', growthEvidence({ extensions: NaN })).status, 'unknown')
 })

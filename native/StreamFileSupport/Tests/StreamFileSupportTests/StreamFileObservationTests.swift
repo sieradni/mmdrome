@@ -18,7 +18,7 @@ final class StreamFileObservationTests: XCTestCase {
         let writer = try FileHandle(forWritingTo: url)
         defer { try? writer.close() }
         var previous = 0
-        for fraction in [0.15, 0.55, 0.85] {
+        for fraction in [0.05, 0.20, 0.50] {
             let count = Int(Double(bytes.count) * fraction)
             try writer.write(contentsOf: bytes.subdata(in: previous..<count))
             previous = count
@@ -27,13 +27,13 @@ final class StreamFileObservationTests: XCTestCase {
             let seconds = Double(file.length) / sr
             observations.append(seconds)
             let end = StreamSchedule.stagedEndFramesEstimate(containerFrames: file.length,
-                metadataFrames: Int64(40 * sr), deliveredBytes: Int64(count), announcedBytes: Int64(bytes.count))
+                metadataFrames: Int64(120 * sr), deliveredBytes: Int64(count), announcedBytes: Int64(bytes.count))
             let action = StreamGrowth.decide(firstSchedule: !started, stalled: false,
-                userPaused: false, interrupted: false, positionSeconds: 0, trackEndSeconds: 40,
+                userPaused: false, interrupted: false, positionSeconds: 0, trackEndSeconds: 120,
                 scheduledEndFrames: scheduled, schedulableEndFrames: end, sampleRate: sr, speed: 1)
-            if fraction == 0.15 { XCTAssertEqual(action, .wait) }
-            if fraction == 0.55 { XCTAssertEqual(action, .start); started = true; scheduled = end }
-            if fraction == 0.85 { XCTAssertEqual(action, .extend(to: end)) }
+            if fraction == 0.05 { XCTAssertEqual(action, .wait) }
+            if fraction == 0.20 { XCTAssertEqual(action, .start); started = true; scheduled = end }
+            if fraction == 0.50 { XCTAssertEqual(action, .extend(to: end)) }
         }
         XCTAssertGreaterThan(observations[1], observations[0])
         XCTAssertGreaterThan(observations[2], observations[1])
