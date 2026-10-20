@@ -27,7 +27,8 @@
           "date": "2026-10-20T21:57:07.500Z",
           "localizedDescription": "Push review now shows track art, metadata, and rating/loved changes before writing; clearer activity and control tooltips across the player; responsive, keyboard-accessible push confirmation.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.62/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5215756
         },
         {
           "version": "1.2.61",
