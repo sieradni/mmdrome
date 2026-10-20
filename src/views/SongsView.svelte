@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
-  import { library, metadataCache, currentTrack } from '../stores/appState'
+  import { library, metadataCache, currentTrack, navidromeConnection, navidromeLoadStatus } from '../stores/appState'
   import { restoreViewState } from '../lib/viewState'
   import { libraryFilters, trackMatchesGenre } from '../lib/libraryFilters'
   import { parseSearchQuery, rankTrackMatch } from '../lib/searchCore'
@@ -216,7 +216,11 @@
 
       <div class="py-6 text-center">
         {#if $library.length === 0}
-          <p class="text-sm text-muted">Your library is empty. Scan your music to get started.</p>
+          {#if $navidromeConnection.checking || $navidromeLoadStatus.loading}
+            <p class="text-sm text-muted">Loading library…</p>
+          {:else}
+            <p class="text-sm text-muted">Your library is empty. Scan your music to get started.</p>
+          {/if}
         {:else}
           <p class="text-sm text-muted">{processed.length} tracks</p>
         {/if}

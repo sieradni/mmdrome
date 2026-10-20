@@ -105,7 +105,8 @@ test('an id migration relinks the orphaned rating onto the re-encoded id and pus
   // The dialog names the MIGRATED row — no raw navidrome- id anywhere.
   await expect(page.getByText('1 file will be updated:')).toBeVisible()
   const dialogRow = page.locator('[data-testid="push-discard-navidrome-s2n"]').locator('xpath=ancestor::li')
-  await expect(dialogRow).toContainText('Song Two — Artist B')
+  await expect(dialogRow).toContainText('Song Two')
+  await expect(dialogRow).toContainText('Artist B · Album Y')
   await expect(dialogRow).not.toContainText('navidrome-')
   await expect(dialogRow).toContainText('→ Song Two.mp3')
   await page.getByRole('button', { name: 'Write to files' }).click()
@@ -154,10 +155,12 @@ test('a legacy double-bind after migration keeps the newer edit; the orphan is d
   // name from the library.
   await expect(page.getByText('2 files will be updated:')).toBeVisible()
   const orphanRow = page.locator('[data-testid="push-discard-navidrome-s2"]').locator('xpath=ancestor::li')
-  await expect(orphanRow).toContainText('Song Two — Artist B')
+  await expect(orphanRow).toContainText('Song Two')
+  await expect(orphanRow).toContainText('Artist B')
   await expect(orphanRow).toContainText('no longer in the library')
   const liveRow = page.locator('[data-testid="push-discard-navidrome-s2n"]').locator('xpath=ancestor::li')
-  await expect(liveRow).toContainText('Song Two — Artist B')
+  await expect(liveRow).toContainText('Song Two')
+  await expect(liveRow).toContainText('Artist B · Album Y')
 
   // Discard the orphan with the × (inline confirm): nothing is written for
   // it, and the newer edit survives for the push.

@@ -1,11 +1,15 @@
 <script lang="ts">
   import { onMount } from 'svelte'
   import { Capacitor, SystemBars, SystemBarType, SystemBarsStyle } from '@capacitor/core'
-  import { currentTrack, queue, playbackState, initStores, settings, library, navidromeConnection, navidromeLoadStatus, shuffleEnabled, currentTime, effectiveDuration, toggleShuffle, loopMode, sleepTimer } from './stores/appState'
+  import { currentTrack, queue, playbackState, initStores, settings, library, navidromeConnection, navidromeLoadStatus, metadataScanState, pushState, shuffleEnabled, currentTime, effectiveDuration, toggleShuffle, loopMode, sleepTimer } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
   import { sleepTimerManager } from './lib/sleepTimer'
   import { loadLibraryFromNavidrome } from './lib/syncEngine'
-  import { ensureTagProbeAfterRestore } from './lib/metadataScanner'
+  import { ensureTagProbeAfterRestore, tagProbeState } from './lib/metadataScanner'
+  import { deriveActivityStatus } from './lib/activityStatus'
+  import { tooltip } from './lib/tooltip'
+  import ActivityStrip from './components/ActivityStrip.svelte'
+  import { saveViewStateSession } from './lib/viewState'
   import { setCachedConfig } from './lib/navidromeApi'
   import { restoreLfmSession } from './lib/lastfmAuth'
   import { scrobbleFlushEngine } from './lib/scrobbleFlush'
@@ -379,6 +383,30 @@
     sliderMax > 0 ? Math.min(100, Math.max(0, (sliderValue / sliderMax) * 100)) : 0
   )
 
+  let activityStatus = $derived(
+    deriveActivityStatus({
+      navChecking: $navidromeConnection.checking,
+      navLoading: $navidromeLoadStatus.loading,
+      navCached: $navidromeLoadStatus.cached,
+      navError: $navidromeConnection.error ?? $navidromeLoadStatus.error,
+      scanStatus: $metadataScanState.status,
+      scanScanned: $metadataScanState.progress.scanned,
+      scanTotal: $metadataScanState.progress.total,
+      probeActive: $tagProbeState.active,
+      probeDone: $tagProbeState.done,
+      probeRemaining: $tagProbeState.remaining,
+      pushActive: $pushState.active,
+      pushDone: $pushState.done,
+      pushTotal: $pushState.total,
+    })
+  )
+
+  function openActivitySettings(targetTab: 'sources' | 'library') {
+    saveViewStateSession('settings', { tab: targetTab })
+    view = 'settings'
+    closeAll()
+  }
+
   const tabs: { id: typeof view; label: string; icon: string }[] = [
     { id: 'songs', label: 'Songs', icon: 'M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z' },
     { id: 'albums', label: 'Albums', icon: 'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z' },
@@ -410,6 +438,7 @@
           />
         </div>
       </div>
+      <ActivityStrip status={activityStatus} onclick={() => { if (activityStatus) openActivitySettings(activityStatus.targetTab) }} />
     </header>
   {/if}
 
@@ -480,17 +509,17 @@
         </div>
       {/if}
       <div class="flex flex-shrink-0 items-center gap-1">
-        <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => { e.stopPropagation(); playbackManager.prev() }}>
+        <button use:tooltip class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => { e.stopPropagation(); playbackManager.prev() }}>
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
         </button>
-        <button class="rounded-full bg-neutral-300 p-2 text-black transition-transform hover:scale-105" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
+        <button use:tooltip class="rounded-full bg-neutral-300 p-2 text-black transition-transform hover:scale-105" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
           {#if $playbackState === 'playing'}
             <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
           {:else}
             <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
           {/if}
         </button>
-        <button class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={(e) => { e.stopPropagation(); playbackManager.next() }}>
+        <button use:tooltip class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={(e) => { e.stopPropagation(); playbackManager.next() }}>
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
         </button>
       </div>
@@ -521,13 +550,13 @@
   <div class="fixed inset-0 z-40 flex flex-col bg-background safe-area-full">
     <!-- Header -->
     <div class="flex items-center justify-between px-4 py-1.5">
-      <button onclick={toggleNowPlaying} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Close player">
+      <button use:tooltip onclick={toggleNowPlaying} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Close player">
         <svg class="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
       <div class="flex items-center gap-1">
         <span class="text-sm font-medium text-muted">Now Playing</span>
       </div>
-      <button onclick={openQueue} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Open queue">
+      <button use:tooltip onclick={openQueue} class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Open queue">
         <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>
       </button>
     </div>
@@ -588,7 +617,7 @@
           </div>
         {/if}
         <div class="ml-auto flex items-center gap-1">
-        <button onclick={toggleLoop} class="rounded-full p-2 transition-colors" class:text-accent={$loopMode !== 'none'} class:text-muted={$loopMode === 'none'} aria-label="Toggle loop">
+        <button use:tooltip onclick={toggleLoop} class="rounded-full p-2 transition-colors" class:text-accent={$loopMode !== 'none'} class:text-muted={$loopMode === 'none'} aria-label="Toggle loop">
           <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
             <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/>
             {#if $loopMode === 'one'}
@@ -599,7 +628,7 @@
           </svg>
         </button>
         <div class="relative" data-volume-popover>
-          <button onclick={(e) => { e.stopPropagation(); volOpen = !volOpen }} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Volume">
+          <button use:tooltip onclick={(e) => { e.stopPropagation(); volOpen = !volOpen }} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Volume">
             <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
               <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
             </svg>
@@ -622,7 +651,7 @@
           {/if}
         </div>
         <div class="relative" data-sleep-popover>
-          <button onclick={toggleSleepPopover} class="rounded-full p-2 transition-colors" class:text-accent={$sleepTimer.active} class:text-muted={!$sleepTimer.active} aria-label="Sleep timer">
+          <button use:tooltip onclick={toggleSleepPopover} class="rounded-full p-2 transition-colors" class:text-accent={$sleepTimer.active} class:text-muted={!$sleepTimer.active} aria-label="Sleep timer">
             <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm.5 6a.5.5 0 011 0v4.25l3 1.8a.5.5 0 01-.25.93.5.5 0 01-.25-.07l-3.25-1.95a.5.5 0 01-.25-.43V8a.5.5 0 01.5-.5z"/>
             </svg>
@@ -701,23 +730,24 @@
          24/28/36px glyph); shuffle + options hang at the edges without
          shifting the centered play group. -->
     <div class="flex items-center justify-center gap-3 px-6 pt-4">
-      <button onclick={() => { toggleShuffle() }} class="rounded-full p-3 transition-colors" class:text-accent={$shuffleEnabled} class:text-muted={!$shuffleEnabled} aria-label="Toggle shuffle">
+      <button use:tooltip onclick={() => { toggleShuffle() }} class="rounded-full p-3 transition-colors" class:text-accent={$shuffleEnabled} class:text-muted={!$shuffleEnabled} aria-label="Toggle shuffle">
         <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
       </button>
-      <button class="rounded-full p-3 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
+      <button use:tooltip class="rounded-full p-3 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
         <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
       </button>
-      <button class="rounded-full bg-neutral-300 p-3.5 text-black transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
+      <button use:tooltip class="rounded-full bg-neutral-300 p-3.5 text-black transition-colors hover:opacity-80" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
         {#if $playbackState === 'playing' || $playbackState === 'buffering'}
           <svg class="h-9 w-9" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
         {:else}
           <svg class="h-9 w-9" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         {/if}
       </button>
-      <button class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
+      <button use:tooltip class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
         <svg class="h-8 w-8" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
       </button>
       <button
+        use:tooltip
         onclick={openTrackOptions}
         disabled={!$currentTrack}
         class="rounded-full p-3 text-muted transition-colors disabled:cursor-not-allowed disabled:opacity-30 hover:text-primary"

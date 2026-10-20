@@ -1,4 +1,9 @@
 <script lang="ts">
+  import PushTrackSummary from '../components/PushTrackSummary.svelte'
+  import PushConfirmShell from '../components/PushConfirmShell.svelte'
+  import PushDiscardButton from '../components/PushDiscardButton.svelte'
+  import LazyThumb from '../components/LazyThumb.svelte'
+
   import AppSlider from '../components/AppSlider.svelte'
   import ClearableSearch from '../components/ClearableSearch.svelte'
   import { onMount } from 'svelte'
@@ -9,9 +14,9 @@
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, testNavidromeConn, loadLibraryFromNavidrome, cancelLongOperation } from '../lib/syncEngine'
   import { webdavBaseKey } from '../lib/webdavUtils'
-  import { buildPushBreakdown, withLibraryTitles, EMPTY_PUSH_BREAKDOWN, type PushBreakdown, type PushableTrackInfo } from '../lib/pushReconcile'
+  import { buildPushBreakdown, withLibraryTitles, withPushContext, EMPTY_PUSH_BREAKDOWN, type PushBreakdown, type PushableTrackInfo, type PushTrackContext } from '../lib/pushReconcile'
   import { metadataCache, relinkPendingMetadata } from '../stores/appState'
-  import { getPendingSyncMetadata } from '../lib/db'
+  import { getPendingSyncMetadata, getFileTagsForBase } from '../lib/db'
   import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, refreshIndexAndProbeForced, reprobeFiles, scanAll, resetMetadataAndRelink, cancelScan, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
   import { parseSearchQuery, highlightSegments, type HighlightSegment } from '../lib/searchCore'
   import { foldMapForSearch, normalizeForSearch } from '../lib/matchNormalize'
@@ -57,6 +62,7 @@
   let syncing = $state(false)
   let syncResult = $state('')
   let confirmPush = $state(false)
+  const pushLibraryTracks = $derived(confirmPush ? new Map($library.map((track) => [track.trackId, track])) : new Map())
   // The dialog's full picture — bucket counts + the pushable track list.
   let pushBreakdown = $state<PushBreakdown>(EMPTY_PUSH_BREAKDOWN)
 
@@ -549,13 +555,15 @@
     // skip the confirmation dialog entirely (TODO 3.5 convention).
     const currentBaseKey = webdavBaseKey($settings.webdavUrl ?? '', $settings.webdavUser ?? '')
     // The pending rows carry no title — resolve display names from the live
-    // library (withLibraryTitles) so the dialog shows "Title — Artist"
+    // library (withLibraryTitles / withPushContext) so the dialog shows
+    // "Title — Artist" plus album, format, and old → new rating/loved diffs
     // instead of raw navidrome ids (2026-09-26 field report). Ids with no
     // library row are orphaned pending edits (kept deliberately so a stale id
     // can't silently lose the user's rating) and keep the raw-id fallback +
     // an explicit "Track not in library" hint in the dialog.
+    const ctxMap = await buildPushContextMap(currentBaseKey)
     pushBreakdown = buildPushBreakdown(
-      withLibraryTitles(pending, pendingTitleMap()),
+      withPushContext(withLibraryTitles(pending, pendingTitleMap()), ctxMap),
       currentBaseKey,
     )
     if (pushBreakdown.pushable > 0) {
@@ -582,6 +590,45 @@
       titles.set(row.trackId, `${row.title}${row.artist ? ` — ${row.artist}` : ''}`)
     }
     return titles
+  }
+
+  /** Builds per-track baseline context (album, fileType, previous rating/loved
+   *  from the probed WebDAV file tag cache only) so the
+   *  Push confirmation dialog can render clean old → new diffs. */
+  async function buildPushContextMap(currentBaseKey: string): Promise<Map<string, PushTrackContext>> {
+    const ctx = new Map<string, PushTrackContext>()
+    const tagEntries = currentBaseKey ? await getFileTagsForBase(currentBaseKey).catch(() => []) : []
+    const tagByPath = new Map(tagEntries.filter((e) => e.status === 'ok' && e.metadata).map((e) => [e.path, e.metadata!]))
+    const metaById = get(metadataCache)
+    for (const t of get(library)) {
+      const title = t.title
+      const row = metaById.get(t.trackId)
+      const fileMeta = row?.webdavPath ? tagByPath.get(row.webdavPath) : undefined
+      // Navidrome ratings may already mirror the local edit and are NOT the
+      // previous WebDAV file value. Only a successful file probe is evidence.
+      const prevRating = fileMeta?.rating
+      const prevLoved = fileMeta?.loved
+      ctx.set(t.trackId, {
+        title,
+        artist: t.artist || undefined,
+        album: t.album || undefined,
+        fileType: t.fileType,
+        prevRating,
+        prevLoved,
+      })
+    }
+    for (const row of metaById.values()) {
+      if (ctx.has(row.trackId) || !row.title) continue
+      const fileMeta = row.webdavPath ? tagByPath.get(row.webdavPath) : undefined
+      ctx.set(row.trackId, {
+        title: row.title,
+        artist: row.artist || undefined,
+        fileType: row.fileType,
+        prevRating: fileMeta?.rating,
+        prevLoved: fileMeta?.loved,
+      })
+    }
+    return ctx
   }
 
   /** True when the dialog row's name came from a snapshot rather than a live
@@ -612,7 +659,12 @@
       await discardLocalEdit(t.trackId)
       pushDiscardTarget = null
       const pending = await getPendingSyncMetadata()
-      const bd = buildPushBreakdown(withLibraryTitles(pending, pendingTitleMap()), webdavBaseKey($settings.webdavUrl ?? '', $settings.webdavUser ?? ''))
+      const currentBaseKey = webdavBaseKey($settings.webdavUrl ?? '', $settings.webdavUser ?? '')
+      const ctxMap = await buildPushContextMap(currentBaseKey)
+      const bd = buildPushBreakdown(
+        withPushContext(withLibraryTitles(pending, pendingTitleMap()), ctxMap),
+        currentBaseKey,
+      )
       pushBreakdown = bd
       if (bd.pushable === 0) {
         // Nothing left to confirm — land in the section with an honest line.
@@ -1952,16 +2004,19 @@
         </section>
 
         {#if confirmPush}
-          <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-            <div class="max-h-[85vh] w-full max-w-sm overflow-y-auto rounded-xl bg-surface-raised p-4">
-              <h4 class="mb-2 text-base font-medium text-primary">Write ratings to WebDAV files?</h4>
-              <p class="mb-3 text-sm text-muted">
-                Downloads each file, rewrites its tags (rating and loved heart), and writes it back atomically. A wrong file link gives the rating to a different file — check the list below against File Matching.
-              </p>
+          <PushConfirmShell onclose={() => { confirmPush = false }}>
+              <div class="shrink-0 border-b border-white/10 px-5 py-4">
+                <h4 class="text-base font-semibold text-primary">Write ratings to WebDAV files?</h4>
+                <p id="push-confirm-description" class="mt-1 text-xs leading-relaxed text-muted">
+                  Updates only rating and loved tags. A wrong file link applies these tags to the wrong file. Tags can be corrected later if you know the previous values. Verify the paths below.
+                </p>
+              </div>
               <!-- Bucket breakdown — the same classifier the run uses, so this
                    picture cannot disagree with what Push will actually do. -->
-              <div class="mb-3 space-y-1 text-sm">
-                <p class="font-medium text-primary">{pushBreakdown.pushable} file{pushBreakdown.pushable === 1 ? '' : 's'} will be updated:</p>
+              <div class="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-5 py-3.5 text-sm">
+                <div class="flex items-baseline justify-between">
+                  <p role="status" class="text-xs font-medium uppercase tracking-wider text-muted">{pushBreakdown.pushable} file{pushBreakdown.pushable === 1 ? '' : 's'} will be updated:</p>
+                </div>
                 <!-- WINDOWED SLICE (2026-09-28 sweep): the breakdown's `tracks`
                      array is deliberately UNCAPPED (the count must reflect the
                      real run — pushReconcile.ts), but rendering every row made
@@ -1972,44 +2027,46 @@
                      /pushchanges e2e specs target discard buttons inside these
                      rows — those dialogs are small (<10 rows), so the cap
                      never hides a spec'd row. -->
-                <ul class="ml-4 max-h-40 list-disc space-y-0.5 overflow-y-auto">
+                <ul class="divide-y divide-white/10">
                   {#each pushBreakdown.tracks.slice(0, PUSH_DIALOG_LIST_CAP) as t (t.trackId)}
-                    <li class="text-muted">
-                      <div class="flex items-start justify-between gap-2">
-                        <span class="min-w-0 break-words">
-                          {t.title}
-                          {#if !pendingTitleMap().has(t.trackId)}
-                            <span class="text-xs text-amber-300">(Track not in library — no matching song found. Discard with the ×)</span>
-                          {:else if isSnapshotNamed(t)}
-                            <span class="text-xs text-muted/70">(no longer in the library — shown from the edit's saved title)</span>
+                    <li class="py-3.5 text-muted">
+                      <div class="flex items-start justify-between gap-1">
+                        <div class="min-w-0 flex-1">
+                          {#if pushLibraryTracks.get(t.trackId)}
+                            <PushTrackSummary track={t}>
+                              {#snippet thumbnail()}
+                                <LazyThumb track={pushLibraryTracks.get(t.trackId)!} size={96} wrapperClass="h-full w-full" />
+                              {/snippet}
+                            </PushTrackSummary>
+                          {:else}
+                            <PushTrackSummary track={t} />
                           {/if}
-                          <span class="text-xs opacity-60">→ {t.webdavPath}</span>
-                        </span>
-                        <!-- Drop this pending edit without pushing: × opens an
-                             inline confirm strip (no nested overlay) — the
-                             orphaned-stale-id rows' one-tap cleanup. -->
-                        <button
-                          data-testid={`push-discard-${t.trackId}`}
-                          onclick={() => requestDiscardPending(t)}
-                          disabled={pushDiscardBusy}
-                          class="shrink-0 rounded-full p-1 text-muted transition-colors hover:bg-white/10 hover:text-primary disabled:opacity-50"
-                          aria-label={`Discard pending edit for ${t.title}`}
-                        >
-                          <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6L6 18"/></svg>
-                        </button>
+                          {#if !pendingTitleMap().has(t.trackId)}
+                            <p class="text-xs text-amber-300">(Track not in library — no matching song found. Discard with the ×)</p>
+                          {:else if isSnapshotNamed(t)}
+                            <p class="text-xs text-muted/70">(no longer in the library — shown from the edit's saved title)</p>
+                          {/if}
+
+                        </div>
+                        <div class="flex shrink-0 items-center pt-0.5">
+                          <!-- Drop this pending edit without pushing: × opens an
+                               inline confirm strip (no nested overlay) — the
+                               orphaned-stale-id rows' one-tap cleanup. -->
+                          <PushDiscardButton title={t.title} expanded={pushDiscardTarget === t.trackId} testId={`push-discard-${t.trackId}`} onclick={() => requestDiscardPending(t)} disabled={pushDiscardBusy} />
+                        </div>
                       </div>
                       {#if pushDiscardTarget === t.trackId}
-                        <div class="mt-1 flex items-center gap-2 rounded-lg bg-surface-hover px-2 py-1.5" data-testid={`push-discard-confirm-${t.trackId}`}>
-                          <span class="min-w-0 flex-1 text-xs">Discard this edit? The rating is never written to the file.</span>
+                        <div class="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-surface-hover px-2.5 py-1.5" data-testid={`push-discard-confirm-${t.trackId}`}>
+                          <span class="min-w-0 flex-1 text-xs">Discard this edit? These rating and loved changes will not be written to the file.</span>
                           <button
                             onclick={() => confirmDiscardPending(t)}
                             disabled={pushDiscardBusy}
-                            class="shrink-0 rounded-lg bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-300 ring-1 ring-red-500/30 transition-opacity hover:opacity-80 disabled:opacity-50"
+                            class="min-h-11 shrink-0 rounded-lg bg-red-500/10 px-2.5 py-1 text-xs font-medium text-red-300 ring-1 ring-red-500/30 transition-opacity hover:opacity-80 disabled:opacity-50"
                           >{pushDiscardBusy ? 'Discarding…' : 'Discard'}</button>
                           <button
                             onclick={cancelDiscardPending}
                             disabled={pushDiscardBusy}
-                            class="shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium text-muted transition-opacity hover:opacity-80 disabled:opacity-50"
+                            class="min-h-11 shrink-0 rounded-lg px-2.5 py-1 text-xs font-medium text-muted transition-opacity hover:opacity-80 disabled:opacity-50"
                           >Keep</button>
                         </div>
                       {/if}
@@ -2020,30 +2077,30 @@
                   <p class="text-xs text-muted">… and {pushBreakdown.tracks.length - PUSH_DIALOG_LIST_CAP} more (the count above is the full list).</p>
                 {/if}
                 {#if pushBreakdown.wrongServer > 0}
-                  <p class="text-amber-300">{pushBreakdown.wrongServer} skipped — matched on a different server.</p>
+                  <p class="text-xs text-amber-300">{pushBreakdown.wrongServer} skipped — matched on a different server.</p>
                 {/if}
                 {#if pushBreakdown.noBase > 0}
-                  <p class="text-amber-300">{pushBreakdown.noBase} skipped — unverified file link (matched before server verification existed). Re-link via File Matching.</p>
+                  <p class="text-xs text-amber-300">{pushBreakdown.noBase} skipped — unverified file link (matched before server verification existed). Re-link via File Matching.</p>
                 {/if}
                 {#if pushBreakdown.ignored > 0}
-                  <p class="text-muted">{pushBreakdown.ignored} dismissed — will not be pushed.</p>
+                  <p class="text-xs text-muted">{pushBreakdown.ignored} dismissed — will not be pushed.</p>
                 {/if}
                 {#if pushBreakdown.noPath > 0}
-                  <p class="text-muted">{pushBreakdown.noPath} without a matched file — nothing to write.</p>
+                  <p class="text-xs text-muted">{pushBreakdown.noPath} without a matched file — nothing to write.</p>
                 {/if}
               </div>
-              <div class="flex justify-end gap-2">
+              <div class="flex shrink-0 flex-wrap justify-end gap-2 border-t border-white/10 px-5 py-3.5">
                 <button
                   onclick={() => { confirmPush = false }}
-                  class="btn-secondary btn-md"
+                  class="btn-secondary btn-md min-h-11"
                 >Cancel</button>
                 <button
                   onclick={performPush}
-                  class="btn-primary btn-md"
+                  class="btn-primary btn-md min-h-11"
+                  disabled={pushDiscardBusy || pushBreakdown.pushable === 0}
                 >Write to files</button>
               </div>
-            </div>
-          </div>
+          </PushConfirmShell>
         {/if}
 
         <!-- Metadata Scan -->

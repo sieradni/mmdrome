@@ -129,12 +129,34 @@ export interface PushableTrackInfo {
   trackId: string
   title: string
   webdavPath: string
+  rating: number
+  loved: boolean
+  prevRating?: number
+  prevLoved?: boolean
+  artist?: string
+  album?: string
+  fileType?: string
 }
 
 /** The row surface the breakdown needs (LocalMetadataStore satisfies it). */
 export interface PushBreakdownRow extends PushRowSnapshot {
   trackId: string
   title?: string
+  prevRating?: number
+  prevLoved?: boolean
+  artist?: string
+  album?: string
+  fileType?: string
+}
+
+/** Baseline server/file metadata for a track so the dialog can show old → new diffs. */
+export interface PushTrackContext {
+  title: string
+  artist?: string
+  album?: string
+  fileType?: string
+  prevRating?: number
+  prevLoved?: boolean
 }
 
 /**
@@ -159,6 +181,64 @@ export function withLibraryTitles(rows: PushBreakdownRow[], titles: ReadonlyMap<
   })
 }
 
+/**
+ * Enriches pending rows with baseline context (album, fileType, previous
+ * file/server rating and loved state) so the confirmation dialog can show
+ * clean old → new change tokens. Pure: leaves unmatched rows untouched.
+ */
+export function withPushContext(rows: PushBreakdownRow[], context: ReadonlyMap<string, PushTrackContext>): PushBreakdownRow[] {
+  if (context.size === 0) return rows
+  return rows.map((row) => {
+    const ctx = context.get(row.trackId)
+    if (!ctx) return row
+    return {
+      ...row,
+      title: ctx.title,
+      artist: ctx.artist ?? row.artist,
+      album: ctx.album ?? row.album,
+      fileType: ctx.fileType ?? row.fileType,
+      prevRating: ctx.prevRating ?? row.prevRating,
+      prevLoved: ctx.prevLoved ?? row.prevLoved,
+    }
+  })
+}
+
+/**
+ * Pure diff descriptor for a pushable track row.
+ * Produces concise, high-signal change tokens (`ratingDiff`, `lovedDiff`)
+ * without inventing changes when the baseline matches or is unknown.
+ */
+export interface PushDiffSummary {
+  ratingChanged: boolean
+  lovedChanged: boolean
+  ratingText: string | null
+  lovedText: string | null
+}
+
+export function describePushDiff(info: Pick<PushableTrackInfo, 'rating' | 'loved' | 'prevRating' | 'prevLoved'>): PushDiffSummary {
+  const hasPrevRating = info.prevRating !== undefined
+  const ratingChanged = hasPrevRating ? info.prevRating !== info.rating : info.rating > 0
+  let ratingText: string | null = null
+  if (hasPrevRating && info.prevRating !== info.rating) {
+    ratingText = `★ ${info.prevRating} → ${info.rating}`
+  } else if (info.rating > 0) {
+    ratingText = `★ ${info.rating}`
+  } else if (hasPrevRating && info.prevRating! > 0 && info.rating === 0) {
+    ratingText = `★ ${info.prevRating} → 0`
+  }
+
+  const hasPrevLoved = info.prevLoved !== undefined
+  const lovedChanged = hasPrevLoved ? info.prevLoved !== info.loved : info.loved
+  let lovedText: string | null = null
+  if (hasPrevLoved && info.prevLoved !== info.loved) {
+    lovedText = info.loved ? '♡ → ♥' : '♥ → ♡'
+  } else if (info.loved) {
+    lovedText = '♥ Loved'
+  }
+
+  return { ratingChanged, lovedChanged, ratingText, lovedText }
+}
+
 export interface PushBreakdown {
   pushable: number
   noPath: number
@@ -174,8 +254,8 @@ export const EMPTY_PUSH_BREAKDOWN: PushBreakdown = { pushable: 0, noPath: 0, ign
 /**
  * The dialog's full picture, derived through the ONE classifier (so the
  * breakdown can never disagree with what the run will do). Buckets are
- * counts; `tracks` lists the pushable rows (title + target path) so the
- * user sees exactly which files are about to be rewritten.
+ * counts; `tracks` lists the pushable rows (title + target path + diff fields)
+ * so the user sees exactly which files and values are about to be rewritten.
  */
 export function buildPushBreakdown(rows: PushBreakdownRow[], currentBaseKey: string): PushBreakdown {
   const bd: PushBreakdown = { pushable: 0, noPath: 0, ignored: 0, noBase: 0, wrongServer: 0, tracks: [] }
@@ -183,7 +263,18 @@ export function buildPushBreakdown(rows: PushBreakdownRow[], currentBaseKey: str
     const bucket = classifyRowForPush(row, currentBaseKey)
     if (bucket === 'pushable') {
       bd.pushable++
-      bd.tracks.push({ trackId: row.trackId, title: row.title ?? row.trackId, webdavPath: row.webdavPath! })
+      bd.tracks.push({
+        trackId: row.trackId,
+        title: row.title ?? row.trackId,
+        webdavPath: row.webdavPath!,
+        rating: row.rating,
+        loved: row.loved,
+        ...(row.prevRating !== undefined ? { prevRating: row.prevRating } : {}),
+        ...(row.prevLoved !== undefined ? { prevLoved: row.prevLoved } : {}),
+        ...(row.artist !== undefined ? { artist: row.artist } : {}),
+        ...(row.album !== undefined ? { album: row.album } : {}),
+        ...(row.fileType !== undefined ? { fileType: row.fileType } : {}),
+      })
     } else if (bucket === 'no-path') bd.noPath++
     else if (bucket === 'ignored') bd.ignored++
     else if (bucket === 'no-base') bd.noBase++

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { shouldKeepPushPending, shouldSkipBeforePut, classifyRowForPush, buildPushBreakdown, withLibraryTitles, EMPTY_PUSH_BREAKDOWN, type PushRowSnapshot, type PushBreakdownRow } from '../src/lib/pushReconcile'
+import { shouldKeepPushPending, shouldSkipBeforePut, classifyRowForPush, buildPushBreakdown, withLibraryTitles, withPushContext, describePushDiff, EMPTY_PUSH_BREAKDOWN, type PushRowSnapshot, type PushBreakdownRow } from '../src/lib/pushReconcile'
 
 function row(over: Partial<PushRowSnapshot> = {}): PushRowSnapshot {
   return { rating: 70, loved: true, syncStatus: 'pending_sync', webdavPath: '/m/a.mp3', webdavBase: 'u|user', comments: 'c', ...over }
@@ -196,4 +196,41 @@ test('titles: an existing stale title never overrides the live library name', ()
 test('titles: empty map returns the SAME rows (library missing = no enrichment, no crash)', () => {
   const rows: PushBreakdownRow[] = [{ ...row(), trackId: 'navidrome-x', title: undefined }]
   assert.equal(withLibraryTitles(rows, new Map()), rows)
+})
+
+test('describePushDiff: formats old -> new rating and loved changes cleanly', () => {
+  assert.deepEqual(
+    describePushDiff({ rating: 90, loved: true, prevRating: 60, prevLoved: false }),
+    { ratingChanged: true, lovedChanged: true, ratingText: '★ 60 → 90', lovedText: '♡ → ♥' },
+  )
+  assert.deepEqual(
+    describePushDiff({ rating: 0, loved: false, prevRating: 80, prevLoved: true }),
+    { ratingChanged: true, lovedChanged: true, ratingText: '★ 80 → 0', lovedText: '♥ → ♡' },
+  )
+  assert.deepEqual(
+    describePushDiff({ rating: 80, loved: false, prevRating: 80, prevLoved: false }),
+    { ratingChanged: false, lovedChanged: false, ratingText: '★ 80', lovedText: null },
+  )
+  assert.deepEqual(
+    describePushDiff({ rating: 100, loved: true }),
+    { ratingChanged: true, lovedChanged: true, ratingText: '★ 100', lovedText: '♥ Loved' },
+  )
+})
+
+test('withPushContext: enriches album, fileType, prevRating, and prevLoved and forwards into buildPushBreakdown', () => {
+  const rows: PushBreakdownRow[] = [
+    { ...row({ rating: 80, loved: true }), trackId: 'navidrome-s1' },
+  ]
+  const ctx = new Map([
+    ['navidrome-s1', { title: 'Song One', artist: 'Artist A', album: 'Album X', fileType: 'flac', prevRating: 40, prevLoved: false }],
+  ])
+  const enriched = withPushContext(rows, ctx)
+  const bd = buildPushBreakdown(enriched, BASE_KEY)
+  assert.equal(bd.tracks.length, 1)
+  assert.equal(bd.tracks[0].title, 'Song One')
+  assert.equal(bd.tracks[0].artist, 'Artist A')
+  assert.equal(bd.tracks[0].album, 'Album X')
+  assert.equal(bd.tracks[0].fileType, 'flac')
+  assert.equal(bd.tracks[0].prevRating, 40)
+  assert.equal(bd.tracks[0].prevLoved, false)
 })

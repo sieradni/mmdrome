@@ -4,6 +4,7 @@
   import { library } from '../stores/appState'
   import { autoQueueFilterFields, autoQueueSort, shuffleEnabled } from '../stores/appState'
   import { autoQueueSettingsDiffer, planApplyLibraryToAutoQueue } from '../lib/autoQueuePlan'
+  import { tooltip } from '../lib/tooltip'
   import AppSlider from './AppSlider.svelte'
 
   let { onopen }: { onopen?: () => void } = $props()
@@ -329,10 +330,10 @@
          settings differ (the pure diff predicate). Icon-only round button,
          same silhouette as the pills. -->
     <button
+      use:tooltip={"Apply to auto queue"}
       onclick={() => (applyOpen = true)}
       class="flex h-10 w-10 items-center justify-center rounded-full text-muted bg-[#0f0f0f] ring-1 ring-white/10 transition-colors hover:text-primary hover:ring-white/20"
       aria-label="Apply the library filter and sort to the auto queue"
-      title="Apply to auto queue"
     >
       <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <!-- Two stacked list rows flowing down onto one row: the shared

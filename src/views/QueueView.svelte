@@ -37,6 +37,7 @@
   import SeekBar from '../components/SeekBar.svelte'
   import BufferSpinner from '../components/BufferSpinner.svelte'
   import ScrollTopButton from '../components/ScrollTopButton.svelte'
+  import { tooltip } from '../lib/tooltip'
 
   let { onclose, oncloseall }: { onclose: () => void; oncloseall: () => void } = $props()
 
@@ -621,10 +622,10 @@
        original 52px despite the larger 28px glyphs (review 2026-09-11). -->
   <div class="grid grid-cols-3 items-center border-b border-white/10 px-4 py-0.5">
     <div class="flex items-center gap-1">
-      <button onclick={oncloseall} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Library">
+      <button use:tooltip onclick={oncloseall} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Library">
         <svg class="h-7 w-7" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" /></svg>
       </button>
-      <button onclick={onclose} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Close queue">
+      <button use:tooltip onclick={onclose} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Close queue">
         <svg class="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
     </div>
@@ -680,6 +681,7 @@
         <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
         <div class="relative -mt-1" onclick={(e) => e.stopPropagation()}>
           <button
+            use:tooltip
             onclick={() => toggleShuffle()}
             class="absolute left-0 top-1/2 -translate-y-1/2 rounded-full p-2.5 transition-colors"
             class:text-accent={$shuffleEnabled}
@@ -690,11 +692,11 @@
           </button>
 
           <div class="flex items-center justify-center gap-1.5">
-            <button class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
+            <button use:tooltip class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
               <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
             </button>
 
-            <button class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
+            <button use:tooltip class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
               {#if $playbackState === 'buffering'}
                 <span class="flex h-6 w-6 items-center justify-center">
                   <BufferSpinner sizeClass="h-6 w-6" trackClass="border-white/30" headClass="border-t-white" />
@@ -706,7 +708,7 @@
               {/if}
             </button>
 
-            <button class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
+            <button use:tooltip class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
               <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
             </button>
           </div>
@@ -1013,6 +1015,7 @@
          states elsewhere. -->
     <div class="flex items-stretch gap-1.5 rounded-t-2xl bg-[#090909] p-1.5 ring-1 ring-white/10">
       <button
+        use:tooltip
         onclick={jumpToCurrent}
         disabled={!$currentTrack}
         class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-muted ring-1 ring-white/10 transition-colors hover:bg-accent-soft hover:text-accent disabled:opacity-30"
@@ -1022,6 +1025,7 @@
         <span class="w-full truncate text-center text-[10px] font-medium leading-none">Current</span>
       </button>
       <button
+        use:tooltip
         onclick={jumpToBoundary}
         disabled={$queue.userQueue.length === 0 || previewAutoItems.length === 0}
         class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-muted ring-1 ring-white/10 transition-colors hover:bg-accent-soft hover:text-accent disabled:opacity-30"
@@ -1031,6 +1035,7 @@
         <span class="w-full truncate text-center text-[10px] font-medium leading-none">Boundary</span>
       </button>
       <button
+        use:tooltip
         onclick={() => filterOpen = !filterOpen}
         class={"flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 transition-colors hover:bg-accent-soft hover:text-accent " + (filterOpen ? 'chip-on' : 'text-muted ring-1 ring-white/10')}
         aria-label="Auto queue filters"
@@ -1040,6 +1045,7 @@
         <span class="w-full truncate text-center text-[10px] font-medium leading-none">Filters</span>
       </button>
       <button
+        use:tooltip
         onclick={clearAbove}
         disabled={aboveCount === 0}
         class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-muted ring-1 ring-white/10 transition-colors hover:bg-accent-soft hover:text-accent disabled:opacity-30 disabled:hover:bg-transparent"
@@ -1049,6 +1055,7 @@
         <span class="w-full truncate text-center text-[10px] font-medium leading-none">Clear above{#if aboveCount > 0}&nbsp;{aboveCount}{/if}</span>
       </button>
       <button
+        use:tooltip
         onclick={clearBelow}
         disabled={belowCount === 0}
         class="flex min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-lg px-1 py-1.5 text-muted ring-1 ring-white/10 transition-colors hover:bg-accent-soft hover:text-accent disabled:opacity-30 disabled:hover:bg-transparent"

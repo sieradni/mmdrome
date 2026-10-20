@@ -10,7 +10,6 @@ import '@fontsource/roboto-mono/400.css'
 import '@fontsource/roboto-mono/500.css'
 import '@fontsource-variable/inter'
 import '@fontsource-variable/space-grotesk'
-import App from './App.svelte'
 import { Capacitor } from '@capacitor/core'
 import { initAppearance } from './lib/appearance'
 
@@ -18,12 +17,16 @@ document.body.style.backgroundColor = '#000000'
 
 void initAppearance()
 
-const app = mount(App, {
-  target: document.getElementById('app')!,
-})
+// Review fixtures never mount App: no store hydration, queue restore, or
+// playback boot. Vite removes this development-only branch from production.
+const uiReview = import.meta.env.DEV && new URLSearchParams(location.search).has('uiPreview')
+const app = (uiReview
+  ? import('./components/UiReview.svelte')
+  : import('./App.svelte')
+).then(({ default: Root }) => mount(Root, { target: document.getElementById('app')! }))
 
 // Skip service worker in the native Capacitor app (local WKWebView is not network-deployed)
-if ('serviceWorker' in navigator && !Capacitor.isNativePlatform() && !location.hostname.includes('localhost')) {
+if (!uiReview && 'serviceWorker' in navigator && !Capacitor.isNativePlatform() && !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) {
   navigator.serviceWorker.register('sw.js')
 }
 

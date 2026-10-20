@@ -76,10 +76,26 @@ test('a rating edit in the UI is pushed to the WebDAV file via PUT-temp + MOVE',
   await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Write ratings to WebDAV files?' })).toBeVisible()
   await expect(page.getByText('1 file will be updated:')).toBeVisible()
+  const pushDialog = page.getByRole('dialog', { name: 'Write ratings to WebDAV files?' })
+  await expect(pushDialog).toBeFocused()
+  await expect(pushDialog).toHaveAccessibleDescription(/Updates only rating and loved tags/)
+  const discardButton = page.getByTestId('push-discard-navidrome-s1')
+  const discardRect = await discardButton.boundingBox()
+  expect(discardRect!.width).toBe(32)
+  expect(discardRect!.height).toBe(32)
+  await page.keyboard.press('Shift+Tab')
+  await expect(pushDialog.getByRole('button', { name: 'Write to files', exact: true })).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(discardButton).toBeFocused()
   // Real names, not raw navidrome ids (2026-09-26 field report): the dialog
   // resolves titles from the live library via withLibraryTitles.
   const dialogRow = page.locator('[data-testid="push-discard-navidrome-s1"]').locator('xpath=ancestor::li')
-  await expect(dialogRow).toContainText('Song One — Artist A')
+  await expect(dialogRow).toContainText('Song One')
+  await expect(dialogRow).toContainText('Artist A · Album X')
+  await expect(dialogRow).not.toContainText('Song One — Artist A')
+  const cover = dialogRow.getByTestId('push-thumbnail').locator('img').last()
+  await expect(cover).toBeVisible()
+  await expect.poll(() => cover.evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0)
   await expect(dialogRow).not.toContainText('navidrome-')
   await expect(dialogRow).toContainText('→ Song One.mp3')
   await page.getByRole('button', { name: 'Write to files' }).click()
@@ -247,8 +263,10 @@ test('the dialog × discards one pending edit after confirmation; only the survi
   // Both rows carry real names.
   const s1Row = page.locator('[data-testid="push-discard-navidrome-s1"]').locator('xpath=ancestor::li')
   const s2Row = page.locator('[data-testid="push-discard-navidrome-s2"]').locator('xpath=ancestor::li')
-  await expect(s1Row).toContainText('Song One — Artist A')
-  await expect(s2Row).toContainText('Song Two — Artist B')
+  await expect(s1Row).toContainText('Song One')
+  await expect(s1Row).toContainText('Artist A · Album X')
+  await expect(s2Row).toContainText('Song Two')
+  await expect(s2Row).toContainText('Artist B · Album Y')
 
   // × opens the inline confirm strip; Keep closes it without discarding.
   await page.getByTestId('push-discard-navidrome-s1').click()
@@ -264,7 +282,8 @@ test('the dialog × discards one pending edit after confirmation; only the survi
   await confirmStrip.getByRole('button', { name: 'Discard' }).click()
   await expect(page.getByText('1 file will be updated:')).toBeVisible()
   await expect(s1Row).toHaveCount(0)
-  await expect(s2Row).toContainText('Song Two — Artist B')
+  await expect(s2Row).toContainText('Song Two')
+  await expect(s2Row).toContainText('Artist B · Album Y')
 
   // Push proceeds with the survivor only: Song One's file must be untouched
   // (no POPM), Song Two's carries the write.
