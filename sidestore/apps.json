@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.61",
-      "versionDate": "2026-10-18T04:49:13.291Z",
-      "versionDescription": "Improve streaming startup and buffering recovery, show loading progress during downloads, and prevent failed streams from restarting during retry.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.61/mmdrome.ipa",
+      "version": "1.2.62",
+      "versionDate": "2026-10-20T21:57:07.500Z",
+      "versionDescription": "Push review now shows track art, metadata, and rating/loved changes before writing; clearer activity and control tooltips across the player; responsive, keyboard-accessible push confirmation.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.62/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.62",
+          "buildVersion": "66",
+          "date": "2026-10-20T21:57:07.500Z",
+          "localizedDescription": "Push review now shows track art, metadata, and rating/loved changes before writing; clearer activity and control tooltips across the player; responsive, keyboard-accessible push confirmation.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.62/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.61",
           "buildVersion": "65",
@@ -602,6 +610,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.62",
+      "identifier": "ios-v1.2.62",
+      "appID": "com.mmdrome.player",
+      "caption": "Push review now shows track art, metadata, and rating/loved changes before writing; clearer activity and control tooltips across the player;",
+      "date": "2026-10-20T21:57:07.500Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.61",
       "identifier": "ios-v1.2.61",
       "appID": "com.mmdrome.player",
@@ -634,15 +651,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Fix queue history replay and recycled-song continuation, preserve native queue occurrence identity, prioritize fresh songs before repeats, a",
       "date": "2026-10-13T10:09:23.770Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.57",
-      "identifier": "ios-v1.2.57",
-      "appID": "com.mmdrome.player",
-      "caption": "Interruption recovery: a stale flag can no longer block the rebuild path, and route changes name their audio port. The Debug HUD can flip th",
-      "date": "2026-10-09T07:31:05.695Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
