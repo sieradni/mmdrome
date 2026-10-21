@@ -215,6 +215,9 @@ test('shuffle mode permutes the pool (set-preserving) and clears the wrap notice
   reset()
   const ids = ['t1', 't2', 't3', 't4', 't5', 't6']
   library.set(ids.map((id) => track(id)))
+  // A shuffle toggle reorders the SAME rule set, so it is not a rule change
+  // (D7): the anti-repeat window must survive it.
+  setQueue({ recentTrackIds: ['t9'] })
   shuffleEnabled.set(true)
   queueWrapNotice.set(true)
 
@@ -223,6 +226,7 @@ test('shuffle mode permutes the pool (set-preserving) and clears the wrap notice
   const auto = get(queue).autoQueue
   assert.deepEqual([...auto].sort(), [...ids].sort(), 'shuffle keeps the same members')
   assert.equal(get(queueWrapNotice), false, 'shuffle clears the wrap hint')
+  assert.deepEqual(get(queue).recentTrackIds, ['t9'], 'the window survives a shuffle toggle')
 })
 
 test('the empty-fill notice fires when nothing can be added and clears on a successful fill', () => {
@@ -272,7 +276,7 @@ test('a fully-tied library still shows the flip at the queue head (rotation pres
   assert.deepEqual(get(queue).autoQueue, ['b', 'a', 'e', 'd'], 'descending head is the anchor\'s down-neighbor — the flip is visible')
 })
 
-test('the autoQueueSort subscription continues the fill from the playing track (not the top)', () => {
+test('the autoQueueSort subscription continues the fill from the playing track (not the top)', async () => {
   // REPRODUCTION for the mission report: applying a new filter/sort to the
   // queue with shuffle off regenerated the auto queue from the TOP of the
   // sorted pool instead of from the current position. Driven through the REAL
@@ -292,6 +296,9 @@ test('the autoQueueSort subscription continues the fill from the playing track (
   const unsubs = priv._subscribeShared()
   try {
     autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
+    // A rule change lands on the next tick (D7 coalesces it with a filter edit
+    // in the same task), so the rebuild is awaited rather than assumed sync.
+    await new Promise((resolve) => setTimeout(resolve, 10))
 
     // The Songs view order is a,b,c,d,e and playback is at c — the regenerated
     // tail must continue d,e then wrap a,b, matching the view order after the
@@ -302,13 +309,15 @@ test('the autoQueueSort subscription continues the fill from the playing track (
   }
 })
 
-// --- sort/filter changes WHILE PLAYING (Phase 2A gate item 6, 2026-10-21) ----
-// The fill can now run with the playing row inside the AUTO section (the user
-// re-sorted or tightened the queue mid-track). These pin what the anchor does
-// then. Two of them expose a real drift: the fill rewrites `autoQueue` without
-// re-anchoring `activeIndex`, so the "combined[activeIndex] is the playing
-// track" invariant (B1) can break. Reported, not repaired here — the fix is a
-// behaviour decision, out of this phase's scope.
+// --- rule changes WHILE PLAYING (D7, 2026-10-21f: G1/G2 CLOSED) -------------
+// A filter or sort edit is a FRESH CONTEXT (D7), not a patch on the old tail:
+// one write promotes the audible AUTO row, clears the anti-repeat window and
+// rebuilds the pool with `keepAuto: false`. That is what closes G1/G2 — after
+// the promotion the anchor names a USER row, so an auto rewrite can no longer
+// move it. These replace the three "KNOWN GAP" pins this section used to hold
+// ("…leaves the anchor on a different track", "…without re-anchoring the
+// playing row", "…leaves activeIndex past the end"): a gap test is rewritten
+// with the new rule, never deleted.
 
 function playingAuto(): void {
   reset()
@@ -323,66 +332,96 @@ function combined(): { ids: string[]; anchor: string | undefined } {
   return { ids, anchor: ids[q.activeIndex] }
 }
 
-test('a filter change that still matches the playing auto row keeps it queued AND anchored', () => {
+test('a filter edit PROMOTES the audible auto row first, so the anchor still names the song playing (D7 / G1 closed)', () => {
   playingAuto()
+  const writesBefore = playQueueWrites.length
 
-  autoQueueFilterFields.set({ ...FIELDS, minRating: 50 })
-  queueManager.replenishAutoQueue()
-
-  const q = get(queue)
-  assert.deepEqual(q.autoQueue, ['a', 'b', 'c'], 'every queued row still matches — nothing is dropped')
-  assert.equal(q.activeIndex, 1)
-  assert.equal(combined().anchor, 'a', 'the playing row is still the anchor')
-})
-
-test('a filter change that EXCLUDES the playing auto row leaves the anchor on a different track (KNOWN GAP)', () => {
-  playingAuto()
-
-  // minRating 90 drops 'a' (80) — the row that is audibly playing.
+  // minRating 90 excludes 'a' (80) — the row that is audibly playing. Under the
+  // old kept-prefix patch the row was pruned and the anchor stayed put, naming
+  // 'b'; D7 promotes it into the user section before the rewrite.
   autoQueueFilterFields.set({ ...FIELDS, minRating: 90 })
-  queueManager.replenishAutoQueue()
+  queueManager.rebuildForFreshContext()
 
   const q = get(queue)
-  assert.deepEqual(q.autoQueue, ['b', 'c'], 'the non-matching playing row is pruned')
-  assert.equal(q.activeIndex, 1, 'KNOWN GAP: the index is NOT re-anchored')
-  assert.equal(combined().anchor, 'b', 'the anchor now names a row that is not playing')
-  assert.equal(get(queue).userQueue.length, 1)
+  assert.deepEqual(q.userQueue, ['u', 'a'], 'the audible row is promoted to the user boundary')
+  assert.equal(q.activeIndex, 1)
+  assert.equal(combined().anchor, 'a', 'the anchor STILL names the audible song')
+  assert.deepEqual(q.autoQueue, ['b', 'c'], 'the tail is rebuilt from the matching pool')
+  assert.deepEqual(q.recentTrackIds, [], 'a fresh context clears the anti-repeat window (D7.2)')
 
-  // The queue is the native refresh payload, so this is not a cosmetic
-  // highlight bug: the next engine sync would position the engine by index.
-  assert.equal(combined().ids[1], 'b')
+  // D7 is ONE write: the promotion, the recents reset and the rebuild land
+  // together, so the native snapshot can never see a half-rewritten queue.
+  assert.equal(playQueueWrites.length, writesBefore + 1, 'one queue write')
+  assert.deepEqual((lastWrite() as unknown as QueueState).userQueue, ['u', 'a'])
+  assert.equal((lastWrite() as QueueState).activeIndex, 1)
 })
 
-test('a sort change mid-play rebuilds the auto order without re-anchoring the playing row (KNOWN GAP)', () => {
+test('a sort edit re-derives the order after the PROMOTED anchor (D7 / G2 closed)', () => {
   playingAuto()
 
   autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
-  queueManager.rebuildAutoQueue()
+  queueManager.rebuildForFreshContext()
 
   const q = get(queue)
-  // Descending rating over the pool, with the anchor rotation a no-op (the
-  // anchor 'u' is the lowest rank, so nothing ranks after it → wrap). The
-  // rebuild ALSO re-admits the USER-queued 'u' through tier 3 (B4), so the
-  // auto tail carries a cross-section duplicate of the user row.
-  assert.deepEqual(q.autoQueue, ['c', 'b', 'a', 'u'])
-  assert.equal(q.activeIndex, 1, 'KNOWN GAP: the index stayed at the playing row’s OLD position')
-  assert.equal(combined().anchor, 'c', 'the anchor names a different row while the user hears a')
+  assert.deepEqual(q.userQueue, ['u', 'a'])
+  assert.equal(combined().anchor, 'a', 'the rebuild cannot move the anchor — it is a user row now')
+  // Descending rating within each tier, in the fresh order. The rotation anchor
+  // is the promoted row ('a', rank 2 of c,b,a,u), so nothing ranks after it →
+  // the fill wraps from the top and the wrap hint is honest. Tier 3 then
+  // re-admits the USER-queued 'u' (B4: a short pool recycles rather than
+  // starving) as an independent auto occurrence — the active row 'a' is the
+  // one id tier 3 excludes.
+  assert.deepEqual(q.autoQueue, ['c', 'b', 'u'])
+  assert.equal(get(queueWrapNotice), true, 'nothing ranks after the anchor → wrapped')
+  assert.deepEqual(q.recentTrackIds, [])
 })
 
-test('a filter change that drops the LAST playing auto row leaves activeIndex past the end (KNOWN GAP)', () => {
+test('a rule edit cannot leave the anchor past the end when the audible row was the LAST matching one', () => {
   reset()
   library.set(['u', 'a', 'b'].map((id) => track(id)))
   metadataCache.set(metaOf([['u', 0], ['a', 95], ['b', 50]]))
   setQueue({ userQueue: ['u'], autoQueue: ['a', 'b'], activeIndex: 2 }) // 'b' plays
 
   autoQueueFilterFields.set({ ...FIELDS, minRating: 90 })
-  queueManager.replenishAutoQueue()
+  queueManager.rebuildForFreshContext()
 
   const q = get(queue)
+  assert.deepEqual(q.userQueue, ['u', 'b'], 'the audible (non-matching) row survives as history')
   assert.deepEqual(q.autoQueue, ['a'])
-  assert.equal(q.activeIndex, 2, 'KNOWN GAP: the index is neither re-anchored nor clamped')
-  assert.equal(combined().ids.length, 2)
-  assert.ok(q.activeIndex >= combined().ids.length, 'the anchor points past the end')
+  assert.equal(q.activeIndex, 1)
+  assert.ok(q.activeIndex < combined().ids.length, 'the anchor is in range — never past the end')
+  assert.equal(combined().anchor, 'b')
+})
+
+test('the filter subscription drives the FRESH CONTEXT through the real reaction layer (D7 wiring)', async () => {
+  playingAuto()
+  const m = new PlaybackManager({
+    engine: new FakeEngine() as unknown as typeof engine,
+    queueManager,
+  })
+  const priv = m as unknown as { _subscribeShared(): Array<() => void>; _initialized: boolean }
+  priv._initialized = true
+  const unsubs = priv._subscribeShared()
+  try {
+    // `_subscribeShared` replenishes on subscribe (that write is not the one
+    // under test) — count from here.
+    const writesBefore = playQueueWrites.length
+    // Nothing matches at 96 (the played row rates 80): the whole tail empties,
+    // which is exactly the shape that used to point the anchor past the end.
+    autoQueueFilterFields.set({ ...FIELDS, minRating: 96 })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+
+    const q = get(queue)
+    assert.deepEqual(q.userQueue, ['u', 'a'], 'the audible auto row was promoted by the reaction')
+    assert.deepEqual(q.autoQueue, [], 'the tail was rebuilt, not patched')
+    assert.equal(combined().anchor, 'a', 'the anchor names the audible song')
+    assert.deepEqual(q.recentTrackIds, [], 'the recency window was reset')
+    assert.equal(get(autoQueueEmptyNotice), true, 'nothing matches → the empty notice is honest')
+    assert.equal(playQueueWrites.length, writesBefore + 1, 'the debounced reaction is ONE write')
+  } finally {
+    for (const u of unsubs) u()
+    m.destroy()
+  }
 })
 
 test('searchQuery persists as a filter through the real manager', () => {

@@ -1,10 +1,11 @@
 # Queue & Playlist Design — Agreed Target (2026-10-21b)
 
-Status: **PARTLY IMPLEMENTED (steps 1–2 of §6, 2026-10-21c/d).** This is the target contract. The
+Status: **PARTLY IMPLEMENTED (steps 1–4 of §6, 2026-10-21c/d/e/f).** This is the target contract. The
 as-built behavior — and the tests that currently pin it — live in [QUEUE-INVARIANTS.md](QUEUE-INVARIANTS.md).
-Landed: D3/D4/D5, D11, D13 and D1's press semantics (+ the crossfade occurrence identity that D1 needs).
-Not landed: D2's optional auto-copy drop on `+`, D6 (repeat pass), D7 (fresh context → G1/G2), D8, D9,
-D12's library validation, D14's tail rules. D10 landed with step 3 (2026-10-21e). Until a rule's row in the matrix says otherwise, do not cite it as shipped.
+Landed: D3/D4/D5, D11, D13, D1's press semantics (+ the crossfade occurrence identity that D1 needs),
+D10 (step 3) and D7 (step 4 — the fresh-context rebuild, which closes G1/G2).
+Not landed: D2's optional auto-copy drop on `+`, D6 (repeat pass), D8, D9, D12's library validation,
+D14's tail rules. Until a rule's row in the matrix says otherwise, do not cite it as shipped.
 
 Date: 2026-10-21 (decisions taken across the 2026-10-21 review, follow-up to Phase 2A).
 Supersedes: the duplicate/order half of QUEUE-INVARIANTS §15, and rows A1–A9, B11–B12, E2/E4, J2–J4,
@@ -280,8 +281,17 @@ No Swift change is expected for D1–D14. The native engine consumes snapshots a
    masks a removal), the browser `queueRows` "two Next presses skip two rows", and the queueMutation resolver
    table. Recorded side effect: an unresolvable id no longer re-targets itself on the next advance (the first
    advance still resolves null and the caller stops) — G4's remaining shape is the missing validation.
-4. **Fresh context (D7)** — promote-before-rewrite, reset recents, full rebuild; rewrite B11/E4/E9
-   and close G1/G2.
+4. **Fresh context — LANDED 2026-10-21f (G1/G2 CLOSED).** `queueManager.rebuildForFreshContext` is ONE
+   write: promote the audible auto occurrence (the same reducer the post-load path uses), clear
+   `recentTrackIds`, rebuild with `keepAuto: false`, rotate after the anchor (now a user row). The
+   PlaybackManager's `_scheduleRuleChange` coalesces a filter edit and a sort pick from the same task into
+   that one write (250 ms trailing for typing, 0 ms for a sort pick) and compares filter VALUES before
+   scheduling, so the subscribe-time fire cannot wipe a restored window. `replenishAutoQueue` keeps its
+   kept-prefix rule for the per-advance fill and `rebuildAutoQueue` remains the shuffle toggle.
+   Pins: `queueManagerFill` (promote-first, last-row anchor, sort-after-promote, the real subscription
+   path, the window surviving a shuffle toggle), `playbackManagerRestore` (subscribe-time guard), browser
+   `queuefresh` (a widened filter re-derives the tail while the audible row stays the anchor).
+   Rewritten matrix rows: B1, B11, E4, E9, D6a/D6b, V7; §13's G1/G2 are CLOSED sections.
 5. **Tail rules + auto-off (D8/D9)** — persisted toggle, UI, wrap/stop/restart, Previous no-op;
    rewrite L2/L3 and Q1.
 6. **Repeat pass (D6)** — planner/manager tests, provenance, wrapper/notice behavior.

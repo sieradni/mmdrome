@@ -8,13 +8,14 @@ occurrence, restore is a raw pass-through, native snapshots carry per-occurrence
 Step 2 (2026-10-21d) shipped press semantics: a library press appends and plays its own row (C7), promotion
 appends instead of moving (C3), "Play next" inserts a copy instead of reordering (C8), and the crossfade
 reconcile resolves the ARMED occurrence (C4). Step 3 (2026-10-21e) made a skip exact: the anchor-ahead-of-
-audio fact (D10) means two presses are two rows, duplicate copies included (B12) — G3 CLOSED. Everything
-else still describes the code as it was, and every remaining known gap is real.
+audio fact (D10) means two presses are two rows, duplicate copies included (B12) — G3 CLOSED. Step 4
+(2026-10-21f) made a filter/sort edit a FRESH CONTEXT (D7): one write promotes the audible auto row, clears
+the anti-repeat window and rebuilds the tail with `keepAuto: false` — **G1 and G2 CLOSED**. Everything else
+still describes the code as it was, and every remaining known gap is real.
 
-> **Still not implemented (steps 4–6):** a filter/sort edit still rewrites the fill in place without
-> promoting the audible row or resetting `recentTrackIds` (D7 → G1/G2), manual Next at the tail is still a
-> no-op under loop-all (D8), the auto queue cannot be switched off (D9), the auto fill has no repeat pass
-> (D6), and `playAll` does not validate ids against the library (G4). Those rows say so; do not pre-fix them.
+> **Still not implemented (steps 5–6):** manual Next at the tail is still a no-op under loop-all (D8), the
+> auto queue cannot be switched off (D9), the auto fill has no repeat pass (D6), and `playAll` does not
+> validate ids against the library (G4). Those rows say so; do not pre-fix them.
 
 ## 0. What this file is
 
@@ -36,10 +37,10 @@ load-bearing, which are deliberate tradeoffs, and which are accidental.
    native/on-device half is not; see E5 in `AGENTS.md` (no local Swift toolchain) and the physical-iOS
    ledger item in the 2026-10-17 streaming plan.
 
-Verification for this document (2026-10-21e, steps 1–3 landed): `npm test` (1420 passing), `npm run check`
-(0 errors / 0 warnings), the full e2e suite (67 passing) and the ui-review suite (8 passing), including the
-rows' browser specs — `queueRows` (11), `queuedragdup` (2), `queueContinuation` (1), `queueflood` (2),
-`persistence` (3).
+Verification for this document (2026-10-21f, steps 1–4 landed): `npm test` (1421 passing), `npm run check`
+(0 errors / 0 warnings), the full e2e suite (68 passing) and the ui-review suite (8 passing), including the
+rows' browser specs — `queueRows` (11), `queuedragdup` (2), `queueContinuation` (1), `queuefresh` (1),
+`queueflood` (2), `persistence` (3).
 
 **Status vocabulary (closed set — every row carries exactly one of these):**
 
@@ -52,11 +53,13 @@ rows' browser specs — `queueRows` (11), `queuedragdup` (2), `queueContinuation
 | `pinned (browser — native mocked)` | A real-bundle browser spec with the native plugin mocked; the wiring is proven, the Swift engine is not. |
 | `pinned (JS half)` | The native bridge's JS side is pinned; the Swift engine / on-device half is not (E5, §16). |
 | `pinned (JS half — device-unverified)` | As above, and the behavior also depends on engine timing only a device run can confirm. |
-| `pinned — G1/G2 exception` | The row holds for the cited cases; §13's G1/G2 fill-rewrite gap is a known exception, stated inline in the row. |
-| `pinned — G1/G2 mechanism` | The row is true, and it is the mechanism by which §13's G1/G2 gap happens. |
 | `known gap G#` | The cited test pins CURRENT behavior that §13 records as wrong (fix = rewrite the test with the new rule). |
 | `known limitation G#` | As above, where the gap is a constraint of the current design rather than a defect. |
 | `current behavior (open question Q#)` | The test pins what the code does; no product decision is recorded. The question is open in §17. |
+
+Two statuses were RETIRED in 2026-10-21f — `pinned — G1/G2 exception` and `pinned — G1/G2 mechanism`. No
+row carries them: the fill has no rule-change exception any more (D7 promotes the audible row first), so
+B1 and E9 state the rule instead of naming a gap.
 
 ## 1. Vocabulary
 
@@ -69,6 +72,7 @@ rows' browser specs — `queueRows` (11), `queuedragdup` (2), `queueContinuation
 | audible row | the track `currentTrack` names — normally `combined[activeIndex]`. |
 | occurrence | one queue ROW: `(section, id, ordinal)`; the same id may appear any number of times in either section and each copy is its own row. |
 | tier 3 | the rotation stage of the fill that re-admits user-queued / cooled rows (B4 tradeoff). |
+| rule change | An explicit edit of the auto filter fields, the auto sort, or the library→auto apply. It is a FRESH CONTEXT (D7): promote the audible row, reset the window, rebuild. A shuffle toggle and a per-advance replenish are NOT rule changes. |
 
 ## 2. Sections & duplicates (occurrence identity)
 
@@ -88,7 +92,7 @@ rows' browser specs — `queueRows` (11), `queuedragdup` (2), `queueContinuation
 
 | # | Invariant | Pinned by | Status |
 | --- | --- | --- | --- |
-| B1 | `combined[activeIndex]` names the playing track through every mutation EXCEPT an auto-fill rewrite. A filter or sort change mid-play is the known exception: the fill moves/prunes the auto rows and leaves the index where it was (G1/G2, §13). | `tests/queueMutation.test.ts` — fuzz "anchor invariant…" (6 seeds × 10k ops); `tests/queueContinuation.test.ts` — "native field shape: row 104 never re-anchors to history row 50"; `tests/playbackManagerAdvance.test.ts` — "control: end-of-track advance is unchanged when the active row is queued" | pinned — G1/G2 exception |
+| B1 | `combined[activeIndex]` names the playing track through every mutation AND through a rule-change rewrite: a filter/sort edit promotes the audible auto row before the fill runs (D7), so the fill below can only move auto rows the anchor does not name. There is no exception left. | `tests/queueMutation.test.ts` — fuzz "anchor invariant…" (6 seeds × 10k ops); `tests/queueContinuation.test.ts` — "native field shape: row 104 never re-anchors to history row 50"; `tests/playbackManagerAdvance.test.ts` — "control: end-of-track advance is unchanged when the active row is queued"; `tests/queueManagerFill.test.ts` — "a filter edit PROMOTES the audible auto row first…", "a rule edit cannot leave the anchor past the end…" | pinned |
 | B2 | An unrelated mutation preserves the active OCCURRENCE, not merely the id: an auto row must not re-anchor onto an earlier user copy of the same song. | `tests/queueContinuation.test.ts` — "unrelated mutation preserves the active auto occurrence, not its history duplicate" | pinned |
 | B3 | Removing a row ABOVE the active row decrements the index; removing a row BELOW it leaves the index alone; removing the ACTIVE row keeps the index so the highlight slides to the next playable row (2.4 option b). | `tests/queueMutation.test.ts` — "removeFromUserQueue: removing a preceding row decrements…", "…removing the active row keeps the index…", "…removing a following row leaves the anchor untouched", "rapid removals above the active row keep the anchor on the playing id each time" | pinned |
 | B4 | Removing the active LAST row leaves the anchor past the new end — an honest stop, never a phantom row. | `tests/queueMutation.test.ts` — "removeFromUserQueue: removing the active LAST row lands the anchor past the new end"; `tests/playbackManagerAdvance.test.ts` — "removing the active LAST row lets it play out (native parity, 2.7)" | pinned |
@@ -98,7 +102,7 @@ rows' browser specs — `queueRows` (11), `queuedragdup` (2), `queueContinuation
 | B8 | Moving the PLAYING row (drag / move-to-end) re-anchors by id and re-arms the crossfade target onto the NEW next row. | `tests/playbackManagerAdvance.test.ts` — "end-of-track after moving the PLAYING row down advances to the NEW next row", "moving the playing row re-arms the web crossfade target onto the NEW next row"; `tests/queueMutation.test.ts` — "dragging the active USER row keeps the anchor on the moved user occurrence" | pinned † |
 | B9 | A queue mutation never leaves a stale armed crossfade target; removal of the armed row re-arms or disarms. | `tests/playbackManagerAdvance.test.ts` — "removing the ARMED next row re-arms the crossfade target past the removal", "…tail next row disarms the arm", "…stale re-arm whose target was removed mid-resolve is dropped", "queue-write bursts coalesce into ONE re-arm" | pinned |
 | B10 | A drag carries the source occurrence (`queueEntryId`); a cross-section duplicate drag moves the occurrence the user grabbed — the auto copy when the user grabbed that one — never a same-id neighbour. | `tests/queueMutation.test.ts` — "applyDragDrop: a cross-section duplicate resolves to the dragged AUTO occurrence (G5 closed)", "…with two user copies the dragged one moves and the other stays"; `tests/e2e/queuedragdup.spec.ts` — "three copies of one song are independent rows" | pinned (G5 closed) |
-| B11 | A filter/sort change while an AUTO row plays must keep the anchor on that row. | `tests/queueManagerFill.test.ts` — "a filter change that still matches the playing auto row keeps it queued AND anchored" / "…EXCLUDES the playing auto row… (KNOWN GAP)" / "a sort change mid-play rebuilds the auto order without re-anchoring… (KNOWN GAP)" / "…drops the LAST playing auto row leaves activeIndex past the end (KNOWN GAP)" | known gap **G1/G2** |
+| B11 | A filter/sort change while an AUTO row plays keeps the anchor ON that row: the rule change promotes the audible occurrence into the user section first, resets the window and rebuilds the tail in ONE write (D7). The rebuilt tail is the fresh order under the new rules — never the old prefix with new rows appended — and the promoted row is never suggested back to itself (tier 3 excludes the active id). | `tests/queueManagerFill.test.ts` — "a filter edit PROMOTES the audible auto row first, so the anchor still names the song playing (D7 / G1 closed)", "a sort edit re-derives the order after the PROMOTED anchor (D7 / G2 closed)", "a rule edit cannot leave the anchor past the end when the audible row was the LAST matching one", "the filter subscription drives the FRESH CONTEXT through the real reaction layer (D7 wiring)"; `tests/e2e/queuefresh.spec.ts` — "a filter edit REBUILDS the tail in the new order and never disturbs the audible row (D7 / G1+G2)" | pinned (browser for the rewrite half) |
 | B12 | Two Next presses inside one load window skip TWO rows (D10): the anchor-ahead-of-audio fact is never read as a removal. Duplicate rows advance by ROW, so the second press leaves a sibling copy instead of stopping on it. | `tests/playbackManagerNav.test.ts` — "two Next presses in the same tick skip TWO rows (D10 / G3)", "two Next presses over duplicate copies land on the second COPY, then past it", "a stale pending advance never masks an active-row removal"; `tests/e2e/queueRows.spec.ts` — "two Next presses skip two rows (G3…)" | pinned (G3 closed) |
 | B13 | Next then Previous in the same tick returns to the starting row, with both left rows cooled. | `tests/playbackManagerNav.test.ts` — "Next then Previous in the same tick returns to the starting row" | new |
 | B14 | On web, removing the PLAYING row skips to its successor immediately; removing a different OCCURRENCE of the same song does not (id equality alone is not enough once duplicates exist). | `tests/playbackManagerAdvance.test.ts` — "removing the PLAYING row skips to the next track immediately (2.7)", "removing a DUPLICATE of the playing row never skips playback (occurrence identity)"; `tests/e2e/queueRows.spec.ts` — duplicate-rows spec (the playing row survives the copy removal) | pinned |
@@ -126,6 +130,8 @@ rows' browser specs — `queueRows` (11), `queuedragdup` (2), `queueContinuation
 | D4 | An explicit queue edit does NOT cool what it hides; `clearQueue`/`clearUserAbove/Below` preserve the window, `playAll` resets it. | `tests/queueMutation.test.ts` — "clearQueue keeps the active track at user[0] and preserves the recency window"; `tests/queueBulkImport.test.ts` — "playAll resets the anti-repeat window and drops the auto tail in the same flow" | pinned |
 | D5 | Fresh fill excludes the window; the cooled rows are re-admitted only when the fresh pool is short (tier 2). | `tests/autoQueuePlan.test.ts` — "tier 2 admits cooling-down tracks when the fresh pool is short"; `tests/queueContinuation.test.ts` — "one vacancy plus one fresh candidate never admits cooldown/recycled candidates" | pinned |
 | D6 | A row dropped by a tightened filter cannot re-enter any tier (every tier requires a filter match). | `tests/autoQueuePlan.test.ts` — "kept is pruned when filters tighten, and the queue-full early return skips the pool"; `tests/queueManagerFill.test.ts` — "a tightened filter prunes non-matching auto tracks and stops filling" | pinned |
+| D6a | A RULE CHANGE resets the window (D7.2): something heard minutes ago can be suggested again immediately — the deliberate, user-visible consequence of "fresh context". A SHUFFLE toggle does not reset it (shuffle reorders the same rule set). | `tests/queueManagerFill.test.ts` — "a filter edit PROMOTES the audible auto row first…" (recents `[]`), "a sort edit re-derives the order after the PROMOTED anchor" (recents `[]`), "the filter subscription drives the FRESH CONTEXT…" (recents `[]`), "shuffle mode permutes the pool (set-preserving)…" (the window survives the toggle) | new |
+| D6b | The rule-change reaction compares filter VALUES (and the sort key) before scheduling, so a subscription's subscribe-time fire is never a rule change — a restored tail and anti-repeat window survive app start. | `tests/playbackManagerRestore.test.ts` — "the subscribe-time filter fire never resets the anti-repeat window (D7 is destructive)" | new |
 
 ## 6. Fill tiers, exhaustion & wrap
 
@@ -134,12 +140,12 @@ rows' browser specs — `queueRows` (11), `queuedragdup` (2), `queueContinuation
 | E1 | Tier admission compares VACANCIES (`needed - kept`), not total capacity. | `tests/queueContinuation.test.ts` — "one vacancy plus one fresh candidate never admits cooldown/recycled candidates" | pinned |
 | E2 | Tier 3 admits user-queued and cooled tracks (B4: recycle instead of starving) and excludes only the playing id. | `tests/autoQueuePlan.test.ts` — "tier 3 recycles user-queued + recent tracks and excludes the active id (B4)"; `tests/queueManagerFill.test.ts` — "a sort change mid-play…" (observes `u` re-admitted) | pinned |
 | E3 | Selection priority is fresh → cool-down → recycling; shuffle samples uniformly WITHIN a full tier and never mixes tiers. | `tests/queueContinuation.test.ts` — "shuffle samples entire tiers without mixing priority or mutating the plan"; `tests/autoQueuePlan.test.ts` — "shuffle is reported as data, not applied" | pinned |
-| E4 | A rebuild (`keepAuto: false`) admits the old auto rows as ordinary pool members and applies the new order wholesale. | `tests/autoQueuePlan.test.ts` — "rebuild (keepAuto false) admits the old auto tracks as ordinary pool members"; `tests/queueManagerFill.test.ts` — "a sort change rebuilds the whole auto queue in the auto-sort order (B7)" | pinned |
+| E4 | A rebuild (`keepAuto: false`) admits the old auto rows as ordinary pool members and applies the new order wholesale. It has exactly two callers: a SHUFFLE toggle (`rebuildAutoQueue`) and a RULE CHANGE (`rebuildForFreshContext`, which promotes and resets the window first). | `tests/autoQueuePlan.test.ts` — "rebuild (keepAuto false) admits the old auto tracks as ordinary pool members"; `tests/queueManagerFill.test.ts` — "a sort change rebuilds the whole auto queue in the auto-sort order (B7)", "a sort edit re-derives the order after the PROMOTED anchor (D7 / G2 closed)" | pinned |
 | E5 | Non-shuffle ordering sorts within each tier and rotates after the anchor (the last user-queue row), so the fill CONTINUES from the current position; a wrapped pool sets `wrapNotice`. | `tests/autoQueuePlan.test.ts` — "non-shuffle ordering follows the shared sort and rotates after the last user entry", "rotateAfterAnchor truth table"; `tests/queueManagerFill.test.ts` — "the autoQueueSort subscription continues the fill from the playing track (not the top)" | pinned |
 | E6 | A fully-tied library still answers the sort arrow at the visible head (ties mirror the direction). | `tests/autoQueuePlan.test.ts` — "buildOrderRank: a fully-tied library mirrors the arrow"; `tests/queueManagerFill.test.ts` — "a fully-tied library still shows the flip at the queue head" | pinned |
 | E7 | The fill follows its OWN sort; the shared library sort never re-ranks it (2026-09-29 decoupling). | `tests/queueManagerFill.test.ts` — "the auto queue follows its OWN sort, never the library sort" | pinned |
 | E8 | The library sort/filter is copied into the auto settings only through the explicit apply plan, and only the differing store is written. | `tests/autoQueuePlan.test.ts` — "differ: identical settings → false…", "apply plan: copies only the store that differs; searchQuery preserved", "apply plan: identical settings plan nothing" | pinned |
-| E9 | The fill writes ONLY `autoQueue` (plus provenance/wrap notice); the user section and the anchor are untouched. This is the G1/G2 mechanism, not a bug in itself: leaving `activeIndex` alone is correct for an append-only fill and wrong once the rewrite prunes or reorders the row it names. | `tests/queueManagerFill.test.ts` — "replenish fills the auto queue from fresh tracks, excluding the playing user track", "a filter change that EXCLUDES the playing auto row…" (asserts user length) | pinned — G1/G2 mechanism |
+| E9 | The fill writes ONLY `autoQueue` (plus provenance/wrap notices): no fill path edits the user section or `activeIndex`. That is safe now BECAUSE the one path that could break it — a rule change — promotes the audible row first (B11), so the row the anchor names is never inside the section being rewritten. | `tests/queueManagerFill.test.ts` — "replenish fills the auto queue from fresh tracks, excluding the playing user track", "the filter subscription drives the FRESH CONTEXT through the real reaction layer" (the user section grows by exactly the promoted row, the auto section is replaced wholesale, and the whole rewrite is ONE persisted write) | pinned |
 | E10 | The two no-op guards skip the Dexie write (a full queue, and nothing addable + nothing dropped). | `tests/queueManagerFill.test.ts` — "the no-op guards skip the Dexie write when nothing can change", "a queue already full of matching tracks takes the first no-op guard" | pinned |
 | E11 | `wrapNotice` is false for an empty pool (a no-op guard can never leave a stale hint); `autoQueueEmptyNotice` tracks "nothing addable". | `tests/queueManagerFill.test.ts` — "the empty-fill notice fires when nothing can be added and clears on a successful fill"; `tests/autoQueuePlan.test.ts` — "kept is pruned when filters tighten, and the queue-full early return skips the pool" | pinned |
 | E12 | Inverted filter ranges are rejected at the panel (they would silently empty the queue). | `tests/autoQueuePlan.test.ts` — "filterRangesValid: inverted ranges are invalid; one-sided bounds are fine" | pinned |
@@ -205,44 +211,55 @@ shuffle round-trip) and **H7** (§9, queue restore after a reload).
 | V2 | A queue drag reorders the store and the preview follows the pointer. | `tests/e2e/queueRows.spec.ts` — "drag to reorder: the drop reorders the store", "drag preview appears over the dragged row" | pinned (browser) |
 | V3 | Duplicates are independent rows through the real view: three user copies render/remove/drag by occurrence, AND dragging an AUTO copy of an already-queued song moves that AUTO occurrence (G5 through the pointer path). | `tests/e2e/queuedragdup.spec.ts` — "three copies of one song are independent rows; dragging one keeps all three", "dragging an AUTO copy of a queued song moves THAT occurrence into Up next (G5)" | pinned (browser) |
 | V6 | A library press queues and plays a NEW row; a second press of an already-played song does not teleport back to the history copy. | `tests/e2e/queueRows.spec.ts` — "pressing a library song queues and plays a NEW row instead of jumping to an old copy (D1)" | pinned (browser) |
+| V7 | A filter edit through the real filter modal RE-DERIVES the tail under the new rules (a widened year filter comes back in the rebuilt order, not the old prefix with new rows appended) and leaves the audible row, its anchor and the user section untouched. | `tests/e2e/queuefresh.spec.ts` — "a filter edit REBUILDS the tail in the new order and never disturbs the audible row (D7 / G1+G2)" | pinned (browser) |
 | V4 | Long queues stay bounded and playback keeps advancing (40-advance album, 500-song flood). | `tests/e2e/queueflood.spec.ts` — "album play-through: 40 advances grow the queue and the queue view stays bounded", "mega-album flood: a 500-song queue scrolls bounded and its landing screen loads" | pinned (browser) |
 | V5 | Offline advance + native progress behave through the real bundle. | `tests/e2e/offline-advance.spec.ts` — "a mid-track connection drop still plays the preloaded next track from the cache", "the full preload window fills in queue order and survives two offline advances"; `tests/e2e/nativeProgress.spec.ts` — "native percentage-first events fill the actual SeekBar before completion" | pinned (browser — native mocked) |
 
-## 13. Known gaps (found by this pass — reported, NOT repaired)
+## 13. Known gaps (found by this pass)
 
-Each is pinned by a passing test that asserts the CURRENT behavior. Do not "fix" a gap by deleting its row;
-rewrite the row and the test with the new rule, and record the decision in `docs/DEVLOG.md`.
+Each open gap is pinned by a passing test that asserts the CURRENT behavior. Do not "fix" a gap by deleting
+its row; rewrite the row and the test with the new rule, and record the decision in `docs/DEVLOG.md` — that
+is what happened to G1, G2, G3 and G5, whose CLOSED sections are kept here with their replacement pins so
+the history stays auditable. **G4's library-validation half is the only open gap left.**
 
-**Progress (2026-10-21c):** G5 is CLOSED — drags now carry the source occurrence (`queueEntryId`), so a
-same-id duplicate can be dragged independently. G1/G2 (fill rewrite without promoting the audible row) and
-G3 (same-tick Next) are still open and close in steps 2–4 of [QUEUE-DESIGN.md](QUEUE-DESIGN.md) §6. The
-"each-key collision" limb of G4 is also gone: row keys are occurrence-scoped (A4), so a bulk import with
-duplicates renders.
+**Progress:** G5 CLOSED 2026-10-21c (drags carry the source occurrence), G3 CLOSED 2026-10-21e (a skip is
+exactly one row), G1 and G2 CLOSED 2026-10-21f (a rule change is a fresh context). The "each-key collision"
+limb of G4 is also gone: row keys are occurrence-scoped (A4), so a bulk import with duplicates renders.
+Only G4's library-validation half is still open, and it is the only gap left.
 
-### G1 — A filter change mid-play does not re-anchor the playing AUTO row (OPEN — step 4)
-- **Shape:** `replenishAutoQueue` writes `autoQueue = kept + fill` and never touches `activeIndex`. When the
-  playing row stops matching the tightened filter, it is pruned; the index stays put and now names a
+### G1 — CLOSED (2026-10-21f): a filter change mid-play keeps the anchor on the playing AUTO row
+- **Shape (was):** `replenishAutoQueue` wrote `autoQueue = kept + fill` and never touched `activeIndex`. When
+  the playing row stopped matching the tightened filter it was pruned; the index stayed put and named a
   different row (or a row past the end when the playing row was last).
-- **Impact:** `activeIndex` is the native refresh payload's position. A mid-track filter edit can make the
-  next engine sync position the engine on the wrong row — a skip/replay class of bug, not a cosmetic
-  highlight. Also breaks B1 until the next advance.
-- **Evidence:** `tests/queueManagerFill.test.ts` — "a filter change that EXCLUDES the playing auto row…",
-  "a filter change that drops the LAST playing auto row leaves activeIndex past the end".
-- **Decision needed:** (a) keep the playing row pinned through a filter change (treat it as exempt), (b) drop
-  the anchor to −1 and stop/advance explicitly, or (c) re-anchor to the surviving occurrence and accept a
-  load. (a) looks most literal ("what I'm hearing stays"), but it means the visible queue can contain a row
-  that no longer matches the filter shown.
+- **Impact (was):** `activeIndex` is the native refresh payload's position, so a mid-track filter edit could
+  make the next engine sync position the engine on the wrong row — a skip/replay class of bug. It also
+  broke B1 until the next advance.
+- **Fix:** the rule-change path no longer patches the tail. `queueManager.rebuildForFreshContext` (D7) runs
+  as ONE write: promote the audible auto occurrence into the user section (the same pure reducer the
+  post-load path uses, so the cooled consumed prefix matches by construction), clear `recentTrackIds`,
+  rebuild the pool with `keepAuto: false`, and let the plan rotate after the anchor — which is now a USER
+  row, so the rewrite below cannot move it. The reaction layer (`_scheduleRuleChange`) coalesces a filter
+  edit and a sort pick from the same task into that single write and compares filter VALUES first, so a
+  subscription's subscribe-time fire cannot wipe the restored window.
+- **Evidence (the rows that replaced the three gap pins):** `tests/queueManagerFill.test.ts` — "a filter edit
+  PROMOTES the audible auto row first, so the anchor still names the song playing (D7 / G1 closed)", "a
+  rule edit cannot leave the anchor past the end when the audible row was the LAST matching one", "the
+  filter subscription drives the FRESH CONTEXT through the real reaction layer (D7 wiring)";
+  `tests/e2e/queuefresh.spec.ts` — the widened year filter re-derives the tail in order while the audible
+  row stays the anchor.
 
-### G2 — A sort change mid-play rebuilds the auto order without re-anchoring (OPEN — step 4)
-- **Shape:** same root as G1 on the rebuild path (`keepAuto: false` wipes and replaces the auto section). The
-  playing row may be re-included at a different position, so the index points at a neighbor.
-- **Evidence:** `tests/queueManagerFill.test.ts` — "a sort change mid-play rebuilds the auto order without
-  re-anchoring the playing row".
-- **Note:** a rebuild also re-admits the user-queued row through tier 3 (B4), so after a sort change the auto
-  tail may hold a cross-section duplicate of a user row. Deliberate, but worth remembering when playlists
+### G2 — CLOSED (2026-10-21f): a sort change mid-play cannot re-anchor the playing row
+- **Shape (was):** the rebuild path (`keepAuto: false`) wiped and replaced the auto section without touching
+  the anchor, so the playing row could be re-included at a different position and the index named a
+  neighbor.
+- **Fix:** the same fresh-context write closes it — the audible row is a user row by the time the rebuild
+  plans its pool, and the rotation anchor is that row (the user tail).
+- **Evidence:** `tests/queueManagerFill.test.ts` — "a sort edit re-derives the order after the PROMOTED
+  anchor (D7 / G2 closed)"; `tests/playbackManagerRestore.test.ts` — "the subscribe-time filter fire never
+  resets the anti-repeat window (D7 is destructive)".
+- **Note (unchanged):** a short pool still re-admits the user-queued row through tier 3 (B4), so the auto
+  tail may hold a cross-section duplicate of a user row. Deliberate, and worth remembering when playlists
   write into these primitives.
-- **Decision needed:** the same three options as G1, applied at the rebuild choke point. A shared
-  "preserve the audible occurrence across a fill rewrite" helper would close G1+G2 together.
 
 ### G3 — CLOSED (2026-10-21e): a skip is exactly one row, with or without a load in flight
 - **Shape (was):** `next()` advanced `activeIndex` synchronously while `currentTrack` still named the old
@@ -302,8 +319,13 @@ added (L1's web natural-end pin, F1's and L6's subscription pins, B8's drag-iden
 3. Drag/remove around the active row with a cross-section duplicate (A8, B8, B10).
 4. Rapid Next/Previous, manual Next at the tail, Previous restart/wrap, natural-end wrap/stop on the web
    path, and the same-tick ordering (B13, L1–L3).
-5. Sort/filter changes while an AUTO row plays — including the two gaps they expose (B11).
+5. Sort/filter changes while an AUTO row plays — originally pinned as the two gaps they exposed; the
+  2026-10-21f pass rewrote those pins to the fresh-context rule (B11, E9, D6a) and added the
+  subscribe-time-fire guard (D6b).
 6. The shuffle-toggle rebuild subscription and the loop-one fade-cancel subscription (F1, L6).
+7. That a RULE CHANGE is one write, that it resets the window while a shuffle toggle does not, and that
+   the rebuilt tail is re-derived rather than patched — the bundled-browser pin in `queuefresh` (B11, E9,
+   D6a).
 
 ## 15. Phase 3 boundary decisions (registered 2026-10-21, NOT implemented)
 

@@ -18,7 +18,9 @@ import {
   settings,
   shuffleEnabled,
   loopMode,
+  autoQueueFilterFields,
 } from '../src/stores/appState'
+import { get } from 'svelte/store'
 import { PlaybackManager } from '../src/lib/playbackManager'
 import { engine } from '../src/lib/engineFacade'
 import { queueManager } from '../src/lib/queueManager'
@@ -56,8 +58,10 @@ class FakeEngine {
 class FakeQueueManager {
   replenished = 0
   rebuilt = 0
+  freshContexts = 0
   replenishAutoQueue(): void { this.replenished++ }
   rebuildAutoQueue(): void { this.rebuilt++ }
+  rebuildForFreshContext(): void { this.freshContexts++ }
 }
 
 /** Only the two calls `_subscribeShared` can make on the web transport. */
@@ -163,6 +167,28 @@ test('_subscribeShared rebuilds the auto queue on a shuffle toggle, and unsubscr
     unsubs.forEach((unsubscribe) => unsubscribe())
     shuffleEnabled.set(true)
     assert.equal(qm.rebuilt, baseline + 2, 'the subscription is released by destroy()')
+  } finally {
+    for (const u of unsubs) u()
+  }
+})
+
+test('the subscribe-time filter fire never resets the anti-repeat window (D7 is destructive)', async () => {
+  // Every Svelte store subscription fires once on subscribe. D7's reaction
+  // clears `recentTrackIds` and rebuilds the tail, so a boot fire would wipe
+  // the restored window and replace the restored tail on EVERY app start. The
+  // reaction layer therefore compares live filter VALUES before scheduling.
+  resetParamStores()
+  const { qm, m } = makeHarness()
+  m._initialized = true
+  const unsubs = m._subscribeShared()
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal(qm.freshContexts, 0, 'an unchanged filter set schedules nothing')
+
+    // A REAL edit still reaches the fresh-context rebuild.
+    autoQueueFilterFields.set({ ...get(autoQueueFilterFields), minRating: 50 })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    assert.equal(qm.freshContexts, 1, 'a changed filter set is one fresh context')
   } finally {
     for (const u of unsubs) u()
   }

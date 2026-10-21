@@ -385,11 +385,59 @@ class QueueManager {
     })
   }
 
-  /** Rebuilds the whole auto queue (keepAuto: false — shuffle/sort flips).
+  /**
+   * D7 — a filter/sort edit is a FRESH CONTEXT, not a patch on the old tail.
+   * ONE queue write that:
+   *   1. promotes the audible AUTO occurrence (so the rewrite cannot move the
+   *      anchor off the song playing) — the same reducer the post-load path
+   *      uses, so the cooled consumed prefix matches by construction;
+   *   2. clears the anti-repeat window: a fresh context may re-suggest what
+   *      was just played (the deliberate, user-visible consequence);
+   *   3. discards the kept prefix and rebuilds the pool (`keepAuto: false`) —
+   *      the kept-prefix patch is the G1/G2 mechanism, so it has no meaning
+   *      once the rule changed;
+   *   4. rotates the rebuilt order after the anchor, which is now the promoted
+   *      user row (`planAutoQueueFill` rotates after the user tail).
+   *
+   * This is the structural close for G1/G2: after the promotion the anchor
+   * names a USER row, and the fill below only ever writes `autoQueue`.
+   */
+  rebuildForFreshContext(): void {
+    queue.update((live) => {
+      const promoted = queueMutation.applyQueueMutation(live, (q) => queueMutation.promoteActiveTrack(q))
+      const base: QueueState = { ...(promoted ?? live), recentTrackIds: [] }
+      const combined = [...base.userQueue, ...base.autoQueue]
+      const state: AutoQueuePlanState = {
+        library: get(library),
+        userQueue: base.userQueue,
+        autoQueue: base.autoQueue,
+        recentTrackIds: [],
+        activeId: combined[base.activeIndex],
+        shuffle: get(shuffleEnabled),
+        sort: get(autoQueueSort),
+        filters: get(autoQueueFilters),
+        meta: get(metadataCache),
+      }
+      const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
+      const fillIds = selectAutoQueueFill(plan, MAX_AUTO_QUEUE).map((t) => t.trackId)
+      queueWrapNotice.set(plan.wrapNotice)
+      autoQueueEmptyNotice.set(plan.pool.length === 0)
+      const updated: QueueState = { ...base, autoQueue: fillIds }
+      syncFillProvenance(updated.autoQueue, plan.tiers)
+      persistQueue('rebuildForFreshContext', updated)
+      return updated
+    })
+  }
+
+  /** Rebuilds the whole auto queue (keepAuto: false — a shuffle toggle).
    *  The fill ALWAYS continues from the anchor (the last user-queue entry —
    *  the point playback is headed from) in the new order, so an explicit
    *  sort change keeps the current position and fills the upcoming songs
-   *  exactly as a fresh library view would order them. */
+   *  exactly as a fresh library view would order them.
+   *
+   *  NOT a rule change (D7): shuffle reorders the same rule set, so it must
+   *  not reset the anti-repeat window. Rule changes go through
+   *  `rebuildForFreshContext`. */
   rebuildAutoQueue(): void {
     const state = this._planState()
     const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })

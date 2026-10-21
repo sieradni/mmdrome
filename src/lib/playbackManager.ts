@@ -117,9 +117,14 @@ export class PlaybackManager {
    *  'reload' decision loads this (an exit-race re-routes it to the fg path). */
   private _pendingBgTrack: Track | null = null
   private _lastSortKey = ''
-  /** Trailing debounce for the auto-queue replenish reaction (filter edits /
-   *  scope changes), owned here and cleared by `destroy()`. */
-  private _replenishTimer: ReturnType<typeof setTimeout> | null = null
+  /** The auto-filter VALUES last reacted to. A Svelte subscription fires once
+   *  at subscribe time, and D7's reaction is destructive (it clears the
+   *  anti-repeat window), so the boot fire must be a no-op — without this
+   *  key every app start would rebuild the restored tail and wipe recents. */
+  private _lastFilterKey = ''
+  /** Trailing delay for the RULE-CHANGE reaction (auto filter/sort edits → one
+   *  fresh-context rebuild, D7), owned here and cleared by `destroy()`. */
+  private _ruleChangeTimer: ReturnType<typeof setTimeout> | null = null
   /** Subscription teardown handles collected from `_subscribeShared` and the
    *  native-only `loopMode` wiring, released by `destroy()`. */
   private _unsubscribers: Array<() => void> = []
@@ -424,6 +429,22 @@ export class PlaybackManager {
     this._engine.setMasterVolume(get(masterGain))
   }
 
+  /**
+   * Coalesces the RULE-CHANGE reactions (auto filter / sort edits) into ONE
+   * fresh-context rebuild (D7). Each trigger clears the pending timer and
+   * re-arms it, so the LAST trigger's delay wins: a filter keystroke settles
+   * after 250 ms, a sort pick fires on the next tick, and a FilterSortBar
+   * apply (filters + sort written in the same task) collapses into a single
+   * queue write instead of resetting the recency window twice.
+   */
+  private _scheduleRuleChange(delay: number): void {
+    if (this._ruleChangeTimer) clearTimeout(this._ruleChangeTimer)
+    this._ruleChangeTimer = setTimeout(() => {
+      this._ruleChangeTimer = null
+      this._qm.rebuildForFreshContext()
+    }, delay)
+  }
+
   private _subscribeShared(): Array<() => void> {
     const unsubs: Array<() => void> = []
 
@@ -565,38 +586,38 @@ export class PlaybackManager {
       }
     }))
 
-    unsubs.push(autoQueueFilters.subscribe(() => {
+    // AUTO FILTER / SCOPE EDITS ARE RULE CHANGES (D7): a fresh context — not
+    // a patch on the old tail. The rebuild promotes the audible auto row first,
+    // resets the anti-repeat window and re-derives the whole tail, so the
+    // "kept prefix pruned under the anchor" shape (G1) cannot exist. Trailing-
+    // delayed so typing in the search box doesn't rebuild per keystroke.
+    this._lastFilterKey = JSON.stringify(get(autoQueueFilters))
+    unsubs.push(autoQueueFilters.subscribe((filters) => {
       if (!this._initialized) return
-      // Filter edits / scope changes re-rank the auto queue — trailing-
-      // debounced so typing in the search box doesn't re-rank per keystroke.
-      // The reaction layer owns the timer (cleared by destroy()).
-      if (this._replenishTimer) clearTimeout(this._replenishTimer)
-      this._replenishTimer = setTimeout(() => {
-        this._replenishTimer = null
-        this._qm.replenishAutoQueue()
-      }, 250)
+      const key = JSON.stringify(filters)
+      if (key === this._lastFilterKey) return
+      this._lastFilterKey = key
+      this._scheduleRuleChange(250)
     }))
 
     // The auto queue follows its OWN persisted sort (2026-09-29 decoupling):
-    // a change to it rebuilds the fill order while shuffle is off. The shared
-    // library sort (libraryFilters) is a VIEW concern and never re-ranks the
-    // queue — the Songs-view sort applying to the queue happens only through
-    // the FilterSortBar apply button (which writes THIS store).
+    // a change to it re-derives the fill order. The shared library sort
+    // (libraryFilters) is a VIEW concern and never re-ranks the queue — the
+    // Songs-view sort applying to the queue happens only through the
+    // FilterSortBar apply button (which writes THIS store).
     // Only sortBy/sortAsc matter here (the rank map in queueManager ignores
     // the filter ranges), so skip no-op subscription fires.
     this._lastSortKey = `${get(autoQueueSort).sortBy}|${get(autoQueueSort).sortAsc}`
     unsubs.push(autoQueueSort.subscribe((sort) => {
       if (!this._initialized) return
-      if (get(shuffleEnabled)) return
       const key = `${sort.sortBy}|${String(sort.sortAsc)}`
       if (key === this._lastSortKey) return
       this._lastSortKey = key
-      // The rebuild continues from the anchor (the last user-queue entry —
-      // where playback is headed), so the new order fills the UPCOMING songs
-      // as the view would order them after the current track, instead of
-      // restarting at the top of the sorted pool (the 2026-10-06 report).
-      // The flip is still visible: the head is the anchor's other neighbor.
-      this._qm.rebuildAutoQueue()
+      // A sort edit is a rule change too (D7), and it fires with ZERO delay so
+      // the re-order still reads as immediate. It is still COALESCED: the
+      // FilterSortBar apply writes filters AND sort in one task, so this fire
+      // replaces the filter's pending 250 ms timer and both land in ONE write.
+      this._scheduleRuleChange(0)
     }))
 
     // Keep the native engine's queue snapshot in step with ANY queue mutation
@@ -1888,9 +1909,9 @@ export class PlaybackManager {
   }
 
   destroy(): void {
-    if (this._replenishTimer) {
-      clearTimeout(this._replenishTimer)
-      this._replenishTimer = null
+    if (this._ruleChangeTimer) {
+      clearTimeout(this._ruleChangeTimer)
+      this._ruleChangeTimer = null
     }
     this._rearmPending = false
     this._armedTargetEntryId = null
