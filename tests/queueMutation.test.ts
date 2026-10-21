@@ -501,6 +501,62 @@ test('clearUserBelowActive: active in auto, active last, nothing active → null
   assert.equal(applyQueueMutation(q(['a'], ['b'], -1), (x) => clearUserBelowActive(x)), null, 'nothing is playing')
 })
 
+// --- drag / remove around the active row (Phase 2A gate item 3, 2026-10-21) --
+// The anchor must keep naming the AUDIBLE row through row edits, including
+// when the same song has a legal cross-section duplicate. Removal is scoped
+// to the row the user removed — the other section's occurrence is untouched.
+
+test('dragging the active USER row keeps the anchor on the moved user occurrence, not the auto duplicate', () => {
+  // 'x' is playing from the user section AND has a tier-3 auto duplicate.
+  const s = q(['a', 'x'], ['x', 'y'], 1)
+  const r = applyQueueMutation(s, (x) => applyDragDrop(x, 'x', 0, ['a', 'x'], ['x', 'y']))!
+  assert.deepEqual(r.userQueue, ['x', 'a'], 'the drag reorders the user section')
+  assert.deepEqual(r.autoQueue, ['x', 'y'], 'the auto duplicate is untouched by a user drag')
+  assert.equal(r.activeIndex, 0, 'the anchor follows the dragged user row')
+  assert.equal(combined(r)[r.activeIndex], 'x')
+  assert.equal(new Set(r.userQueue).size, r.userQueue.length)
+})
+
+test('applyDragDrop resolves a cross-section duplicate to the USER occurrence (the drag signature carries no section)', () => {
+  // The resolver receives only the track id, so `indexOf` finds the user copy
+  // first. KNOWN LIMITATION: the auto occurrence of a shared id cannot be
+  // dragged independently — this drop is a no-op, not a promote.
+  const s = q(['x'], ['x', 'y'], 1)
+  assert.equal(applyQueueMutation(s, (x) => applyDragDrop(x, 'x', 0, ['x'], ['x', 'y'])), null)
+  assert.deepEqual(s.userQueue, ['x'])
+  assert.deepEqual(s.autoQueue, ['x', 'y'], 'the auto occurrence is still queued')
+  assert.equal(s.activeIndex, 1, 'nothing moved, so the anchor stays on the auto occurrence')
+
+  // And a drop elsewhere moves the USER copy — the auto copy keeps its slot.
+  const s2 = q(['x', 'a'], ['x', 'y'], 1) // 'a' playing
+  const r = applyQueueMutation(s2, (x) => applyDragDrop(x, 'x', 2, ['x', 'a'], ['x', 'y']))!
+  assert.deepEqual(r.userQueue, ['a', 'x'], 'the user copy moved to the tail')
+  assert.deepEqual(r.autoQueue, ['x', 'y'], 'the auto duplicate did not ride along')
+  assert.equal(combined(r)[r.activeIndex], 'a', 'an unrelated edit never moves the playing row')
+})
+
+test('rapid removals above the active row keep the anchor on the playing id each time', () => {
+  let s = q(['p1', 'p2', 'p3', 'x', 'tail'], [], 3)
+  s = removeFromUserQueue(s, 0)!
+  assert.equal(combined(s)[s.activeIndex], 'x', 'after the first removal')
+  s = removeFromUserQueue(s, 0)!
+  assert.equal(combined(s)[s.activeIndex], 'x', 'after the second, in the same tick')
+  assert.equal(s.activeIndex, 1)
+  assert.deepEqual(s.userQueue, ['p3', 'x', 'tail'])
+})
+
+test('removing the PLAYING user row leaves its auto occurrence queued (removal is section-scoped)', () => {
+  // The audible id has a tier-3 duplicate in auto. Removing the user row is a
+  // removal of THAT occurrence; the auto copy is a separate queued row and is
+  // not purged (the same scoping removeFromAutoQueue applies in reverse).
+  const s = q(['x', 'next'], ['x'], 0)
+  const r = removeFromUserQueue(s, 0)!
+  assert.deepEqual(r.userQueue, ['next'])
+  assert.deepEqual(r.autoQueue, ['x'], 'the auto occurrence survives the user-row removal')
+  assert.equal(combined(r)[r.activeIndex], 'next', 'the highlight slides to the next playable row (position semantics)')
+  assert.ok(r.recentTrackIds.includes('x'), 'the removed occurrence cools down')
+})
+
 test('a null mutation produces no state change (no store write)', () => {
   const s = q(['a'], ['b'], 0)
   assert.equal(applyQueueMutation(s, () => null), null)

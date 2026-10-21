@@ -1,7 +1,7 @@
 # Holistic UI Polish, Queue Boundary Hardening & Feature Roadmap
 
-Date: 2026-10-18
-Status: Active roadmap; Phase 1 prototype implemented, awaiting user design review. Later phases are NOT complete.
+Date: 2026-10-18 (Phase 2A closed 2026-10-21)
+Status: Active roadmap. Phase 1 is implemented and design-approved (real-device review still outstanding). **Phase 2A is CLOSED (2026-10-21)** — deliverable: [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md); it found five gaps, registered in its §13. Phases 2B, 2C and 3 are NOT complete.
 
 ## 1. Guiding Principles & Guardrails
 
@@ -114,21 +114,21 @@ This is a completion ledger, not a promise that all phases are done. Update it a
 
 ### Next highest-value work — strict order
 1. **Review this UI prototype**, refine, then pin agreed behavior with browser tests. Do not start a broad visual rewrite before this feedback.
-2. **Queue/playback reliability characterization** (2A), before playlist implementation. Produce an invariant matrix and failing reproductions before choosing an extraction/refactor. No speculative big-bang rewrite.
+2. **[DONE 2026-10-21] Queue/playback reliability characterization** (2A), before playlist implementation. Invariant matrix + characterization tests landed; no refactor was performed, and the gaps it exposed are registered rather than patched. See "Phase 2A closure" at the end of this file and [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md).
 3. **Small, test-backed reliability extractions**, only where the matrix proves duplication or drift. Keep queue mutations in their existing choke point and playback transport ownership unchanged.
 4. Shared rating editor/display and Settings decomposition in separately reviewable, behavior-preserving increments.
 5. Saved view/filter presets, with separate explicit apply-to-auto-queue action. No hidden queue changes when selecting a library preset.
 6. Playlist demo and API capability check, then boundary-safe implementation only after the reliability gate below.
 
-### Reliability gate before playlists
-- [ ] Document intended behavior for user vs auto queue, promotion/history, active anchor, recent cooldown, tier exhaustion/wrap, shuffle, loop-one/all, and independent auto sort/filter settings.
-- [ ] Characterize bulk play/enqueue with empty input, missing library IDs, repeated IDs, a track present in both sections, and active track within the imported list.
-- [ ] Preserve within-section unique IDs, section-prefixed keys, active identity across mutations, and existing refill/anchor rotation. Playlist duplicate/order semantics need an explicit decision because queue uniqueness may intentionally collapse duplicates.
-- [ ] Test restore with stale IDs/duplicates, clear/remove/drag around active, rapid Next/Previous, and sort/filter changes while playing.
-- [ ] Cover native snapshot/refresh/trackChanged identity reconciliation, stale events, and web/native advance parity. Passing Node tests does not verify the native engine on a phone.
-- [ ] Run relevant queue mutation/fill/manager/transport suites plus queue drag/row browser tests. Refactors must preserve current contracts; do not weaken assertions to fit a new design.
-- [ ] Define export scope (user queue versus combined queue), playlist ownership/read-only behavior, missing tracks, server unavailable, and playlist-ID migration handling.
-- [ ] Verify Navidrome/Subsonic playlist endpoint behavior and permissions against the configured server/docs. Prefer its existing playlist support; local-only playlists are a fallback, not a second backend to build automatically.
+### Reliability gate before playlists — ALL 8 CLOSED 2026-10-21
+- [x] Document intended behavior for user vs auto queue, promotion/history, active anchor, recent cooldown, tier exhaustion/wrap, shuffle, loop-one/all, and independent auto sort/filter settings. → [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md) §1–§11 (76 invariants, every row pointing at a passing test).
+- [x] Characterize bulk play/enqueue with empty input, missing library IDs, repeated IDs, a track present in both sections, and active track within the imported list. → `tests/queueBulkImport.test.ts` (7 tests); the unguarded cases are registered as matrix gap **G4**.
+- [x] Preserve within-section unique IDs, section-prefixed keys, active identity across mutations, and existing refill/anchor rotation. → pinned by `tests/queueMutation.test.ts` (incl. the 10k×6 fuzz), `tests/queueContinuation.test.ts`, `tests/queueManagerFill.test.ts`. Playlist duplicate/order semantics are now an EXPLICIT registered decision (matrix §15: first-occurrence collapse on import, verbatim export) rather than an open assumption.
+- [x] Test restore with stale IDs/duplicates, clear/remove/drag around active, rapid Next/Previous, and sort/filter changes while playing. → `tests/queueRestore.test.ts`, `tests/queueRestoreAnchor.test.ts`, `tests/queueMutation.test.ts` (4 new drag/remove cases), `tests/playbackManagerNav.test.ts` (6), `tests/queueManagerFill.test.ts` (4).
+- [x] Cover native snapshot/refresh/trackChanged identity reconciliation, stale events, and web/native advance parity. → `tests/queueContinuation.test.ts`, `tests/nativeTransport.test.ts`, `tests/playbackManagerNative.test.ts`, `tests/nativeReconcile.test.ts`, plus the new same-tick web nav suite. A passing Node suite still does NOT verify the native engine on a phone — the 2026-10-17 physical acceptance item remains open.
+- [x] Run relevant queue mutation/fill/manager/transport suites plus queue drag/row browser tests. → `npm test` 1382/1382; `npx playwright test` queueRows + queuedragdup + queueContinuation + queueflood = 12/12 passing. No assertions were weakened and no queue/playback behavior was changed.
+- [x] Define export scope (user queue versus combined queue), playlist ownership/read-only behavior, missing tracks, server unavailable, and playlist-ID migration handling. → matrix §15 registers all seven decisions with a recommended default and rationale.
+- [x] Verify Navidrome/Subsonic playlist endpoint behavior and permissions against the configured server/docs. → matrix §15 records the doc/source verification (Subsonic API docs + Navidrome `server/subsonic/playlists.go`, `persistence/playlist_repository.go`, `core/playlists/playlists.go`): create-with-id REPLACES tracks, update is incremental (0-based remove indexes), repeated `songId` keeps order AND duplicates, non-admins see own+public, mutations need owner-or-admin, missing = code 70, forbidden = code 50, both inside HTTP 200 bodies. NO live server was contacted in this environment — the server-instance check is a Phase 3 field task, not a claim made here.
 
 ### Deferred quality backlog — retain for later prioritization
 - [ ] Consistent empty/error/retry states for Albums/Artists and source failures; distinguish authentication failures from offline rather than labeling every cached fallback offline.
@@ -169,3 +169,25 @@ This is a completion ledger, not a promise that all phases are done. Update it a
 - The **row and activity strip** are shared production components; the surrounding review dialog is a fixture shell, not proof of production modal accessibility or discard interactions. Push/migration e2e tests cover the actual write/discard surface.
 - File baselines come only from successful probes, can be stale, and are explicitly labeled last-probed. Do not reintroduce Navidrome values as previous WebDAV values.
 - Roadmap descriptions above are proposals, not permission to unify intentionally independent queue/library semantics. No playlist or queue-policy changes were made in this increment.
+
+### Phase 2A closure — queue/playback reliability characterization (2026-10-21)
+
+**Deliverable:** [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md) — 76 invariants across sections/uniqueness, the active anchor, promotion/history, the recency cooldown, fill tiers/exhaustion/wrap, shuffle, loop mode & manual navigation, persistence/restore, the native bridge, the bulk-import boundary, and the browser-level pins. Every row names a real passing test; §13 registers the five gaps; §15 registers the Phase 3 boundary decisions; §16 states what is out of scope.
+
+**Tests added (+27; suite 1355 → 1382):**
+- `tests/queueBulkImport.test.ts` (7) — `playAll` shape: empty import, duplicate ids, unknown-library ids (and the stall on them), the actively-playing track inside the import, cross-section duplicate on enqueue + promote collapse, `playNext` on an empty queue, recency reset.
+- `tests/queueRestore.test.ts` (3) + `tests/queueRestoreAnchor.test.ts` (1) — persisted-row dedupe (first occurrence), active re-anchor by id, out-of-range anchor → −1, legacy `historyQueue`, and the first full library sync dropping stale ids / re-anchoring.
+- `tests/queueMutation.test.ts` (+4) — dragging the active user row with an auto duplicate, drag identity resolving to the user occurrence, rapid removals above the active row, and removal being section-scoped.
+- `tests/playbackManagerNav.test.ts` (6) — the same-tick Next gap, Next at the tail never wrapping, Previous restart/wrap, Next-then-Previous ordering, and the natural-end wrap/stop matrix on the web path.
+- `tests/queueManagerFill.test.ts` (+4) — filter change mid-play (kept row vs excluded row vs last row) and sort change mid-play.
+- `tests/playbackManagerRestore.test.ts` (+2) — the shuffle-toggle rebuild subscription and the loop-one fade-cancel subscription.
+
+**Gaps found (characterized, NOT repaired — behavior changes were out of scope):**
+- **G1/G2** — a filter or sort change while an AUTO row plays rewrites `autoQueue` without re-anchoring `activeIndex`; the anchor can name a different row, or sit past the end. This breaks B1 and contaminates the native refresh payload. Highest-value queue fix before playlists.
+- **G3** — a second Next press inside the load window (anchor advanced, `currentTrack` not yet written) is read as "the active row was removed" and re-targets the SAME row; a quick double-tap skips one row instead of two.
+- **G4** — `playAll` is an unguarded bulk boundary: no dedupe, no library validation, `activeIndex 0` even for an empty array (an unknown id can stall the advance chain). Exactly the shape a server playlist import can produce (the server retains duplicates and order).
+- **G5** — drag identity is id-only, so the auto occurrence of a cross-section duplicate cannot be dragged independently.
+
+**Verification:** `npm run check` 0 errors / 0 warnings; `npm test` 1382/1382; `npx playwright test tests/e2e/{queueRows,queuedragdup,queueContinuation,queueflood}.spec.ts` 12/12. No queue or playback behavior changed for this increment. On-device native verification remains outstanding (2026-10-17 plan), and the playlist endpoint check is docs/source-level only — no live server was available.
+
+**Next:** decide G1/G2 (one shared "preserve the audible occurrence across a fill rewrite" rule) before Phase 3 playlists; 2B (rating editor/display extraction) and 2C (Settings decomposition) remain open and are independent of the queue.

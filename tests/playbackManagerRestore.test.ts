@@ -16,6 +16,8 @@ import {
   snapTolerance,
   masterGain,
   settings,
+  shuffleEnabled,
+  loopMode,
 } from '../src/stores/appState'
 import { PlaybackManager } from '../src/lib/playbackManager'
 import { engine } from '../src/lib/engineFacade'
@@ -58,21 +60,30 @@ class FakeQueueManager {
   rebuildAutoQueue(): void { this.rebuilt++ }
 }
 
+/** Only the two calls `_subscribeShared` can make on the web transport. */
+class FakeWebTransport {
+  calls: string[] = []
+  cancelNext(): void { this.calls.push('cancelNext') }
+}
+
 // --- harness ---------------------------------------------------------------
 
 type PrivatePM = {
   _applyPlaybackParams(): void
   _subscribeShared(): Array<() => void>
+  _initialized: boolean
 }
 
 function makeHarness() {
   const eng = new FakeEngine()
   const qm = new FakeQueueManager()
+  const web = new FakeWebTransport()
   const m = new PlaybackManager({
     engine: eng as unknown as typeof engine,
     queueManager: qm as unknown as typeof queueManager,
+    webTransport: web as never,
   }) as unknown as PrivatePM
-  return { eng, qm, m }
+  return { eng, qm, web, m }
 }
 
 function resetParamStores(): void {
@@ -132,4 +143,47 @@ test('_subscribeShared still runs the one-shot auto-queue replenish', () => {
   m._subscribeShared()
 
   assert.equal(qm.replenished, 1, 'the subscribe-time replenish is a call-site side effect, not a subscription')
+})
+
+test('_subscribeShared rebuilds the auto queue on a shuffle toggle, and unsubscribing stops it', () => {
+  resetParamStores()
+  shuffleEnabled.set(false)
+  const { qm, m } = makeHarness()
+  m._initialized = true
+  const unsubs = m._subscribeShared()
+  try {
+    // A Svelte store subscription fires immediately; that initial fire is a
+    // real rebuild too, so measure deltas from the post-subscribe count.
+    const baseline = qm.rebuilt
+    shuffleEnabled.set(true)
+    assert.equal(qm.rebuilt, baseline + 1, 'shuffle on re-samples the auto fill')
+    shuffleEnabled.set(false)
+    assert.equal(qm.rebuilt, baseline + 2, 'shuffle off returns the fill to the sort order')
+
+    unsubs.forEach((unsubscribe) => unsubscribe())
+    shuffleEnabled.set(true)
+    assert.equal(qm.rebuilt, baseline + 2, 'the subscription is released by destroy()')
+  } finally {
+    for (const u of unsubs) u()
+  }
+})
+
+test('_subscribeShared cancels the armed web fade exactly when loop-one is selected', () => {
+  resetParamStores()
+  loopMode.set('none')
+  const { web, m } = makeHarness()
+  const unsubs = m._subscribeShared()
+  try {
+    loopMode.set('one')
+    assert.equal(web.calls.filter((c) => c === 'cancelNext').length, 1, 'a fade must never run into a loop-one restart')
+
+    loopMode.set('all')
+    assert.equal(web.calls.filter((c) => c === 'cancelNext').length, 1, 'leaving loop-one cancels nothing')
+
+    unsubs.forEach((unsubscribe) => unsubscribe())
+    loopMode.set('one')
+    assert.equal(web.calls.filter((c) => c === 'cancelNext').length, 1, 'unsubscribed')
+  } finally {
+    for (const u of unsubs) u()
+  }
 })

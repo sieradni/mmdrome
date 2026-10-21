@@ -302,6 +302,89 @@ test('the autoQueueSort subscription continues the fill from the playing track (
   }
 })
 
+// --- sort/filter changes WHILE PLAYING (Phase 2A gate item 6, 2026-10-21) ----
+// The fill can now run with the playing row inside the AUTO section (the user
+// re-sorted or tightened the queue mid-track). These pin what the anchor does
+// then. Two of them expose a real drift: the fill rewrites `autoQueue` without
+// re-anchoring `activeIndex`, so the "combined[activeIndex] is the playing
+// track" invariant (B1) can break. Reported, not repaired here — the fix is a
+// behaviour decision, out of this phase's scope.
+
+function playingAuto(): void {
+  reset()
+  library.set(['u', 'a', 'b', 'c'].map((id) => track(id)))
+  metadataCache.set(metaOf([['u', 0], ['a', 80], ['b', 90], ['c', 95]]))
+  setQueue({ userQueue: ['u'], autoQueue: ['a', 'b', 'c'], activeIndex: 1 }) // 'a' plays
+}
+
+function combined(): { ids: string[]; anchor: string | undefined } {
+  const q = get(queue)
+  const ids = [...q.userQueue, ...q.autoQueue]
+  return { ids, anchor: ids[q.activeIndex] }
+}
+
+test('a filter change that still matches the playing auto row keeps it queued AND anchored', () => {
+  playingAuto()
+
+  autoQueueFilterFields.set({ ...FIELDS, minRating: 50 })
+  queueManager.replenishAutoQueue()
+
+  const q = get(queue)
+  assert.deepEqual(q.autoQueue, ['a', 'b', 'c'], 'every queued row still matches — nothing is dropped')
+  assert.equal(q.activeIndex, 1)
+  assert.equal(combined().anchor, 'a', 'the playing row is still the anchor')
+})
+
+test('a filter change that EXCLUDES the playing auto row leaves the anchor on a different track (KNOWN GAP)', () => {
+  playingAuto()
+
+  // minRating 90 drops 'a' (80) — the row that is audibly playing.
+  autoQueueFilterFields.set({ ...FIELDS, minRating: 90 })
+  queueManager.replenishAutoQueue()
+
+  const q = get(queue)
+  assert.deepEqual(q.autoQueue, ['b', 'c'], 'the non-matching playing row is pruned')
+  assert.equal(q.activeIndex, 1, 'KNOWN GAP: the index is NOT re-anchored')
+  assert.equal(combined().anchor, 'b', 'the anchor now names a row that is not playing')
+  assert.equal(get(queue).userQueue.length, 1)
+
+  // The queue is the native refresh payload, so this is not a cosmetic
+  // highlight bug: the next engine sync would position the engine by index.
+  assert.equal(combined().ids[1], 'b')
+})
+
+test('a sort change mid-play rebuilds the auto order without re-anchoring the playing row (KNOWN GAP)', () => {
+  playingAuto()
+
+  autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
+  queueManager.rebuildAutoQueue()
+
+  const q = get(queue)
+  // Descending rating over the pool, with the anchor rotation a no-op (the
+  // anchor 'u' is the lowest rank, so nothing ranks after it → wrap). The
+  // rebuild ALSO re-admits the USER-queued 'u' through tier 3 (B4), so the
+  // auto tail carries a cross-section duplicate of the user row.
+  assert.deepEqual(q.autoQueue, ['c', 'b', 'a', 'u'])
+  assert.equal(q.activeIndex, 1, 'KNOWN GAP: the index stayed at the playing row’s OLD position')
+  assert.equal(combined().anchor, 'c', 'the anchor names a different row while the user hears a')
+})
+
+test('a filter change that drops the LAST playing auto row leaves activeIndex past the end (KNOWN GAP)', () => {
+  reset()
+  library.set(['u', 'a', 'b'].map((id) => track(id)))
+  metadataCache.set(metaOf([['u', 0], ['a', 95], ['b', 50]]))
+  setQueue({ userQueue: ['u'], autoQueue: ['a', 'b'], activeIndex: 2 }) // 'b' plays
+
+  autoQueueFilterFields.set({ ...FIELDS, minRating: 90 })
+  queueManager.replenishAutoQueue()
+
+  const q = get(queue)
+  assert.deepEqual(q.autoQueue, ['a'])
+  assert.equal(q.activeIndex, 2, 'KNOWN GAP: the index is neither re-anchored nor clamped')
+  assert.equal(combined().ids.length, 2)
+  assert.ok(q.activeIndex >= combined().ids.length, 'the anchor points past the end')
+})
+
 test('searchQuery persists as a filter through the real manager', () => {
   reset()
   library.set([
