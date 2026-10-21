@@ -27,7 +27,8 @@
           "date": "2026-10-21T08:23:38.984Z",
           "localizedDescription": "Reliable WebDAV push: writes now respect the destination file's ETag on Nextcloud-style servers and report the cause when a server refuses a write. The push review pane is capped so the screen above and below stays reachable on iOS, shows no colored border, and opens the full track details from its art or title.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.63/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5216457
         },
         {
           "version": "1.2.62",
