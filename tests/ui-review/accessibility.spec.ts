@@ -11,6 +11,11 @@ test('push dialog supports keyboard navigation and clear accessible changes', as
   const rect = await discard.boundingBox()
   expect(rect!.width).toBe(32)
   expect(rect!.height).toBe(32)
+  // Row stops first: art and title open the details view, then the × discard.
+  await page.keyboard.press('Tab')
+  await expect(dialog.getByRole('button', { name: 'Show details for Everything In Its Right Place', exact: true })).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(dialog.getByRole('button', { name: 'Everything In Its Right Place', exact: true })).toBeFocused()
   await page.keyboard.press('Tab')
   await expect(discard).toBeFocused()
   await page.keyboard.press('Enter')

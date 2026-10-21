@@ -51,42 +51,37 @@
 </main>
 
 {#if modalOpen}
-  <PushConfirmShell onclose={() => { modalOpen = false }}>
-      <header class="shrink-0 border-b border-white/10 px-5 py-4">
-        <h2 id="review-title" class="text-base font-semibold">Write ratings to WebDAV files?</h2>
-        <p id="push-confirm-description" class="mt-1 text-xs text-muted">Updates only rating and loved tags. A wrong file link applies these tags to the wrong file. Tags can be corrected later if you know the previous values. Verify the paths below.</p>
-      </header>
-      <div class="min-h-0 overflow-y-auto px-5 py-3.5">
-        <p role="status" class="text-xs text-muted">{tracks.length} file{tracks.length === 1 ? '' : 's'} will be updated:</p>
-        <ul class="divide-y divide-white/10">
-          {#each tracks as track (track.trackId)}
-            <li class="py-3.5">
-              <div class="flex items-start gap-1">
-                {#if track.trackId !== 'two'}
-                  <PushTrackSummary {track}>
-                    {#snippet thumbnail()}
-                      <img src={demoCover(track.trackId === 'one' ? '#456575' : '#916343')} alt="" class="h-full w-full object-cover" />
-                    {/snippet}
-                  </PushTrackSummary>
-                {:else}
-                  <PushTrackSummary {track} />
-                {/if}
-                <PushDiscardButton title={track.title} expanded={discardTarget === track.trackId} onclick={() => { discardTarget = track.trackId }} />
-              </div>
-              {#if discardTarget === track.trackId}
-                <div class="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-surface-hover px-2.5 py-1.5">
-                  <span class="min-w-0 flex-1 text-xs">Discard this edit? These rating and loved changes will not be written to the file.</span>
-                  <button class="btn-secondary min-h-11 px-3 py-1 text-xs" onclick={() => { tracks = tracks.filter((item) => item.trackId !== track.trackId); discardTarget = null }}>Discard</button>
-                  <button class="min-h-11 px-3 py-1 text-xs text-muted" onclick={() => { discardTarget = null }}>Keep</button>
-                </div>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      </div>
-      <footer class="flex shrink-0 flex-wrap justify-end gap-2 border-t border-white/10 px-5 py-3.5">
-        <button class="btn-secondary btn-md min-h-11" onclick={() => { modalOpen = false }}>Close preview</button>
-        <button class="btn-primary btn-md min-h-11" disabled>Write to files (demo)</button>
-      </footer>
+  <PushConfirmShell
+    count={tracks.length}
+    closeLabel="Close preview"
+    submitLabel="Write to files (demo)"
+    submitDisabled={true}
+    onclose={() => { modalOpen = false }}
+  >
+    <ul class="divide-y divide-white/10">
+      {#each tracks as track (track.trackId)}
+        <li class="py-3.5">
+          <div class="flex items-start gap-1">
+            {#if track.trackId !== 'two'}
+              <PushTrackSummary {track} onopen={() => {}}>
+                {#snippet thumbnail()}
+                  <img src={demoCover(track.trackId === 'one' ? '#456575' : '#916343')} alt="" class="h-full w-full object-cover" />
+                {/snippet}
+              </PushTrackSummary>
+            {:else}
+              <PushTrackSummary {track} onopen={() => {}} />
+            {/if}
+            <PushDiscardButton title={track.title} expanded={discardTarget === track.trackId} onclick={() => { discardTarget = track.trackId }} />
+          </div>
+          {#if discardTarget === track.trackId}
+            <div class="mt-2 flex flex-wrap items-center gap-2 rounded-lg bg-surface-hover px-2.5 py-1.5">
+              <span class="min-w-0 flex-1 text-xs">Discard this edit? These rating and loved changes will not be written to the file.</span>
+              <button class="btn-secondary min-h-11 px-3 py-1 text-xs" onclick={() => { tracks = tracks.filter((item) => item.trackId !== track.trackId); discardTarget = null }}>Discard</button>
+              <button class="min-h-11 px-3 py-1 text-xs text-muted" onclick={() => { discardTarget = null }}>Keep</button>
+            </div>
+          {/if}
+        </li>
+      {/each}
+    </ul>
   </PushConfirmShell>
 {/if}

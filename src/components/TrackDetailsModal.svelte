@@ -3,6 +3,7 @@
   import type { Track } from '../stores/appState'
   import { commitFeedback } from '../lib/feedbackService'
   import TrackDetailPanel from './TrackDetailPanel.svelte'
+  import ModalShell from './ModalShell.svelte'
   import AppSlider from './AppSlider.svelte'
 
   let { track, onclose }: { track: Track; onclose: () => void } = $props()
@@ -67,34 +68,30 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div
-  class="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-  onclick={onclose}
-  onkeydown={(e) => { if (e.key === 'Escape') onclose() }}
->
-  <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-  <div
-    class="mx-4 w-full max-w-lg rounded-xl border border-white/10 bg-surface shadow-2xl max-h-[80vh] overflow-y-auto"
-    onclick={(e) => e.stopPropagation()}
-  >
-    <!-- Header -->
-    <div class="flex items-start justify-between border-b border-white/10 px-5 py-4">
-      <div class="min-w-0 flex-1 pr-4">
-        <h2 class="truncate text-base font-bold text-primary" title={track.title}>{track.title}</h2>
-        <p class="truncate text-xs text-muted">{track.artist}</p>
-      </div>
-      <button
-        onclick={onclose}
-        class="flex-shrink-0 rounded-full p-1 text-muted transition-colors hover:text-primary"
-        aria-label="Close"
-      >
-        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M6 6l12 12M18 6l-12 12" />
-        </svg>
-      </button>
+<!-- Track details: the shared dialog shell (ModalShell). Opening it from a
+     push-confirm row relies on the shell being a native <dialog> — top-layer
+     order, not z-index, decides that this pane paints above the push pane. -->
+<ModalShell ariaLabel={track.title} {onclose}>
+  <!-- Header -->
+  <div class="flex shrink-0 items-start justify-between border-b border-white/10 px-5 py-4">
+    <div class="min-w-0 flex-1 pr-4">
+      <h2 class="truncate text-base font-bold text-primary" title={track.title}>{track.title}</h2>
+      <p class="truncate text-xs text-muted">{track.artist}</p>
     </div>
+    <button
+      onclick={onclose}
+      class="flex-shrink-0 rounded-full p-1 text-muted transition-colors hover:text-primary"
+      aria-label="Close"
+    >
+      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M6 6l12 12M18 6l-12 12" />
+      </svg>
+    </button>
+  </div>
 
+  <!-- One scroll region (the panel + the rating controls): the pane height is
+       capped by the shell, so the body scrolls instead of the pane growing. -->
+  <div class="min-h-0 flex-1 overflow-y-auto overscroll-contain">
     <div class="px-5 py-4">
       <TrackDetailPanel {track} {meta} />
     </div>
@@ -166,4 +163,4 @@
       </div>
     </div>
   </div>
-</div>
+</ModalShell>

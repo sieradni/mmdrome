@@ -25,6 +25,20 @@ for (const [width, height] of [[320, 568], [390, 844], [844, 390], [1280, 800], 
     expect(rect!.y).toBeGreaterThanOrEqual(15)
     expect(rect!.x + rect!.width).toBeLessThanOrEqual(width - 15)
     expect(rect!.y + rect!.height).toBeLessThanOrEqual(height - 15)
+    // The pane is HEIGHT-CAPPED, not merely fit-checked: on iOS a
+    // `100dvh`-tall confirm pane runs under the notch / home indicator /
+    // Safari's bottom bar (its footer became unreachable) and leaves no
+    // backdrop to tap. 80dvh keeps a slice of the screen it covers visible
+    // above and below.
+    expect(rect!.height).toBeLessThanOrEqual(height * 0.8 + 1)
+    // No border and no outline: iOS Safari paints its own focus ring around
+    // the focused dialog, which read as an unremovable colored border.
+    await expect(dialog).toHaveCSS('border-top-width', '0px')
+    await expect(dialog).toHaveCSS('outline-style', 'none')
+    // Row art + title are the detail-view target (same as the library rows).
+    await expect(dialog.getByTestId('push-title-button')).toHaveCount(3)
+    await expect(dialog.getByTestId('push-thumbnail-button')).toHaveCount(3)
+    await expect(dialog.getByRole('button', { name: 'Show details for Reckoner', exact: true })).toBeVisible()
     expect(Math.abs(rect!.x + rect!.width / 2 - width / 2)).toBeLessThan(2)
     expect(Math.abs(rect!.y + rect!.height / 2 - height / 2)).toBeLessThan(2)
     expect(await dialog.evaluate((node) => node.scrollWidth <= node.clientWidth)).toBe(true)
@@ -38,6 +52,17 @@ for (const [width, height] of [[320, 568], [390, 844], [844, 390], [1280, 800], 
     await expect(opener).toBeFocused()
     await opener.click()
     await page.mouse.click(4, 4)
+    await expect(dialog).toHaveCount(0)
+    // …and the strips ABOVE and BELOW the pane are real, tappable backdrop
+    // (the capped height is what keeps them reachable on a phone).
+    await opener.click()
+    const above = (await dialog.boundingBox())!
+    expect(above.height).toBeGreaterThan(0)
+    await page.mouse.click(width / 2, above.y / 2)
+    await expect(dialog).toHaveCount(0)
+    await opener.click()
+    const below = (await dialog.boundingBox())!
+    await page.mouse.click(width / 2, (below.y + below.height + height) / 2)
     await expect(dialog).toHaveCount(0)
   })
 }

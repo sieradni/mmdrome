@@ -15,7 +15,9 @@ import { openSettingsSection } from './libraryHarness'
 // Push Changes end-to-end against the REAL bundle: a UI rating edit marks a
 // bound row pending_sync (webdav rating source), and Push writes it back
 // through the atomic temp-write path — GET (etag) → PUT <file>.mmdrome-tmp →
-// MOVE with If-Match. The route-mocked WebDAV server keeps mutable state and
+// MOVE guarded by a destination-tagged `If` condition (never `If-Match` — that
+// header is scoped to the temp SOURCE). The route-mocked WebDAV server keeps
+// mutable state and
 // honors the concurrency headers, so the specs prove the browser actually
 // performed the whole write sequence exactly once, left no temp orphan, and
 // physically changed the stored file bytes (a POPM frame now present).
@@ -86,7 +88,28 @@ test('a rating edit in the UI is pushed to the WebDAV file via PUT-temp + MOVE',
   await page.keyboard.press('Shift+Tab')
   await expect(pushDialog.getByRole('button', { name: 'Write to files', exact: true })).toBeFocused()
   await page.keyboard.press('Tab')
+  await expect(pushDialog.getByRole('button', { name: 'Show details for Song One', exact: true })).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(pushDialog.getByRole('button', { name: 'Song One', exact: true })).toBeFocused()
+  await page.keyboard.press('Tab')
   await expect(discardButton).toBeFocused()
+
+  // Tapping the row's title or art opens the SAME details view the library
+  // rows use — and it must stack ABOVE the confirm pane (native dialog top
+  // layer; a z-index overlay would paint behind it and be untappable).
+  await page.getByTestId('push-title-button').click()
+  const details = page.getByRole('dialog', { name: 'Song One', exact: true })
+  await expect(details).toBeVisible()
+  await expect(details.getByRole('button', { name: 'Set rating to 100' })).toBeVisible()
+  await expect(details.getByText('Album Artist', { exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(details).toHaveCount(0)
+  await expect(pushDialog).toBeVisible()
+  await page.getByTestId('push-thumbnail-button').click()
+  await expect(page.getByRole('dialog', { name: 'Song One', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('dialog', { name: 'Song One', exact: true })).toHaveCount(0)
+  await expect(pushDialog).toBeVisible()
   // Real names, not raw navidrome ids (2026-09-26 field report): the dialog
   // resolves titles from the live library via withLibraryTitles.
   const dialogRow = page.locator('[data-testid="push-discard-navidrome-s1"]').locator('xpath=ancestor::li')
@@ -107,6 +130,17 @@ test('a rating edit in the UI is pushed to the WebDAV file via PUT-temp + MOVE',
   expect(dav.getPutCount(), 'one atomic PUT to the temp path').toBe(1)
   expect(dav.getMoveCount(), 'one atomic MOVE over the target').toBe(1)
   expect(dav.storedPaths(), 'no .mmdrome-tmp orphan after a successful push').not.toContain('Song One.mp3.mmdrome-tmp')
+
+  // WIRE-LEVEL PRECONDITION SCOPE (2026-10-20). The MOVE must guard the
+  // DESTINATION through a tagged `If` list. `If-Match` is evaluated against
+  // the request URI — the temp SOURCE — by RFC 7232 §3.1 and by sabre/dav
+  // (Nextcloud), so a destination etag there 412s every guarded row and no
+  // retry can recover. The mock now enforces the RFC scope (a destination etag
+  // in If-Match fails), so this spec would fail outright on the old client;
+  // these assertions name the exact headers either way.
+  const moveHeaders = dav.lastMoveHeaders()!
+  expect(moveHeaders['if-match']).toBeUndefined()
+  expect(moveHeaders['if']).toMatch(/^<https:\/\/dav\.test\/files\/user\/Song%20One\.mp3> \(\["etag-\d+"\]\)$/)
   const original = fixtureFiles().find((f) => f.path === 'Song One.mp3')!.bytes
   const pushed = dav.bytesOf('Song One.mp3')
   expect(pushed, 'the pushed file exists with new bytes').toBeTruthy()
@@ -146,21 +180,78 @@ test('a 412 on MOVE (concurrent writer) is retried once: re-GET, re-modify, succ
   expect(dav.getPutCount(), 'one temp PUT per attempt').toBe(2)
   expect(dav.getMoveCount(), 'one rejected MOVE + one successful retry MOVE').toBe(2)
   // Exactly one DELETE: the temp cleanup lives in webdavPutAtomic
-  // (webdavAtomicWrite.ts) as a single idempotent-armed cleanup — the failed
-  // attempt deletes its temp once, the catch-all is a no-op afterwards. The
-  // old double-DELETE (branch + catch-all both cleaning) was extracted and
-  // fixed; tests/webdavAtomicWrite.test.ts pins the exactly-once contract at
-  // the Node level.
+  // (webdavAtomicWrite.ts) as ONE `discardTemp()` call on the failed MOVE's
+  // branch. The old double-DELETE (branch + catch-all both cleaning) was
+  // extracted and fixed; tests/webdavAtomicWrite.test.ts pins the exactly-once
+  // contract at the Node level.
   expect(dav.getDeleteCount(), 'the failed attempt cleans its temp file exactly once').toBe(1)
   expect(dav.storedPaths(), 'no .mmdrome-tmp orphan after the retry').not.toContain('Song One.mp3.mmdrome-tmp')
 
   // The stored file: the retry overwrote the concurrent writer's bytes (its
   // distinct audio length is gone) and the app's tags won with a POPM frame
-  // present. The retry MOVE only succeeded because it carried the FRESH etag
-  // from the re-GET — the mock rejects stale If-Match with 412.
+  // present. The retry MOVE only succeeded because its destination-tagged
+  // `If` condition carried the FRESH etag from the re-GET — the mock rejects a
+  // destination etag mismatch with 412, exactly like a real server.
   const finalBytes = dav.bytesOf('Song One.mp3')!
   expect(finalBytes.length, 'concurrent-writer bytes replaced by the push').not.toBe(concurrentBytes.length)
   expect(finalBytes.indexOf(Buffer.from('POPM'))).toBeGreaterThan(-1)
+})
+
+test('a refused MOVE surfaces its cause in the result line and leaves no temp behind', async ({ page }) => {
+  await bootApp(page)
+  await mockSubsonic(page)
+  const dav = await installWebdavMock(page, { baseUrl: DAV_BASE, files: fixtureFiles() })
+  await preparePendingRating(page, dav)
+
+  // The server accepts the temp PUT and then refuses the rename (403), a
+  // realistic shape: quota/permission rules apply to the final path, not the
+  // temp. Before this pass the pane said only "Pushed 0 track(s), 1 failed" —
+  // the cause was swallowed by the row loop.
+  dav.armMoveFailure('Song One.mp3', 403, 1)
+
+  await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Write ratings to WebDAV files?' })).toBeVisible()
+  await page.getByRole('button', { name: 'Write to files' }).click()
+  const result = page.getByText(/Pushed 0 track\(s\), 1 failed/)
+  await expect(result).toBeVisible({ timeout: 30_000 })
+  await expect(result).toContainText('WebDAV MOVE failed (403)')
+  await expect(result).toContainText('Song One.mp3')
+
+  // The row stays pending for the next Push, the destination is untouched,
+  // and the failed attempt cleaned its temp exactly once.
+  expect(dav.getDeleteCount(), 'the failed MOVE cleaned its temp').toBe(1)
+  expect(dav.storedPaths(), 'no .mmdrome-tmp orphan after a refused MOVE').not.toContain('Song One.mp3.mmdrome-tmp')
+  expect(dav.bytesOf('Song One.mp3'), 'the destination was never replaced').toEqual(fixtureFiles().find((f) => f.path === 'Song One.mp3')!.bytes)
+  await expect(page.getByRole('button', { name: 'Push Changes', exact: true })).toBeEnabled()
+})
+
+test('a destination deleted between GET and MOVE is a skip, not a failure', async ({ page }) => {
+  await bootApp(page)
+  await mockSubsonic(page)
+  const dav = await installWebdavMock(page, { baseUrl: DAV_BASE, files: fixtureFiles() })
+  await preparePendingRating(page, dav)
+
+  // A concurrent deleter (another client, a sync tool, the library's own
+  // cleanup) removes the file after our GET. sabre/dav resolves the
+  // destination-tagged `If` with tree->getNodeForPath and does not catch
+  // NotFound, so the conditional MOVE answers 404 — NOT 412. Treating only
+  // 412 as "re-read the destination" reported this as `1 failed, WebDAV MOVE
+  // failed (404)` even though the file is simply gone and the correct outcome
+  // is the same skip a missing file already gets on the GET path.
+  dav.armVanish('Song One.mp3', 1)
+
+  await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Write ratings to WebDAV files?' })).toBeVisible()
+  await page.getByRole('button', { name: 'Write to files' }).click()
+  const result = page.getByText(/Pushed 0 track\(s\), 1 skipped/)
+  await expect(result).toBeVisible({ timeout: 30_000 })
+  await expect(result).not.toContainText('failed')
+
+  // One attempt, one temp cleanup, nothing orbiting the collection.
+  expect(dav.getMoveCount(), 'the conditional MOVE was attempted once').toBe(1)
+  expect(dav.getDeleteCount(), 'the 404 MOVE cleaned its temp exactly once').toBe(1)
+  expect(dav.storedPaths(), 'no .mmdrome-tmp orphan after the 404').not.toContain('Song One.mp3.mmdrome-tmp')
+  expect(dav.bytesOf('Song One.mp3'), 'the vanished destination was not resurrected').toBeUndefined()
 })
 
 test('push shows a bucket breakdown with the track list, and cancelling mid-run keeps pushed rows', async ({ page }) => {
