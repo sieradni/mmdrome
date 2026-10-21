@@ -2,16 +2,18 @@
 
 Date: 2026-10-21
 Phase: 2A of [2026-10-18-holistic-polish-and-roadmap.md](plans/2026-10-18-holistic-polish-and-roadmap.md) — "Queue Pool Hardening & View-Layer Deduplication".
-Status: **partly implemented**. §2 (A1–A9), §3 B2/B10 and §10 N1 now describe the OCCURRENCE model that
-step 1 of [QUEUE-DESIGN.md](QUEUE-DESIGN.md) §6 shipped (2026-10-21c): a row is `(section, id, ordinal)`,
-duplicates are legal in both sections, every mutation path moves/removes/drags an occurrence, restore is a
-raw pass-through, and the native snapshot carries per-occurrence entry ids. Everything else still describes
-the code as it was, and every remaining known gap is real.
+Status: **partly implemented**. Step 1 (2026-10-21c) shipped the OCCURRENCE model — a row is
+`(section, id, ordinal)`, duplicates are legal in both sections, every mutation path moves/removes/drags an
+occurrence, restore is a raw pass-through, native snapshots carry per-occurrence entry ids (§2, B2/B10, N1).
+Step 2 (2026-10-21d) shipped press semantics: a library press appends and plays its own row (C7), promotion
+appends instead of moving (C3), "Play next" inserts a copy instead of reordering (C8), and the crossfade
+reconcile resolves the ARMED occurrence (C4). Everything else still describes the code as it was, and every
+remaining known gap is real.
 
-> **Still not implemented (steps 2–4):** pressing a song still jumps to an old copy (D1), a filter/sort edit
-> still rewrites the fill in place without promoting the audible row or resetting `recentTrackIds` (D7),
-> manual Next at the tail is still a no-op under loop-all (D8), the auto queue cannot be switched off (D9),
-> and a same-tick Next/Previous still loses a press (D12). Those rows say so; do not pre-fix them.
+> **Still not implemented (steps 3–6):** a filter/sort edit still rewrites the fill in place without
+> promoting the audible row or resetting `recentTrackIds` (D7 → G1/G2), manual Next at the tail is still a
+> no-op under loop-all (D8), the auto queue cannot be switched off (D9), a same-tick Next still loses a press
+> (D10 → G3), and the auto fill has no repeat pass (D6). Those rows say so; do not pre-fix them.
 
 ## 0. What this file is
 
@@ -33,9 +35,9 @@ load-bearing, which are deliberate tradeoffs, and which are accidental.
    native/on-device half is not; see E5 in `AGENTS.md` (no local Swift toolchain) and the physical-iOS
    ledger item in the 2026-10-17 streaming plan.
 
-Verification for this document (2026-10-21c, step 1 landed): `npm test` (1406 passing), `npm run check`
-(0 errors / 0 warnings), the full e2e suite (64 passing) and the ui-review suite (8 passing), including the
-rows' browser specs — `queueRows` (9), `queuedragdup` (1), `queueContinuation` (1), `queueflood` (2),
+Verification for this document (2026-10-21d, steps 1–2 landed): `npm test` (1418 passing), `npm run check`
+(0 errors / 0 warnings), the full e2e suite (66 passing) and the ui-review suite (8 passing), including the
+rows' browser specs — `queueRows` (10), `queuedragdup` (2), `queueContinuation` (1), `queueflood` (2),
 `persistence` (3).
 
 **Status vocabulary (closed set — every row carries exactly one of these):**
@@ -91,7 +93,7 @@ rows' browser specs — `queueRows` (9), `queuedragdup` (1), `queueContinuation`
 | B4 | Removing the active LAST row leaves the anchor past the new end — an honest stop, never a phantom row. | `tests/queueMutation.test.ts` — "removeFromUserQueue: removing the active LAST row lands the anchor past the new end"; `tests/playbackManagerAdvance.test.ts` — "removing the active LAST row lets it play out (native parity, 2.7)" | pinned |
 | B5 | Once the playing row is unqueued, advance targets `activeIndex` (the highlighted next row), not `activeIndex + 1`. | `tests/queueMutation.test.ts` — "advanceTargetIndex: after an active-row removal the next row is AT activeIndex (2.4 option b)"; `tests/playbackManagerAdvance.test.ts` — "end-of-track after removing the ACTIVE row advances to the next row (not stop/wrap)", "next() after removing the ACTIVE row plays the highlighted row" | pinned |
 | B6 | With no playing track, advance uses the plain `activeIndex + 1` (the end-of-queue refill path). | `tests/queueMutation.test.ts` — "advanceTargetIndex: no playing track keeps the plain +1 target" | pinned |
-| B7 | Promotion puts the audible song at the user boundary with the untouched auto continuation immediately after it — never at an old history slot. | `tests/queueMutation.test.ts` — "recycled auto promotion moves the audible song to the boundary (native history-replay regression)", "recycled promotion with no surviving auto tail keeps the audible song queued", "a repeat play never rewinds…", "long hands-off auto session with interleaved duplicates never replays history" | pinned |
+| B7 | Promotion puts the audible song at the user boundary with the untouched auto continuation immediately after it — never at an old history slot, and never by moving an old copy (C3). | `tests/queueMutation.test.ts` — "recycled auto promotion APPENDS a new user occurrence and keeps the history copy (native history-replay regression)", "recycled promotion with no surviving auto tail keeps the audible song queued", "a repeat play never rewinds…", "long hands-off auto session with interleaved duplicates never replays history" | pinned |
 | B8 | Moving the PLAYING row (drag / move-to-end) re-anchors by id and re-arms the crossfade target onto the NEW next row. | `tests/playbackManagerAdvance.test.ts` — "end-of-track after moving the PLAYING row down advances to the NEW next row", "moving the playing row re-arms the web crossfade target onto the NEW next row"; `tests/queueMutation.test.ts` — "dragging the active USER row keeps the anchor on the moved user occurrence" | pinned † |
 | B9 | A queue mutation never leaves a stale armed crossfade target; removal of the armed row re-arms or disarms. | `tests/playbackManagerAdvance.test.ts` — "removing the ARMED next row re-arms the crossfade target past the removal", "…tail next row disarms the arm", "…stale re-arm whose target was removed mid-resolve is dropped", "queue-write bursts coalesce into ONE re-arm" | pinned |
 | B10 | A drag carries the source occurrence (`queueEntryId`); a cross-section duplicate drag moves the occurrence the user grabbed — the auto copy when the user grabbed that one — never a same-id neighbour. | `tests/queueMutation.test.ts` — "applyDragDrop: a cross-section duplicate resolves to the dragged AUTO occurrence (G5 closed)", "…with two user copies the dragged one moves and the other stays"; `tests/e2e/queuedragdup.spec.ts` — "three copies of one song are independent rows" | pinned (G5 closed) |
@@ -106,10 +108,12 @@ rows' browser specs — `queueRows` (9), `queuedragdup` (1), `queueContinuation`
 | --- | --- | --- | --- |
 | C1 | Only an ACTIVE AUTO row promotes; an explicit user-row replay leaves its independent upcoming auto occurrence untouched. | `tests/queueMutation.test.ts` — "explicit USER replay never consumes its independent upcoming auto copy", "promoteActiveTrack is a no-op when the active row is not in auto" | pinned |
 | C2 | The auto prefix consumed by the promotion cools down in the SAME write (the rows the user never played must not re-enter the fill at the head). | `tests/queueMutation.test.ts` — "promoteActiveTrack consumes the skipped prefix and cools it for the refill"; `tests/playbackManagerAdvance.test.ts` — "auto-row promotion cools the consumed skipped prefix so the refill cannot replay it" | pinned |
-| C3 | Promotion never duplicates: an existing user copy is MOVED, not appended again. | `tests/queueMutation.test.ts` — "recycled auto promotion moves the audible song…", "promoteActiveTrack: active row in auto at auto[0] promotes to the user tail", "…works in the transition window" | pinned |
-| C4 | A crossfade transition promotes the row that actually played (the reconciled target), not blindly the advanced index. | `tests/crossfadeReconcile.test.ts` — "target still queued at a different index → repoint", "target removed mid-fade → rescue…", "advance exhausted + loop-all → wrap…"; `tests/queueContinuation.test.ts` — "web crossfade reconciliation retains the chosen auto occurrence before promotion" | pinned |
+| C3 | Promotion APPENDS a new user occurrence (D5, 2026-10-21d): an older user copy of the same id stays where it is as history — promotion never relocates it. The user section therefore grows by exactly one row per played auto row. | `tests/queueMutation.test.ts` — "recycled auto promotion APPENDS a new user occurrence and keeps the history copy", "promotion with TWO pre-existing user copies appends a THIRD and collapses neither", "promoteActiveTrack: active row in auto at auto[0] promotes to the user tail"; `tests/queueContinuation.test.ts` — "real native manager: hands-off shuffle…" (one row per play); `tests/e2e/queueContinuation.spec.ts` — "shuffle plays every eligible song…" (`userQueue.length` grows by one) | pinned |
+| C4 | A crossfade transition promotes the row that actually played (the reconciled target), not blindly the advanced index — and the target is resolved by OCCURRENCE (`targetEntryId`), so a duplicate cannot repoint the anchor onto a different copy of the same song. | `tests/crossfadeReconcile.test.ts` — "duplicate target: the armed occurrence wins over the first forward copy" (+ its id-only control), "an entry id whose occurrence is gone falls back…", "target still queued at a different index → repoint", "target removed mid-fade → rescue…", "advance exhausted + loop-all → wrap…"; `tests/playbackManagerAdvance.test.ts` — "crossfade reconcile uses the ARMED occurrence, not the first copy of the song"; `tests/queueContinuation.test.ts` — "web crossfade reconciliation retains the chosen auto occurrence before promotion" | pinned |
 | C5 | An early native bridge event that promotes before `engage` settles still gets a fresh snapshot afterwards. | `tests/queueContinuation.test.ts` — "initial native engage syncs a promotion made by an early bridge event even when later promotion is a no-op" | pinned (JS half — device-unverified) |
 | C6 | User-section replay of a row that also sits in auto must not consume the auto tail. | `tests/queueContinuation.test.ts` — "native explicit history replay and Previous keep their selected occurrence and auto tail" | pinned |
+| C7 | A press on a song OUTSIDE the queue (library/album/artist/detail) starts that song: it drops the id's auto occurrence(s), appends ONE new user occurrence at the tail, anchors it and cools the previous audible row. It never jumps to an older copy in the log or the auto tail. A press on the AUDIBLE row resumes/restarts it without cloning. | `tests/queueMutation.test.ts` — "pressTrack appends a new occurrence, drops auto copies, anchors it and cools the previous row (D1)", "pressTrack returns null for the audible occurrence (resume, never a clone)", "pressTrack on an empty queue appends row 0 and leaves recents alone"; `tests/playbackManagerAdvance.test.ts` — "a library press starts a NEW occurrence instead of jumping to a history copy (D1)", "a library press drops the id's auto occurrence…", "a library press on the AUDIBLE row resumes it without cloning"; `tests/e2e/queueRows.spec.ts` — "pressing a library song queues and plays a NEW row instead of jumping to an old copy (D1)" | pinned |
+| C8 | "Play next" is a press-driven INSERT: it adds a new user occurrence right after the audible row and never relocates a copy that is already queued (dropping that copy next to the anchor would delete it from the log). Row-scoped reorders remain `moveToNext`/`moveToEnd`/`moveRowToNext`/`moveRowToEnd`. | `tests/queueMutation.test.ts` — "playNext inserts a new track right after the active row", "playNext ADDS a copy even when that song already sits in the next slot", "playNext never relocates an existing copy", "playNext on an auto-active queue inserts at the user tail…", "moveUserRowToNext / moveUserRowToEnd address the ROW index" | pinned |
 
 ## 5. Recency cooldown
 
@@ -198,7 +202,8 @@ shuffle round-trip) and **H7** (§9, queue restore after a reload).
 | --- | --- | --- | --- |
 | V1 | Queue rows carry their true combined index under the virtual window (play taps, now-playing, drag identity, drop target). | `tests/e2e/queueRows.spec.ts` — "row data-combined-index equals the true combined index", "tapping a queue row plays THAT row", "the playing row shows the now-playing indicator" | pinned (browser) |
 | V2 | A queue drag reorders the store and the preview follows the pointer. | `tests/e2e/queueRows.spec.ts` — "drag to reorder: the drop reorders the store", "drag preview appears over the dragged row" | pinned (browser) |
-| V3 | Three copies of one song are independent rows, each keyed and removable by occurrence, and dragging the third copy moves THAT copy. | `tests/e2e/queuedragdup.spec.ts` — "three copies of one song are independent rows alongside their auto occurrence" | pinned (browser) |
+| V3 | Duplicates are independent rows through the real view: three user copies render/remove/drag by occurrence, AND dragging an AUTO copy of an already-queued song moves that AUTO occurrence (G5 through the pointer path). | `tests/e2e/queuedragdup.spec.ts` — "three copies of one song are independent rows; dragging one keeps all three", "dragging an AUTO copy of a queued song moves THAT occurrence into Up next (G5)" | pinned (browser) |
+| V6 | A library press queues and plays a NEW row; a second press of an already-played song does not teleport back to the history copy. | `tests/e2e/queueRows.spec.ts` — "pressing a library song queues and plays a NEW row instead of jumping to an old copy (D1)" | pinned (browser) |
 | V4 | Long queues stay bounded and playback keeps advancing (40-advance album, 500-song flood). | `tests/e2e/queueflood.spec.ts` — "album play-through: 40 advances grow the queue and the queue view stays bounded", "mega-album flood: a 500-song queue scrolls bounded and its landing screen loads" | pinned (browser) |
 | V5 | Offline advance + native progress behave through the real bundle. | `tests/e2e/offline-advance.spec.ts` — "a mid-track connection drop still plays the preloaded next track from the cache", "the full preload window fills in queue order and survives two offline advances"; `tests/e2e/nativeProgress.spec.ts` — "native percentage-first events fill the actual SeekBar before completion" | pinned (browser — native mocked) |
 
@@ -273,7 +278,9 @@ duplicates renders.
 - **Evidence:** `tests/queueMutation.test.ts` — "applyDragDrop: a cross-section duplicate resolves to the
   dragged AUTO occurrence (G5 closed)", "…with two user copies the dragged one moves and the other stays";
   `tests/queueOccurrence.test.ts` — `resolveEntry` / `entryOccupancy`.
-- **Remaining:** QueueView derives the drag entry from the row it rendered (V2/V3 pins in §12).
+- **Real-surface proof (2026-10-21d):** `tests/e2e/queuedragdup.spec.ts` — "dragging an AUTO copy of a queued
+  song moves THAT occurrence into Up next (G5)" restores the cross-section gesture through the pointer path
+  (the step-1 rewrite had replaced it with a user-section gesture).
 
 ## 14. What was unpinned before this pass
 

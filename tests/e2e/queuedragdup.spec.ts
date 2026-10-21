@@ -125,3 +125,60 @@ test('three copies of one song are independent rows; dragging one keeps all thre
   await expect(page.getByRole('button', { name: 'Close queue' })).toHaveCount(0)
   expect(pageErrors).toEqual([])
 })
+
+test('dragging an AUTO copy of a queued song moves THAT occurrence into Up next (G5)', async ({ page }) => {
+  const pageErrors: string[] = []
+  page.on('pageerror', (err) => pageErrors.push(String(err)))
+
+  await bootSmall(page)
+  // Play row 0, then queue three more songs. The auto fill recycles queued ids
+  // once its unique pool runs dry (tier 3), which is exactly how a real
+  // cross-section duplicate appears.
+  await page.locator('[data-track-id]').first().click()
+  await page.waitForTimeout(1200)
+  const addButtons = page.getByRole('button', { name: 'Add to queue', exact: true })
+  for (const i of [1, 2, 3]) await addButtons.nth(i).click()
+  await page.waitForTimeout(600)
+  await openQueue(page)
+
+  const userBefore = await userRows(page)
+  const autoIds: string[] = await page.evaluate(() =>
+    [...document.querySelectorAll('[aria-label="Auto queue"] .queue-track-item')].map(
+      (el) => (el as HTMLElement).dataset.trackId ?? '',
+    ),
+  )
+  const userIds = userBefore.map((r) => r.track)
+  const shared = autoIds.find((id) => userIds.includes(id))
+  expect(
+    shared,
+    `fixture must reach a cross-section duplicate (user=${userIds.join(',')} auto=${autoIds.slice(0, 12).join(',')})`,
+  ).toBeTruthy()
+
+  // Drag the AUTO occurrence onto the TOP of Up next. Before occurrence
+  // identity this moved the USER copy (the first `indexOf(trackId)`) or no-oped.
+  const autoRow = page.locator(`[aria-label="Auto queue"] .queue-track-item[data-track-id="${shared}"]`).first()
+  const handle = autoRow.locator('.drag-handle')
+  const source = await handle.boundingBox()
+  const target = await page.locator('[aria-label="User queue"] .queue-track-item').first().boundingBox()
+  if (!source || !target) throw new Error('drag geometry missing')
+  await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(target.x + target.width / 2, target.y + 6, { steps: 12 })
+  await page.mouse.up()
+  await page.waitForTimeout(700)
+
+  expect(pageErrors.filter((e) => /each_key_duplicate|Duplicate key/i.test(e))).toEqual([])
+  const userAfter = await userRows(page)
+  // The auto occurrence MOVED into the user section; the queued copy stayed.
+  expect(userAfter.length).toBe(userBefore.length + 1)
+  expect(userAfter.filter((r) => r.track === shared).length).toBe(2)
+  expect(new Set(userAfter.map((r) => r.entry)).size).toBe(userAfter.length)
+  const autoAfter: string[] = await page.evaluate(() =>
+    [...document.querySelectorAll('[aria-label="Auto queue"] .queue-track-item')].map(
+      (el) => (el as HTMLElement).dataset.trackId ?? '',
+    ),
+  )
+  expect(autoAfter.length).toBe(autoIds.length - 1)
+  expect(autoAfter[0]).not.toBe(shared)
+  expect(pageErrors).toEqual([])
+})

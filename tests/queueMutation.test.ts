@@ -15,6 +15,7 @@ import {
   playNext,
   planDragDrop,
   planDragDropRows,
+  pressTrack,
   promoteActiveTrack,
   promoteToUser,
   promoteToUserNext,
@@ -245,29 +246,27 @@ test('promoteActiveTrack works in the transition window (active row deep in auto
   assert.equal(r.activeIndex, 1)
 })
 
-// Recycled AUTO songs move ONE existing user copy to the boundary — never all
-// copies. The old `filter(id !== activeId)` collapsed duplicates; the redesign
-// keeps them (D3), and step 2 (D5) turns this into a pure append.
+// Promotion APPENDS a new user occurrence (D5, step 2): a user copy that is
+// already in the log is history and is never relocated, however many copies
+// exist.
 
-test('recycled auto promotion moves ONE audible copy to the boundary and keeps the other as history', () => {
+test('recycled auto promotion APPENDS a new user occurrence and keeps the history copy', () => {
   // Pile [a,b,c,d,e] (played earlier); auto [b-copy, x, y]; b-copy plays.
   const s = q(['a', 'b', 'c', 'd', 'e'], ['b', 'x', 'y'], 5)
   const r = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
-  assert.deepEqual(r.userQueue, ['a', 'c', 'd', 'e', 'b'], 'one user copy moves (the FIRST), never both')
+  assert.deepEqual(r.userQueue, ['a', 'b', 'c', 'd', 'e', 'b'], 'the history copy at 1 stays put')
+  assert.equal(count(r.userQueue, 'b'), 2, 'log copy + newly played copy')
   assert.deepEqual(r.autoQueue, ['x', 'y'], 'consumed prefix gone, tail intact')
   assert.equal(combined(r)[r.activeIndex], 'b')
   assert.equal(r.activeIndex, r.userQueue.length - 1, 'audible song at user tail, not history or continuation')
   assert.equal(combined(r)[advanceTargetIndex(r, combined(r), 'b')], 'x')
 })
 
-test('promotion with TWO pre-existing user copies moves ONE copy, never collapses both', () => {
+test('promotion with TWO pre-existing user copies appends a THIRD and collapses neither', () => {
   const s = q(['a', 'b', 'a'], ['a', 'x'], 3) // auto a plays
   const r = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
-  // Step 1 keeps the historical move-one-copy promotion (step 2 / D5 turns
-  // this into a pure append); what matters now is that it never collapses
-  // duplicates the way `filter(id !== active)` did.
-  assert.equal(count(r.userQueue, 'a'), 2, 'the unmoved history copy survives')
-  assert.deepEqual(r.userQueue, ['b', 'a', 'a'])
+  assert.equal(count(r.userQueue, 'a'), 3, 'both history copies survive plus the played one')
+  assert.deepEqual(r.userQueue, ['a', 'b', 'a', 'a'])
   assert.deepEqual(r.autoQueue, ['x'])
   assert.equal(combined(r)[r.activeIndex], 'a')
   assert.equal(r.activeIndex, r.userQueue.length - 1)
@@ -276,11 +275,11 @@ test('promotion with TWO pre-existing user copies moves ONE copy, never collapse
 test('recycled promotion with no surviving auto tail keeps the audible song queued', () => {
   const s = q(['a', 'b', 'c'], ['c'], 3)
   const r = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
-  assert.deepEqual(r.userQueue, ['a', 'b', 'c'])
+  assert.deepEqual(r.userQueue, ['a', 'b', 'c', 'c'], 'the history c stays; the played c appends')
   assert.deepEqual(r.autoQueue, [])
-  assert.equal(r.activeIndex, 2, 'audible c stays at the boundary')
+  assert.equal(r.activeIndex, 3, 'audible c sits at the boundary')
   assert.equal(combined(r)[r.activeIndex], 'c')
-  assert.equal(advanceTargetIndex(r, combined(r), 'c'), 3, 'next advance enters refill path')
+  assert.equal(advanceTargetIndex(r, combined(r), 'c'), 4, 'next advance enters refill path')
 })
 
 test('a repeat play never rewinds: chained auto plays keep moving forward', () => {
@@ -291,7 +290,7 @@ test('a repeat play never rewinds: chained auto plays keep moving forward', () =
   assert.equal(combined(s)[s.activeIndex], 'd')
   s = { ...s, activeIndex: advanceTargetIndex(s, combined(s), 'd') }
   s = applyQueueMutation(s, (x) => promoteActiveTrack(x))!
-  assert.deepEqual(s.userQueue, ['a', 'c', 'd', 'b'], 'recycled b moves to tail')
+  assert.deepEqual(s.userQueue, ['a', 'b', 'c', 'd', 'b'], 'recycled b appends; history b stays at 1')
   assert.deepEqual(s.autoQueue, ['e', 'f'])
   assert.equal(combined(s)[s.activeIndex], 'b')
   assert.equal(combined(s)[advanceTargetIndex(s, combined(s), 'b')], 'e')
@@ -361,6 +360,33 @@ test('addToUserQueue appends a NEW occurrence even when the id is already queued
   assert.deepEqual(r2.userQueue, ['a', 'b'])
 })
 
+test('pressTrack appends a new occurrence, drops auto copies, anchors it and cools the previous row (D1)', () => {
+  // 'a' is in the history pile AND the auto tail; 'b' is audible.
+  const s = q(['x', 'a', 'b'], ['a', 'y'], 2)
+  const r = pressTrack(s, 'a')!
+  assert.deepEqual(r.userQueue, ['x', 'a', 'b', 'a'], 'history stays; the press appends its own row')
+  assert.deepEqual(r.autoQueue, ['y'], "the pressed id's suggestions are gone")
+  assert.equal(r.activeIndex, 3, 'anchored on the pressed occurrence')
+  assert.equal(combined(r)[r.activeIndex], 'a')
+  assert.ok(r.recentTrackIds.includes('b'), 'the previous audible row cools')
+  assert.ok(!r.recentTrackIds.includes('a'), 'the pressed song is not cooled')
+})
+
+test('pressTrack returns null for the audible occurrence (resume, never a clone)', () => {
+  assert.equal(pressTrack(q(['x', 'a'], [], 1), 'a'), null)
+  // Same rule when the audible song is also duplicated: the press is the
+  // active row, so it resumes instead of stacking another copy.
+  assert.equal(pressTrack(q(['a', 'a'], [], 1), 'a'), null)
+})
+
+test('pressTrack on an empty queue appends row 0 and leaves recents alone', () => {
+  const r = pressTrack(q([], [], -1), 'a')!
+  assert.deepEqual(r.userQueue, ['a'])
+  assert.deepEqual(r.autoQueue, [])
+  assert.equal(r.activeIndex, 0)
+  assert.deepEqual(r.recentTrackIds, [])
+})
+
 test('playNext inserts a new track right after the active row (anchor re-indexes)', () => {
   const s = q(['a', 'b', 'c'], [], 1)
   const r = applyQueueMutation(s, (x) => playNext(x, 'x'))!
@@ -368,17 +394,29 @@ test('playNext inserts a new track right after the active row (anchor re-indexes
   assert.equal(r.activeIndex, 1)
 })
 
-test('playNext no-ops when the row already occupies the next slot', () => {
+test('playNext ADDS a copy even when that song already sits in the next slot (D2 press intent)', () => {
   const s = q(['a', 'b', 'c'], [], 1)
-  assert.equal(applyQueueMutation(s, (x) => playNext(x, 'c')), null)
+  const r = applyQueueMutation(s, (x) => playNext(x, 'c'))!
+  assert.deepEqual(r.userQueue, ['a', 'b', 'c', 'c'], 'the press is an intent to hear it next')
+  assert.equal(r.activeIndex, 1, 'the audible row never moves')
+  assert.equal(combined(r)[r.activeIndex], 'b')
 })
 
-test('playNext reorders the FIRST user occurrence (duplicates are not created)', () => {
+test('playNext never relocates an existing copy — the history row stays put (step 2)', () => {
   const s = q(['a', 'b', 'a', 'c'], [], 2) // second a is audible
   const r = applyQueueMutation(s, (x) => playNext(x, 'a'))!
-  assert.deepEqual(r.userQueue, ['b', 'a', 'a', 'c'], 'one a moves; the other stays')
-  assert.equal(r.activeIndex, 1, 'the anchor follows the moved occurrence')
+  assert.deepEqual(r.userQueue, ['a', 'b', 'a', 'a', 'c'], 'a new occurrence, the other two untouched')
+  assert.equal(r.activeIndex, 2, 'the audible occurrence stays the audible occurrence')
   assert.equal(combined(r)[r.activeIndex], 'a')
+  assert.equal(combined(r)[3], 'a', 'the inserted copy sits right after it')
+})
+
+test('playNext on an auto-active queue inserts at the user tail and keeps the auto anchor', () => {
+  const s = q(['a', 'b'], ['c', 'd'], 2) // c (auto) is audible
+  const r = applyQueueMutation(s, (x) => playNext(x, 'x'))!
+  assert.deepEqual(r.userQueue, ['a', 'b', 'x'])
+  assert.equal(combined(r)[r.activeIndex], 'c', 'the audible auto occurrence is untouched')
+  assert.equal(r.activeIndex, 3)
 })
 
 test('promoteToUser appends a new user occurrence and drops the auto occurrence', () => {

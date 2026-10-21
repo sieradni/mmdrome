@@ -1,10 +1,10 @@
 # Queue & Playlist Design — Agreed Target (2026-10-21b)
 
-Status: **AGREED, NOT IMPLEMENTED.** This is the target contract. The as-built behavior — and the
-tests that currently pin it — live in [QUEUE-INVARIANTS.md](QUEUE-INVARIANTS.md). Where the two
-disagree, this document is the intent and the matrix is the truth about the code *today*. Every rule
-below lands with its test and matrix-row rewrite in the same change; until then, do not cite this file
-as shipped behavior.
+Status: **PARTLY IMPLEMENTED (steps 1–2 of §6, 2026-10-21c/d).** This is the target contract. The
+as-built behavior — and the tests that currently pin it — live in [QUEUE-INVARIANTS.md](QUEUE-INVARIANTS.md).
+Landed: D3/D4/D5, D11, D13 and D1's press semantics (+ the crossfade occurrence identity that D1 needs).
+Not landed: D2's optional auto-copy drop on `+`, D6 (repeat pass), D7 (fresh context → G1/G2), D8, D9,
+D10, D12, D14's tail rules. Until a rule's row in the matrix says otherwise, do not cite it as shipped.
 
 Date: 2026-10-21 (decisions taken across the 2026-10-21 review, follow-up to Phase 2A).
 Supersedes: the duplicate/order half of QUEUE-INVARIANTS §15, and rows A1–A9, B11–B12, E2/E4, J2–J4,
@@ -62,8 +62,12 @@ Each rule is normative. "MUST" means the implementation is wrong if it does not 
 - `addToUserQueue` MUST append a new occurrence even when the id is already in the user section.
 - Pressing + on a track that also has an auto occurrence SHOULD drop that auto occurrence (a queued
   row supersedes the suggestion). `[open: default-drop, confirm at implementation]`
-- `playNext` / `moveToNext` / `moveToEnd` remain **reorder** operations on an existing user row
-  (they move one occurrence; with duplicates they operate on the row the caller names).
+- `moveToNext` / `moveToEnd` / `moveRowToNext` / `moveRowToEnd` remain **reorder** operations on the
+  row the caller names. **Superseded 2026-10-21d:** the press-driven "Play next" (`playNext`) is an
+  INSERT, not a reorder — it appends a new user occurrence right after the audible row and never
+  relocates a queued copy (that copy may be history above the anchor; moving it would delete a log
+  row). Decided during step 2 because turning the old reorder into an insert is the only version that
+  honours "a press is an intent to hear this song next".
 
 ### D3 — The user section has no uniqueness invariant
 
@@ -260,11 +264,15 @@ No Swift change is expected for D1–D14. The native engine consumes snapshots a
    Two step-1 leftovers recorded on purpose: `promoteActiveTrack` still MOVES one existing user copy of
    the promoted id to the boundary (D5 removes that in step 2), and `refreshQueue` re-sends full rows, so
    Swift keeps entry ids it already had.
-2. **Press semantics** — D1/D2, append-only promotion (D5). Manager tests + a browser spec for
-   "library press does not jump". Note the crossfade reconcile is still id+index based
-   (`resolveQueueOccurrence` without an entry id), so a duplicate armed target resolves to the first
-   forward copy of that song; step 2 should either pass the armed occurrence's entry id or prove the
-   copies are sonically interchangeable.
+2. **Press semantics — LANDED 2026-10-21d.** `queueMutation.pressTrack` + `queueManager.selectTrack`:
+   a library/album/artist/detail press drops the id's auto occurrence(s), appends ONE user occurrence,
+   anchors it and cools the previous row; the audible row resumes without cloning. Promotion is
+   append-only (D5) and "Play next" inserts a copy instead of relocating one. The crossfade reconcile
+   now carries the armed row's `targetEntryId` (+ `userLength`) and resolves that exact occurrence;
+   manager-level pin: "crossfade reconcile uses the ARMED occurrence, not the first copy of the song",
+   pure pins in `tests/crossfadeReconcile.test.ts`. Browser: `queueRows` D1 press spec, `queuedragdup`
+   cross-section drag restored. Deliberately NOT done: D2's SHOULD-drop of an auto copy on `+` (still
+   open in the design, so the code does not guess).
 3. **Skip exactness (D10)** — rewrite the G3 known-gap test into "two presses = two rows".
 4. **Fresh context (D7)** — promote-before-rewrite, reset recents, full rebuild; rewrite B11/E4/E9
    and close G1/G2.

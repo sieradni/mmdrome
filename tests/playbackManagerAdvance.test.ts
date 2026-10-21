@@ -127,7 +127,9 @@ type PrivatePM = {
   handleQueueRowRemoved(removedId: string, removedWasActive?: boolean): Promise<void>
   _setupNextTrack(): Promise<void>
   _rearmCrossfadeTarget(): void
+  playTrackById(trackId: string): Promise<void>
   _initialized: boolean
+  _armedTargetEntryId: string | null
 }
 
 function makeHarness(isNative: () => boolean = () => false) {
@@ -177,8 +179,10 @@ test('web crossfade completion of a recycled AUTO occurrence keeps audible ident
   setPlaybackState('playing')
   await h.m._handleCrossfadeEnd(t1.trackId)
   const q = get(queue)
-  assert.deepEqual(q.userQueue, [t0.trackId, t1.trackId])
-  assert.equal(q.activeIndex, 1)
+  // D5: the played auto occurrence is APPENDED — the history copy at user[0]
+  // stays where it is (the old move collapsed the log row into the tail).
+  assert.deepEqual(q.userQueue, [t1.trackId, t0.trackId, t1.trackId])
+  assert.equal(q.activeIndex, 2)
   assert.equal(get(currentTrack)?.trackId, t1.trackId)
   assert.equal(q.autoQueue[0], t2.trackId)
   assert.ok(h.web.calls.includes(`prepareNext:${t2.trackId}`))
@@ -628,6 +632,85 @@ test('moving the playing row re-arms the web crossfade target onto the NEW next 
   // old-slot preloaded t2.
   assert.ok(h.web.calls.includes('prepareNext:navidrome-a1'))
   assert.ok(!h.web.calls.includes('prepareNext:navidrome-t2'))
+})
+
+test('a library press starts a NEW occurrence instead of jumping to a history copy (D1)', async () => {
+  const h = makeHarness()
+  resetStores()
+  library.set([t0, t1, t2])
+  // t1 was played earlier and sits in the history pile; t0 is audible.
+  queue.set({ userQueue: ['navidrome-t1', 't0'], autoQueue: ['navidrome-t2'], recentTrackIds: [], activeIndex: 1 })
+  setCurrentTrack(t0)
+  setPlaybackState('playing')
+
+  await h.m.playTrackById('navidrome-t1')
+
+  const q = get(queue)
+  assert.deepEqual(q.userQueue, ['navidrome-t1', 't0', 'navidrome-t1'], 'the history row stays; a new one is appended')
+  assert.equal(q.activeIndex, 2, 'the press anchors its OWN row')
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t1')
+  assert.ok(q.recentTrackIds.includes('t0'), 'the previous audible row cools')
+})
+
+test("a library press drops the id's auto occurrence (explicit play supersedes a suggestion)", async () => {
+  const h = makeHarness()
+  resetStores()
+  library.set([t0, t1, t2])
+  queue.set({ userQueue: ['t0'], autoQueue: ['navidrome-t2', 'navidrome-t1', 'navidrome-t2'], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(t0)
+  setPlaybackState('playing')
+
+  await h.m.playTrackById('navidrome-t1')
+
+  const q = get(queue)
+  assert.deepEqual(q.userQueue, ['t0', 'navidrome-t1'])
+  assert.ok(!q.autoQueue.includes('navidrome-t1'), "the pressed id's suggestions are gone")
+  assert.deepEqual(q.autoQueue.slice(0, 2), ['navidrome-t2', 'navidrome-t2'], 'other suggestions are untouched')
+  assert.equal(q.activeIndex, 1)
+})
+
+test('a library press on the AUDIBLE row resumes it without cloning (D1 exemption)', async () => {
+  const h = makeHarness()
+  resetStores()
+  library.set([t0, t1, t2])
+  queue.set({ userQueue: ['t0', 'navidrome-t1'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(t0)
+  setPlaybackState('playing')
+
+  await h.m.playTrackById('t0')
+
+  const q = get(queue)
+  assert.deepEqual(q.userQueue, ['t0', 'navidrome-t1'], 'no new occurrence')
+  assert.equal(q.activeIndex, 0)
+  assert.equal(get(currentTrack)?.trackId, 't0')
+})
+
+test('crossfade reconcile uses the ARMED occurrence, not the first copy of the song', async () => {
+  const h = makeHarness()
+  resetStores()
+  library.set([t0, t1, t2])
+  // t0 plays; the next row is the USER copy of t1, and an AUTO copy of t1 sits
+  // later (a tier-3 cross-section duplicate).
+  queue.set({ userQueue: ['t0', 'navidrome-t1', 'navidrome-t2'], autoQueue: ['navidrome-t1'], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(t0)
+  setPlaybackState('playing')
+
+  await h.m._setupNextTrack()
+  await flush()
+  assert.equal(h.m._armedTargetEntryId, 'user:navidrome-t1', 'the arm carries the row identity')
+
+  // Mid-fade the user drags that armed row to the top (a real queue edit).
+  queue.set({ userQueue: ['navidrome-t1', 't0', 'navidrome-t2'], autoQueue: ['navidrome-t1'], recentTrackIds: [], activeIndex: 1 })
+
+  await h.m._handleCrossfadeEnd('navidrome-t1')
+
+  // The fade played the USER occurrence at index 0. Resolving by id alone would
+  // scan forward from the advanced anchor and land on the AUTO copy instead.
+  const q = get(queue)
+  assert.equal(q.activeIndex, 0, 'repointed to the occurrence that actually played')
+  assert.equal([...q.userQueue, ...q.autoQueue][q.activeIndex], 'navidrome-t1')
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t1')
+  assert.equal(q.autoQueue.filter((id) => id === 'navidrome-t1').length, 1, 'the untouched auto copy stays queued')
 })
 
 test('auto-row promotion cools the consumed skipped prefix so the refill cannot replay it', () => {

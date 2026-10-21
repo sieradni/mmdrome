@@ -153,45 +153,6 @@ export function applyQueueMutation(
   return updated
 }
 
-/**
- * Positions `trackId` in the user queue right after the active row (clamped to
- * the user tail when the active row sits in the auto queue; appended when
- * nothing is active). An existing user copy is MOVED (reorder, first
- * occurrence); otherwise the row is inserted. Returns `null` when the row has
- * no user slot and is already in place — or, for an existing copy, when it
- * already occupies the target slot (including the active row itself).
- */
-export function insertUserAfterActive(q: QueueState, trackId: string): string[] | null {
-  return insertUserAfterActiveWithAnchor(q, trackId)?.userQueue ?? null
-}
-
-/** The same reorder with the audible row's projected index (a duplicate id
- *  makes ordinal re-resolution ambiguous, so the caller supplies the fact). */
-function insertUserAfterActiveWithAnchor(q: QueueState, trackId: string): { userQueue: string[]; anchorIndex?: number } | null {
-  const idx = q.userQueue.indexOf(trackId)
-  const insertAt = q.activeIndex >= 0 ? Math.min(q.activeIndex + 1, q.userQueue.length) : q.userQueue.length
-  if (idx >= 0 && (insertAt === idx || insertAt === idx + 1)) return null
-  const activeInUser = q.activeIndex >= 0 && q.activeIndex < q.userQueue.length
-  if (idx < 0) {
-    const userQueue = [...q.userQueue.slice(0, insertAt), trackId, ...q.userQueue.slice(insertAt)]
-    const anchorIndex = activeInUser && insertAt <= q.activeIndex ? q.activeIndex + 1 : undefined
-    return { userQueue, ...(anchorIndex !== undefined ? { anchorIndex } : {}) }
-  }
-  const userQueue = [...q.userQueue]
-  userQueue.splice(idx, 1)
-  const adjusted = Math.max(0, Math.min(insertAt > idx ? insertAt - 1 : insertAt, userQueue.length))
-  userQueue.splice(adjusted, 0, trackId)
-  let anchorIndex: number | undefined
-  if (activeInUser) {
-    if (q.activeIndex === idx) anchorIndex = adjusted
-    else {
-      const base = q.activeIndex - (idx < q.activeIndex ? 1 : 0)
-      anchorIndex = adjusted <= base ? base + 1 : base
-    }
-  }
-  return { userQueue, ...(anchorIndex !== undefined ? { anchorIndex } : {}) }
-}
-
 /** Appends a new occurrence to the user queue. Always — a queued row is an
  *  occurrence, not a set membership (D2). */
 export function addToUserQueue(q: QueueState, trackId: string): QueueMutation | null {
@@ -199,16 +160,47 @@ export function addToUserQueue(q: QueueState, trackId: string): QueueMutation | 
 }
 
 /**
- * Plays a track right after the active row (first user-copy move when it is
- * already queued, plain insert otherwise). In-auto active row: clamped to the
- * user tail, which can sit before the playing track in combined order —
- * accepted by design. Reorder, never an add: duplicates are not created here.
+ * "Play next" (the row menu / library press): inserts a NEW user occurrence
+ * right after the active row. D2/step 2 — a press-driven insert is an INTENT to
+ * hear this song next, not a request to relocate a copy the user already has
+ * (that copy may be history above the anchor, and moving it would rewrite the
+ * listening log). Row-scoped reorders stay in `moveUserRowToNext`/
+ * `moveUserRowToEnd`.
+ *
+ * In-auto active row: clamped to the user tail, which can sit before the
+ * playing track in combined order — accepted by design.
  */
 export function playNext(q: QueueState, trackId: string): QueueMutation | null {
-  const edit = insertUserAfterActiveWithAnchor(q, trackId)
-  return edit
-    ? { userQueue: edit.userQueue, ...(edit.anchorIndex !== undefined ? { anchorIndex: edit.anchorIndex } : {}) }
-    : null
+  const insertAt = q.activeIndex >= 0 ? Math.min(q.activeIndex + 1, q.userQueue.length) : q.userQueue.length
+  // Inserted BELOW the audible user row (or at the tail), so the anchor needs no
+  // hint: the audible occurrence keeps its ordinal and `applyQueueMutation`
+  // re-resolves it exactly. An auto-active row is untouched by a user insert.
+  return { userQueue: [...q.userQueue.slice(0, insertAt), trackId, ...q.userQueue.slice(insertAt)] }
+}
+
+/**
+ * A PRESS on a song outside the queue (D1): start THAT song, never jump to an
+ * old copy of it. Returns the rewritten state, or `null` when the press is the
+ * audible row itself (resume/restart — no new row).
+ *
+ * The write: drop the id's auto occurrence(s) (a suggestion is superseded by
+ * an explicit play), append ONE user occurrence, anchor it, and cool the
+ * previous audible row into the recency window. Anchor-changing by design, so
+ * it returns a full state instead of a `QueueMutation` (whose anchor contract
+ * is "preserve the audible occurrence").
+ */
+export function pressTrack(q: QueueState, trackId: string): QueueState | null {
+  const combined = [...q.userQueue, ...q.autoQueue]
+  const activeId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : undefined
+  if (activeId === trackId) return null
+  const userQueue = [...q.userQueue, trackId]
+  return {
+    ...q,
+    userQueue,
+    autoQueue: q.autoQueue.filter((id) => id !== trackId),
+    activeIndex: userQueue.length - 1,
+    recentTrackIds: activeId ? inscribeRecent(q.recentTrackIds, activeId, RECENT_LIMIT) : q.recentTrackIds,
+  }
 }
 
 /**
@@ -309,12 +301,11 @@ export function moveToEnd(q: QueueState, trackId: string): QueueMutation | null 
 }
 
 /**
- * Promote ONLY the active AUTO occurrence. The audible row is appended at the
- * user boundary as a new occurrence; an older user copy of the same id stays
- * where it is as history. (Step 2 of the redesign, D5, removes the copy-move
- * that still happens here — until then this moves at most ONE existing user
- * copy, never all of them, so duplicates are preserved.) The consumed skipped
- * auto prefix cools down atomically.
+ * Promote ONLY the active AUTO occurrence (D5): append a NEW user occurrence at
+ * the boundary and remove the auto occurrence. An older user copy of the same
+ * id stays where it is as history — promotion never relocates it (moving it
+ * would delete a row the user already played). The consumed skipped auto
+ * prefix cools down atomically.
  */
 export function promoteActiveTrack(q: QueueState): QueueMutation | null {
   const combined = [...q.userQueue, ...q.autoQueue]
@@ -333,14 +324,12 @@ export function promoteActiveTrack(q: QueueState): QueueMutation | null {
   for (const skippedId of q.autoQueue.slice(0, autoIdx)) {
     recentTrackIds = inscribeRecent(recentTrackIds, skippedId, RECENT_LIMIT)
   }
-  const existingUserIdx = q.userQueue.indexOf(activeId)
-  const userQueue = existingUserIdx >= 0
-    ? q.userQueue.filter((_, i) => i !== existingUserIdx)
-    : q.userQueue
   return {
-    userQueue: [...userQueue, activeId],
+    userQueue: [...q.userQueue, activeId],
     autoQueue: q.autoQueue.slice(autoIdx + 1),
-    anchorIndex: userQueue.length,
+    // The appended tail row is the new anchor (the hint is validated against
+    // the audible id by `applyQueueMutation`).
+    anchorIndex: q.userQueue.length,
     ...(recentTrackIds !== q.recentTrackIds ? { recentTrackIds } : {}),
   }
 }

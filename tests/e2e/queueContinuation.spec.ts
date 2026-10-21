@@ -47,7 +47,9 @@ test('shuffle plays every eligible song before recycling and keeps the active ro
     }).toBe(target)
     const after = await queueState()
     expect(after.activeIndex).toBe(after.userQueue.length - 1)
-    expect(new Set(after.userQueue).size).toBe(after.userQueue.length)
+    // D5: promotion APPENDS to the listening log — exactly one row per play,
+    // duplicates included (the old move kept the section unique).
+    expect(after.userQueue.length).toBe(before.userQueue.length + 1)
     if (before.autoQueue[1]) expect(after.autoQueue[0]).toBe(before.autoQueue[1])
     heard.add(target)
   }

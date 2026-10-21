@@ -79,12 +79,31 @@ class QueueManager {
   }
 
   /**
-   * Inserts a track right after the active row (clamped to the user tail when
-   * the active row sits in the auto queue); moves an already-queued copy
-   * instead of duplicating it.
+   * "Play next" (press-driven insert, D2/step 2): adds a NEW user occurrence
+   * right after the active row. It never relocates an existing copy — a copy
+   * above the anchor is history, and moving it would rewrite the log.
    */
   playNext(trackId: string): void {
     this._mutateQueue((q) => queueMutation.playNext(q, trackId))
+  }
+
+  /**
+   * A PRESS on a song outside the queue (D1): start THAT song. Drops the id's
+   * auto occurrence(s), appends a new user occurrence at the tail, anchors it
+   * and cools the previous audible row. No-op when the press IS the audible
+   * row (the manager resumes/restarts it instead).
+   *
+   * Anchor-CHANGING write by design (the anchor moves to the appended row), so
+   * it bypasses `_mutateQueue`'s preserve-the-audible-occurrence contract and
+   * persists through the same choke point every other write uses.
+   */
+  selectTrack(trackId: string): void {
+    queue.update((q) => {
+      const updated = queueMutation.pressTrack(q, trackId)
+      if (updated === null) return q
+      persistQueue('selectTrack', updated)
+      return updated
+    })
   }
 
   /** Moves the auto OCCURRENCE at `autoIndex` to the end of the user queue
@@ -135,9 +154,10 @@ class QueueManager {
 
   /**
    * Promotes the active track out of the auto queue — the post-load success
-   * path. The auto tail is sliced from the active id's first occurrence and
-   * an existing user copy moves to the tail so the audible row stays at the
-   * boundary. No-op (null, no write) when the active occurrence isn't in auto.
+   * path. Appends a NEW user occurrence at the boundary (D5) and slices the
+   * auto tail after the promoted row; an older user copy of the same id stays
+   * where it is as history. No-op (null, no write) when the active occurrence
+   * isn't in auto.
    */
   promoteActiveTrack(): void {
     this._mutateQueue((q) => queueMutation.promoteActiveTrack(q))

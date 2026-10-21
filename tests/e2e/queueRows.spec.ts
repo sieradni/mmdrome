@@ -299,3 +299,39 @@ test('duplicate songs render as independent occurrence rows (distinct keys, row-
   await expect(playing).toHaveAttribute('data-track-id', dupId as string)
   expect(pageErrors).toEqual([])
 })
+
+test('pressing a library song queues and plays a NEW row instead of jumping to an old copy (D1)', async ({ page }) => {
+  await bootBig(page)
+  const rows = page.locator('[data-track-id]')
+  const firstId = await rows.nth(0).getAttribute('data-track-id')
+  const secondId = await rows.nth(1).getAttribute('data-track-id')
+  expect(firstId).toBeTruthy()
+  expect(secondId).toBeTruthy()
+
+  // Press three songs the way a user does: play A, play B, then press A again.
+  // A second press of A must QUEUE AND START a new row — the old path found A
+  // in the history pile and teleported back to it without queueing anything.
+  for (const id of [firstId, secondId, firstId]) {
+    await page.locator(`[data-track-id="${id}"]`).first().click()
+    await page.waitForTimeout(1200)
+  }
+
+  await openQueue(page)
+  const readRows = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('[aria-label="User queue"] .queue-track-item')].map((el) => ({
+        track: (el as HTMLElement).dataset.trackId ?? '',
+        index: Number((el as HTMLElement).dataset.combinedIndex),
+        playing: el.classList.contains('ui-now-playing-row'),
+      })),
+    )
+
+  const userRows = await readRows()
+  expect(userRows.map((r) => r.track)).toEqual([firstId, secondId, firstId])
+  // The press anchors its OWN new row: the third user row is playing, and the
+  // history copy of the same song is still listed above it.
+  const playing = userRows.filter((r) => r.playing)
+  expect(playing).toHaveLength(1)
+  expect(playing[0].track).toBe(firstId)
+  expect(playing[0].index).toBe(2)
+})

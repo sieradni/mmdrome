@@ -110,3 +110,58 @@ test('wrap index falls back to 0 when the first user row is missing from the com
 test('loop-mode none + advance exhausted → none (no wrap, no repoint if index matches)', () => {
   assert.deepEqual(reconcileCrossfadeTarget(input({ advanced: false, activeIndex: 1 })), { kind: 'none' })
 })
+// ── occurrence identity (queue step 2, 2026-10-21d) ──────────────────────
+
+test('duplicate target: the armed occurrence wins over the first forward copy', () => {
+  // The fade played the USER copy at index 0; an AUTO copy of the same song
+  // sits after the advanced anchor. Resolving by id alone would repoint to 3.
+  const r = reconcileCrossfadeTarget(
+    input({
+      targetId: 't1',
+      combined: ['t1', 't0', 't2', 't1'],
+      userQueue: ['t1', 't0', 't2'],
+      userLength: 3,
+      activeIndex: 2,
+      targetEntryId: 'user:t1',
+    }),
+  )
+  assert.deepEqual(r, { kind: 'repoint', index: 0 })
+})
+
+test('duplicate target: identical id-only input repoints to the wrong (auto) copy', () => {
+  // Control for the test above — the behavior it replaces, so the pin proves
+  // the entry id is what makes the difference, not the fixture.
+  const r = reconcileCrossfadeTarget(
+    input({ targetId: 't1', combined: ['t1', 't0', 't2', 't1'], userQueue: ['t1', 't0', 't2'], activeIndex: 2 }),
+  )
+  assert.deepEqual(r, { kind: 'repoint', index: 3 })
+})
+
+test('an entry id whose occurrence is gone falls back to the id/position chain', () => {
+  // Armed auto copy was removed mid-fade; the user copy is the only one left.
+  const r = reconcileCrossfadeTarget(
+    input({
+      targetId: 't1',
+      combined: ['t0', 't1'],
+      userQueue: ['t0', 't1'],
+      userLength: 2,
+      activeIndex: 1,
+      targetEntryId: 'auto:t1',
+    }),
+  )
+  assert.deepEqual(r, { kind: 'none' })
+})
+
+test('entry id resolves to the same index → none (no store write)', () => {
+  const r = reconcileCrossfadeTarget(
+    input({
+      targetId: 't1',
+      combined: ['t0', 't1', 't2'],
+      userQueue: ['t0', 't1'],
+      userLength: 2,
+      activeIndex: 1,
+      targetEntryId: 'user:t1',
+    }),
+  )
+  assert.deepEqual(r, { kind: 'none' })
+})

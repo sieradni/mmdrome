@@ -10,6 +10,12 @@
  *  - `targetId` — the armed crossfade target id (null = the arm was cancelled
  *    mid-fade: NO reconcile runs at all — including the loop-all wrap, which
  *    the old code gated inside the `_crossfadeTrackId` block);
+ *  - `targetEntryId`/`userLength` (2026-10-21d, queue step 2) — the armed row's
+ *    OCCURRENCE id and the user/auto split it was resolved in. With duplicates
+ *    an id alone is ambiguous: the resolver would answer with the first other
+ *    copy of the same song and silently repoint the anchor onto a row the user
+ *    did not hear. Present = resolve the exact occurrence first; absent (older
+ *    callers/tests) = the id+position fallback chain, unchanged;
  *  - `combined`/`activeIndex`/`userQueue` — the post-advance queue snapshot;
  *  - `advanced` — whether advanceQueue produced a next track;
  *  - `loopMode` — for the wrap decision.
@@ -47,16 +53,25 @@ export interface CrossfadeReconcileInput {
   activeIndex: number
   /** Post-advance user queue. */
   userQueue: string[]
+  /** The armed row's occurrence id (`user:<id>[#n]` / `auto:<id>[#n]`). */
+  targetEntryId?: string | null
+  /** Post-advance length of the user section (the entry id's split point). */
+  userLength?: number
   /** Whether advanceQueue found a next track. */
   advanced: boolean
   loopMode: LoopMode
 }
 
 export function reconcileCrossfadeTarget(input: CrossfadeReconcileInput): CrossfadeReconcileResult {
-  const { targetId, combined, activeIndex, userQueue, advanced, loopMode } = input
+  const { targetId, combined, activeIndex, userQueue, advanced, loopMode, targetEntryId, userLength } = input
   if (targetId === null) return { kind: 'none' }
 
-  const playingIdx = resolveQueueOccurrence(combined, targetId, activeIndex)
+  const playingIdx = resolveQueueOccurrence(
+    combined,
+    targetId,
+    activeIndex,
+    targetEntryId ? { entryId: targetEntryId, userLength: userLength ?? userQueue.length } : undefined,
+  )
   const rescue = playingIdx < 0
   const userQueueAfter = rescue ? [targetId, ...userQueue] : userQueue
 

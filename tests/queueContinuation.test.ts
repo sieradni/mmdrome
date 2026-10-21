@@ -59,16 +59,19 @@ test('native field shape: row 104 never re-anchors to history row 50; duplicate 
   const manager = nativeManager()
   manager._onNativeTrackChanged('repeat')
   const q = get(queue)
-  assert.equal(q.activeIndex, 103)
-  assert.equal(q.userQueue[103], 'repeat')
+  // D5 append: the played auto occurrence lands at the user TAIL (index 104),
+  // never on the history row at 50 — and the history row survives.
+  assert.equal(q.activeIndex, 104)
+  assert.equal(q.userQueue[104], 'repeat')
+  assert.equal(q.userQueue[50], 'repeat', 'the history occurrence is untouched')
   assert.equal(q.autoQueue[0], 'upcoming-0')
-  assert.equal(q.userQueue.length, 104)
-  assert.equal(q.userQueue.filter(id => id === 'repeat').length, 1)
+  assert.equal(q.userQueue.length, 105)
+  assert.equal(q.userQueue.filter(id => id === 'repeat').length, 2)
   assert.equal(get(currentTrack)?.trackId, 'repeat')
   manager._onNativeTrackChanged('repeat')
   assert.deepEqual(get(queue), q)
   manager._onNativeTrackChanged('upcoming-0')
-  assert.equal(get(queue).activeIndex, 104)
+  assert.equal(get(queue).activeIndex, 105)
   assert.equal(get(queue).userQueue.at(-1), 'upcoming-0')
   assert.equal(get(queue).autoQueue[0], 'upcoming-1')
 })
@@ -98,8 +101,8 @@ test('web crossfade reconciliation retains the chosen auto occurrence before pro
   const auto = ['repeat', 'next']
   assert.deepEqual(reconcileCrossfadeTarget({ targetId: 'repeat', combined: [...user, ...auto], userQueue: user, activeIndex: 2, advanced: true, loopMode: 'none' }), { kind: 'none' })
   const promoted = applyQueueMutation({ userQueue: user, autoQueue: auto, activeIndex: 2, recentTrackIds: [] }, promoteActiveTrack)!
-  assert.deepEqual(promoted.userQueue, ['prev', 'repeat'])
-  assert.equal(promoted.activeIndex, 1)
+  assert.deepEqual(promoted.userQueue, ['repeat', 'prev', 'repeat'], 'append — the history copy stays at 0')
+  assert.equal(promoted.activeIndex, 2)
   assert.deepEqual(promoted.autoQueue, ['next'])
 })
 
@@ -128,9 +131,12 @@ test('initial native engage syncs a promotion made by an early bridge event even
   await load
   await new Promise(resolve => setTimeout(resolve, 0))
   assert.equal(refreshes.length, 1, 'settled engage must not retain the unpromoted native snapshot')
-  assert.equal(refreshes[0].activeIndex, 1)
-  assert.equal(refreshes[0].tracks[1].queueEntryId, 'user:repeat')
-  assert.equal(refreshes[0].tracks[2].trackId, 'next')
+  // The audible auto occurrence was appended at the user tail: the history
+  // copy stays at 0 and the new occurrence is its own entry id.
+  assert.equal(refreshes[0].activeIndex, 2)
+  assert.equal(refreshes[0].tracks[2].queueEntryId, 'user:repeat#1')
+  assert.equal(refreshes[0].tracks[0].queueEntryId, 'user:repeat')
+  assert.equal(refreshes[0].tracks[3].trackId, 'next')
   transport.disengage()
 })
 
@@ -177,7 +183,9 @@ test('real native manager: hands-off shuffle hears the whole eligible library be
       assert.equal(after.activeIndex, after.userQueue.length - 1)
       assert.equal(after.userQueue[after.activeIndex], id)
       assert.equal(get(currentTrack)?.trackId, id)
-      assert.equal(new Set(after.userQueue).size, after.userQueue.length)
+      // D5: the user section is a listening LOG — repeats are the point, so its
+      // only invariant is that it grew by exactly one row per played track.
+      assert.equal(after.userQueue.length, before.userQueue.length + 1)
       assert.equal(new Set(after.autoQueue).size, after.autoQueue.length)
       assert.ok(after.autoQueue.length <= 50)
       if (next) assert.equal(after.autoQueue[0], next)

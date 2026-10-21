@@ -5,7 +5,7 @@ import { engine } from './engineFacade'
 import { nativeEngine, BackgroundAudio, type NativeTrackSnapshot } from './nativePlugin'
 import { queueManager } from './queueManager'
 import { advanceTargetIndex, resolveQueueOccurrence } from './queueMutation'
-import { combinedEntryIds } from './queueOccurrence'
+import { combinedEntryIds, entryIdAt } from './queueOccurrence'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc, sweepStaleTranscodeEntries } from './preloader'
 import { forwardNativePreloadProgress } from './nativeLoadStatus'
@@ -125,6 +125,10 @@ export class PlaybackManager {
   /** Coalescing flag for `_rearmCrossfadeTarget` (microtask, scheduleSync
    *  convention) — reset by `destroy()`. */
   private _rearmPending = false
+  /** The armed crossfade target's OCCURRENCE id (2026-10-21d). The transport
+   *  only carries the track id, which is ambiguous once duplicates exist; the
+   *  reconcile resolves this exact row instead of the first copy of the song. */
+  private _armedTargetEntryId: string | null = null
   private _amOverride: typeof audioManager | null = null
   private _qmOverride: typeof queueManager | null = null
   private _stmOverride: typeof sleepTimerManager | null = null
@@ -1210,15 +1214,26 @@ export class PlaybackManager {
           return
         }
         const rg = computeReplayGainFields(get(settings).replayGainMode ?? 'off', nextTrack)
+        // The armed row's occurrence identity, captured from the RE-VALIDATED
+        // live snapshot (the same array the transport is armed from) — the
+        // reconcile must never resolve a different copy of the same song.
+        const liveUserLength = liveQ.userQueue.length
+        this._armedTargetEntryId = entryIdAt(
+          liveCombined.slice(0, liveUserLength),
+          liveCombined.slice(liveUserLength),
+          liveTarget,
+        )
         // The target duration rides along for the engine's nextTooShort gate
         // (a shorter-than-fade target would end mid-ramp — native parity).
         this._webTransport!.prepareNext(targetId, url, rg, nextTrack?.duration ?? undefined)
       } else {
         // No URL for the next row — disarm (a stale arm could crossfade into
         // an old target at the transition point).
+        this._armedTargetEntryId = null
         this._webTransport!.prepareNext(null, null)
       }
     } else {
+      this._armedTargetEntryId = null
       this._webTransport!.prepareNext(null, null)
     }
   }
@@ -1481,7 +1496,13 @@ export class PlaybackManager {
 
   private async _handleCrossfadeEnd(targetId: string | null): Promise<void> {
     if (this._handlingEnd) return
+    // An end-of-track sleep park consumes NO arm (the element is paused just
+    // below its end), so the armed row's identity must survive it.
     if (this._parkAtTrackEnd()) return
+    // Past here the arm is consumed whichever branch handles the fade — hold
+    // its occurrence id for the reconcile, then drop it.
+    const armedEntryId = this._armedTargetEntryId
+    this._armedTargetEntryId = null
 
     if (get(loopMode) === 'one') {
       const current = get(currentTrack)
@@ -1507,6 +1528,10 @@ export class PlaybackManager {
       const q = get(queue)
       const result = reconcileCrossfadeTarget({
         targetId,
+        // The row the fade actually played, by OCCURRENCE — with duplicates an
+        // id alone names a different copy of the same song.
+        targetEntryId: armedEntryId,
+        userLength: q.userQueue.length,
         combined: this._qm.getCombinedQueue(),
         activeIndex: q.activeIndex,
         userQueue: q.userQueue,
@@ -1540,6 +1565,16 @@ export class PlaybackManager {
     }
   }
 
+  /**
+   * A press on a song OUTSIDE the queue (library, album, artist, detail modal)
+   * — D1: start THAT song, never jump to an old copy of it.
+   *
+   * The old path did `combined.indexOf(trackId)` and teleported to the first
+   * copy: pressing a song that sat in the played pile (or in the suggestion
+   * tail) jumped backwards without queuing the press. Now the press appends a
+   * new user occurrence at the tail, anchors it and loads it; an id that is
+   * already the AUDIBLE row is a resume/restart of that row (no clone).
+   */
   async playTrackById(trackId: string): Promise<void> {
     this._stm.clearPendingStop()
     const track = this._qm.findTrack(trackId)
@@ -1547,23 +1582,13 @@ export class PlaybackManager {
 
     const q = get(queue)
     const combined = this._qm.getCombinedQueue()
-    const existingIdx = combined.indexOf(trackId)
-    if (existingIdx >= 0) {
-      await this.playTrackAt(existingIdx)
-    } else {
-      const prevId = q.activeIndex >= 0 ? combined[q.activeIndex] : undefined
-      queue.update((q) => {
-        const userQueue = [...q.userQueue, trackId]
-        const newIndex = userQueue.length - 1
-        const updated = { ...q, userQueue, activeIndex: newIndex }
-        if (prevId) {
-          updated.recentTrackIds = inscribeRecent(q.recentTrackIds, prevId, RECENT_LIMIT)
-        }
-        persistQueue('selectTrack', updated)
-        return updated
-      })
-      await this._loadTrack(track)
+    const activeId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : undefined
+    if (activeId === trackId) {
+      await this.playTrackAt(q.activeIndex)
+      return
     }
+    this._qm.selectTrack(trackId)
+    await this._loadTrack(track)
   }
 
   async playTrackAt(index: number): Promise<void> {
@@ -1864,6 +1889,7 @@ export class PlaybackManager {
       this._replenishTimer = null
     }
     this._rearmPending = false
+    this._armedTargetEntryId = null
     for (const unsubscribe of this._unsubscribers) unsubscribe()
     this._unsubscribers = []
     if (this.isNative()) {
