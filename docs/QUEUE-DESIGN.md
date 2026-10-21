@@ -63,8 +63,10 @@ Each rule is normative. "MUST" means the implementation is wrong if it does not 
 - `addToUserQueue` MUST append a new occurrence even when the id is already in the user section.
 - Pressing + on a track that also has an auto occurrence SHOULD drop that auto occurrence (a queued
   row supersedes the suggestion). `[open: default-drop, confirm at implementation]`
-- `moveToNext` / `moveToEnd` / `moveRowToNext` / `moveRowToEnd` remain **reorder** operations on the
-  row the caller names. **Superseded 2026-10-21d:** the press-driven "Play next" (`playNext`) is an
+- `moveUserRowToNext` / `moveUserRowToEnd` remain **reorder** operations on the row the caller names
+  (the row index — the id-taking `moveToNext`/`moveToEnd` and the bulk `reorderAll` write were deleted
+  2026-10-21h: a bare id names several rows once duplicates exist, and the bulk write is exactly the
+  drag path that reconciliation replaced). **Superseded 2026-10-21d:** the press-driven "Play next" (`playNext`) is an
   INSERT, not a reorder — it appends a new user occurrence right after the audible row and never
   relocates a queued copy (that copy may be history above the anchor; moving it would delete a log
   row). Decided during step 2 because turning the old reorder into an insert is the only version that

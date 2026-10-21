@@ -424,6 +424,77 @@ test('the filter subscription drives the FRESH CONTEXT through the real reaction
   }
 })
 
+test('a filter edit and a sort pick in ONE task collapse into a single fresh-context write (D7)', async () => {
+  // The FilterSortBar apply writes BOTH stores synchronously. Without the
+  // shared rule-change timer each write would rebuild (two fresh contexts, two
+  // window resets); the contract is ONE queue write carrying BOTH new rules.
+  reset()
+  library.set(['a', 'b', 'c', 'd', 'e'].map((id) => track(id)))
+  // Distinct ratings so the tail can only be in this order if the single write
+  // carried the SORT as well as the filter.
+  metadataCache.set(metaOf([['a', 10], ['b', 20], ['c', 30], ['d', 40], ['e', 50]]))
+  setQueue({ userQueue: ['a'], activeIndex: 0 })
+
+  const m = new PlaybackManager({
+    engine: new FakeEngine() as unknown as typeof engine,
+    queueManager,
+  })
+  const priv = m as unknown as { _subscribeShared(): Array<() => void>; _initialized: boolean }
+  priv._initialized = true
+  const unsubs = priv._subscribeShared()
+  try {
+    const writesBefore = playQueueWrites.length
+    const userBefore = [...get(queue).userQueue]
+    autoQueueFilterFields.set({ ...FIELDS, minRating: 10 })
+    autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
+    await new Promise((resolve) => setTimeout(resolve, 300))
+
+    assert.equal(playQueueWrites.length, writesBefore + 1, 'the apply is ONE queue write')
+    const q = get(queue)
+    assert.deepEqual(q.recentTrackIds, [], 'the apply is a fresh context, not a fill patch')
+    // Descending rating, continued after the anchor 'a' (lowest rank → wrap).
+    assert.deepEqual(q.autoQueue, ['e', 'd', 'c', 'b'], 'the one write carried BOTH new rules')
+    assert.equal(get(queueWrapNotice), true)
+    assert.deepEqual(q.userQueue, userBefore, 'the user section is untouched')
+  } finally {
+    for (const u of unsubs) u()
+    m.destroy()
+  }
+})
+
+test('a sort flip is a rule change even while shuffling (never skipped)', async () => {
+  // Shuffle decides how a rebuilt pool is SAMPLED, not whether the rule
+  // changed: the flip must still reset the window and re-derive the tail. The
+  // old `if (get(shuffleEnabled)) return` early-out would make this a no-op.
+  reset()
+  library.set(['a', 'b', 'c', 'd', 'e', 'f'].map((id) => track(id)))
+  setQueue({ userQueue: ['a'], activeIndex: 0, recentTrackIds: ['b'] })
+  shuffleEnabled.set(true)
+
+  const m = new PlaybackManager({
+    engine: new FakeEngine() as unknown as typeof engine,
+    queueManager,
+  })
+  const priv = m as unknown as { _subscribeShared(): Array<() => void>; _initialized: boolean }
+  priv._initialized = true
+  const unsubs = priv._subscribeShared()
+  try {
+    const writesBefore = playQueueWrites.length
+    autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    assert.equal(playQueueWrites.length, writesBefore + 1, 'the flip re-derived the tail')
+    const q = get(queue)
+    assert.deepEqual(q.recentTrackIds, [], 'a RULE CHANGE resets the window even under shuffle')
+    // Shuffle permutes within tiers, so the membership is the assertion; the
+    // cooled 'b' returns because the window was cleared.
+    assert.deepEqual([...q.autoQueue].sort(), ['b', 'c', 'd', 'e', 'f'], 'the cleared window re-admits b')
+  } finally {
+    for (const u of unsubs) u()
+    m.destroy()
+  }
+})
+
 test('searchQuery persists as a filter through the real manager', () => {
   reset()
   library.set([

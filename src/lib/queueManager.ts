@@ -132,23 +132,9 @@ class QueueManager {
     this._mutateQueue((q) => queueMutation.promoteToUserNext(q, autoIndex))
   }
 
-  /**
-   * Reorders a user row to just after the active row (clamped to the user tail
-   * when the active row sits in the auto queue). No-ops — `null`, no write —
-   * when the row is missing or already in place.
-   */
-  moveToNext(trackId: string): void {
-    this._mutateQueue((q) => queueMutation.moveToNext(q, trackId))
-  }
-
-  /** Moves a user row to the very end of the user queue. */
-  moveToEnd(trackId: string): void {
-    this._mutateQueue((q) => queueMutation.moveToEnd(q, trackId))
-  }
-
   /** Row-scoped reorder: moves the user OCCURRENCE at `index` right after the
-   *  active row. Duplicates make the id-taking form ambiguous; the view always
-   *  knows the row it rendered. */
+   *  active row. The row index is the ONLY reorder identity — an id names
+   *  several rows once duplicates exist, so no id-taking reorder exists. */
   moveRowToNext(index: number): void {
     this._mutateQueue((q) => queueMutation.moveUserRowToNext(q, index))
   }
@@ -280,21 +266,12 @@ class QueueManager {
   }
 
   /**
-   * Replaces both queue sections wholesale — the drag-reorder path (QueueView
-   * `applyDrop`). The active row is re-anchored by its id (first surviving
-   * occurrence, matching the drag preview), or −1 when nothing is active.
-   */
-  reorderAll(userQueue: string[], autoQueue: string[]): void {
-    this._mutateQueue(() => ({ userQueue, autoQueue }))
-  }
-
-  /**
    * Drag-and-drop resolution (2026-09-12; occurrence identity 2026-10-21): the
    * dragged row is an OCCURRENCE (`queueEntryId`) and the plan is computed from the drag-time sections (what the user
    * saw) then reconciled against the CURRENT store — never a verbatim write
-   * of the drag-start snapshot. The old path (`reorderAll` from the preview
-   * arrays) let any mutation landing mid-drag (natural advance, promotion,
-   * fill re-rank) be silently overwritten by the stale order, and the stale
+   * of the drag-start snapshot. Writing the preview arrays back (the removed
+   * pre-reconcile path) let any mutation landing mid-drag (natural advance,
+   * promotion, fill re-rank) be overwritten by the stale order, and the stale
    * preloaded row played next. Anchor-preserving via `_mutateQueue`.
    */
   applyDragDrop(draggedEntryId: string, targetCombinedIndex: number, dragStartUser: string[], dragStartAuto: string[]): void {

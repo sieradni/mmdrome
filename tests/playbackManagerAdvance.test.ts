@@ -490,11 +490,11 @@ test('queue-write bursts coalesce into ONE re-arm reading the final snapshot', a
   h.m._initialized = true
 
   // A single flow fires several writes (advance → advanceTo + promote +
-  // replenish): remove t1 then reorder, both in the same task. Only ONE
+  // replenish): remove t1 then re-add it, both in the same task. Only ONE
   // re-arm may run, reading the FINAL queue (t2 is next).
   queueManager.removeFromUserQueue(1)
   h.m._rearmCrossfadeTarget()
-  queueManager.reorderAll(['t0', 'navidrome-t2'], [])
+  queueManager.addToUserQueue('navidrome-t1')
   h.m._rearmCrossfadeTarget()
   h.web.calls = []
   await flush()
@@ -561,7 +561,7 @@ test('_setupNextTrack after an active-row removal arms the highlighted row, not 
   assert.ok(h.web.calls.includes('prepareNext:navidrome-t2'))
 })
 
-test('reorderAll re-arms the crossfade target to the new next row', async () => {
+test('a queue drag that moves the next row re-arms onto the NEW next row', async () => {
   const h = makeHarness()
   resetStores()
   library.set([t0, t1, t2])
@@ -570,8 +570,10 @@ test('reorderAll re-arms the crossfade target to the new next row', async () => 
   setPlaybackState('playing')
   h.m._initialized = true
 
-  // Drag t1 to the end: the armed next row must become t2, not the moved t1.
-  queueManager.reorderAll(['t0', 'navidrome-t2', 'navidrome-t1'], [])
+  // Drag t1 to the end through the real drop path: the armed next row must
+  // become t2, not the moved t1.
+  queueManager.applyDragDrop('user:navidrome-t1', 3, ['t0', 'navidrome-t1', 'navidrome-t2'], [])
+  assert.deepEqual(get(queue).userQueue, ['t0', 'navidrome-t2', 'navidrome-t1'], 'the drag moved t1')
   h.web.calls = []
   h.m._rearmCrossfadeTarget()
   await flush()

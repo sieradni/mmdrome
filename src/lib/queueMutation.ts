@@ -22,11 +22,12 @@
  * target for that case. Only a genuinely vanished id degrades to position
  * semantics, and DEV records the violation.
  *
- * Reordering with duplicates: the id-taking builders (`playNext`, `moveToNext`,
- * `moveToEnd`) operate on the FIRST user occurrence of the id — the row the
- * caller means when duplicates are not in play. Row-specific UI paths (drag,
- * remove, auto-row promote) take a section index or an occurrence instead, so
- * they can never touch a different copy.
+ * Reordering with duplicates: a REORDER is row-scoped
+ * (`moveUserRowToNext`/`moveUserRowToEnd`) — an id names several rows, so
+ * there is no id-taking move. Row-specific UI paths (drag, remove, auto-row
+ * promote) take a section index or an occurrence for the same reason. The one
+ * id-taking builder left is `playNext`, which INSERTS its own row and never
+ * repositions an existing one.
  */
 
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
@@ -286,18 +287,6 @@ export function moveUserRowToEnd(q: QueueState, index: number): QueueMutation | 
       : q.activeIndex > index ? q.activeIndex - 1 : q.activeIndex
   }
   return { userQueue, ...(anchorIndex !== undefined ? { anchorIndex } : {}) }
-}
-
-/** Reorders the FIRST user occurrence of `trackId` to just after the active row; no-op when the row is missing or already in place. Id-level convenience for callers without a row index — the view uses `moveUserRowToNext`. */
-export function moveToNext(q: QueueState, trackId: string): QueueMutation | null {
-  const idx = q.userQueue.indexOf(trackId)
-  return idx < 0 ? null : moveUserRowToNext(q, idx)
-}
-
-/** Moves the FIRST user occurrence of `trackId` to the very end of the user queue. */
-export function moveToEnd(q: QueueState, trackId: string): QueueMutation | null {
-  const idx = q.userQueue.indexOf(trackId)
-  return idx < 0 ? null : moveUserRowToEnd(q, idx)
 }
 
 /**

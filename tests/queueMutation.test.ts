@@ -8,8 +8,6 @@ import {
   clearQueue,
   clearUserAboveActive,
   clearUserBelowActive,
-  moveToEnd,
-  moveToNext,
   moveUserRowToEnd,
   moveUserRowToNext,
   playNext,
@@ -445,28 +443,6 @@ test('promoteToUserNext appends a new user row after the active row and drops th
   assert.equal(r2.activeIndex, 0)
 })
 
-test('moveToNext reorders a user row to just after the active row', () => {
-  const r = applyQueueMutation(q(['a', 'b', 'c', 'd'], [], 0), (x) => moveToNext(x, 'c'))!
-  assert.deepEqual(r.userQueue, ['a', 'c', 'b', 'd'])
-  assert.equal(r.activeIndex, 0)
-
-  assert.equal(applyQueueMutation(q(['a', 'b'], [], 0), (x) => moveToNext(x, 'b')), null)
-  assert.equal(applyQueueMutation(q(['a', 'b'], [], 0), (x) => moveToNext(x, 'zzz')), null)
-})
-
-test('moveToEnd moves ONE user occurrence to the very end (anchor follows it)', () => {
-  const r = applyQueueMutation(q(['a', 'b', 'c'], [], 0), (x) => moveToEnd(x, 'a'))!
-  assert.deepEqual(r.userQueue, ['b', 'c', 'a'])
-  assert.equal(r.activeIndex, 2)
-  assert.equal(applyQueueMutation(q(['a', 'b'], [], 0), (x) => moveToEnd(x, 'zzz')), null)
-
-  // Two copies: only the moved one changes order.
-  const r2 = applyQueueMutation(q(['a', 'b', 'a'], [], 0), (x) => moveToEnd(x, 'a'))!
-  assert.deepEqual(r2.userQueue, ['b', 'a', 'a'])
-  assert.equal(count(r2.userQueue, 'a'), 2)
-  assert.equal(r2.activeIndex, 2, 'the audible first copy is now the last row')
-})
-
 test('moveUserRowToNext / moveUserRowToEnd address the ROW index, so duplicates are independent', () => {
   const s = q(['a', 'b', 'a', 'c'], [], 0)
   const r = applyQueueMutation(s, (x) => moveUserRowToNext(x, 2))!
@@ -477,6 +453,18 @@ test('moveUserRowToNext / moveUserRowToEnd address the ROW index, so duplicates 
   assert.deepEqual(r2.userQueue, ['b', 'a', 'a'])
   assert.equal(combined(r2)[r2.activeIndex], 'a')
   assert.equal(r2.activeIndex, 1, 'the audible copy slid up one slot')
+
+  // The anchor follows the row it moved, and only that row.
+  const r3 = applyQueueMutation(q(['a', 'b', 'c'], [], 0), (x) => moveUserRowToEnd(x, 0))!
+  assert.deepEqual(r3.userQueue, ['b', 'c', 'a'])
+  assert.equal(r3.activeIndex, 2)
+  const r4 = applyQueueMutation(q(['a', 'b', 'a'], [], 0), (x) => moveUserRowToEnd(x, 0))!
+  assert.equal(count(r4.userQueue, 'a'), 2, 'two copies: only the moved one changes order')
+  assert.equal(r4.activeIndex, 2, 'the audible first copy is now the last row')
+
+  // No-ops: already in place, and a row index past the end.
+  assert.equal(applyQueueMutation(q(['a', 'b'], [], 0), (x) => moveUserRowToNext(x, 1)), null)
+  assert.equal(applyQueueMutation(q(['a', 'b'], [], 0), (x) => moveUserRowToEnd(x, 9)), null)
 })
 
 // --- removal ---------------------------------------------------------------
@@ -688,8 +676,9 @@ test('fuzz: anchor identity, duplicate legality, drag row-count preservation (10
     { name: 'playNext', run: (s, id) => playNext(s, id) },
     { name: 'promoteUser', drag: true, run: (s, id) => promoteToUser(s, s.autoQueue.indexOf(id)) },
     { name: 'promoteUserNext', drag: true, run: (s, id) => promoteToUserNext(s, s.autoQueue.indexOf(id)) },
-    { name: 'moveNext', drag: true, run: (s, id) => moveToNext(s, id) },
-    { name: 'moveEnd', drag: true, run: (s, id) => moveToEnd(s, id) },
+    // Reorders are row-scoped: pick the row the id sits on (index −1 no-ops).
+    { name: 'moveRowNext', drag: true, run: (s, id) => moveUserRowToNext(s, s.userQueue.indexOf(id)) },
+    { name: 'moveRowEnd', drag: true, run: (s, id) => moveUserRowToEnd(s, s.userQueue.indexOf(id)) },
     { name: 'removeAuto', run: (s, id) => removeFromAutoQueue(s, s.autoQueue.indexOf(id)) },
     { name: 'promoteActive', run: (s) => promoteActiveTrack(s) },
     { name: 'clear', run: (s) => clearQueue(s) },

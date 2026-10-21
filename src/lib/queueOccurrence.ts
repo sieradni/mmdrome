@@ -28,7 +28,6 @@
  * tests/queueOccurrence.test.ts.
  */
 
-import type { QueueState } from '../stores/appState'
 
 export type QueueSection = 'user' | 'auto'
 
@@ -171,9 +170,4 @@ export function occurrenceCounts(ids: readonly string[]): Map<string, number> {
  *  persisted rows verbatim (D13). */
 export function clampStoredActiveIndex(stored: number, total: number): number {
   return Number.isInteger(stored) && stored >= 0 && stored < total ? stored : -1
-}
-
-/** Convenience for callers holding a QueueState. */
-export function entriesOf(q: Pick<QueueState, 'userQueue' | 'autoQueue'>): string[] {
-  return combinedEntryIds(q.userQueue, q.autoQueue)
 }
