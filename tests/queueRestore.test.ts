@@ -1,10 +1,18 @@
-// Restore characterization (Phase 2A gate item 4, 2026-10-21): what a legacy
-// or corrupt persisted queue row becomes after `initStores` reads it, and what
-// the first full library sync does to rows the library no longer contains.
+// Restore + library reconcile characterization (queue redesign step 1,
+// 2026-10-21; supersedes the Phase 2A dedupe snapshot).
+//
+// Restore is a RAW PASS-THROUGH (D13): the persisted rows are kept verbatim,
+// duplicates included — a row is an occurrence now, so a legacy duplicate is
+// legal and must not be silently deleted. With no dedupe the stored anchor is
+// exact, so only bounds are checked.
+//
+// A library sync prunes unknown ids and re-anchors BY COUNT (subtract the rows
+// removed above the old index). `indexOf(id)` would land on an earlier copy
+// once duplicates exist — the wrong row.
 //
 // `initStores` is once-per-process, so the restore-dependent assertions live
-// in the first test; the later tests drive the SAME restored state through the
-// library reconcile (documented in each test). Stubbing follows
+// in the first test; later tests drive the SAME state (or an explicit
+// queue.set) through the library reconcile. Stubbing follows
 // tests/autoQueueFiltersPersistence.test.ts — Dexie tables share one
 // prototype, so `get`/`toArray` are patched once and dispatch on `this.name`.
 
@@ -13,11 +21,12 @@ import assert from 'node:assert/strict'
 import { get } from 'svelte/store'
 import { db } from '../src/lib/db'
 import { initStores, queue, setLibrary, library, type QueueState, type Track } from '../src/stores/appState'
+import { entryIdAt } from '../src/lib/queueOccurrence'
 
 const PERSISTED = {
   id: 'main',
   // A legacy row: duplicate user rows, a duplicate auto row, and an active
-  // index that points PAST two duplicates that the restore will collapse.
+  // index that names the FIRST 'd' AFTER both user copies.
   userQueue: ['a', 'b', 'a', 'c'],
   autoQueue: ['d', 'd', 'e'],
   recentTrackIds: ['r1', 'r1', 'r2'],
@@ -45,48 +54,68 @@ function combined(q: QueueState): string[] {
   return [...q.userQueue, ...q.autoQueue]
 }
 
-test('restore dedupes each section (first occurrence wins), re-anchors the active row by id, and sanitizes recents', async () => {
+test('restore keeps persisted rows VERBATIM (duplicates included), the exact stored anchor, and sanitizes recents', async () => {
   await initStores()
 
   const q = get(queue)
-  assert.deepEqual(q.userQueue, ['a', 'b', 'c'], 'user duplicates collapse, first occurrence wins')
-  assert.deepEqual(q.autoQueue, ['d', 'e'], 'auto duplicates collapse too')
-  assert.deepEqual(combined(q), ['a', 'b', 'c', 'd', 'e'])
+  assert.deepEqual(q.userQueue, ['a', 'b', 'a', 'c'], 'legacy user duplicates survive restore')
+  assert.deepEqual(q.autoQueue, ['d', 'd', 'e'], 'legacy auto duplicates survive restore')
+  assert.deepEqual(combined(q), ['a', 'b', 'a', 'c', 'd', 'd', 'e'])
 
-  // The persisted activeIndex (4) named the FIRST 'd' in the old combined
-  // array. After two collapsed duplicates sit above it, the same row is 3 —
-  // a pasted index would name 'e' instead. Re-anchoring is by ID.
-  assert.equal(q.activeIndex, 3)
-  assert.equal(combined(q)[q.activeIndex], 'd', 'the audible row survives the dedupe')
+  // The stored index is exact because nothing was collapsed: 4 names the
+  // first 'd'. Deduping "for safety" would have deleted the history this
+  // queue exists to keep (D13).
+  assert.equal(q.activeIndex, 4)
+  assert.equal(combined(q)[q.activeIndex], 'd', 'the audible row survives restore')
 
-  // The queue keeps FIRST occurrences while recents keep the NEWEST (the two
-  // sanitizers disagree by design — each section's semantic).
+  // Recents keep the NEWEST occurrence (sanitizeRecent's semantic), while the
+  // queue keeps every occurrence (its own semantic).
   assert.deepEqual(q.recentTrackIds, ['r1', 'r2'])
 })
 
-test('a library sync that no longer contains the active track drops it and clears the anchor (-1)', () => {
-  // Continues from the restored queue: ['a','b','c'] + ['d','e'], active 'd'.
-  const remaining = ['a', 'b', 'c', 'e'].map(track) // 'd' vanished from the server
+test('the restored duplicate rows have distinct occurrence entry ids', async () => {
+  const q = get(queue)
+  assert.equal(entryIdAt(q.userQueue, q.autoQueue, 0), 'user:a')
+  assert.equal(entryIdAt(q.userQueue, q.autoQueue, 2), 'user:a#1')
+  assert.equal(entryIdAt(q.userQueue, q.autoQueue, 4), 'auto:d')
+  assert.equal(entryIdAt(q.userQueue, q.autoQueue, 5), 'auto:d#1')
+})
+
+test('a library sync that loses the audible track clears the anchor and keeps the other copies', () => {
+  // Continues from the restored queue: ['a','b','a','c'] + ['d','d','e'],
+  // active 'd' (the first auto d).
+  const remaining = ['a', 'b', 'c', 'e'].map(track) // every 'd' vanished from the server
   setLibrary(remaining)
 
   const q = get(queue)
-  assert.deepEqual(q.userQueue, ['a', 'b', 'c'])
-  assert.deepEqual(q.autoQueue, ['e'], 'the stale id is removed from the auto section')
+  assert.deepEqual(q.userQueue, ['a', 'b', 'a', 'c'], 'the user duplicate is preserved')
+  assert.deepEqual(q.autoQueue, ['e'], 'both stale auto occurrences are removed')
   assert.equal(q.activeIndex, -1, 'nothing is playing a track the library lost')
 
-  // The library itself is authoritative (one source of truth for the sync).
   assert.deepEqual(get(library).map((t) => t.trackId), ['a', 'b', 'c', 'e'])
 })
 
-test('a library sync that keeps the active track re-anchors it by id after rows above it are pruned', () => {
-  // The playing row is 'd' at index 3 of ['a','b','c','d','e'].
+test('a library sync that keeps the audible row re-anchors BY COUNT after pruning rows above it', () => {
+  // The audible row is the SECOND 'a' (combined index 2). Removing the 'x'
+  // above it must land the anchor on the other 'a' — `indexOf('a')` would
+  // return 0, the wrong copy.
+  queue.set({ userQueue: ['a', 'x', 'a', 'b'], autoQueue: [], recentTrackIds: [], activeIndex: 2 })
+
+  setLibrary(['a', 'b'].map(track))
+
+  const q = get(queue)
+  assert.deepEqual(combined(q), ['a', 'a', 'b'])
+  assert.equal(q.activeIndex, 1, 'count-based re-anchor, not indexOf(id)')
+  assert.equal(combined(q)[q.activeIndex], 'a')
+})
+
+test('a library sync that keeps the active track re-anchors it by count after rows above it are pruned', () => {
   queue.set({ userQueue: ['a', 'b', 'c', 'd'], autoQueue: ['e'], recentTrackIds: [], activeIndex: 3 })
 
-  // The library loses 'a' and 'b' — two rows ABOVE the playing row.
   setLibrary(['c', 'd', 'e'].map(track))
 
   const q = get(queue)
   assert.deepEqual(combined(q), ['c', 'd', 'e'])
-  assert.equal(q.activeIndex, 1, 'the index followed the row, not the old position')
+  assert.equal(q.activeIndex, 1, 'the index followed the rows, not the old position')
   assert.equal(combined(q)[q.activeIndex], 'd')
 })

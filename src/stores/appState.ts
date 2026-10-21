@@ -2,6 +2,7 @@ import { writable, get, derived } from 'svelte/store'
 import type { LocalMetadataStore } from '$lib/db'
 import type { NoMatchReason } from '$lib/metadataCore'
 import { getSetting, setSetting, getQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata, reopenDatabase } from '$lib/db'
+import { clampStoredActiveIndex } from '$lib/queueOccurrence'
 import { describeStorageError, planStorageInitAttempt, STORAGE_INIT_MAX_ATTEMPTS } from '$lib/storageHealth'
 import { persistQueue } from '$lib/queuePersistence'
 import { persisted, type PersistedValue } from '$lib/persistedStore'
@@ -400,17 +401,24 @@ function reconcileQueueWithLibrary(tracks: Track[]): void {
     const oldCombined = [...q.userQueue, ...q.autoQueue]
     const oldActiveId = q.activeIndex >= 0 && q.activeIndex < oldCombined.length ? oldCombined[q.activeIndex] : undefined
 
+    // Occurrence-preserving prune: filtering by membership keeps EVERY copy of
+    // a surviving id (duplicates are legal, D3).
     const userQueue = q.userQueue.filter((id) => ids.has(id))
     const autoQueue = q.autoQueue.filter((id) => ids.has(id))
     const recentTrackIds = q.recentTrackIds.filter((id) => ids.has(id))
     const newCombined = [...userQueue, ...autoQueue]
 
-    let activeIndex = q.activeIndex
-    if (oldActiveId === undefined || !ids.has(oldActiveId)) {
-      activeIndex = -1
-    } else {
-      const idx = newCombined.indexOf(oldActiveId)
-      activeIndex = idx >= 0 ? idx : -1
+    // Re-anchor BY COUNT (D13): the audible OCCURRENCE keeps its identity, so
+    // subtract exactly the rows removed above it. `indexOf(id)` would land on
+    // an earlier copy once the queue holds duplicates — the wrong row.
+    let activeIndex = -1
+    if (oldActiveId !== undefined && ids.has(oldActiveId)) {
+      let removedAbove = 0
+      for (let i = 0; i < q.activeIndex; i++) if (!ids.has(oldCombined[i])) removedAbove++
+      const candidate = q.activeIndex - removedAbove
+      activeIndex = candidate >= 0 && candidate < newCombined.length && newCombined[candidate] === oldActiveId
+        ? candidate
+        : -1
     }
 
     // Dump-visible drops: a server ID migration (Navidrome 0.64 re-encoding)
@@ -577,26 +585,19 @@ async function restoreLocalState(): Promise<void> {
   if (q) {
     // `?? q.historyQueue` tolerates rows persisted by app versions that still
     // used the old field name — the first saveQueue overwrites the row.
-    // Section-scoped dedupe (2026-09-23 re-review): the queue views key rows
-    // by `u-${id}` / `a-${id}` (the advance-churn fix), which TRUSTS
-    // within-section id uniqueness. The mutation layer maintains it, but this
-    // restore is a raw pass-through of whatever an older app version
-    // persisted — a single legacy duplicate would collide the each-keys and
-    // silently DROP rows. First occurrence wins (Set preserves order).
-    const userQueue = [...new Set(q.userQueue)]
-    const autoQueue = [...new Set(q.autoQueue)]
-    // Re-anchor the active row BY ID (the reconcileQueueWithLibrary rule): a
-    // deduped duplicate BEFORE the active row shifts positions, so a pasted
-    // index would point at the wrong row.
-    const oldCombined = [...q.userQueue, ...q.autoQueue]
-    const oldActiveId = q.activeIndex >= 0 && q.activeIndex < oldCombined.length ? oldCombined[q.activeIndex] : undefined
-    const newCombined = [...userQueue, ...autoQueue]
-    const reAnchoredActive = oldActiveId !== undefined ? newCombined.indexOf(oldActiveId) : -1
+    //
+    // RAW PASS-THROUGH (D13, 2026-10-21): restore keeps the persisted rows
+    // verbatim, duplicates included. Rows are occurrences now (QueueView keys
+    // `u-<id>#<n>`), so a legacy duplicate is legal — deduping "for safety"
+    // would silently delete the listening history this queue exists to keep.
+    // With no dedupe the stored index is EXACT: it only needs bounds checking.
+    const userQueue = Array.isArray(q.userQueue) ? [...q.userQueue] : []
+    const autoQueue = Array.isArray(q.autoQueue) ? [...q.autoQueue] : []
     queue.set({
       userQueue,
       autoQueue,
       recentTrackIds: sanitizeRecent(q.recentTrackIds ?? (q as { historyQueue?: string[] }).historyQueue),
-      activeIndex: reAnchoredActive >= 0 ? reAnchoredActive : q.activeIndex < newCombined.length ? q.activeIndex : -1,
+      activeIndex: clampStoredActiveIndex(q.activeIndex, userQueue.length + autoQueue.length),
     })
   }
 

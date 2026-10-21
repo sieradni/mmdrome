@@ -19,6 +19,12 @@
   } from '../stores/appState'
   import { bufferedRanges, preloadEntries } from '../stores/loadStatus'
   import { planDragDrop } from '../lib/queueMutation'
+  import {
+    entryIdOf,
+    findEntryIndex,
+    rowKeyOf,
+    sectionOccurrences,
+  } from '../lib/queueOccurrence'
   import { currentLoadedFraction } from '../lib/loadStatus'
   import { filterRangesValid } from '../lib/autoQueuePlan'
   import { onMount, onDestroy, tick } from 'svelte'
@@ -90,22 +96,47 @@
     if (savedScroll?.scrollTop) queueMachine.armRestore(savedScroll.scrollTop)
   })
 
-  // Underlying track arrays
-  let userTracks = $derived.by(() => {
-    const q = $queue
-    const lib = $library
-    const ordered: (Track | null)[] = q.userQueue.map((id) => lib.find((t) => t.trackId === id) ?? null)
-    return ordered.filter((t): t is Track => t !== null)
+  // Library lookup for the occurrence rows. One Map per library change; the
+  // row derives below run on every queue write, so a per-id `find` over the
+  // whole library would be O(queue × library).
+  let trackMap = $derived.by(() => {
+    const m = new Map<string, Track>()
+    for (const t of $library) m.set(t.trackId, t)
+    return m
   })
 
-  let autoTracks = $derived.by(() => {
-    const q = $queue
-    const lib = $library
-    const ordered: (Track | null)[] = q.autoQueue.map((id) => lib.find((t) => t.trackId === id) ?? null)
-    return ordered.filter((t): t is Track => t !== null)
-  })
+  /** Live combined id order — the only source of a row's true combined index. */
+  let combinedIds = $derived([...$queue.userQueue, ...$queue.autoQueue])
 
-  let combinedTracks = $derived([...userTracks, ...autoTracks])
+  interface KeyedTrack {
+    /** Occurrence row key (`u-<id>#<n>` / `a-<id>#<n>`) — position-free. */
+    key: string
+    /** Transport/occurrence identity (the drag identity, D4/D11). */
+    entryId: string
+    track: Track
+    /** True combined index in the CURRENT queue (data-stamped, never a mount
+     *  position); during a drag it is the PREVIEW-space index. */
+    originalCombinedIdx: number
+  }
+
+  /** Rows for one section, occurrence-keyed. An id missing from the library
+   *  still consumes its queue slot: `originalCombinedIdx` comes from the
+   *  occurrence list, never from the filtered row array. */
+  function sectionItems(ids: string[], section: 'user' | 'auto', base: number): KeyedTrack[] {
+    return sectionOccurrences(ids, section).flatMap((occurrence, i) => {
+      const track = trackMap.get(occurrence.trackId)
+      if (!track) return []
+      return [{
+        key: rowKeyOf(section, occurrence.trackId, occurrence.ordinal),
+        entryId: entryIdOf(section, occurrence.trackId, occurrence.ordinal),
+        track,
+        originalCombinedIdx: base + i,
+      }]
+    })
+  }
+
+  let userItems = $derived(sectionItems($queue.userQueue, 'user', 0))
+  let autoItems = $derived(sectionItems($queue.autoQueue, 'auto', $queue.userQueue.length))
 
   // Drag Engine State
   let listContainerEl = $state<HTMLElement | null>(null)
@@ -174,13 +205,15 @@
     })
   })
   let isDragging = $state(false)
-  // Drag identity is the TRACK ID, not an index (2026-09-12): an advance,
+  // Drag identity is the OCCURRENCE, not an id and not an index (2026-09-12
+  // for the index half; 2026-10-21 for the occurrence half). An advance,
   // promotion, or fill re-rank landing mid-drag reindexes the combined list,
-  // so an index captured at drag start can point at a different row by the
-  // time the finger lifts. The sections are snapshotted by ID at drag start
-  // (liveDrag*) and the drop is resolved against them + the CURRENT store —
-  // never against a stale snapshot written wholesale.
-  let draggedTrackId = $state<string | null>(null)
+  // so a start-of-drag index can point at a different row by the time the
+  // finger lifts; with duplicates an id names two rows, so it cannot say
+  // WHICH one the user grabbed (G5). The entry id (`user:x`, `user:x#1`, …)
+  // names exactly one row. The drag-time sections are snapshotted and the
+  // drop is resolved against them + the CURRENT store by occurrence counts.
+  let draggedEntryId = $state<string | null>(null)
   let targetCombinedIndex = $state<number | null>(null)
   let liveDragUserIds = $state<string[]>([])
   let liveDragAutoIds = $state<string[]>([])
@@ -193,82 +226,43 @@
 
   let autoScrollFrameId: number | null = null
 
-  interface KeyedTrack {
-    key: string
-    track: Track
-    originalCombinedIdx: number
-  }
-
-  const trackMap = $derived.by(() => {
-    const m = new Map<string, Track>()
-    for (const t of combinedTracks) m.set(t.trackId, t)
-    return m
-  })
-
   // Preview + drop share ONE transform (planDragDrop): the dragged row is
   // re-resolved BY ID in the drag-time arrays on every evaluation, so the
   // preview re-resolves if the underlying arrays change instead of freezing
   // a start-of-drag index snapshot.
   let draggedCombinedIdxLive = $derived.by(() => {
-    if (draggedTrackId === null) return -1
-    return [...liveDragUserIds, ...liveDragAutoIds].indexOf(draggedTrackId)
+    if (draggedEntryId === null) return -1
+    return findEntryIndex(liveDragUserIds, liveDragAutoIds, draggedEntryId)
   })
 
   let dragPlan = $derived.by(() => {
-    if (!isDragging || draggedTrackId === null || targetCombinedIndex === null || draggedCombinedIdxLive < 0) {
+    if (!isDragging || draggedEntryId === null || targetCombinedIndex === null || draggedCombinedIdxLive < 0) {
       return null
     }
     return planDragDrop(liveDragUserIds, liveDragAutoIds, draggedCombinedIdxLive, targetCombinedIndex)
   })
 
-  // Reactive preview items for user queue
+  // Preview rows during a drag (the plan's target space), live rows otherwise.
+  // Keys are occurrence-scoped and position-free: a row's Svelte identity
+  // survives every advance/promotion/fill rewrite that keeps its place among
+  // same-id copies (the 2026-09-23 churn lesson), and two copies of one song
+  // get distinct keys (D4). The ordinal changes only when a same-id copy
+  // ABOVE the row is added or removed — exactly when the row's copy is a
+  // different one.
   let previewUserItems = $derived.by<KeyedTrack[]>(() => {
-    if (!dragPlan) {
-      return userTracks.map((track, i) => ({
-        // Each key is the TRACK ID, not an index-embedded key (2026-09-23
-        // scroll review): every advance/promote/replenish rewrites the queues
-        // and shifted the old `u-${i}-${id}` keys — Svelte destroyed and
-        // re-created EVERY row's DOM on each advance, unmounting LazyThumbs
-        // and re-arming their covers as fresh (paced) requests. The
-        // "queue thumbnails don't load even in view" report. Section-scoped
-        // prefixes stay (a track CAN sit in both sections — auto Tier 3
-        // deliberately admits user-queued tracks (B4) — so the sections'
-        // keyspaces must not collide); the position index survives ONLY as
-        // originalCombinedIdx (drag-start resolution), never in the key.
-        // Within-section id uniqueness is enforced by the mutation layer
-        // (addToUserQueue no-ops on an existing copy; promotions move rather
-        // than duplicate).
-        key: `u-${track.trackId}`,
-        track,
-        originalCombinedIdx: i,
-      }))
-    }
-    return dragPlan.user.flatMap((id, i) => {
-      const track = trackMap.get(id)
-      return track ? [{ key: `u-${id}`, track, originalCombinedIdx: i }] : []
-    })
+    if (!dragPlan) return userItems
+    return sectionItems(dragPlan.user, 'user', 0)
   })
 
-  // Reactive preview items for auto queue
   let previewAutoItems = $derived.by<KeyedTrack[]>(() => {
-    if (!dragPlan) {
-      return autoTracks.map((track, i) => ({
-        // Track-id key, same rationale as previewUserItems above (the
-        // position index in the old `a-${i}-${id}` key was the churn); the
-        // index still feeds originalCombinedIdx (drag-start resolution).
-        key: `a-${track.trackId}`,
-        track,
-        originalCombinedIdx: userTracks.length + i,
-      }))
-    }
-    const U = dragPlan.user.length
-    return dragPlan.auto.flatMap((id, i) => {
-      const track = trackMap.get(id)
-      return track ? [{ key: `a-${id}`, track, originalCombinedIdx: U + i }] : []
-    })
+    if (!dragPlan) return autoItems
+    return sectionItems(dragPlan.auto, 'auto', dragPlan.user.length)
   })
 
-  let draggedTrack = $derived(draggedTrackId ? trackMap.get(draggedTrackId) ?? null : null)
+  let draggedTrack = $derived.by(() => {
+    if (!draggedEntryId) return null
+    return [...userItems, ...autoItems].find((i) => i.entryId === draggedEntryId)?.track ?? null
+  })
 
   // ── Virtual windows (2026-09-28; the SongsView model, per section) ──
   // The queue can flood to 500+ rows (Play All); each section renders a
@@ -432,23 +426,19 @@
     targetCombinedIndex = target
   }
 
-  function startPointerDrag(e: PointerEvent, combinedIdx: number) {
+  function startPointerDrag(e: PointerEvent, item: KeyedTrack) {
     if (e.button !== undefined && e.button !== 0) return
 
     e.preventDefault()
     e.stopPropagation()
 
     isDragging = true
-    // Resolve the dragged row in the space the user SEES: during an active
-    // drag that's the plan space (the preview), at rest the real combined
-    // array. Real indices can have diverged mid-drag (that's the whole
-    // reason drag identity is id-based).
-    const planCombined = dragPlan ? [...dragPlan.user, ...dragPlan.auto] : null
-    draggedTrackId = planCombined?.[combinedIdx] ?? combinedTracks[combinedIdx]?.trackId ?? null
-    targetCombinedIndex = combinedIdx
-    // Drag-time section snapshot (BY ID): the preview and the drop both plan
-    // against these, with the dragged row re-resolved live — mid-drag store
-    // mutations reindex the real lists, so an index-only identity would drift.
+    // The row's OCCURRENCE identity (D4/D11) — not its id (two copies share
+    // one) and not its index (mid-drag mutations reindex the real lists).
+    draggedEntryId = item.entryId
+    targetCombinedIndex = item.originalCombinedIdx
+    // Drag-time section snapshot: the preview and the drop both plan against
+    // these, with the dragged occurrence re-resolved live by entry id.
     liveDragUserIds = $queue.userQueue.slice()
     liveDragAutoIds = $queue.autoQueue.slice()
 
@@ -495,24 +485,24 @@
   }
 
   function applyDrop() {
-    if (!isDragging || draggedTrackId === null || targetCombinedIndex === null) {
+    if (!isDragging || draggedEntryId === null || targetCombinedIndex === null) {
       stopPointerDrag()
       return
     }
 
-    // Resolve against the drag-time sections BY ID — the arrays that produced
-    // the preview the user sees. queueManager.applyDragDrop recomputes the
-    // shape from the CURRENT store (mutation-race safe: an advance/promotion
-    // landing mid-drag can no longer be overwritten by a stale snapshot) and
-    // no-ops when nothing actually changed.
-    queueManager.applyDragDrop(draggedTrackId, targetCombinedIndex, liveDragUserIds, liveDragAutoIds)
+    // Resolve against the drag-time sections BY OCCURRENCE — the arrays that
+    // produced the preview the user sees. queueManager.applyDragDrop recomputes
+    // the shape from the CURRENT store by per-id occurrence counts
+    // (mutation-race safe: an advance/promotion landing mid-drag can no longer
+    // be overwritten by a stale snapshot) and no-ops when nothing changed.
+    queueManager.applyDragDrop(draggedEntryId, targetCombinedIndex, liveDragUserIds, liveDragAutoIds)
 
     stopPointerDrag()
   }
 
   function stopPointerDrag() {
     isDragging = false
-    draggedTrackId = null
+    draggedEntryId = null
     targetCombinedIndex = null
     liveDragUserIds = []
     liveDragAutoIds = []
@@ -568,14 +558,29 @@
     s.albumScope ? `Album · ${s.albumScope}` : s.artistScope ? `Artist · ${s.artistScope}` : null,
   )
 
-  function removeFromUser(trackId: string) {
-    const q = $queue
-    const idx = q.userQueue.indexOf(trackId)
-    if (idx < 0) return
-    // Removing the PLAYING row skips to the next track immediately (2.4/2.7)
-    // — playbackManager decides whether the removed id was the playing one.
-    const removedId = queueManager.removeFromUserQueue(idx)
-    if (removedId !== undefined) playbackManager.handleQueueRowRemoved(removedId)
+  /** Removes exactly the row that was pressed — never `indexOf(trackId)`.
+   *  With duplicates an id names several rows, so the ROW's combined index is
+   *  the only safe target (D4). */
+  function removeRow(item: KeyedTrack) {
+    if (isDragging) return
+    const idx = item.originalCombinedIdx
+    if (idx < $queue.userQueue.length) {
+      // Removing the PLAYING row skips to the next track immediately (2.4/2.7).
+      // With duplicates the id is ambiguous, so the ROW fact is captured
+      // before the write: only the active row's own removal is a skip
+      // (removing another copy of the audible song must not skip it).
+      const removedWasActive = idx === $queue.activeIndex
+      const removedId = queueManager.removeFromUserQueue(idx)
+      if (removedId !== undefined) playbackManager.handleQueueRowRemoved(removedId, removedWasActive)
+      return
+    }
+    queueManager.removeFromAutoQueue(idx - $queue.userQueue.length)
+  }
+
+  /** Section-local index of a queue row (user rows map 1:1, auto rows are
+   *  offset by the user length). */
+  function autoIndexOf(item: KeyedTrack): number {
+    return item.originalCombinedIdx - $queue.userQueue.length
   }
 
   function isCurrentTrack(currentCombinedIdx: number): boolean {
@@ -583,14 +588,18 @@
     return currentCombinedIdx === $queue.activeIndex
   }
 
-  function playQueueItem(trackId: string, currentCombinedIdx: number) {
+  /** Plays the pressed ROW (by combined index). Pressing the audible row
+   *  restarts it; every other row is a positional play. Occurrence identity
+   *  makes this exact even when several rows share a track id. */
+  function playQueueItem(currentCombinedIdx: number) {
     if (isDragging) return
-    const activeId = $queue.activeIndex >= 0 ? combinedTracks[$queue.activeIndex]?.trackId : null
-    if (!$currentTrack || $playbackState === 'stopped' || activeId !== trackId || currentCombinedIdx !== $queue.activeIndex) {
-      playbackManager.playTrackAt(currentCombinedIdx)
-    } else {
-      playbackManager.seek(0)
-    }
+    const id = combinedIds[currentCombinedIdx]
+    if (id === undefined) return
+    const isAudible = currentCombinedIdx === $queue.activeIndex
+      && $currentTrack?.trackId === id
+      && $playbackState !== 'stopped'
+    if (isAudible) playbackManager.seek(0)
+    else playbackManager.playTrackAt(currentCombinedIdx)
   }
 
   function handleClearQueue() {
@@ -774,17 +783,18 @@
                drag drop-target, and the drag identity. -->
           {@const itemIndex = item.originalCombinedIdx}
           <div
-            onclick={() => playQueueItem(item.track.trackId, itemIndex)}
+            onclick={() => playQueueItem(itemIndex)}
             role="button"
             tabindex="0"
-            onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(item.track.trackId, itemIndex) }}
+            onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(itemIndex) }}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (isCurrentTrack(itemIndex) ? 'ui-now-playing-row ' : 'hover:bg-white/5 ') +
-              (isDragging && item.track.trackId === draggedTrackId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
+              (isDragging && item.entryId === draggedEntryId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
             style={preloadTint(item.track.trackId)}
             data-combined-index={itemIndex}
             data-track-id={item.track.trackId}
+            data-entry-id={item.entryId}
           >
             <!-- Drag Handle -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -792,7 +802,7 @@
               class="drag-handle touch-none flex-shrink-0 cursor-grab active:cursor-grabbing rounded py-1 pl-1 pr-0.5 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover"
               aria-label="Drag to reorder"
               onclick={(e) => e.stopPropagation()}
-              onpointerdown={(e) => startPointerDrag(e, itemIndex)}
+              onpointerdown={(e) => startPointerDrag(e, item)}
               role="presentation"
             >
               <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
@@ -823,7 +833,7 @@
                 </svg>
               </button>
               <button
-                onclick={() => queueManager.moveToNext(item.track.trackId)}
+                onclick={() => queueManager.moveRowToNext(itemIndex)}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Move to next"
               >
@@ -832,7 +842,7 @@
                 </svg>
               </button>
               <button
-                onclick={() => queueManager.moveToEnd(item.track.trackId)}
+                onclick={() => queueManager.moveRowToEnd(itemIndex)}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Move to end"
               >
@@ -842,7 +852,7 @@
                 </svg>
               </button>
               <button
-                onclick={() => removeFromUser(item.track.trackId)}
+                onclick={() => removeRow(item)}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-red-400"
                 aria-label="Remove from queue"
               >
@@ -900,17 +910,18 @@
                includes the user length); no window offset may be added. -->
           {@const itemCombinedIndex = item.originalCombinedIdx}
           <div
-            onclick={() => playQueueItem(item.track.trackId, itemCombinedIndex)}
+            onclick={() => playQueueItem(itemCombinedIndex)}
             role="button"
             tabindex="0"
-            onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(item.track.trackId, itemCombinedIndex) }}
+            onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(itemCombinedIndex) }}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (isCurrentTrack(itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-white/5 ') +
-              (isDragging && item.track.trackId === draggedTrackId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
+              (isDragging && item.entryId === draggedEntryId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
             style={preloadTint(item.track.trackId)}
             data-combined-index={itemCombinedIndex}
             data-track-id={item.track.trackId}
+            data-entry-id={item.entryId}
           >
             <!-- Drag Handle -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -918,7 +929,7 @@
               class="drag-handle touch-none flex-shrink-0 cursor-grab active:cursor-grabbing rounded py-1 pl-1 pr-0.5 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover"
               aria-label="Drag to reorder"
               onclick={(e) => e.stopPropagation()}
-              onpointerdown={(e) => startPointerDrag(e, itemCombinedIndex)}
+              onpointerdown={(e) => startPointerDrag(e, item)}
               role="presentation"
             >
               <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
@@ -949,7 +960,7 @@
                 </svg>
               </button>
               <button
-                onclick={() => queueManager.promoteToUserNext(item.track.trackId)}
+                onclick={() => queueManager.promoteToUserNext(autoIndexOf(item))}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Play next"
               >
@@ -958,7 +969,7 @@
                 </svg>
               </button>
               <button
-                onclick={() => queueManager.promoteToUser(item.track.trackId)}
+                onclick={() => queueManager.promoteToUser(autoIndexOf(item))}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-green-400"
                 aria-label="Add to user queue"
               >
@@ -967,7 +978,7 @@
                 </svg>
               </button>
               <button
-                onclick={() => queueManager.removeFromAutoQueue(item.track.trackId)}
+                onclick={() => removeRow(item)}
                 class="rounded-lg p-2 text-muted/70 transition-colors hover:text-red-400"
                 aria-label="Remove from auto queue"
               >
@@ -987,7 +998,7 @@
     <!-- End-of-queue terminus: extra scroll length past the last row so the
          ↑ button (or a thumb resting near the list bottom) never covers the
          final rows (review 2026-09-11). -->
-    {#if combinedTracks.length > 0}
+    {#if combinedIds.length > 0}
       <div class="flex flex-col items-center gap-1 px-6 pb-16 pt-8 text-center" aria-hidden="true">
         <div class="h-0.5 w-8 rounded-full bg-white/15"></div>
         <p class="text-[11px] uppercase tracking-widest text-muted/40">End of queue</p>

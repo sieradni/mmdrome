@@ -12,13 +12,12 @@ import { bootSongLibrary, QUEUE_SCROLLER } from './thumbflowHelpers'
 // rows slide on every window move (the "queue is slidy" report), and
 // jump-to-current silently no-oped when the row was outside the window.
 //
-// App semantics the fixtures must respect (learned from the first run's
-// snapshots): the FIRST Add-to-queue starts playback of that row (it becomes
-// active, auto-queue replenishes); later Adds are NO-OPS when the track is
-// already queued (the mutation layer dedupes; the replenished auto queue
-// already holds most of a small library). A BIG library therefore matters:
-// user rows accumulate only when the add ordering leaves them out of the
-// auto fill, or through the row action buttons.
+// App semantics the fixtures must respect: the FIRST Add-to-queue starts
+// playback of that row (it becomes active, auto-queue replenishes); every
+// later Add APPENDS a new occurrence, duplicates included (queue redesign
+// step 1 / D2 — the old dedupe no-op is gone). A BIG library still matters:
+// it keeps the auto fill from mirroring the user rows, so the user section has
+// enough independent rows for the reorder/scroll assertions.
 
 const LIB_ALBUMS = 40
 const TRACKS_PER_ALBUM = 12
@@ -251,4 +250,52 @@ test('the empty island navigates to Now Playing', async ({ page }) => {
   await island.click()
   // The queue overlay closes; the expanded Now Playing (or library) shows.
   await expect(page.getByRole('button', { name: 'Close queue' })).toHaveCount(0)
+})
+
+test('duplicate songs render as independent occurrence rows (distinct keys, row-scoped remove)', async ({ page }) => {
+  const pageErrors: string[] = []
+  page.on('pageerror', (err) => pageErrors.push(String(err)))
+  await bootBig(page)
+
+  // Play row 0, then press + on that same row twice: three copies of one
+  // track in the user section (the append semantics are real end-to-end).
+  await page.locator('[data-track-id]').first().click()
+  await page.waitForTimeout(1000)
+  const addButton = page.getByRole('button', { name: 'Add to queue', exact: true }).first()
+  await addButton.click()
+  await addButton.click()
+  await page.waitForTimeout(400)
+  await openQueue(page)
+
+  const readRows = () => page.evaluate(() => {
+    return [...document.querySelectorAll('[aria-label="User queue"] .queue-track-item')].map((el) => ({
+      entry: (el as HTMLElement).dataset.entryId ?? '',
+      track: (el as HTMLElement).dataset.trackId ?? '',
+    }))
+  })
+  const before = await readRows()
+  const dupId = before[0]?.track
+  expect(dupId).toBeTruthy()
+  const copies = before.filter((r) => r.track === dupId)
+  expect(copies.length, 'three occurrences of the played song').toBe(3)
+
+  // Occurrence keys, not ids: each copy is addressable on its own.
+  const keys = before.map((r) => r.entry)
+  expect(new Set(keys).size).toBe(keys.length)
+  expect(keys.filter((k) => k.startsWith(`user:${dupId}`)).length).toBe(3)
+
+  // Removing the SECOND copy removes exactly one row; both other copies of
+  // the same song survive (indexOf(trackId) would have removed the first).
+  const rows = page.locator('[aria-label="User queue"] .queue-track-item')
+  await rows.nth(1).getByRole('button', { name: 'Remove from queue' }).click()
+  await page.waitForTimeout(400)
+  const after = await readRows()
+  expect(after.length).toBe(before.length - 1)
+  expect(after.filter((r) => r.track === dupId).length).toBe(2)
+  // The removed row was a COPY, not the audible occurrence: the playing row
+  // must stay the now-playing one (an id-equality skip would have advanced).
+  const playing = page.locator('div.z-40 .ui-now-playing-row')
+  await expect(playing).toHaveCount(1)
+  await expect(playing).toHaveAttribute('data-track-id', dupId as string)
+  expect(pageErrors).toEqual([])
 })

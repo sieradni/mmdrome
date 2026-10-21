@@ -54,9 +54,10 @@ function combined(): string[] {
   return [...q.userQueue, ...q.autoQueue]
 }
 
-function assertUniquePerSection(q: QueueState): void {
-  assert.equal(new Set(q.userQueue).size, q.userQueue.length, 'user section uniqueness')
-  assert.equal(new Set(q.autoQueue).size, q.autoQueue.length, 'auto section uniqueness')
+/** Occurrence identity means duplicates are LEGAL: never assert uniqueness
+ *  here. This helper is kept to state the opposite contract explicitly. */
+function assertOccurrenceOrder(q: QueueState, expected: string[]): void {
+  assert.deepEqual([...q.userQueue, ...q.autoQueue], expected)
 }
 
 test('playAll([]) clears the queue; the next advance refills the auto tail and skips its head (known gap)', () => {
@@ -82,27 +83,27 @@ test('playAll([]) clears the queue; the next advance refills the auto tail and s
   assert.ok(!q.recentTrackIds.includes('a'), 'the skipped head is not even marked as heard')
 })
 
-test('playAll writes duplicate ids verbatim (KNOWN GAP: the bulk path bypasses section uniqueness)', () => {
+test('playAll preserves duplicate ids verbatim — duplicates are legal occurrences (D3/D12)', () => {
   reset(['a', 'b'])
   setQueue({ userQueue: ['x'], activeIndex: 0 })
 
   queueManager.playAll(['a', 'a', 'b'])
 
   let q = get(queue)
-  assert.deepEqual(q.userQueue, ['a', 'a', 'b'], 'KNOWN GAP: playAll does not dedupe — callers must pass unique ids')
-  assert.equal(new Set(q.userQueue).size, 2, 'a within-section duplicate is a fatal Svelte each-key collision in QueueView')
+  assert.deepEqual(q.userQueue, ['a', 'a', 'b'], 'the import order and its duplicates are kept')
   assert.equal(q.activeIndex, 0)
+  assert.equal(q.userQueue.filter((id) => id === 'a').length, 2, 'two independent rows')
 
-  // Nor does the library sync dedupe: reconcileQueueWithLibrary filters by
-  // membership only, so the duplicate survives a full reload of the library.
+  // The library sync keeps both copies too (membership filter, no dedupe).
   setLibrary(['a', 'b'].map(track))
   q = get(queue)
-  assert.deepEqual(q.userQueue, ['a', 'a', 'b'], 'KNOWN GAP: reconciliation does not enforce uniqueness')
+  assert.deepEqual(q.userQueue, ['a', 'a', 'b'], 'a library reconcile preserves occurrences')
 
-  // Every OTHER entry point refuses the duplicate, which is what keeps this a
-  // boundary-only gap rather than a steady-state one.
+  // + is an append, not a set insert: the queue can now represent the same
+  // song three times.
   queueManager.addToUserQueue('a')
-  assert.deepEqual(get(queue).userQueue, ['a', 'a', 'b'], 'addToUserQueue no-ops on an existing user row')
+  assert.deepEqual(get(queue).userQueue, ['a', 'a', 'b', 'a'], 'addToUserQueue appends a new occurrence')
+  assertOccurrenceOrder(get(queue), ['a', 'a', 'b', 'a'])
 })
 
 test('playAll keeps ids missing from the library queued; advancing onto one stalls until playback stops', () => {
@@ -151,7 +152,7 @@ test('playAll with the actively playing track inside the import anchors on row 0
   assert.equal(get(queue).activeIndex, 0)
 })
 
-test('enqueueing a track already in the auto section makes a transient cross-section duplicate that promote collapses', () => {
+test('a cross-section duplicate is two rows; promoting the auto occurrence appends a user occurrence', () => {
   reset(['a', 'b', 'c'])
   setQueue({ userQueue: ['a'], autoQueue: ['b', 'c'], activeIndex: 0 })
 
@@ -161,14 +162,15 @@ test('enqueueing a track already in the auto section makes a transient cross-sec
   assert.deepEqual(q.userQueue, ['a', 'b'], 'the user row is added')
   assert.deepEqual(q.autoQueue, ['b', 'c'], 'the auto occurrence is left alone (cross-section duplicates are legal)')
   assert.equal(combined().filter((id) => id === 'b').length, 2, 'one occurrence per section')
-  assertUniquePerSection(q)
 
-  queueManager.promoteToUser('b')
+  // Promoting the AUTO occurrence moves it into the user section as a NEW
+  // occurrence: the older user copy is history and stays put.
+  queueManager.promoteToUser(0)
   q = get(queue)
-  assert.deepEqual(q.userQueue, ['a', 'b'], 'the existing user copy is kept, not appended again')
-  assert.deepEqual(q.autoQueue, ['c'], 'the auto copy leaves with the promotion')
-  assert.equal(combined().filter((id) => id === 'b').length, 1, 'the duplicate collapsed')
-  assertUniquePerSection(q)
+  assert.deepEqual(q.userQueue, ['a', 'b', 'b'], 'the auto row became a second user occurrence')
+  assert.deepEqual(q.autoQueue, ['c'], 'the promoted auto occurrence left its section')
+  assert.equal(combined().filter((id) => id === 'b').length, 2, 'no row was collapsed or lost')
+  assert.equal(q.activeIndex, 0)
 })
 
 test('playNext on an empty queue appends the row and keeps the anchor unset until playback selects one', () => {

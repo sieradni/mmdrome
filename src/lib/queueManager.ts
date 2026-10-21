@@ -53,9 +53,9 @@ class QueueManager {
   /**
    * Single-write choke point for ANCHOR-PRESERVING queue edits — user-initiated
    * mutations that must not move the playing-track anchor. The mutation algebra
-   * (section rewrites, id re-anchor, `null` no-op, dev invariant assert) lives
-   * in the pure `queueMutation` module; this method only binds it to the store
-   * and persists.
+   * (section rewrites, OCCURRENCE re-anchor, `null` no-op, dev invariant
+   * assert) lives in the pure `queueMutation` module; this method only binds it
+   * to the store and persists.
    *
    * Scope boundary: anchor-CHANGING writes are a separate single-writer family
    * and must NOT route here — `advanceTo` (and the native re-adopt in
@@ -72,7 +72,8 @@ class QueueManager {
     })
   }
 
-  /** Appends a track to the end of the user queue (no-op when it already has a user slot — uniqueness). */
+  /** Appends a NEW occurrence of a track to the end of the user queue (D2:
+   *  duplicates are legal — pressing + twice queues the song twice). */
   addToUserQueue(trackId: string): void {
     this._mutateQueue((q) => queueMutation.addToUserQueue(q, trackId))
   }
@@ -86,24 +87,24 @@ class QueueManager {
     this._mutateQueue((q) => queueMutation.playNext(q, trackId))
   }
 
-  /** Moves an auto row to the end of the user queue (promoting the in-window active row is a plain promote). */
-  promoteToUser(trackId: string): void {
-    this._mutateQueue((q) => queueMutation.promoteToUser(q, trackId))
+  /** Moves the auto OCCURRENCE at `autoIndex` to the end of the user queue
+   *  (promoting the in-window active occurrence is a plain promote). */
+  promoteToUser(autoIndex: number): void {
+    this._mutateQueue((q) => queueMutation.promoteToUser(q, autoIndex))
   }
 
   /**
-   * Moves an auto row to the slot right after the active row. When the target
-   * IS the in-window active row, this degrades to a plain promote — the playing
-   * track can only leave the auto side by being promoted up.
+   * Moves the auto OCCURRENCE at `autoIndex` to the slot right after the
+   * active row. When that occurrence IS the active row, this degrades to a
+   * plain promote — the playing track can only leave auto by being promoted.
    */
-  promoteToUserNext(trackId: string): void {
+  promoteToUserNext(autoIndex: number): void {
     const q = get(queue)
-    const combined = [...q.userQueue, ...q.autoQueue]
-    if (q.activeIndex >= 0 && q.activeIndex < combined.length && combined[q.activeIndex] === trackId) {
+    if (q.activeIndex === q.userQueue.length + autoIndex) {
       this.promoteActiveTrack()
       return
     }
-    this._mutateQueue((q) => queueMutation.promoteToUserNext(q, trackId))
+    this._mutateQueue((q) => queueMutation.promoteToUserNext(q, autoIndex))
   }
 
   /**
@@ -118,6 +119,18 @@ class QueueManager {
   /** Moves a user row to the very end of the user queue. */
   moveToEnd(trackId: string): void {
     this._mutateQueue((q) => queueMutation.moveToEnd(q, trackId))
+  }
+
+  /** Row-scoped reorder: moves the user OCCURRENCE at `index` right after the
+   *  active row. Duplicates make the id-taking form ambiguous; the view always
+   *  knows the row it rendered. */
+  moveRowToNext(index: number): void {
+    this._mutateQueue((q) => queueMutation.moveUserRowToNext(q, index))
+  }
+
+  /** Row-scoped reorder: moves the user OCCURRENCE at `index` to the end. */
+  moveRowToEnd(index: number): void {
+    this._mutateQueue((q) => queueMutation.moveUserRowToEnd(q, index))
   }
 
   /**
@@ -176,21 +189,21 @@ class QueueManager {
   }
 
   /**
-   * "Not now": removes an auto-queued track and cools it down so the next fill
+   * "Not now": removes the auto OCCURRENCE at `autoIndex` and cools it down so the next fill
    * doesn't immediately re-suggest it (replenish excludes the window; only a
    * short pool admits it back). When the target IS the in-window active row,
    * this degrades to a plain promote — the playing track can only leave the
    * auto side by being promoted up. The recency mark folds into the same write
    * (single saveQueue per mutation).
    */
-  removeFromAutoQueue(trackId: string): void {
+  removeFromAutoQueue(autoIndex: number): void {
     const q = get(queue)
-    const combined = [...q.userQueue, ...q.autoQueue]
-    if (q.activeIndex >= 0 && q.activeIndex < combined.length && combined[q.activeIndex] === trackId) {
+    if (autoIndex < 0 || autoIndex >= q.autoQueue.length) return
+    if (q.activeIndex === q.userQueue.length + autoIndex) {
       this.promoteActiveTrack()
       return
     }
-    this._mutateQueue((q) => queueMutation.removeFromAutoQueue(q, trackId))
+    this._mutateQueue((q) => queueMutation.removeFromAutoQueue(q, autoIndex))
   }
 
   /**
@@ -246,16 +259,16 @@ class QueueManager {
   }
 
   /**
-   * Drag-and-drop resolution (2026-09-12): the dragged row is identified by
-   * ID and the plan is computed from the drag-time sections (what the user
+   * Drag-and-drop resolution (2026-09-12; occurrence identity 2026-10-21): the
+   * dragged row is an OCCURRENCE (`queueEntryId`) and the plan is computed from the drag-time sections (what the user
    * saw) then reconciled against the CURRENT store — never a verbatim write
    * of the drag-start snapshot. The old path (`reorderAll` from the preview
    * arrays) let any mutation landing mid-drag (natural advance, promotion,
    * fill re-rank) be silently overwritten by the stale order, and the stale
    * preloaded row played next. Anchor-preserving via `_mutateQueue`.
    */
-  applyDragDrop(draggedTrackId: string, targetCombinedIndex: number, dragStartUser: string[], dragStartAuto: string[]): void {
-    this._mutateQueue((q) => queueMutation.applyDragDrop(q, draggedTrackId, targetCombinedIndex, dragStartUser, dragStartAuto))
+  applyDragDrop(draggedEntryId: string, targetCombinedIndex: number, dragStartUser: string[], dragStartAuto: string[]): void {
+    this._mutateQueue((q) => queueMutation.applyDragDrop(q, draggedEntryId, targetCombinedIndex, dragStartUser, dragStartAuto))
   }
 
   /**

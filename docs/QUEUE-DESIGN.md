@@ -250,10 +250,21 @@ No Swift change is expected for D1–D14. The native engine consumes snapshots a
 
 ## 6. Implementation order (each step gates on check + tests)
 
-1. **Row identity + duplicates foundation** — occurrence ids, keys, remove, drag, restore, reconcile,
-   native entry ids, remove uniqueness asserts. Browser pins: `queueRows`, `queuedragdup`.
+1. **Row identity + duplicates foundation — LANDED 2026-10-21c.** Occurrence ids (`src/lib/queueOccurrence.ts`),
+   `u-<id>#<n>` keys, row-scoped remove/reorder/promote, drag by `queueEntryId` with per-id count
+   reconciliation (G5 closed), raw-pass-through restore, count-based library reconcile, native
+   `queueEntryId` per row, uniqueness asserts removed. Pins: `tests/queueOccurrence.test.ts` (new),
+   `tests/queueMutation.test.ts`, `queueRestore`, `queueBulkImport`, `queueManagerFill`;
+   browser `queueRows` (duplicate-rows spec), `queuedragdup` (three copies). Unit 1406, e2e 64,
+   ui-review 8, `npm run check` 0/0 — all green.
+   Two step-1 leftovers recorded on purpose: `promoteActiveTrack` still MOVES one existing user copy of
+   the promoted id to the boundary (D5 removes that in step 2), and `refreshQueue` re-sends full rows, so
+   Swift keeps entry ids it already had.
 2. **Press semantics** — D1/D2, append-only promotion (D5). Manager tests + a browser spec for
-   "library press does not jump".
+   "library press does not jump". Note the crossfade reconcile is still id+index based
+   (`resolveQueueOccurrence` without an entry id), so a duplicate armed target resolves to the first
+   forward copy of that song; step 2 should either pass the armed occurrence's entry id or prove the
+   copies are sonically interchangeable.
 3. **Skip exactness (D10)** — rewrite the G3 known-gap test into "two presses = two rows".
 4. **Fresh context (D7)** — promote-before-rewrite, reset recents, full rebuild; rewrite B11/E4/E9
    and close G1/G2.

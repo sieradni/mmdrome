@@ -2,15 +2,16 @@
 
 Date: 2026-10-21
 Phase: 2A of [2026-10-18-holistic-polish-and-roadmap.md](plans/2026-10-18-holistic-polish-and-roadmap.md) — "Queue Pool Hardening & View-Layer Deduplication".
-Status: **characterization only**. No queue or playback behavior was changed to produce this document.
+Status: **partly implemented**. §2 (A1–A9), §3 B2/B10 and §10 N1 now describe the OCCURRENCE model that
+step 1 of [QUEUE-DESIGN.md](QUEUE-DESIGN.md) §6 shipped (2026-10-21c): a row is `(section, id, ordinal)`,
+duplicates are legal in both sections, every mutation path moves/removes/drags an occurrence, restore is a
+raw pass-through, and the native snapshot carries per-occurrence entry ids. Everything else still describes
+the code as it was, and every remaining known gap is real.
 
-> **Target design (2026-10-21b, NOT implemented):** [QUEUE-DESIGN.md](QUEUE-DESIGN.md) records the
-> agreed rules that will replace parts of this snapshot — duplicates are legal in the user queue and
-> on auto-pool exhaustion, pressing a song never jumps to an old copy, each row is an independent
-> occurrence, a filter/sort edit resets the cooldown and rebuilds the pool, the auto queue can be
-> switched off, and the tail/loop rules change. This file remains the truth about the CODE until those
-> changes land; the rows they rewrite are listed in QUEUE-DESIGN.md §4. Do not cite the design as
-> shipped behavior, and do not "pre-fix" a row to match it.
+> **Still not implemented (steps 2–4):** pressing a song still jumps to an old copy (D1), a filter/sort edit
+> still rewrites the fill in place without promoting the audible row or resetting `recentTrackIds` (D7),
+> manual Next at the tail is still a no-op under loop-all (D8), the auto queue cannot be switched off (D9),
+> and a same-tick Next/Previous still loses a press (D12). Those rows say so; do not pre-fix them.
 
 ## 0. What this file is
 
@@ -32,9 +33,10 @@ load-bearing, which are deliberate tradeoffs, and which are accidental.
    native/on-device half is not; see E5 in `AGENTS.md` (no local Swift toolchain) and the physical-iOS
    ledger item in the 2026-10-17 streaming plan.
 
-Verification for this document: `npm test` (1382 passing), `npm run check` (0 errors / 0 warnings), and the
-browser specs the rows cite — `queueRows` (8), `queuedragdup` (1), `queueContinuation` (1), `queueflood` (2),
-`persistence` (3): 15/15 in Chromium against the production bundle.
+Verification for this document (2026-10-21c, step 1 landed): `npm test` (1406 passing), `npm run check`
+(0 errors / 0 warnings), the full e2e suite (64 passing) and the ui-review suite (8 passing), including the
+rows' browser specs — `queueRows` (9), `queuedragdup` (1), `queueContinuation` (1), `queueflood` (2),
+`persistence` (3).
 
 **Status vocabulary (closed set — every row carries exactly one of these):**
 
@@ -62,22 +64,22 @@ browser specs the rows cite — `queueRows` (8), `queuedragdup` (1), `queueConti
 | combined | `[...userQueue, ...autoQueue]` — the only order playback walks. |
 | anchor | `queue.activeIndex`, an index into **combined**. |
 | audible row | the track `currentTrack` names — normally `combined[activeIndex]`. |
-| occurrence | one `(id, section)` pair; the same id may exist once in each section. |
+| occurrence | one queue ROW: `(section, id, ordinal)`; the same id may appear any number of times in either section and each copy is its own row. |
 | tier 3 | the rotation stage of the fill that re-admits user-queued / cooled rows (B4 tradeoff). |
 
-## 2. Sections & uniqueness
+## 2. Sections & duplicates (occurrence identity)
 
 | # | Invariant | Pinned by | Status |
 | --- | --- | --- | --- |
-| A1 | The user section holds each id at most once; every "move into user" builder (add, play-next, promote, drag) collapses an existing copy instead of duplicating it. | `tests/queueMutation.test.ts` — "addToUserQueue appends and refuses duplicates", "playNext dedupe-moves an existing user copy", "promoteToUser appends when absent, keeps the user copy when present" | pinned |
-| A2 | The auto section never contains an id twice. | `tests/queueMutation.test.ts` — fuzz "anchor invariant, uniqueness, drag row-count preservation"; `tests/queueContinuation.test.ts` — "real native manager: hands-off shuffle hears the whole eligible library before repeating" (asserts set sizes every step) | pinned |
-| A3 | The same id MAY exist once per section (a transient tier-3 duplicate) and must collapse when it is promoted into the user section. | `tests/queueBulkImport.test.ts` — "enqueueing a track already in the auto section makes a transient cross-section duplicate that promote collapses"; `tests/queueMutation.test.ts` — "promoteToUserNext always drops the auto copy" | pinned |
-| A4 | Within-section uniqueness is a hard requirement: QueueView keys rows by `u-${id}` / `a-${id}`, so a duplicate is a fatal Svelte each-key collision. | `tests/queueMutation.test.ts` — "applyDragDrop: a cross-section duplicate drag never yields a within-section duplicate"; `tests/e2e/queuedragdup.spec.ts` — "dragging a cross-section duplicate auto row into the user queue does not crash the each keys" | pinned |
-| A5 | Restore dedupes each persisted section keeping the FIRST occurrence (order-stable). | `tests/queueRestore.test.ts` — "restore dedupes each section (first occurrence wins), re-anchors the active row by id, and sanitizes recents" | new |
-| A6 | A drag/drop never emits a within-section duplicate, including a dragged id whose duplicate sits in the converted prefix. | `tests/queueMutation.test.ts` — "planDragDrop: auto→user with an existing user copy dedupe-moves (no each-key collision)", "planDragDrop: user→auto conversion drops the dragged id from the converted prefix", "applyDragDrop: a pre-corrupt snapshot is normalized as it passes through" | pinned |
-| A7 | A drop computed against the drag-time arrays is reconciled with the live queue (departed rows are not resurrected, joining rows keep their store position). | `tests/queueMutation.test.ts` — "applyDragDrop: mid-drag advance no longer resurrects the stale order", "…reorder still lands when rows joined mid-drag", "…dragged row removed mid-drag voids the drop" | pinned |
-| A8 | Removal is section-scoped: removing a user row does not purge the same id's auto occurrence (and vice versa). | `tests/queueMutation.test.ts` — "removing the PLAYING user row leaves its auto occurrence queued (removal is section-scoped)" | new |
-| A9 | A bulk import (`playAll`) is the ONE path that does not enforce A1/A2. | `tests/queueBulkImport.test.ts` — "playAll writes duplicate ids verbatim (KNOWN GAP…)" | known gap **G4** |
+| A1 | The user section may hold the same id any number of times; `addToUserQueue` ALWAYS appends a new occurrence (D2/D3). | `tests/queueMutation.test.ts` — "addToUserQueue appends a NEW occurrence even when the id is already queued (D2)"; `tests/queueBulkImport.test.ts` — "playAll preserves duplicate ids verbatim…" (+ appends a third copy); `tests/e2e/queueRows.spec.ts` — "duplicate songs render as independent occurrence rows" | pinned |
+| A2 | No mutation builder dedupes either section. Auto duplicates can arise from a drag/convert, a restore or a bulk import; the fill's unique-first selection is a planner rule (D6, repeat pass not implemented yet), never an identity constraint. | `tests/queueMutation.test.ts` — duplicates exercised by the planner/removal tests; `tests/queueRestore.test.ts` — restored auto duplicates survive | pinned |
+| A3 | The same id in both sections is TWO independent rows. Promoting the auto occurrence appends a new user occurrence and drops that auto row; an older user copy stays where it is as history. | `tests/queueBulkImport.test.ts` — "a cross-section duplicate is two rows; promoting the auto occurrence appends a user occurrence"; `tests/queueMutation.test.ts` — "promoteToUser appends a new user occurrence…", "promoteToUserNext appends…" | pinned |
+| A4 | Row identity is the OCCURRENCE. QueueView keys rows `u-<id>#<n>` / `a-<id>#<n>` (position-free): a duplicate is legal and addressable, and a row's key changes only when a same-id copy above it is added/removed — never on an advance. | `tests/queueOccurrence.test.ts` — "row keys are occurrence-scoped and never contain the row position"; `tests/e2e/queuedragdup.spec.ts` — "three copies of one song are independent rows"; `tests/e2e/queueRows.spec.ts` — duplicate-rows spec | pinned (browser for the key/render half) |
+| A5 | Restore is a RAW PASS-THROUGH: persisted rows are kept verbatim (duplicates included) and the stored anchor is kept, bounds-checked, because nothing shifted. | `tests/queueRestore.test.ts` — "restore keeps persisted rows VERBATIM (duplicates included), the exact stored anchor…" | pinned |
+| A6 | A drag moves the OCCURRENCE the user grabbed (entry id), never a same-id neighbour. No drag path dedupes or normalizes a section; a same-id auto row converted into user is its own row. | `tests/queueMutation.test.ts` — "an auto copy of an id already in user is a SEPARATE row (no dedupe)", "…conversion keeps a duplicated auto row in the converted prefix", "applyDragDrop: a cross-section duplicate resolves to the dragged AUTO occurrence (G5 closed)", "…with two user copies the dragged one moves and the other stays" | pinned |
+| A7 | Drop reconciliation budgets by PER-ID OCCURRENCE COUNTS against the live queue: a planned row is kept while a live occurrence of its origin id remains; live rows the plan never consumed (joined mid-drag) are appended in live order to their own section; a removed dragged occurrence voids the drop. | `tests/queueMutation.test.ts` — "reconciliation budgets by per-id COUNT…", "…reorder still lands when rows joined mid-drag", "…a row that joined the USER section mid-drag stays…", "…a mid-drag removal of the SAME id above voids the drop" | pinned |
+| A8 | Removal is occurrence-scoped AND section-scoped: a row ⨯ removes exactly the indexed copy (one occurrence), never `indexOf(id)`, and never purges the other section's copy. | `tests/queueMutation.test.ts` — "removeFromAutoQueue removes exactly the indexed occurrence…", "one duplicate can be removed without touching the other", "removing the PLAYING user row leaves its auto occurrence queued"; `tests/e2e/queueRows.spec.ts` — duplicate-rows spec (removes the second copy) | pinned |
+| A9 | A bulk import (`playAll`) preserves the source order and duplicates verbatim. The remaining bulk gap is LIBRARY VALIDATION (unknown ids can stall playback), not dedupe. | `tests/queueBulkImport.test.ts` — "playAll preserves duplicate ids verbatim…", "playAll keeps ids missing from the library queued…" | known gap **G4** (validation half) |
 
 ## 3. Active anchor & advancement
 
@@ -92,10 +94,11 @@ browser specs the rows cite — `queueRows` (8), `queuedragdup` (1), `queueConti
 | B7 | Promotion puts the audible song at the user boundary with the untouched auto continuation immediately after it — never at an old history slot. | `tests/queueMutation.test.ts` — "recycled auto promotion moves the audible song to the boundary (native history-replay regression)", "recycled promotion with no surviving auto tail keeps the audible song queued", "a repeat play never rewinds…", "long hands-off auto session with interleaved duplicates never replays history" | pinned |
 | B8 | Moving the PLAYING row (drag / move-to-end) re-anchors by id and re-arms the crossfade target onto the NEW next row. | `tests/playbackManagerAdvance.test.ts` — "end-of-track after moving the PLAYING row down advances to the NEW next row", "moving the playing row re-arms the web crossfade target onto the NEW next row"; `tests/queueMutation.test.ts` — "dragging the active USER row keeps the anchor on the moved user occurrence" | pinned † |
 | B9 | A queue mutation never leaves a stale armed crossfade target; removal of the armed row re-arms or disarms. | `tests/playbackManagerAdvance.test.ts` — "removing the ARMED next row re-arms the crossfade target past the removal", "…tail next row disarms the arm", "…stale re-arm whose target was removed mid-resolve is dropped", "queue-write bursts coalesce into ONE re-arm" | pinned |
-| B10 | A cross-section duplicate drag resolves to the USER occurrence (the drag signature carries no section). | `tests/queueMutation.test.ts` — "applyDragDrop resolves a cross-section duplicate to the USER occurrence" | known limitation **G5** |
+| B10 | A drag carries the source occurrence (`queueEntryId`); a cross-section duplicate drag moves the occurrence the user grabbed — the auto copy when the user grabbed that one — never a same-id neighbour. | `tests/queueMutation.test.ts` — "applyDragDrop: a cross-section duplicate resolves to the dragged AUTO occurrence (G5 closed)", "…with two user copies the dragged one moves and the other stays"; `tests/e2e/queuedragdup.spec.ts` — "three copies of one song are independent rows" | pinned (G5 closed) |
 | B11 | A filter/sort change while an AUTO row plays must keep the anchor on that row. | `tests/queueManagerFill.test.ts` — "a filter change that still matches the playing auto row keeps it queued AND anchored" / "…EXCLUDES the playing auto row… (KNOWN GAP)" / "a sort change mid-play rebuilds the auto order without re-anchoring… (KNOWN GAP)" / "…drops the LAST playing auto row leaves activeIndex past the end (KNOWN GAP)" | known gap **G1/G2** |
 | B12 | Two Next presses in the same tick must skip two rows. | `tests/playbackManagerNav.test.ts` — "two Next presses in the same tick skip only ONE row (KNOWN GAP…)" | known gap **G3** |
 | B13 | Next then Previous in the same tick returns to the starting row, with both left rows cooled. | `tests/playbackManagerNav.test.ts` — "Next then Previous in the same tick returns to the starting row" | new |
+| B14 | On web, removing the PLAYING row skips to its successor immediately; removing a different OCCURRENCE of the same song does not (id equality alone is not enough once duplicates exist). | `tests/playbackManagerAdvance.test.ts` — "removing the PLAYING row skips to the next track immediately (2.7)", "removing a DUPLICATE of the playing row never skips playback (occurrence identity)"; `tests/e2e/queueRows.spec.ts` — duplicate-rows spec (the playing row survives the copy removal) | pinned |
 
 ## 4. Promotion & history
 
@@ -195,7 +198,7 @@ shuffle round-trip) and **H7** (§9, queue restore after a reload).
 | --- | --- | --- | --- |
 | V1 | Queue rows carry their true combined index under the virtual window (play taps, now-playing, drag identity, drop target). | `tests/e2e/queueRows.spec.ts` — "row data-combined-index equals the true combined index", "tapping a queue row plays THAT row", "the playing row shows the now-playing indicator" | pinned (browser) |
 | V2 | A queue drag reorders the store and the preview follows the pointer. | `tests/e2e/queueRows.spec.ts` — "drag to reorder: the drop reorders the store", "drag preview appears over the dragged row" | pinned (browser) |
-| V3 | A cross-section duplicate drag never crashes the each keys. | `tests/e2e/queuedragdup.spec.ts` — "dragging a cross-section duplicate auto row into the user queue does not crash the each keys" | pinned (browser) |
+| V3 | Three copies of one song are independent rows, each keyed and removable by occurrence, and dragging the third copy moves THAT copy. | `tests/e2e/queuedragdup.spec.ts` — "three copies of one song are independent rows alongside their auto occurrence" | pinned (browser) |
 | V4 | Long queues stay bounded and playback keeps advancing (40-advance album, 500-song flood). | `tests/e2e/queueflood.spec.ts` — "album play-through: 40 advances grow the queue and the queue view stays bounded", "mega-album flood: a 500-song queue scrolls bounded and its landing screen loads" | pinned (browser) |
 | V5 | Offline advance + native progress behave through the real bundle. | `tests/e2e/offline-advance.spec.ts` — "a mid-track connection drop still plays the preloaded next track from the cache", "the full preload window fills in queue order and survives two offline advances"; `tests/e2e/nativeProgress.spec.ts` — "native percentage-first events fill the actual SeekBar before completion" | pinned (browser — native mocked) |
 
@@ -204,13 +207,13 @@ shuffle round-trip) and **H7** (§9, queue restore after a reload).
 Each is pinned by a passing test that asserts the CURRENT behavior. Do not "fix" a gap by deleting its row;
 rewrite the row and the test with the new rule, and record the decision in `docs/DEVLOG.md`.
 
-**Agreed direction (2026-10-21b, not implemented):** G1/G2 close structurally (the audible row is
-promoted before any auto rewrite, and a filter/sort edit is a full rebuild), G3 closes with an explicit
-skip fact, G5 closes with occurrence-based drag identity, and G4 becomes the bulk-import contract.
-See [QUEUE-DESIGN.md](QUEUE-DESIGN.md) §2 (D7, D10, D11, D12). Until those commits land, every gap
-below still describes the code.
+**Progress (2026-10-21c):** G5 is CLOSED — drags now carry the source occurrence (`queueEntryId`), so a
+same-id duplicate can be dragged independently. G1/G2 (fill rewrite without promoting the audible row) and
+G3 (same-tick Next) are still open and close in steps 2–4 of [QUEUE-DESIGN.md](QUEUE-DESIGN.md) §6. The
+"each-key collision" limb of G4 is also gone: row keys are occurrence-scoped (A4), so a bulk import with
+duplicates renders.
 
-### G1 — A filter change mid-play does not re-anchor the playing AUTO row
+### G1 — A filter change mid-play does not re-anchor the playing AUTO row (OPEN — step 4)
 - **Shape:** `replenishAutoQueue` writes `autoQueue = kept + fill` and never touches `activeIndex`. When the
   playing row stops matching the tightened filter, it is pruned; the index stays put and now names a
   different row (or a row past the end when the playing row was last).
@@ -224,7 +227,7 @@ below still describes the code.
   load. (a) looks most literal ("what I'm hearing stays"), but it means the visible queue can contain a row
   that no longer matches the filter shown.
 
-### G2 — A sort change mid-play rebuilds the auto order without re-anchoring
+### G2 — A sort change mid-play rebuilds the auto order without re-anchoring (OPEN — step 4)
 - **Shape:** same root as G1 on the rebuild path (`keepAuto: false` wipes and replaces the auto section). The
   playing row may be re-included at a different position, so the index points at a neighbor.
 - **Evidence:** `tests/queueManagerFill.test.ts` — "a sort change mid-play rebuilds the auto order without
@@ -235,7 +238,7 @@ below still describes the code.
 - **Decision needed:** the same three options as G1, applied at the rebuild choke point. A shared
   "preserve the audible occurrence across a fill rewrite" helper would close G1+G2 together.
 
-### G3 — A Next press inside the load window does not advance
+### G3 — A Next press inside the load window does not advance (OPEN — step 3)
 - **Shape:** `next()` advances `activeIndex` synchronously, but `currentTrack` is only written after the new
   source resolves. A second press inside that window sees `combined[activeIndex] !== playingId`, which
   `advanceTargetIndex` interprets as "the active row was removed" (2.4 option b) and re-targets the SAME
@@ -259,15 +262,18 @@ below still describes the code.
   whether `playAll` should dedupe (first occurrence), filter unknown ids, or reject the import. Whatever is
   chosen becomes the playlist contract.
 
-### G5 — Drag identity is id-only, so an auto duplicate cannot be dragged independently
-- **Shape:** `applyDragDrop` receives a track id, not a section; `indexOf` finds the user copy first. Dropping
-  the auto occurrence onto the user tail is a no-op, and dropping it elsewhere moves the USER copy.
-- **Impact:** minor — promotion/remove buttons are the sanctioned path for an auto occurrence. Worth knowing
-  before the queue view grows another drag surface (playlists).
-- **Evidence:** `tests/queueMutation.test.ts` — "applyDragDrop resolves a cross-section duplicate to the USER
-  occurrence (the drag signature carries no section)".
-- **Decision needed:** if occurrence-level dragging matters, pass the source section (or `queueEntryId`) into
-  the drag payload.
+### G5 — CLOSED (2026-10-21c): drag identity is the occurrence
+- **Shape (was):** `applyDragDrop` received a track id, not an occurrence; `indexOf` found the user copy first,
+  so dropping the auto occurrence moved the USER copy (or no-opped).
+- **Fix (2026-10-21c):** the drag payload is a `queueEntryId` (`u-<id>#<n>` / `a-<id>#<n>`), the plan resolves
+  the source occurrence in the drag-start arrays, and the drag-move reconciles per-id occurrence COUNTS
+  against the live queue to find the dragged copy's live index. `planDragDrop`/`applyDragDrop` take either a
+  legacy `{ trackId }` signature (section-agnostic, kept for callers that only have an id) or
+  `{ entryId }`.
+- **Evidence:** `tests/queueMutation.test.ts` — "applyDragDrop: a cross-section duplicate resolves to the
+  dragged AUTO occurrence (G5 closed)", "…with two user copies the dragged one moves and the other stays";
+  `tests/queueOccurrence.test.ts` — `resolveEntry` / `entryOccupancy`.
+- **Remaining:** QueueView derives the drag entry from the row it rendered (V2/V3 pins in §12).
 
 ## 14. What was unpinned before this pass
 
@@ -275,7 +281,7 @@ These behaviors had no durable test before 2026-10-21 and are now pinned. Rows m
 all before this pass; rows marked `pinned †` already had some, and the items below name the limb this pass
 added (L1's web natural-end pin, F1's and L6's subscription pins, B8's drag-identity pin).
 
-1. Restore dedupe + active re-anchoring; out-of-range anchor; legacy `historyQueue` (A5, H2, H3, H4).
+1. Restore raw pass-through + anchor bounds (A5, H2, H3, H4).
 2. Bulk `playAll` shape, empty import, duplicate ids, unknown ids, active-track-in-import (J1–J4).
 3. Drag/remove around the active row with a cross-section duplicate (A8, B8, B10).
 4. Rapid Next/Previous, manual Next at the tail, Previous restart/wrap, natural-end wrap/stop on the web
@@ -309,7 +315,7 @@ server was contacted):
 | --- | --- | --- |
 | **Export scope** | The USER queue, verbatim (the played pile included, as the queue view shows it), with an optional "from the current row" variant as a UI affordance. Never the auto tail. | The auto tail is a regenerated suggestion pool; exporting it would freeze arbitrary suggestions into the user's account. A second backend is out of scope. |
 | **Overwrite semantics** | "Save queue" creates a playlist when no id is stored; later saves reuse the stored id. Offer an explicit "Replace playlist" (create+id) and an incremental "Update" (updatePlaylist) so a save can never silently drop a row the user added on the server. | create+id replaces wholesale; update is incremental. The choice must be the user's, mirrored in the confirm copy. |
-| **Duplicate / order semantics** | On IMPORT/play, collapse duplicates to the first occurrence (A1) and preserve the server order otherwise; on EXPORT, the local queue is already unique, so write it verbatim. Report collapsed counts. | Local queue uniqueness is a hard constraint (A4). The server permits duplicates; the app cannot represent them within one section. |
+| **Duplicate / order semantics** | Preserve the server order AND its duplicates on import/play (occurrence identity, A1/A9) — `playAll` already writes rows verbatim. Export writes the user section verbatim. | Since 2026-10-21c the local queue represents duplicates as independent occurrences, so the server's duplicates are no longer lossy. The old "collapse to first occurrence" clause was written against the uniqueness model and is void. |
 | **Missing tracks** | Filter ids the local library does not know at play/enqueue time, keep the surviving order, and state the count. Never rewrite the server playlist to "fix" it. | Mirrors the library-sync reconcile (H4) and the autoplay contract: an unresolvable id must not stall the chain (G4). |
 | **Server unavailable** | No local playlist cache in v1. Show the honest offline/error state with retry; the local queue keeps working. | A second local playlist backend is exactly the duplication the roadmap forbids; the queue already survives offline. |
 | **Playlist-ID migration / not found** | Code 70 → the playlist is gone (or invisible): clear the stored id, tell the user, require an explicit re-create. Never auto-recreate. | Auto-recreate after a migration produces duplicate playlists; invisible-vs-missing is indistinguishable to a non-admin by design. |

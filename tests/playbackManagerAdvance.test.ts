@@ -124,7 +124,7 @@ type PrivatePM = {
   _onTrackEnded(fromError?: boolean): Promise<void>
   _handleCrossfadeEnd(targetId: string | null): Promise<void>
   next(): Promise<void>
-  handleQueueRowRemoved(removedId: string): Promise<void>
+  handleQueueRowRemoved(removedId: string, removedWasActive?: boolean): Promise<void>
   _setupNextTrack(): Promise<void>
   _rearmCrossfadeTarget(): void
   _initialized: boolean
@@ -241,6 +241,35 @@ test('removing the PLAYING row skips to the next track immediately (2.7)', async
   // next row was NOT pre-marked (it is about to play).
   assert.ok(q.recentTrackIds.includes('navidrome-t1'))
   assert.ok(!q.recentTrackIds.includes('navidrome-t2'))
+})
+
+test('removing a DUPLICATE of the playing row never skips playback (occurrence identity)', async () => {
+  const h = makeHarness()
+  resetStores()
+  library.set([t0, t1, t2])
+  // Two copies of the playing song, the audible one first, then a successor.
+  queue.set({
+    userQueue: ['navidrome-t1', 'navidrome-t1', 'navidrome-t2'],
+    autoQueue: [],
+    recentTrackIds: [],
+    activeIndex: 0,
+  })
+  setCurrentTrack(t1)
+  setPlaybackState('playing')
+
+  // Remove the SECOND copy. The id matches the playing track, but the audible
+  // OCCURRENCE is untouched — an id-equality skip would cut the song here.
+  const wasActive = 1 === get(queue).activeIndex
+  assert.equal(wasActive, false)
+  const removedId = queueManager.removeFromUserQueue(1)
+  assert.equal(removedId, 'navidrome-t1')
+  await h.m.handleQueueRowRemoved(removedId, wasActive)
+
+  assert.equal(get(currentTrack)?.trackId, 'navidrome-t1', 'the audible copy keeps playing')
+  assert.equal(get(playbackState), 'playing')
+  const q = get(queue)
+  assert.equal(q.activeIndex, 0)
+  assert.deepEqual(q.userQueue, ['navidrome-t1', 'navidrome-t2'])
 })
 
 test('removal skip ignores loop-one — the removed track never restarts', async () => {
@@ -564,12 +593,12 @@ test('end-of-track after moving the PLAYING row down advances to the NEW next ro
   setPlaybackState('playing')
   h.m._initialized = true
 
-  queueManager.applyDragDrop('navidrome-t1', 3, ['t0', 'navidrome-t1', 'navidrome-t2'], ['navidrome-a1'])
+  queueManager.applyDragDrop('user:navidrome-t1', 3, ['t0', 'navidrome-t1', 'navidrome-t2'], ['navidrome-a1'])
   await flush()
   const qAfterDrag = get(queue)
   assert.deepEqual(qAfterDrag.userQueue, ['t0', 'navidrome-t2', 'navidrome-t1'])
   assert.deepEqual(qAfterDrag.autoQueue, ['navidrome-a1'])
-  assert.equal(qAfterDrag.activeIndex, 2) // anchor re-anchored by id
+  assert.equal(qAfterDrag.activeIndex, 2) // anchor followed the dragged occurrence
 
   // Natural end: from the LIVE anchor the next row is the auto tail a1 —
   // never t2 ("the preloaded song in the previous position").
@@ -589,7 +618,7 @@ test('moving the playing row re-arms the web crossfade target onto the NEW next 
   setPlaybackState('playing')
   h.m._initialized = true
 
-  queueManager.applyDragDrop('navidrome-t1', 3, ['t0', 'navidrome-t1', 'navidrome-t2'], ['navidrome-a1'])
+  queueManager.applyDragDrop('user:navidrome-t1', 3, ['t0', 'navidrome-t1', 'navidrome-t2'], ['navidrome-a1'])
   await flush()
   h.web.calls = []
   h.m._rearmCrossfadeTarget()

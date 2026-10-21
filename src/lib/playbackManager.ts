@@ -4,7 +4,8 @@ import { audioManager } from './audioManager'
 import { engine } from './engineFacade'
 import { nativeEngine, BackgroundAudio, type NativeTrackSnapshot } from './nativePlugin'
 import { queueManager } from './queueManager'
-import { advanceTargetIndex, resolveQueueOccurrence, queueEntryId } from './queueMutation'
+import { advanceTargetIndex, resolveQueueOccurrence } from './queueMutation'
+import { combinedEntryIds } from './queueOccurrence'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc, sweepStaleTranscodeEntries } from './preloader'
 import { forwardNativePreloadProgress } from './nativeLoadStatus'
@@ -695,12 +696,18 @@ export class PlaybackManager {
     // mode/format/bitrate (the mode is per-session, not per-track).
     const transcode = this._activeTranscode()
     const userLength = get(queue).userQueue.length
+    // Occurrence-scoped entry ids (D4): the same song may appear several times,
+    // so Swift must be able to name ONE copy — `user:<id>` for the first,
+    // `user:<id>#<n>` for later ones. Derived from the SAME combined array the
+    // snapshot walks, never from a separately-read store (a mid-build mutation
+    // would otherwise desync the two).
+    const entryIds = combinedEntryIds(combined.slice(0, userLength), combined.slice(userLength))
     const snapshot = combined.map((id, index) => {
       const track = this._qm.findTrack(id)
       const row: NativeTrackSnapshot = {
         index,
         trackId: id,
-        queueEntryId: queueEntryId(id, index < userLength ? 'user' : 'auto'),
+        queueEntryId: entryIds[index],
         title: track?.title ?? id,
         artist: track?.artist ?? '',
         album: track?.album ?? '',
@@ -1667,9 +1674,17 @@ export class PlaybackManager {
    * emptied): the native sync guard bails on the out-of-range index, so the
    * engine plays the track out and the natural-end chain stops/wraps. Mirror
    * that exactly instead of cutting the audio — parity, not a second policy.
+   *
+   * `removedWasActive` (2026-10-21c, occurrence identity): with duplicates an
+   * id-equality test is NOT enough — removing a copy of the playing song while
+   * the audible occurrence stays queued used to skip playback. The caller
+   * knows the row it removed (it holds that row's combined index), so it
+   * states whether that row was the active one; the id check stays as the
+   * second, cheap guard for callers that omitted the fact.
    */
-  async handleQueueRowRemoved(removedId: string): Promise<void> {
+  async handleQueueRowRemoved(removedId: string, removedWasActive = true): Promise<void> {
     if (this.isNative()) return // native: engine-driven skip (1.4)
+    if (!removedWasActive) return
     if (removedId !== get(currentTrack)?.trackId) return
     // No successor → let it play out (native parity, see above).
     if (!this._hasNextQueued()) return

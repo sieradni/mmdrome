@@ -3,75 +3,112 @@
  * edit rewrites its sections and re-anchors the active index.
  *
  * Owned exclusively by queueManager (`_mutateQueue` delegates here); kept free
- * of store/Dexie access so the anchor invariant and duplicate rule are
- * unit-verifiable (see the scratch-verify precedent) without a live app.
+ * of store/Dexie access so the anchor invariant and occurrence identity are
+ * unit-verifiable without a live app.
  *
- * Uniqueness invariant: the USER queue holds each track at most once — every
- * "move into user" builder (add, play-next, promote) collapses an existing
- * user copy instead of duplicating it. The AUTO queue never contains an id
- * twice by construction (`_buildPool` excludes `inAuto`); a tier-3 cross-
- * section duplicate (id in both sections) is transient and collapses on
- * promote.
+ * IDENTITY MODEL (2026-10-21, queue redesign step 1): a row is an OCCURRENCE —
+ * `(section, trackId, ordinal)` — never a bare id. Duplicates are legal in
+ * BOTH sections (D3): the user section is a listening log, and an id may occur
+ * any number of times. Nothing here dedupes, normalizes, or asserts uniqueness;
+ * row identity, drag identity, removal and the anchor all speak occurrences
+ * (`queueOccurrence.ts`). The native `queueEntryId` is the occurrence's entry
+ * id, so Swift can name one copy of a repeated song.
  *
- * The DRAG planner is part of this invariant (2026-10-04): the tier-3 cross-
- * section duplicate it can fold is exactly how a queue drag used to put one id
- * in the user section twice — and because `planDragDrop` feeds the LIVE PREVIEW,
- * the duplicate crashed Svelte's each-key check mid-drag. `planDragDrop` now
- * dedupe-moves into the user section and drops the dragged id from the
- * converted prefix; `applyDragDrop` normalizes again at the write boundary.
+ * Anchor rule: preserve the active OCCURRENCE, not merely its song id. The
+ * anchor is captured from `combined[activeIndex]` BEFORE the sections change
+ * and re-resolved by (section, id, ordinal) after them. When that exact copy
+ * was moved across sections (promotion, a drag across the user/auto seam) the
+ * anchor follows the moved copy — `anchorIndex` is the planner's explicit
+ * target for that case. Only a genuinely vanished id degrades to position
+ * semantics, and DEV records the violation.
  *
- * Anchor rule: preserve the active SECTION occurrence, not just its song id.
- * Promotion moves a recycled song's existing user row to the tail and consumes
- * the auto prefix. The audible song stays at the boundary, with the untouched
- * auto continuation immediately after it. Never anchor on the next song while
- * the previous one is still audible: native reconciliation would follow the
- * audible id back into history (2026-10-13 field regression).
+ * Reordering with duplicates: the id-taking builders (`playNext`, `moveToNext`,
+ * `moveToEnd`) operate on the FIRST user occurrence of the id — the row the
+ * caller means when duplicates are not in play. Row-specific UI paths (drag,
+ * remove, auto-row promote) take a section index or an occurrence instead, so
+ * they can never touch a different copy.
  */
 
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
+import {
+  entryIdOf,
+  findEntryIndex,
+  findOccurrenceIndex,
+  occurrenceAt,
+  occurrenceCounts,
+  sameOccurrence,
+  sectionOccurrences,
+  type QueueOccurrence,
+  type QueueSection,
+} from './queueOccurrence'
 import type { QueueState } from '../stores/appState'
 
 const DEV = (import.meta as { env?: { DEV?: boolean } }).env?.DEV === true
 
-/** True when an id appears more than once (section-scoped uniqueness check). */
-function hasWithinSectionDuplicate(ids: string[]): boolean {
-  return new Set(ids).size !== ids.length
-}
-
-/**
- * Keeps only the FIRST occurrence of each id. The store write path must never
- * emit a within-section duplicate (fatal Svelte each-key collision), so even a
- * pre-existing corrupt snapshot is normalized as it passes through.
- */
-function uniqueFirst(ids: string[]): string[] {
-  const seen = new Set<string>()
-  return ids.filter((id) => (seen.has(id) ? false : (seen.add(id), true)))
-}
-
 /**
  * The sections a queue mutation may rewrite. `activeIndex` is deliberately NOT
  * part of the mutation surface — `applyQueueMutation` owns it exclusively,
- * re-anchoring from the pre-mutation active id (single source of truth for the
- * anchor invariant).
+ * re-anchoring from the pre-mutation active occurrence (single source of truth
+ * for the anchor invariant). `anchorIndex` is the one exception: a planner that
+ * MOVES the active occurrence across sections (a drag over the user/auto seam)
+ * knows its post-mutation index, which section-local re-resolution cannot
+ * derive. It is validated against the expected id before use.
  */
-export type QueueMutation = Partial<Pick<QueueState, 'userQueue' | 'autoQueue' | 'recentTrackIds'>>
-
-/** Stable within a section (section-scoped uniqueness); independent of index. */
-export function queueEntryId(trackId: string, section: 'user' | 'auto'): string {
-  return `${section}:${trackId}`
+export type QueueMutation = Partial<Pick<QueueState, 'userQueue' | 'autoQueue' | 'recentTrackIds'>> & {
+  anchorIndex?: number
 }
 
 /** Resolve the exact reported occurrence when available; otherwise preserve
  * a matching selection, prefer forward playback, then allow wraps/re-adoption.
  * Never trust numeric indexes from an engine's older snapshot. */
-export function resolveQueueOccurrence(combined: string[], trackId: string, activeIndex: number, occurrence?: { entryId: string; userLength: number }): number {
+export function resolveQueueOccurrence(
+  combined: string[],
+  trackId: string,
+  activeIndex: number,
+  occurrence?: { entryId: string; userLength: number },
+): number {
   if (occurrence) {
-    const exact = combined.findIndex((id, i) => id === trackId && queueEntryId(id, i < occurrence.userLength ? 'user' : 'auto') === occurrence.entryId)
-    if (exact >= 0) return exact
+    const userLength = Math.max(0, Math.min(occurrence.userLength, combined.length))
+    const exact = findEntryIndex(combined.slice(0, userLength), combined.slice(userLength), occurrence.entryId)
+    if (exact >= 0 && combined[exact] === trackId) return exact
   }
-  if (activeIndex >= 0 && combined[activeIndex] === trackId) return activeIndex
+  if (activeIndex >= 0 && activeIndex < combined.length && combined[activeIndex] === trackId) return activeIndex
   const forward = combined.indexOf(trackId, Math.max(0, activeIndex + 1))
   return forward >= 0 ? forward : combined.indexOf(trackId)
+}
+
+/**
+ * Where the pre-mutation audible occurrence lives in the mutated queue.
+ *
+ * 1. The exact occurrence (section + id + ordinal) still exists → its index.
+ * 2. The copy moved to the OTHER section (promotion appends the audible row at
+ *    the user boundary; a drag across the seam converts it) → that section's
+ *    occurrence of the id (last when moving auto→user, first when moving
+ *    user→auto — the boundary the move produced in practice).
+ * 3. Another copy of the same id remains in its own section → that copy.
+ * 4. The id is gone entirely → position semantics (the pre-mutation index,
+ *    clamped) + a DEV violation line.
+ */
+function resolveAnchorAfterMutation(active: QueueOccurrence, before: QueueState, updated: QueueState): number {
+  const exact = findOccurrenceIndex(updated.userQueue, updated.autoQueue, active)
+  if (exact >= 0) return exact
+
+  const otherIds = active.section === 'user' ? updated.autoQueue : updated.userQueue
+  const otherIdx = active.section === 'user' ? otherIds.indexOf(active.trackId) : otherIds.lastIndexOf(active.trackId)
+  if (otherIdx >= 0) return active.section === 'user' ? updated.userQueue.length + otherIdx : otherIdx
+
+  const ownIds = active.section === 'user' ? updated.userQueue : updated.autoQueue
+  const ownIdx = ownIds.indexOf(active.trackId)
+  if (ownIdx >= 0) return active.section === 'user' ? ownIdx : updated.userQueue.length + ownIdx
+
+  const total = updated.userQueue.length + updated.autoQueue.length
+  if (DEV) {
+    console.error(
+      '[queueMutation] anchor invariant violated — a mutation dropped the active id from the queue:',
+      { active, userQueue: updated.userQueue, autoQueue: updated.autoQueue },
+    )
+  }
+  return Math.min(before.activeIndex, total - 1)
 }
 
 /**
@@ -79,154 +116,205 @@ export function resolveQueueOccurrence(combined: string[], trackId: string, acti
  * snapshot, or `null` for a deliberate no-op (the caller must NOT write the
  * store then).
  *
- * Anchor rule: the active id is captured from `combined[activeIndex]` BEFORE
- * the sections change, then re-anchored within the same section when possible,
- * or to its promoted user occurrence. A removed active row keeps position
- * semantics; DEV records an invariant violation when a user occurrence is lost.
- * No active id (empty queue, or an out-of-range pre-mutation index) → −1.
- *
- * Invariant: `combined[activeIndex]` points at the playing track whenever it
- * remains queued.
+ * No uniqueness enforcement exists here — a within-section duplicate is legal
+ * input and legal output (D3). Row identity is the occurrence, so a duplicate
+ * is never a key collision: QueueView keys rows by `u-<id>#<n>`.
  */
 export function applyQueueMutation(
   q: QueueState,
   mutate: (q: QueueState) => QueueMutation | null,
 ): QueueState | null {
-  const combined = [...q.userQueue, ...q.autoQueue]
-  const activeIdx = q.activeIndex
-  const activeId = activeIdx >= 0 && activeIdx < combined.length ? combined[activeIdx] : undefined
-  const activeWasAuto = activeId !== undefined && activeIdx >= q.userQueue.length
+  const active = occurrenceAt(q.userQueue, q.autoQueue, q.activeIndex)
   const mutation = mutate(q)
   if (mutation === null) return null
-  const updated: QueueState = { ...q, ...mutation }
-  if (DEV && (hasWithinSectionDuplicate(updated.userQueue) || hasWithinSectionDuplicate(updated.autoQueue))) {
-    // A within-section duplicate is a fatal Svelte each-key collision
-    // (`u-${trackId}` / `a-${trackId}` in QueueView) — the effect flush aborts
-    // and the view goes inert (nav buttons dead). No builder may emit one; a
-    // violation fails loudly here instead of surfacing as an opaque crash.
-    console.error(
-      '[queueMutation] within-section duplicate — Svelte each-key collision risk:',
-      { userQueue: updated.userQueue, autoQueue: updated.autoQueue },
-    )
-  }
-  if (activeId !== undefined) {
-    const newCombined = [...updated.userQueue, ...updated.autoQueue]
-    // An unrelated edit must not follow an AUTO occurrence into its old
-    // user copy. Promotion removes that auto occurrence and moves the user
-    // copy to the boundary, so only then do we anchor in the user section.
-    const autoIdx = activeWasAuto ? updated.autoQueue.indexOf(activeId) : -1
-    const foundIdx = autoIdx >= 0 ? updated.userQueue.length + autoIdx : newCombined.indexOf(activeId)
-    const forward = foundIdx < 0 && activeWasAuto
-    if (forward) {
-      // Defensive position fallback for an auto row that actually vanished.
-      // Normal promotion always retains the audible id at the user tail.
-      const suffixCount = combined.length - activeIdx - 1
-      updated.activeIndex = newCombined.length - suffixCount
-    } else if (foundIdx >= 0) {
-      updated.activeIndex = foundIdx
-    } else {
-      // A vanished USER-section active row is a genuine invariant violation
-      // (no sanctioned builder does this): degrade to the pre-mutation index
-      // (position semantics, never a wrong row) and fail loudly in DEV.
-      updated.activeIndex = activeIdx
-      if (DEV) {
-        console.error(
-          '[queueMutation] anchor invariant violated — a mutation dropped the active id from the queue:',
-          { activeId, userQueue: updated.userQueue, autoQueue: updated.autoQueue },
-        )
-      }
-    }
-  } else {
+  const { anchorIndex, ...sections } = mutation
+  const updated: QueueState = { ...q, ...sections }
+  if (!active) {
     updated.activeIndex = -1
+    return updated
   }
+  // A planner's explicit target wins over ordinal re-resolution: with two
+  // copies of one id, the ordinal that was audible can name a DIFFERENT
+  // physical row after a same-id copy moved past it. The hint is validated by
+  // id, so a stale/incorrect hint can never anchor a different song.
+  if (anchorIndex !== undefined) {
+    const combined = [...updated.userQueue, ...updated.autoQueue]
+    if (anchorIndex >= 0 && anchorIndex < combined.length && combined[anchorIndex] === active.trackId) {
+      updated.activeIndex = anchorIndex
+      return updated
+    }
+  }
+  const exact = findOccurrenceIndex(updated.userQueue, updated.autoQueue, active)
+  if (exact >= 0) {
+    updated.activeIndex = exact
+    return updated
+  }
+  updated.activeIndex = resolveAnchorAfterMutation(active, q, updated)
   return updated
 }
 
 /**
  * Positions `trackId` in the user queue right after the active row (clamped to
  * the user tail when the active row sits in the auto queue; appended when
- * nothing is active). An existing user copy is MOVED (dedupe-move); otherwise
- * the row is inserted. Returns `null` when the row has no user slot and is
- * already in place — or, for an existing copy, when it already occupies the
- * target slot (including the active row itself: moving "next" from the active
- * slot is a no-op reorder).
+ * nothing is active). An existing user copy is MOVED (reorder, first
+ * occurrence); otherwise the row is inserted. Returns `null` when the row has
+ * no user slot and is already in place — or, for an existing copy, when it
+ * already occupies the target slot (including the active row itself).
  */
 export function insertUserAfterActive(q: QueueState, trackId: string): string[] | null {
+  return insertUserAfterActiveWithAnchor(q, trackId)?.userQueue ?? null
+}
+
+/** The same reorder with the audible row's projected index (a duplicate id
+ *  makes ordinal re-resolution ambiguous, so the caller supplies the fact). */
+function insertUserAfterActiveWithAnchor(q: QueueState, trackId: string): { userQueue: string[]; anchorIndex?: number } | null {
   const idx = q.userQueue.indexOf(trackId)
   const insertAt = q.activeIndex >= 0 ? Math.min(q.activeIndex + 1, q.userQueue.length) : q.userQueue.length
   if (idx >= 0 && (insertAt === idx || insertAt === idx + 1)) return null
+  const activeInUser = q.activeIndex >= 0 && q.activeIndex < q.userQueue.length
   if (idx < 0) {
-    return [...q.userQueue.slice(0, insertAt), trackId, ...q.userQueue.slice(insertAt)]
+    const userQueue = [...q.userQueue.slice(0, insertAt), trackId, ...q.userQueue.slice(insertAt)]
+    const anchorIndex = activeInUser && insertAt <= q.activeIndex ? q.activeIndex + 1 : undefined
+    return { userQueue, ...(anchorIndex !== undefined ? { anchorIndex } : {}) }
   }
-  const userQueue = q.userQueue.filter((id) => id !== trackId)
-  userQueue.splice(insertAt > idx ? insertAt - 1 : insertAt, 0, trackId)
-  return userQueue
+  const userQueue = [...q.userQueue]
+  userQueue.splice(idx, 1)
+  const adjusted = Math.max(0, Math.min(insertAt > idx ? insertAt - 1 : insertAt, userQueue.length))
+  userQueue.splice(adjusted, 0, trackId)
+  let anchorIndex: number | undefined
+  if (activeInUser) {
+    if (q.activeIndex === idx) anchorIndex = adjusted
+    else {
+      const base = q.activeIndex - (idx < q.activeIndex ? 1 : 0)
+      anchorIndex = adjusted <= base ? base + 1 : base
+    }
+  }
+  return { userQueue, ...(anchorIndex !== undefined ? { anchorIndex } : {}) }
 }
 
-/** Appends to the user queue; no-op (null) when the track already has a user slot. */
+/** Appends a new occurrence to the user queue. Always — a queued row is an
+ *  occurrence, not a set membership (D2). */
 export function addToUserQueue(q: QueueState, trackId: string): QueueMutation | null {
-  if (q.userQueue.includes(trackId)) return null
   return { userQueue: [...q.userQueue, trackId] }
 }
 
 /**
- * Plays a track right after the active row (user-copy move when it is already
- * queued, plain insert otherwise). In-auto active row: clamped to the user
- * tail, which can sit before the playing track in combined order — accepted
- * by design.
+ * Plays a track right after the active row (first user-copy move when it is
+ * already queued, plain insert otherwise). In-auto active row: clamped to the
+ * user tail, which can sit before the playing track in combined order —
+ * accepted by design. Reorder, never an add: duplicates are not created here.
  */
 export function playNext(q: QueueState, trackId: string): QueueMutation | null {
-  const userQueue = insertUserAfterActive(q, trackId)
-  return userQueue ? { userQueue } : null
+  const edit = insertUserAfterActiveWithAnchor(q, trackId)
+  return edit
+    ? { userQueue: edit.userQueue, ...(edit.anchorIndex !== undefined ? { anchorIndex: edit.anchorIndex } : {}) }
+    : null
 }
 
 /**
- * Moves an auto row to the end of the user queue; an existing user copy is
- * kept (no duplicate — the auto copy is simply dropped).
+ * Moves the auto OCCURRENCE at `autoIndex` to the end of the user queue — a
+ * new user occurrence, because promoting a suggestion is exactly "queue this
+ * now". An older user copy of the same id stays where it is as history. Out-of-
+ * range index is a no-op.
  */
-export function promoteToUser(q: QueueState, trackId: string): QueueMutation | null {
-  if (q.autoQueue.indexOf(trackId) < 0) return null
+export function promoteToUser(q: QueueState, autoIndex: number): QueueMutation | null {
+  const trackId = q.autoQueue[autoIndex]
+  if (trackId === undefined) return null
+  const removedCombined = q.userQueue.length + autoIndex
+  const anchorIndex = q.activeIndex >= q.userQueue.length && q.activeIndex > removedCombined
+    ? q.activeIndex - 1
+    : undefined
   return {
-    userQueue: q.userQueue.includes(trackId) ? q.userQueue : [...q.userQueue, trackId],
-    autoQueue: q.autoQueue.filter((id) => id !== trackId),
+    userQueue: [...q.userQueue, trackId],
+    autoQueue: q.autoQueue.filter((_, i) => i !== autoIndex),
+    ...(anchorIndex !== undefined ? { anchorIndex } : {}),
   }
 }
 
 /**
- * Moves an auto row to the slot right after the active row (dedupe-move of a
- * user copy if one exists). The auto copy is always dropped — even when the
- * user part is already in place, so a cross-section duplicate never survives.
+ * Moves the auto OCCURRENCE at `autoIndex` to the slot right after the active
+ * row, appending a new user occurrence (no dedupe-move: the auto row and any
+ * user copy are independent rows). Out-of-range index is a no-op.
  */
-export function promoteToUserNext(q: QueueState, trackId: string): QueueMutation | null {
-  if (q.autoQueue.indexOf(trackId) < 0) return null
-  const userQueue = insertUserAfterActive(q, trackId)
+export function promoteToUserNext(q: QueueState, autoIndex: number): QueueMutation | null {
+  const trackId = q.autoQueue[autoIndex]
+  if (trackId === undefined) return null
+  const insertAt = q.activeIndex >= 0 ? Math.min(q.activeIndex + 1, q.userQueue.length) : q.userQueue.length
+  let anchorIndex: number | undefined
+  if (q.activeIndex >= 0 && q.activeIndex < q.userQueue.length) {
+    anchorIndex = insertAt <= q.activeIndex ? q.activeIndex + 1 : q.activeIndex
+  } else if (q.activeIndex >= q.userQueue.length) {
+    // The user section grows by one ABOVE the auto row, and the removed auto
+    // occurrence may have sat before the audible one.
+    anchorIndex = q.activeIndex + 1 - (autoIndex < q.activeIndex - q.userQueue.length ? 1 : 0)
+  }
   return {
-    ...(userQueue ? { userQueue } : {}),
-    autoQueue: q.autoQueue.filter((id) => id !== trackId),
+    userQueue: [...q.userQueue.slice(0, insertAt), trackId, ...q.userQueue.slice(insertAt)],
+    autoQueue: q.autoQueue.filter((_, i) => i !== autoIndex),
+    ...(anchorIndex !== undefined ? { anchorIndex } : {}),
   }
 }
 
-/** Reorders a user row to just after the active row; no-op (null) when the row is missing or already in place. */
-export function moveToNext(q: QueueState, trackId: string): QueueMutation | null {
-  if (q.userQueue.indexOf(trackId) < 0) return null
-  const userQueue = insertUserAfterActive(q, trackId)
-  return userQueue ? { userQueue } : null
+/**
+ * Reorders the user OCCURRENCE at `index` to just after the active row. The
+ * exact row is addressed by index (the view always has it), so a duplicate id
+ * can never move a different copy. No-op when the row is already in place.
+ */
+export function moveUserRowToNext(q: QueueState, index: number): QueueMutation | null {
+  const trackId = q.userQueue[index]
+  if (trackId === undefined) return null
+  const insertAt = q.activeIndex >= 0 ? Math.min(q.activeIndex + 1, q.userQueue.length) : q.userQueue.length
+  if (insertAt === index || insertAt === index + 1) return null
+  const userQueue = [...q.userQueue]
+  userQueue.splice(index, 1)
+  const adjusted = Math.max(0, Math.min(insertAt > index ? insertAt - 1 : insertAt, userQueue.length))
+  userQueue.splice(adjusted, 0, trackId)
+  let anchorIndex: number | undefined
+  if (q.activeIndex >= 0 && q.activeIndex < q.userQueue.length) {
+    if (q.activeIndex === index) anchorIndex = adjusted
+    else {
+      const base = q.activeIndex - (index < q.activeIndex ? 1 : 0)
+      anchorIndex = adjusted <= base ? base + 1 : base
+    }
+  }
+  return { userQueue, ...(anchorIndex !== undefined ? { anchorIndex } : {}) }
 }
 
-/** Moves a user row to the very end of the user queue. */
-export function moveToEnd(q: QueueState, trackId: string): QueueMutation | null {
-  if (q.userQueue.indexOf(trackId) < 0) return null
-  const userQueue = q.userQueue.filter((id) => id !== trackId)
+/** Moves the user OCCURRENCE at `index` to the very end of the user queue. */
+export function moveUserRowToEnd(q: QueueState, index: number): QueueMutation | null {
+  const trackId = q.userQueue[index]
+  if (trackId === undefined) return null
+  const userQueue = [...q.userQueue]
+  userQueue.splice(index, 1)
   userQueue.push(trackId)
-  return { userQueue }
+  let anchorIndex: number | undefined
+  if (q.activeIndex >= 0 && q.activeIndex < q.userQueue.length) {
+    anchorIndex = q.activeIndex === index
+      ? userQueue.length - 1
+      : q.activeIndex > index ? q.activeIndex - 1 : q.activeIndex
+  }
+  return { userQueue, ...(anchorIndex !== undefined ? { anchorIndex } : {}) }
+}
+
+/** Reorders the FIRST user occurrence of `trackId` to just after the active row; no-op when the row is missing or already in place. Id-level convenience for callers without a row index — the view uses `moveUserRowToNext`. */
+export function moveToNext(q: QueueState, trackId: string): QueueMutation | null {
+  const idx = q.userQueue.indexOf(trackId)
+  return idx < 0 ? null : moveUserRowToNext(q, idx)
+}
+
+/** Moves the FIRST user occurrence of `trackId` to the very end of the user queue. */
+export function moveToEnd(q: QueueState, trackId: string): QueueMutation | null {
+  const idx = q.userQueue.indexOf(trackId)
+  return idx < 0 ? null : moveUserRowToEnd(q, idx)
 }
 
 /**
- * Promote ONLY the active AUTO occurrence. A recycled song dedupe-MOVES its
- * user copy to the tail; no duplicate keys, no history replay, and the active
- * index continues to name the audible song. Explicit user-row replay leaves
- * its independent upcoming auto occurrence untouched. The consumed skipped
- * auto prefix cools down atomically with the move.
+ * Promote ONLY the active AUTO occurrence. The audible row is appended at the
+ * user boundary as a new occurrence; an older user copy of the same id stays
+ * where it is as history. (Step 2 of the redesign, D5, removes the copy-move
+ * that still happens here — until then this moves at most ONE existing user
+ * copy, never all of them, so duplicates are preserved.) The consumed skipped
+ * auto prefix cools down atomically.
  */
 export function promoteActiveTrack(q: QueueState): QueueMutation | null {
   const combined = [...q.userQueue, ...q.autoQueue]
@@ -245,9 +333,14 @@ export function promoteActiveTrack(q: QueueState): QueueMutation | null {
   for (const skippedId of q.autoQueue.slice(0, autoIdx)) {
     recentTrackIds = inscribeRecent(recentTrackIds, skippedId, RECENT_LIMIT)
   }
+  const existingUserIdx = q.userQueue.indexOf(activeId)
+  const userQueue = existingUserIdx >= 0
+    ? q.userQueue.filter((_, i) => i !== existingUserIdx)
+    : q.userQueue
   return {
-    userQueue: [...q.userQueue.filter((id) => id !== activeId), activeId],
+    userQueue: [...userQueue, activeId],
     autoQueue: q.autoQueue.slice(autoIdx + 1),
+    anchorIndex: userQueue.length,
     ...(recentTrackIds !== q.recentTrackIds ? { recentTrackIds } : {}),
   }
 }
@@ -256,134 +349,187 @@ export function promoteActiveTrack(q: QueueState): QueueMutation | null {
  * The drag-preview transform, shared by the QueueView preview AND the drop
  * resolver (2026-09-12). Operates on ID arrays in combined order: `fromIdx`
  * is the dragged row's combined index, `toIdx` the DOM drop slot (combined
- * space). Semantics mirror the long-standing preview exactly:
+ * space). Semantics:
  *   - user→user: reorder within the user section;
  *   - user→auto: the dragged row lands PAST the user tail and auto rows
  *     above the slot join the user tail (the "convert" rule);
  *   - auto→user: the dragged row is inserted into the user section;
  *   - auto→auto: reorder within the auto section.
- * One algorithm for what-you-see and what-you-get: the drop can never
- * disagree with the preview, and applyDragDrop feeds it the LIVE arrays so a
- * mutation that landed mid-drag cannot resurrect a stale order.
+ * One algorithm for what-you-see and what-you-get.
+ *
+ * The OCCURRENCE-aware form (`planDragDropRows`) is the source of truth: it
+ * carries each row's origin section, so duplicates and cross-section
+ * conversion keep their identity. `planDragDrop` is the preview's id view.
  */
+export type DragRow = QueueOccurrence
+
+export function planDragDropRows(
+  user: string[],
+  auto: string[],
+  fromIdx: number,
+  toIdx: number,
+): { user: DragRow[]; auto: DragRow[] } {
+  const userRows = sectionOccurrences(user, 'user')
+  const autoRows = sectionOccurrences(auto, 'auto')
+  const U = userRows.length
+  const isUserSource = fromIdx < U
+  const rows = isUserSource ? userRows : autoRows
+  const sourceIdx = isUserSource ? fromIdx : fromIdx - U
+  const dragged = rows[sourceIdx]
+  if (dragged === undefined) return { user: userRows, auto: autoRows }
+  const target = Math.max(0, toIdx)
+
+  if (isUserSource) {
+    const remainingUser = userRows.filter((_, i) => i !== fromIdx)
+    if (target <= U) {
+      let insertAt = target
+      if (insertAt > fromIdx) insertAt--
+      insertAt = Math.max(0, Math.min(insertAt, remainingUser.length))
+      const nextUser = [...remainingUser]
+      nextUser.splice(insertAt, 0, dragged)
+      return { user: nextUser, auto: autoRows }
+    }
+    const autoTargetIdx = target - U
+    return {
+      user: [...remainingUser, ...autoRows.slice(0, autoTargetIdx), dragged],
+      auto: autoRows.slice(autoTargetIdx),
+    }
+  }
+
+  const remainingAuto = autoRows.filter((_, i) => i !== sourceIdx)
+  if (target <= U) {
+    const insertAt = Math.max(0, Math.min(target, userRows.length))
+    const nextUser = [...userRows]
+    nextUser.splice(insertAt, 0, dragged)
+    return { user: nextUser, auto: remainingAuto }
+  }
+  const autoTargetIdx = target - U
+  let insertAt = autoTargetIdx
+  if (insertAt > sourceIdx) insertAt--
+  insertAt = Math.max(0, Math.min(insertAt, remainingAuto.length))
+  const nextAuto = [...remainingAuto]
+  nextAuto.splice(insertAt, 0, dragged)
+  return { user: userRows, auto: nextAuto }
+}
+
+/** Id view of the drag plan (preview / legacy callers). */
 export function planDragDrop(
   user: string[],
   auto: string[],
   fromIdx: number,
   toIdx: number,
 ): { user: string[]; auto: string[] } {
-  const U = user.length
-  const isUserSource = fromIdx < U
-  const dragged = isUserSource ? user[fromIdx] : auto[fromIdx - U]
-  if (dragged === undefined) return { user, auto }
-
-  if (isUserSource) {
-    const remainingUser = user.filter((_, i) => i !== fromIdx)
-    if (toIdx <= U) {
-      let insertAt = toIdx
-      if (insertAt > fromIdx) insertAt--
-      insertAt = Math.max(0, Math.min(insertAt, remainingUser.length))
-      const nextUser = [...remainingUser]
-      nextUser.splice(insertAt, 0, dragged)
-      return { user: nextUser, auto }
-    }
-    const autoTargetIdx = toIdx - U
-    // Dedupe: a tier-3 cross-section duplicate of the DRAGGED id can sit in
-    // the converted prefix, and `remainingUser` + `converted` + `dragged`
-    // would then put that id in the user section TWICE — a fatal Svelte
-    // each-key collision (`e/each_key_duplicate`, QueueView `u-${id}`),
-    // thrown from the drag PREVIEW while the user is still holding the row.
-    // The dragged occurrence carries the move intent, so the converted copy
-    // is dropped.
-    const converted = auto.slice(0, autoTargetIdx).filter((id) => id !== dragged)
-    return { user: [...remainingUser, ...converted, dragged], auto: auto.slice(autoTargetIdx) }
-  }
-
-  const autoFromIdx = fromIdx - U
-  const remainingAuto = auto.filter((_, i) => i !== autoFromIdx)
-  if (toIdx <= U) {
-    // Dedupe-move parity with `insertUserAfterActive`: an existing user copy
-    // of the dragged id is removed BEFORE the insert (one user row per track
-    // — the same key-collision guard on the auto→user half). The slot
-    // decrements when the removed copy sat above it so the row still lands
-    // on the drop the user aimed at.
-    const existingIdx = user.indexOf(dragged)
-    const withoutExisting = existingIdx >= 0 ? user.filter((_, i) => i !== existingIdx) : user
-    let insertAt = toIdx
-    if (existingIdx >= 0 && existingIdx < toIdx) insertAt--
-    insertAt = Math.max(0, Math.min(insertAt, withoutExisting.length))
-    const nextUser = [...withoutExisting]
-    nextUser.splice(insertAt, 0, dragged)
-    return { user: nextUser, auto: remainingAuto }
-  }
-  const autoTargetIdx = toIdx - U
-  let insertAt = autoTargetIdx
-  if (insertAt > autoFromIdx) insertAt--
-  insertAt = Math.max(0, Math.min(insertAt, remainingAuto.length))
-  const nextAuto = [...remainingAuto]
-  nextAuto.splice(insertAt, 0, dragged)
-  return { user, auto: nextAuto }
+  const plan = planDragDropRows(user, auto, fromIdx, toIdx)
+  return { user: plan.user.map((r) => r.trackId), auto: plan.auto.map((r) => r.trackId) }
 }
 
 /**
- * Drop resolution for the queue drag-and-drop. The dragged row is identified
- * by ID — the drag started from an index, but indices go stale when any
- * mutation (advance, promote, fill re-rank) lands mid-drag; the old applyDrop
- * wrote its START-OF-DRAG preview arrays verbatim, resurrecting the stale
- * order over the mutation (the moved-playing-row played the stale preloaded
- * row next).
+ * Drop resolution for the queue drag-and-drop.
  *
- * The plan is computed from the drag-time arrays (what the user SAW — the
- * preview's exact semantics, conversion included), then RECONCILED against
- * the live store: rows that left the queue mid-drag are dropped from the
- * plan (never resurrected); rows that JOINED it mid-drag (fill re-rank,
- * promotion) keep their store position by appending to the auto tail (the
- * user never saw them, so the visible intent stays authoritative for the
- * rows they did see). A dragged row that left the queue entirely voids the
- * drop. No-op when the reconciled shape already matches the store.
+ * The dragged row is an OCCURRENCE (its entry id), not an id — with duplicates
+ * an id cannot name the row the user grabbed (G5). The plan is computed from
+ * the drag-time arrays (what the user SAW) and then RECONCILED against the
+ * live store by PER-ID OCCURRENCE COUNTS: each planned row consumes one live
+ * occurrence of that id in the section it came from, and planned rows with no
+ * live occurrence left are dropped (removed mid-drag, never resurrected).
+ * Live rows no planned row consumed (they joined mid-drag) are appended in
+ * live order to their own section — the user never saw them, so the visible
+ * intent stays authoritative for the rows they did see.
+ *
+ * Set membership (the old `liveIds.has(id)`) cannot express two copies of one
+ * id: it either drops the second planned copy or re-admits the second live
+ * copy as a "newcomer". Counts are the only correct budget. No-op when the
+ * reconciled shape already matches the store; the dragged occurrence leaving
+ * the queue entirely voids the drop.
  */
 export function applyDragDrop(
   q: QueueState,
-  draggedTrackId: string,
+  draggedEntryId: string,
   targetCombinedIndex: number,
   dragStartUser: string[],
   dragStartAuto: string[],
 ): QueueMutation | null {
-  const startCombined = [...dragStartUser, ...dragStartAuto]
-  const fromIdx = startCombined.indexOf(draggedTrackId)
+  const active = occurrenceAt(q.userQueue, q.autoQueue, q.activeIndex)
+  const fromIdx = findEntryIndex(dragStartUser, dragStartAuto, draggedEntryId)
   if (fromIdx < 0) return null
-  const plan = planDragDrop(dragStartUser, dragStartAuto, fromIdx, targetCombinedIndex)
+  const draggedOccurrence = occurrenceAt(dragStartUser, dragStartAuto, fromIdx)
+  if (!draggedOccurrence) return null
+  const plan = planDragDropRows(dragStartUser, dragStartAuto, fromIdx, targetCombinedIndex)
 
-  const liveCombined = [...q.userQueue, ...q.autoQueue]
-  // The dragged row left the queue mid-drag (removal, clear): its removal
-  // supersedes the drop — there is nothing to place.
-  if (!liveCombined.includes(draggedTrackId)) return null
-  const liveIds = new Set(liveCombined)
-  const inPlan = new Set([...plan.user, ...plan.auto])
-  // Defense in depth: the plan is duplicate-free after the 2026-10-04 fix, but
-  // the reconciliation appends the live tail verbatim — a snapshot that is
-  // ALREADY corrupt would otherwise leak its duplicate into the write.
-  const user = uniqueFirst(plan.user.filter((id) => liveIds.has(id)))
-  const auto = uniqueFirst([
-    ...plan.auto.filter((id) => liveIds.has(id)),
-    ...liveCombined.filter((id) => !inPlan.has(id)),
-  ])
+  const liveCounts: Record<QueueSection, Map<string, number>> = {
+    user: occurrenceCounts(q.userQueue),
+    auto: occurrenceCounts(q.autoQueue),
+  }
+  const used: Record<QueueSection, Map<string, number>> = { user: new Map(), auto: new Map() }
+  const user: string[] = []
+  const auto: string[] = []
+  const plannedIndexByEntry = new Map<string, number>()
+  let draggedKept = false
+
+  const keep = (row: DragRow, out: string[]): boolean => {
+    const budget = liveCounts[row.section].get(row.trackId) ?? 0
+    const consumed = used[row.section].get(row.trackId) ?? 0
+    if (consumed >= budget) return false
+    used[row.section].set(row.trackId, consumed + 1)
+    out.push(row.trackId)
+    return true
+  }
+
+  for (const row of plan.user) {
+    if (!keep(row, user)) continue
+    plannedIndexByEntry.set(entryIdOf(row.section, row.trackId, row.ordinal), user.length - 1)
+    if (sameOccurrence(row, draggedOccurrence)) draggedKept = true
+  }
+  for (const row of plan.auto) {
+    if (!keep(row, auto)) continue
+    plannedIndexByEntry.set(entryIdOf(row.section, row.trackId, row.ordinal), user.length + auto.length - 1)
+    if (sameOccurrence(row, draggedOccurrence)) draggedKept = true
+  }
+  if (!draggedKept) return null
+
+  // Live rows the plan never consumed joined mid-drag: keep them, in live
+  // order, in the section they joined.
+  for (const id of q.userQueue) {
+    const consumed = used.user.get(id) ?? 0
+    if (consumed > 0) used.user.set(id, consumed - 1)
+    else user.push(id)
+  }
+  for (const id of q.autoQueue) {
+    const consumed = used.auto.get(id) ?? 0
+    if (consumed > 0) used.auto.set(id, consumed - 1)
+    else auto.push(id)
+  }
+
+  // A moved active occurrence knows its own target index — the explicit anchor
+  // hint that a cross-section conversion cannot derive section-locally.
+  let anchorIndex: number | undefined
+  if (active) {
+    const key = entryIdOf(active.section, active.trackId, active.ordinal)
+    const planned = plannedIndexByEntry.get(key)
+    if (planned !== undefined && [...user, ...auto][planned] === active.trackId) anchorIndex = planned
+  }
+
   if (JSON.stringify(user) === JSON.stringify(q.userQueue) && JSON.stringify(auto) === JSON.stringify(q.autoQueue)) {
     return null
   }
-  return { userQueue: user, autoQueue: auto }
+  return { userQueue: user, autoQueue: auto, ...(anchorIndex !== undefined ? { anchorIndex } : {}) }
 }
 
 /**
- * "Not now": removes an auto-queued track and cools it down so the next fill
- * doesn't immediately re-suggest it. Active-row targets never reach here —
- * the manager routes those to `promoteActiveTrack` first.
+ * "Not now": removes the auto OCCURRENCE at `autoIndex` and cools it down so
+ * the next fill doesn't immediately re-suggest it (the recency window is
+ * id-scoped by design). Active-row targets never reach here — the manager
+ * routes those to `promoteActiveTrack` first.
  */
-export function removeFromAutoQueue(q: QueueState, trackId: string): QueueMutation | null {
-  if (q.autoQueue.indexOf(trackId) < 0) return null
+export function removeFromAutoQueue(q: QueueState, autoIndex: number): QueueMutation | null {
+  const trackId = q.autoQueue[autoIndex]
+  if (trackId === undefined) return null
+  const removedCombined = q.userQueue.length + autoIndex
+  const anchorIndex = q.activeIndex > removedCombined ? q.activeIndex - 1 : undefined
   return {
-    autoQueue: q.autoQueue.filter((id) => id !== trackId),
+    autoQueue: q.autoQueue.filter((_, i) => i !== autoIndex),
     recentTrackIds: inscribeRecent(q.recentTrackIds, trackId, RECENT_LIMIT),
+    ...(anchorIndex !== undefined ? { anchorIndex } : {}),
   }
 }
 
@@ -445,7 +591,7 @@ export function advanceTargetIndex(
 export function clearQueue(q: QueueState): QueueMutation | null {
   const combined = [...q.userQueue, ...q.autoQueue]
   const currentId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : null
-  return { userQueue: currentId ? [currentId] : [], autoQueue: [] }
+  return { userQueue: currentId ? [currentId] : [], autoQueue: [], ...(currentId ? { anchorIndex: 0 } : {}) }
 }
 
 /**
@@ -461,7 +607,8 @@ export function clearUserAboveActive(q: QueueState): QueueMutation | null {
   if (q.activeIndex < 0) return null
   const cut = q.activeIndex < q.userQueue.length ? q.activeIndex : q.userQueue.length
   if (cut === 0) return null
-  return { userQueue: q.userQueue.slice(cut) }
+  const anchorIndex = q.activeIndex < q.userQueue.length ? 0 : q.activeIndex - q.userQueue.length
+  return { userQueue: q.userQueue.slice(cut), anchorIndex }
 }
 
 /**
@@ -474,5 +621,5 @@ export function clearUserAboveActive(q: QueueState): QueueMutation | null {
 export function clearUserBelowActive(q: QueueState): QueueMutation | null {
   if (q.activeIndex < 0 || q.activeIndex >= q.userQueue.length) return null
   const userQueue = q.userQueue.slice(0, q.activeIndex + 1)
-  return userQueue.length === q.userQueue.length ? null : { userQueue }
+  return userQueue.length === q.userQueue.length ? null : { userQueue, anchorIndex: q.activeIndex }
 }

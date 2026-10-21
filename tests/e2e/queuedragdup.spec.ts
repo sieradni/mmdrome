@@ -1,25 +1,21 @@
 import { test, expect, type Page } from '@playwright/test'
 import { bootSongLibrary } from './thumbflowHelpers'
 
-// Regression pin for the production `Each_key_duplicate` crash (2026-10-04):
-// after a full/looped album play-through the auto tail holds cross-section
-// duplicates (tier 3 deliberately recycles user-queued tracks — B4
-// anti-starvation), and dragging one of those AUTO rows into the USER section
-// used to append it beside its existing user copy. The preview is keyed
-// `u-${trackId}`, so the duplicate threw from Svelte's each-key check MID-DRAG,
-// aborting the effect flush — the queue overlay went inert (dead nav buttons).
+// Browser pin for the duplicate row identity (queue redesign step 1).
 //
-// The fix lives in `planDragDrop` (dedupe-move into user; the converted prefix
-// drops the dragged id) with a normalization pass in `applyDragDrop`. This spec
-// drives the real view path: it asserts the fixture actually reaches the
-// duplicate precondition, performs the auto→user drag through the pointer
-// handlers, and then asserts the section holds unique ids and the overlay is
-// still interactive.
-
-// A tall viewport keeps BOTH queue sections on screen: the drag coordinates
-// reach the auto row's handle and the user drop target without scrolling (a
-// scrolled-out handle silently no-ops the drag and the test would pass
-// vacuously).
+// History: the 2026-10-04 crash came from keying rows `u-${trackId}` and
+// deduping cross-section duplicates in the drag planner. The redesign removes
+// BOTH premises: duplicates are legal occurrences (D3) and each row is keyed
+// by its occurrence (`u-<id>#<n>`, D4), so a drag must never need to collapse
+// a copy. This spec drives the real view path with THREE copies of one song
+// in the user section:
+//   1. the rows render with distinct occurrence keys (no each-key collision);
+//   2. dragging one copy reorders without losing a copy;
+//   3. removing a row removes exactly that copy, not `indexOf(id)`'s first;
+//   4. the overlay stays interactive throughout.
+//
+// A tall viewport keeps the whole short queue on screen: a scrolled-out handle
+// silently no-ops the drag and the test would pass vacuously.
 test.use({ viewport: { width: 1280, height: 1400 } })
 
 const TRACKS = 10
@@ -56,65 +52,75 @@ async function openQueue(page: Page): Promise<void> {
   await page.waitForTimeout(600)
 }
 
-function sectionIds(page: Page, label: 'User queue' | 'Auto queue'): Promise<string[]> {
-  return page.evaluate(
-    (l) =>
-      [...document.querySelectorAll(`[aria-label="${l}"] .queue-track-item`)].map(
-        (el) => (el as HTMLElement).dataset.trackId ?? '',
-      ),
-    label,
+function userRows(page: Page): Promise<{ entry: string; track: string }[]> {
+  return page.evaluate(() =>
+    [...document.querySelectorAll('[aria-label="User queue"] .queue-track-item')].map((el) => ({
+      entry: (el as HTMLElement).dataset.entryId ?? '',
+      track: (el as HTMLElement).dataset.trackId ?? '',
+    })),
   )
 }
 
-test('dragging a cross-section duplicate auto row into the user queue does not crash the each keys', async ({ page }) => {
+test('three copies of one song are independent rows; dragging one keeps all three', async ({ page }) => {
   const pageErrors: string[] = []
   page.on('pageerror', (err) => pageErrors.push(String(err)))
 
   await bootSmall(page)
-  // Play row 0 (the first tap starts playback), then enqueue several more rows
-  // so the user section has real rows ahead of a replenished auto tail.
+  // Play row 0 (the first tap starts playback), then queue TWO more copies of
+  // that same song. Occurrence identity is the only thing that can represent
+  // this without a key collision.
   await page.locator('[data-track-id]').first().click()
   await page.waitForTimeout(1200)
-  const addButtons = page.getByRole('button', { name: 'Add to queue' })
-  for (const i of [1, 2, 3, 4]) await addButtons.nth(i).click()
+  const addButton = page.getByRole('button', { name: 'Add to queue', exact: true }).first()
+  await addButton.click()
+  await addButton.click()
+  // One independent track after the copies, so the drop has an observable
+  // neighbour and the section is not three identical rows.
+  await page.getByRole('button', { name: 'Add to queue', exact: true }).nth(1).click()
   await page.waitForTimeout(500)
   await openQueue(page)
 
-  const userIds = await sectionIds(page, 'User queue')
-  const autoIds = await sectionIds(page, 'Auto queue')
-  expect(userIds.length).toBeGreaterThan(0)
-  expect(autoIds.length).toBeGreaterThan(0)
+  expect(pageErrors).toEqual([])
+  const before = await userRows(page)
+  const dupId = before[0]?.track
+  expect(dupId).toBeTruthy()
+  expect(before.filter((r) => r.track === dupId).length).toBe(3)
+  expect(new Set(before.map((r) => r.entry)).size).toBe(before.length)
+  expect(before.some((r) => r.track !== dupId)).toBe(true)
 
-  // Precondition: a tier-3 cross-section duplicate is exactly what the bug
-  // needed. Fail loudly here rather than pass vacuously if the fixture drifts.
-  const autoDuplicatingUser = autoIds.find((id) => userIds.includes(id))
-  expect(
-    autoDuplicatingUser,
-    `fixture must reach the cross-section duplicate precondition (user=${userIds.join(',')} auto=${autoIds.join(',')})`,
-  ).toBeTruthy()
-
-  // Drag that auto row onto the TOP of the user section (the reported gesture).
-  const autoRow = page.locator(`[aria-label="Auto queue"] [data-track-id="${autoDuplicatingUser}"]`).first()
-  const userRow = page.locator('[aria-label="User queue"] .queue-track-item').first()
-  const handle = autoRow.locator('.drag-handle')
+  // Drag the SECOND duplicate's handle down past the independent track. The
+  // old id-based planner either no-oped or moved the wrong copy; the point
+  // here is that every copy survives and no key collides.
+  const rows = page.locator('[aria-label="User queue"] .queue-track-item')
+  const count = await rows.count()
+  const handle = rows.nth(1).locator('.drag-handle')
   const source = await handle.boundingBox()
-  const target = await userRow.boundingBox()
+  const targetRow = rows.nth(count - 1)
+  const target = await targetRow.boundingBox()
   if (!source || !target) throw new Error('drag geometry missing')
   await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2)
   await page.mouse.down()
-  await page.mouse.move(source.x + source.width / 2, target.y + target.height / 2, { steps: 10 })
+  await page.mouse.move(source.x + source.width / 2, target.y + target.height + 8, { steps: 10 })
   await page.mouse.up()
   await page.waitForTimeout(600)
 
-  // The each-key collision aborted the flush: no such error, and the user
-  // section holds each id at most once. (Pre-fix this run throws
-  // `https://svelte.dev/e/each_key_duplicate` during the drag.)
-  const dupErrors = pageErrors.filter((e) => /each_key_duplicate|Duplicate key/i.test(e))
-  expect(dupErrors).toEqual([])
-  const afterUserIds = await sectionIds(page, 'User queue')
-  expect(new Set(afterUserIds).size).toBe(afterUserIds.length)
+  expect(pageErrors.filter((e) => /each_key_duplicate|Duplicate key/i.test(e))).toEqual([])
+  const after = await userRows(page)
+  expect(after.length, 'a drag never drops or duplicates a row').toBe(before.length)
+  expect(after.filter((r) => r.track === dupId).length).toBe(3)
+  expect(new Set(after.map((r) => r.entry)).size).toBe(after.length)
 
-  // The overlay itself must still be interactive (the crash left it inert).
+  // Remove the SECOND copy of the song: exactly that occurrence leaves, the
+  // other two survive (the old path removed the first `indexOf(trackId)`).
+  const dupRows = page.locator(`[aria-label="User queue"] .queue-track-item[data-track-id="${dupId}"]`)
+  await dupRows.nth(1).getByRole('button', { name: 'Remove from queue' }).click()
+  await page.waitForTimeout(400)
+  const removed = await userRows(page)
+  expect(removed.length).toBe(before.length - 1)
+  expect(removed.filter((r) => r.track === dupId).length).toBe(2)
+  expect(new Set(removed.map((r) => r.entry)).size).toBe(removed.length)
+
+  // The overlay itself must still be interactive.
   await page.getByRole('button', { name: 'Close queue' }).click()
   await expect(page.getByRole('button', { name: 'Close queue' })).toHaveCount(0)
   expect(pageErrors).toEqual([])
