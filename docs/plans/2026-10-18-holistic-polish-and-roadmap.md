@@ -172,7 +172,7 @@ This is a completion ledger, not a promise that all phases are done. Update it a
 
 ### Phase 2A closure — queue/playback reliability characterization (2026-10-21)
 
-**Deliverable:** [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md) — 76 invariants across sections/uniqueness, the active anchor, promotion/history, the recency cooldown, fill tiers/exhaustion/wrap, shuffle, loop mode & manual navigation, persistence/restore, the native bridge, the bulk-import boundary, and the browser-level pins. Every row names a real passing test; §13 registers the five gaps; §15 registers the Phase 3 boundary decisions; §16 states what is out of scope.
+**Deliverable:** [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md) — 76 invariants across sections/uniqueness, the active anchor, promotion/history, the recency cooldown, fill tiers/exhaustion/wrap, shuffle, loop mode & manual navigation, persistence/restore, the native bridge, the bulk-import boundary, and the browser-level pins. Every row names a real passing test (H7's reload proof is `tests/e2e/persistence.spec.ts` — it snapshots the rendered sections and anchor, reloads, and compares); §13 registers the five gaps; §15 registers the Phase 3 boundary decisions; §16 states what is out of scope; §17 records the one behavior whose intent is undecided (manual Next at the tail) as an open product question, not an intent.
 
 **Tests added (+27; suite 1355 → 1382):**
 - `tests/queueBulkImport.test.ts` (7) — `playAll` shape: empty import, duplicate ids, unknown-library ids (and the stall on them), the actively-playing track inside the import, cross-section duplicate on enqueue + promote collapse, `playNext` on an empty queue, recency reset.

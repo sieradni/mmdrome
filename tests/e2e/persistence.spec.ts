@@ -12,6 +12,12 @@ import { installNavidromeMock, seedMockCredentials } from './navidromeMock'
 // (the detail overlay is guarded behind an active track). The shuffle spec
 // runs against the Navidrome mock, because the shuffle toggle lives in the
 // Now Playing detail controls, which need an ACTIVE track.
+//
+// The queue-row spec is the browser half of QUEUE-INVARIANTS H7: it writes a
+// real queue, reloads, and reads the RESTORED sections + anchor back out of
+// the rendered queue. Reading the IndexedDB row (queueContinuation.spec.ts)
+// proves the write; it cannot prove the boot restore, which is the half a
+// reload exercises.
 
 async function openQueue(page: Page): Promise<void> {
   // The mini-player bar opens the Now Playing detail (its empty state covers
@@ -23,9 +29,35 @@ async function openQueue(page: Page): Promise<void> {
   await page.getByRole('button', { name: 'Close queue' }).waitFor({ state: 'visible' })
 }
 
+/** Opens the queue from the ACTIVE mini-player bar (the idle `openQueue`
+ *  helper taps the "Not playing" empty state instead). */
+async function openQueueFromMiniBar(page: Page): Promise<void> {
+  await page.locator('div.ui-island[role="button"]').first().click()
+  await page.getByRole('button', { name: 'Open queue' }).click()
+  await page.getByRole('button', { name: 'Close queue' }).waitFor({ state: 'visible' })
+}
+
 async function openQueueFilter(page: Page): Promise<void> {
   await openQueue(page)
   await page.getByRole('button', { name: 'Auto queue filters' }).click()
+}
+
+/** The rendered queue rows per section, in order: the title text, the true
+ *  combined index the row carries, and whether it is the highlighted (anchor)
+ *  row. The section groups are the QueueView's accessible grouping, so this
+ *  reads the same DOM a screen reader would. */
+async function readQueueSections(
+  page: Page,
+): Promise<{ user: { title: string; index: number; current: boolean }[]; auto: { title: string; index: number; current: boolean }[] }> {
+  return page.evaluate(() => {
+    const read = (label: string) =>
+      Array.from(document.querySelectorAll(`[aria-label="${label}"] .queue-track-item`)).map((el) => ({
+        title: el.querySelector('p')?.textContent?.trim() ?? '',
+        index: Number(el.getAttribute('data-combined-index')),
+        current: el.classList.contains('ui-now-playing-row'),
+      }))
+    return { user: read('User queue'), auto: read('Auto queue') }
+  })
 }
 
 test('queue filter rating inputs snap cleared fields to their boundary and persist', async ({ page }) => {
@@ -113,4 +145,44 @@ test('shuffle mode round-trips through a reload', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Toggle shuffle' })).toHaveClass(
     /(^|\s)text-accent($|\s)/,
   )
+})
+
+test('the queue survives a reload with its sections and anchor intact', async ({ page }) => {
+  // Boot one session against the mock, start a track (user row + replenished
+  // auto tail), snapshot the RENDERED queue, reload, and snapshot it again.
+  // Equal snapshots mean the persisted row was written AND the boot restore
+  // put the rows back in order at the same combined indexes, with the anchor
+  // still highlighted. The Node restore suite pins the pure dedupe/re-anchor
+  // rule; this pins that the real bundle runs it.
+  await installNavidromeMock(page)
+  await bootApp(page)
+  await seedMockCredentials(page)
+  await page.reload({ waitUntil: 'networkidle' })
+  await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })
+
+  await page.getByText('Midnight Drive').first().click()
+  await expect(page.getByText('Midnight Drive')).toHaveCount(2, { timeout: 10_000 })
+
+  await openQueueFromMiniBar(page)
+  await page.waitForTimeout(600)
+  const before = await readQueueSections(page)
+  // Shape guard: an empty section would make the equality below vacuous.
+  expect(before.user.length).toBeGreaterThan(0)
+  expect(before.auto.length).toBeGreaterThan(0)
+  expect(before.user.filter((r) => r.current).map((r) => r.title)).toEqual(['Midnight Drive'])
+
+  // The queue write is fire-and-forget — let the Dexie transaction commit.
+  await page.waitForTimeout(300)
+  await page.reload({ waitUntil: 'networkidle' })
+  await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })
+
+  // Boot deliberately does not auto-activate a track, so the queue is reached
+  // through the idle mini bar (the same path the filter spec uses).
+  await openQueue(page)
+  await page.waitForTimeout(600)
+  const after = await readQueueSections(page)
+
+  expect(after.user).toEqual(before.user)
+  expect(after.auto).toEqual(before.auto)
+  expect(after.user.filter((r) => r.current).map((r) => r.title)).toEqual(['Midnight Drive'])
 })

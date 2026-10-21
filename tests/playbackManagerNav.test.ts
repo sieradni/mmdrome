@@ -201,7 +201,7 @@ test('two Next presses in the same tick skip only ONE row (KNOWN GAP: the anchor
   assert.equal(get(currentTrack)?.trackId, 't2')
 })
 
-test('Next at the queue tail is a no-op even under loop-all (wrapping is a natural-end decision)', async () => {
+test('Next at the queue tail is a no-op under loop-all', async () => {
   reset()
   queue.set({ userQueue: ['t0'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
   loopMode.set('all')
