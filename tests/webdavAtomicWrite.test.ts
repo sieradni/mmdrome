@@ -73,9 +73,9 @@ function runFailureCase(
   })
 }
 
-test('success: PUT temp → MOVE dest, no DELETE, If-Match carries the etag', async () => {
+test('success: PUT temp → MOVE dest, no DELETE, the destination etag rides as a TAGGED If header', async () => {
   const t = fakeTransport([{ status: 201 }, { status: 201 }])
-  await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', '"etag-1"', t.impl, 1000)
+  const outcome = await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', '"etag-1"', t.impl, 1000)
   assert.deepEqual(
     t.calls.map((c) => [c.method, c.url] as [string, string]),
     [
@@ -84,22 +84,69 @@ test('success: PUT temp → MOVE dest, no DELETE, If-Match carries the etag', as
     ],
   )
   const move = t.calls[1]
-  assert.equal(move.headers['If-Match'], '"etag-1"', 'the GET etag rides as If-Match')
+  // The precondition must be scoped to the DESTINATION resource. `If-Match`
+  // is evaluated against the request URI (the temp SOURCE) on real servers
+  // — RFC 7232 §3.1, sabre/dav Server::checkPreconditions — so it 412s every
+  // guarded push. The WebDAV If tagged list names the destination instead.
+  assert.equal(move.headers['If-Match'], undefined, 'If-Match targets the temp source on a real server — never send it')
+  assert.equal(
+    move.headers['If'],
+    `<${DEST_URL}> (["etag-1"])`,
+    'the destination etag must ride as a bracketed, destination-tagged If condition',
+  )
   assert.equal(move.headers.Destination, DEST_URL)
   assert.equal(move.headers.Overwrite, 'T')
   assert.equal(move.headers.Authorization, `Basic ${btoa('user:token')}`)
   assert.equal(t.calls.filter((c) => c.method === 'DELETE').length, 0, 'a successful MOVE deletes nothing')
+  assert.deepEqual(outcome, { guarded: true })
 })
 
-test('without an etag the MOVE is a blind overwrite (no If-Match header)', async () => {
+test('without an etag the MOVE is a blind overwrite (no If header), reported as unguarded', async () => {
   const t = fakeTransport([{ status: 201 }, { status: 201 }])
-  await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', undefined, t.impl, 1000)
+  const outcome = await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', undefined, t.impl, 1000)
+  assert.equal(t.calls[1].headers['If'], undefined)
   assert.equal(t.calls[1].headers['If-Match'], undefined)
+  assert.deepEqual(outcome, { guarded: false })
+})
+
+test('an etag that cannot be expressed in the If header degrades to a blind overwrite', async () => {
+  // Server-controlled input interpolated into a header: an unquoted or
+  // bracket-breaking tag must not produce a malformed precondition (some
+  // servers 400 the whole MOVE). It becomes an unguarded write, and the
+  // caller's blind-overwrite count tells the user.
+  for (const bogus of ['etag-1', '"a]b"', '"a\rb"']) {
+    const t = fakeTransport([{ status: 201 }, { status: 201 }])
+    const outcome = await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', bogus, t.impl, 1000)
+    assert.equal(t.calls[1].headers['If'], undefined, `etag ${JSON.stringify(bogus)} must not be sent`)
+    assert.deepEqual(outcome, { guarded: false }, `etag ${JSON.stringify(bogus)} is an unguarded write`)
+  }
+})
+
+test('a weak etag is still expressible (sabre compares the raw tag)', async () => {
+  const t = fakeTransport([{ status: 201 }, { status: 201 }])
+  const outcome = await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', 'W/"etag-2"', t.impl, 1000)
+  assert.equal(t.calls[1].headers['If'], `<${DEST_URL}> ([W/"etag-2"])`)
+  assert.deepEqual(outcome, { guarded: true })
 })
 
 runFailureCase(
   '412 (ConflictError): PUT → MOVE(412) → exactly one temp DELETE',
   [{ status: 201 }, { status: 412 }],
+  'conflict',
+  [
+    ['PUT', TEMP_URL],
+    ['MOVE', TEMP_URL],
+    ['DELETE', TEMP_URL],
+  ],
+)
+
+runFailureCase(
+  // sabre/dav resolves the If tagged node with tree->getNodeForPath, which
+  // throws NotFound when the destination vanished between GET and MOVE — so a
+  // destination-guard failure reaches us as 404, not 412. It is the same
+  // "re-read the destination" case and must take the retry path.
+  'MOVE 404 (destination vanished): ConflictError, exactly one temp DELETE',
+  [{ status: 201 }, { status: 404 }],
   'conflict',
   [
     ['PUT', TEMP_URL],
@@ -145,10 +192,17 @@ test('PUT failure throws before any temp exists — no DELETE at all', async () 
   )
 })
 
-test('temp path naming matches the shared suffix convention (mirror check)', async () => {
-  // webdavAtomicWrite mirrors webdavUtils.webdavTempPath to stay
-  // Capacitor-free; this pins the mirror so drift fails here first.
-  const t = fakeTransport([{ status: 201 }, { status: 201 }])
-  await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', undefined, t.impl, 1000)
-  assert.ok(t.calls[0].url.endsWith('.mmdrome-tmp'), `temp URL must carry the shared suffix: ${t.calls[0].url}`)
+test('the write core and the transport layer build the SAME URLs', async () => {
+  // Both sides import webdavPaths — this is the pin that they cannot drift
+  // into a GET at one URL and a PUT at another. The whitespace base is the
+  // field case that used to break exactly that way (the core's old local
+  // mirror skipped normalizeUrl's trim).
+  const { buildWebdavUrl, webdavTempPath } = await import('../src/lib/webdavPaths')
+  for (const base of [BASE, `${BASE} `, BASE.replace(/\/+$/, ''), `  ${BASE.replace(/\/+$/, '')}  `]) {
+    const t = fakeTransport([{ status: 201 }, { status: 201 }])
+    await webdavPutAtomic(base, FILE, new ArrayBuffer(8), 'user', 'token', undefined, t.impl, 1000)
+    assert.equal(t.calls[0].url, TEMP_URL, `PUT url for base ${JSON.stringify(base)}`)
+    assert.equal(t.calls[1].headers.Destination, DEST_URL, `Destination for base ${JSON.stringify(base)}`)
+    assert.equal(t.calls[1].url, buildWebdavUrl(base, webdavTempPath(FILE)))
+  }
 })

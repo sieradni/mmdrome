@@ -1,25 +1,17 @@
 /**
- * The atomic WebDAV write — GET is NOT part of this module; it only performs
- * the PUT-temp → MOVE(-If-Match) half of Push's write, given already-fetched
- * bytes (TODO 3.8a). Extracted from `syncEngine.webdavPutAtomic` (which is now
- * a thin adapter binding `webdavFetch`) so the error-path CONTRACT is
- * unit-testable with a fake transport:
+ * Atomic WebDAV write (PUT-temp → conditional MOVE) over an injected transport.
  *
- * - the temp file is deleted AT MOST ONCE on any failure — the previous
- *   structure cleaned up in BOTH the `!moveRes.ok` branch AND the catch-all,
- *   so a 412 (ConflictError) or any MOVE error produced two DELETEs (benign
- *   but observable, and asserted-as-observed in tests/e2e/pushchanges.spec.ts
- *   until this extraction);
- * - `etag` (the concurrency token from the caller's GET) is forwarded as the
- *   MOVE's `If-Match` header — absent etag = blind overwrite (the caller
- *   surfaces that; D5/TODO 3.8b);
- * - a 412 MOVE response is rethrown as `ConflictError` so the caller's single
- *   re-GET retry path (syncEngine) can distinguish it from other failures;
- * - all other MOVE statuses throw a plain Error; PUT failure throws before
- *   any temp exists to clean (no DELETE then either).
- *
- * Keep this module DOM/Dexie-free — it takes everything by parameter.
+ * - Temp file (`<path>.mmdrome-tmp`) is deleted at most once on any MOVE failure
+ *   (status error or network rejection); PUT failure throws before any temp exists.
+ * - The destination ETag from the caller's GET rides in a destination-tagged
+ *   WebDAV `If` header (`<dest-url> (["etag"])`), never `If-Match` (which targets
+ *   the `.mmdrome-tmp` request URI under RFC 7232 §3.1 and sabre/dav).
+ * - HTTP 412 or 404 on MOVE throws `ConflictError` so `syncEngine` retries with a
+ *   fresh GET (sabre/dav throws uncaught `NotFound` 404 when resolving a tagged
+ *   `If` URI whose destination vanished between GET and MOVE).
  */
+
+import { authHeaders, buildWebdavUrl, webdavIfHeader, webdavTempPath } from './webdavPaths'
 
 export class ConflictError extends Error {
   constructor(message: string) {
@@ -28,8 +20,6 @@ export class ConflictError extends Error {
   }
 }
 
-/** Minimal async transport shape — structurally satisfied by `webdavFetch`
- *  (webdavUtils) and by the fakes in tests. */
 export type WebdavFetchLike = (
   url: string,
   options: RequestInit,
@@ -41,20 +31,12 @@ export interface ResponseLike {
   readonly status: number
 }
 
-export function webdavPutAtomic(
-  baseUrl: string,
-  filePath: string,
-  data: ArrayBuffer,
-  user: string,
-  token: string,
-  etag: string | undefined,
-  fetchImpl: WebdavFetchLike,
-  timeoutMs: number,
-): Promise<void> {
-  return webdavPutAtomicImpl(baseUrl, filePath, data, user, token, etag, fetchImpl, timeoutMs)
+export interface AtomicWriteOutcome {
+  /** False when no destination precondition was sent (blind overwrite). */
+  guarded: boolean
 }
 
-async function webdavPutAtomicImpl(
+export async function webdavPutAtomic(
   baseUrl: string,
   filePath: string,
   data: ArrayBuffer,
@@ -63,84 +45,44 @@ async function webdavPutAtomicImpl(
   etag: string | undefined,
   fetchImpl: WebdavFetchLike,
   timeoutMs: number,
-): Promise<void> {
-  const tempPath = webdavTempPath(filePath)
+): Promise<AtomicWriteOutcome> {
+  const tempUrl = buildWebdavUrl(baseUrl, webdavTempPath(filePath))
   const headers = authHeaders(user, token)
 
-  // Write to temp file first — original untouched if this fails. No temp
-  // exists yet, so a PUT failure deletes nothing.
-  const putRes = await fetchImpl(buildWebdavUrl(baseUrl, tempPath), {
+  const putRes = await fetchImpl(tempUrl, {
     method: 'PUT',
-    headers: {
-      ...headers,
-      'Content-Type': 'application/octet-stream',
-    },
+    headers: { ...headers, 'Content-Type': 'application/octet-stream' },
     body: data,
   }, timeoutMs)
   if (!putRes.ok) throw new Error(`WebDAV PUT to temp failed (${putRes.status}) for ${filePath}`)
 
-  // Atomically replace via MOVE with optional concurrency check
   const destUrl = buildWebdavUrl(baseUrl, filePath)
+  const ifHeader = webdavIfHeader(destUrl, etag)
   const moveHeaders: Record<string, string> = {
     ...headers,
     Destination: destUrl,
     Overwrite: 'T',
   }
-  if (etag) moveHeaders['If-Match'] = etag
+  if (ifHeader) moveHeaders['If'] = ifHeader
 
-  // ONE cleanup, whichever way the MOVE fails: a 412 (ConflictError), any
-  // other non-ok status, a network/CORS rejection. `noCleanupNeeded` is set
-  // on the success path (the MOVE consumed the temp — deleting nothing is
-  // correct there) and inside cleanupTemp itself, so neither the catch-all
-  // nor the finally can fire a second DELETE.
-  let noCleanupNeeded = false
-  const cleanupTemp = (): Promise<void> => {
-    if (noCleanupNeeded) return Promise.resolve()
-    noCleanupNeeded = true
-    return fetchImpl(buildWebdavUrl(baseUrl, tempPath), {
-      method: 'DELETE',
-      headers,
-    }, timeoutMs).then(() => undefined).catch(() => {})
-  }
+  const discardTemp = (): Promise<void> =>
+    fetchImpl(tempUrl, { method: 'DELETE', headers }, timeoutMs).then(() => undefined, () => undefined)
 
+  let moveRes: ResponseLike
   try {
-    const moveRes = await fetchImpl(buildWebdavUrl(baseUrl, tempPath), {
-      method: 'MOVE',
-      headers: moveHeaders,
-    }, timeoutMs)
-
-    if (!moveRes.ok) {
-      await cleanupTemp()
-      if (moveRes.status === 412) throw new ConflictError(`File changed since GET for ${filePath}`)
-      throw new Error(`WebDAV MOVE failed (${moveRes.status}) for ${filePath}`)
-    }
-    // Success: the MOVE consumed the temp — there is nothing to clean.
-    noCleanupNeeded = true
+    moveRes = await fetchImpl(tempUrl, { method: 'MOVE', headers: moveHeaders }, timeoutMs)
   } catch (err) {
-    // Catch-all for rejections (network/CORS) — the `!ok` branch already ran
-    // its cleanup, so this is a no-op there; it is the ONLY cleanup on the
-    // rejection paths.
-    await cleanupTemp()
+    await discardTemp()
     throw err
-  } finally {
-    await cleanupTemp()
   }
-}
 
-// Inlined from webdavUtils (mirrors its exports) to keep this module pure and
-// Node-importable — webdavUtils imports Capacitor, which is browser-only.
-// CHANGING webdavUtils' URL/auth/temp-naming helpers REQUIRES updating these
-// mirrors; tests/webdavTempFile.test.ts + tests/webdavAtomicWrite.test.ts pin
-// the observable behavior (temp path, If-Match header, auth header shape).
-function webdavTempPath(filePath: string): string {
-  return `${filePath}.mmdrome-tmp`
-}
+  if (!moveRes.ok) {
+    await discardTemp()
+    if (moveRes.status === 412 || moveRes.status === 404) {
+      throw new ConflictError(`File changed since GET for ${filePath} (HTTP ${moveRes.status})`)
+    }
+    throw new Error(`WebDAV MOVE failed (${moveRes.status}) for ${filePath}`)
+  }
 
-function authHeaders(user: string, token: string): Record<string, string> {
-  return { Authorization: `Basic ${btoa(`${user}:${token}`)}` }
-}
-
-function buildWebdavUrl(baseUrl: string, filePath: string): string {
-  const base = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`
-  return `${base}${filePath.split('/').map(encodeURIComponent).join('/')}`
+  return { guarded: ifHeader !== null }
 }

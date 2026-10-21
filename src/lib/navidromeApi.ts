@@ -1,7 +1,7 @@
 import type { Track } from '../stores/appState'
 import type { RawStructuredLyrics } from './lyricsCore'
 import { writable } from 'svelte/store'
-import { webdavFetch } from './webdavUtils'
+import { webdavFetch, authHeaders, buildWebdavUrl } from './webdavUtils'
 
 import { md5 } from './md5'
 import { recordAuthOutcome, authBaseKey } from './authHealth'
@@ -659,13 +659,13 @@ export async function testWebdavConnection(
   token: string,
 ): Promise<{ connected: boolean; error?: string }> {
   try {
-    const url = `${baseUrl.replace(/\/+$/, '')}/`
+    const url = buildWebdavUrl(baseUrl, '/')
     // Routes through webdavFetch so the test exercises the exact same code
     // path (native CapacitorHttp / web fetch) as real sync operations.
     const res = await webdavFetch(url, {
       method: 'PROPFIND',
       headers: {
-        Authorization: `Basic ${btoa(`${user}:${token}`)}`,
+        ...authHeaders(user, token),
         Depth: '0',
       },
     }, 15000)

@@ -1,5 +1,13 @@
 import { Capacitor } from '@capacitor/core'
 import { CapacitorHttp, type HttpResponse } from '@capacitor/core'
+import { authHeaders, buildWebdavUrl, isTempFile, normalizeUrl, webdavTempPath } from './webdavPaths'
+
+// The URL/auth/temp helpers live in `webdavPaths` (Capacitor-free) so the pure
+// write core and Node tests share ONE derivation with this transport layer —
+// they were previously duplicated here and mirrored there, and the copies
+// drifted. Re-exported here because this is the module the scanners import.
+export { authHeaders, buildWebdavUrl, isTempFile, normalizeUrl, webdavTempPath }
+export { MMDROME_TMP_SUFFIX } from './webdavPaths'
 
 /**
  * Minimal fetch-compatible surface used across WebDAV call sites.
@@ -99,14 +107,6 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer
 }
 
-export function authHeaders(user: string, token: string): Record<string, string> {
-  return { Authorization: `Basic ${btoa(`${user}:${token}`)}` }
-}
-
-export function normalizeUrl(base: string): string {
-  return base.trim().replace(/\/+$/, "")
-}
-
 /**
  * Strips the PROPFIND base URL off a returned href, producing the relative
  * path the index keys on. Absolute and path-form hrefs are both handled; a
@@ -145,24 +145,3 @@ export function webdavBaseKey(url: string, user: string): string {
   return `${url.trim()}|${user.trim()}`
 }
 
-export function buildWebdavUrl(baseUrl: string, filePath: string): string {
-  const encodedPath = filePath.split("/").map((s) => encodeURIComponent(s)).join("/")
-  return `${normalizeUrl(baseUrl)}/${encodedPath.replace(/^\/+/, "")}`
-}
-
-/**
- * Atomic-write temp naming (TODO 3.8a): `webdavPutAtomic` writes to
- * `<file>.mmdrome-tmp` then MOVEs it over the target. The suffix is the SINGLE
- * source for both the writer and the orphan-cleanup detector — a crash between
- * the PUT and the MOVE leaves an orphan temp on the server that the next scan
- * deletes (a changed suffix would strand old orphans forever).
- */
-export const MMDROME_TMP_SUFFIX = ".mmdrome-tmp"
-
-export function webdavTempPath(filePath: string): string {
-  return `${filePath}${MMDROME_TMP_SUFFIX}`
-}
-
-export function isTempFile(filename: string): boolean {
-  return filename.endsWith(MMDROME_TMP_SUFFIX)
-}

@@ -92,8 +92,9 @@ async function webdavGet(
 /**
  * Thin adapter: binds the pure `webdavPutAtomic` (`webdavAtomicWrite.ts`) to
  * the app's real `webdavFetch` transport (native → CapacitorHttp, web →
- * fetch, §3.3). All policy — the exactly-once temp cleanup, If-Match
- * forwarding, ConflictError-on-412 — lives in the pure module and is pinned
+ * fetch, §3.3). All policy — the exactly-once temp cleanup, the
+ * destination-scoped `If` precondition
+ * forwarding, ConflictError-on-412/404 — lives in the pure module and is pinned
  * by tests/webdavAtomicWrite.test.ts; this wrapper carries no logic of its
  * own beyond argument order.
  */
@@ -104,7 +105,7 @@ function webdavPutAtomicViaAppFetch(
   user: string,
   token: string,
   etag?: string,
-): Promise<void> {
+) {
   return webdavPutAtomic(baseUrl, filePath, data, user, token, etag, webdavFetch, WEBDAV_TIMEOUT)
 }
 
@@ -364,6 +365,10 @@ export interface WebdavSyncResult {
   skipped: number
   wrongServer: number
   blindOverwrite: number
+  /** The FIRST per-row failure's message (absent when nothing failed). Without
+   *  it the pane reported a bare "N failed" with no cause — a wrong base URL,
+   *  a MOVE rejection and a tag-write error all read identically. */
+  failureReason?: string
   /** True when the run ended because the user cancelled it (not an error).
    *  Row-atomic by construction: rows pushed before the cancel stay pushed
    *  and synced; the rest stay pending_sync for the next Push. */
@@ -408,6 +413,7 @@ export async function runManualWebDAVSync(
   let skipped = 0
   let wrongServer = 0
   let blindOverwrite = 0
+  let failureReason = ''
   const pushedPaths = new Set<string>()
 
   for (const track of pending) {
@@ -462,16 +468,19 @@ export async function runManualWebDAVSync(
         continue
       }
       // GET with ETag for concurrency detection. A server that sends no ETag
-      // leaves the MOVE a blind overwrite (no If-Match) — count it so the
+      // leaves the MOVE a blind overwrite (no destination `If` condition) — count it so the
       // result line surfaces the loss of concurrency protection (TODO 3.8b).
       const { data: raw, etag } = await webdavGet(webdavUrl, davPath, webdavUser, webdavToken)
       // In-flight event: position = this row's queue slot (settled + 1).
       opts.onProgress?.(settled + 1, total, titleOf(track.trackId))
       const modified = await modifyMetadataBuffer(raw, track.rating, track.loved, fileTypeOf(track.trackId, track.fileType))
-      let blind = !etag
+      let blind: boolean
 
       try {
-        await webdavPutAtomicViaAppFetch(webdavUrl, davPath, modified, webdavUser, webdavToken, etag)
+        // `guarded: false` = the write went out WITHOUT a destination
+        // precondition (no etag, or an etag the `If` header cannot express).
+        // Trust the write's own verdict rather than the pre-call guess.
+        blind = !(await webdavPutAtomicViaAppFetch(webdavUrl, davPath, modified, webdavUser, webdavToken, etag)).guarded
       } catch (err) {
         if (err instanceof ConflictError) {
           // Re-check the live row once more — the retry's re-PUT has the same
@@ -489,8 +498,7 @@ export async function runManualWebDAVSync(
           const reModified = await modifyMetadataBuffer(
             refreshed, track.rating, track.loved, fileTypeOf(track.trackId, track.fileType),
           )
-          blind = !newEtag
-          await webdavPutAtomicViaAppFetch(webdavUrl, davPath, reModified, webdavUser, webdavToken, newEtag)
+          blind = !(await webdavPutAtomicViaAppFetch(webdavUrl, davPath, reModified, webdavUser, webdavToken, newEtag)).guarded
         } else {
           throw err
         }
@@ -527,7 +535,10 @@ export async function runManualWebDAVSync(
       // The file vanished between scan and push — not a failure of the push
       // itself; the next scan will clear the stale path (missing count).
       if (err instanceof NotFoundError) skipped++
-      else failed++
+      else {
+        failed++
+        if (!failureReason) failureReason = err instanceof Error ? err.message : String(err)
+      }
     } finally {
       // Exactly one settle event per row, whichever way it ended (synced,
       // skipped, or failed).
@@ -547,5 +558,5 @@ export async function runManualWebDAVSync(
     }
   }
 
-  return { synced, failed, skipped, wrongServer, blindOverwrite, cancelled: cancelledRun }
+  return { synced, failed, skipped, wrongServer, blindOverwrite, cancelled: cancelledRun, failureReason: failureReason || undefined }
 }
