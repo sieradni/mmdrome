@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.62",
-      "versionDate": "2026-10-20T21:57:07.500Z",
-      "versionDescription": "Push review now shows track art, metadata, and rating/loved changes before writing; clearer activity and control tooltips across the player; responsive, keyboard-accessible push confirmation.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.62/mmdrome.ipa",
+      "version": "1.2.63",
+      "versionDate": "2026-10-21T08:23:38.984Z",
+      "versionDescription": "Reliable WebDAV push: writes now respect the destination file's ETag on Nextcloud-style servers and report the cause when a server refuses a write. The push review pane is capped so the screen above and below stays reachable on iOS, shows no colored border, and opens the full track details from its art or title.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.63/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.63",
+          "buildVersion": "67",
+          "date": "2026-10-21T08:23:38.984Z",
+          "localizedDescription": "Reliable WebDAV push: writes now respect the destination file's ETag on Nextcloud-style servers and report the cause when a server refuses a write. The push review pane is capped so the screen above and below stays reachable on iOS, shows no colored border, and opens the full track details from its art or title.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.63/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5216457
+        },
         {
           "version": "1.2.62",
           "buildVersion": "66",
@@ -611,6 +620,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.63",
+      "identifier": "ios-v1.2.63",
+      "appID": "com.mmdrome.player",
+      "caption": "Reliable WebDAV push: writes now respect the destination file's ETag on Nextcloud-style servers and report the cause when a server refuses a",
+      "date": "2026-10-21T08:23:38.984Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.62",
       "identifier": "ios-v1.2.62",
       "appID": "com.mmdrome.player",
@@ -643,15 +661,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Recover dead IndexedDB connections transparently and make failed storage recovery actionable",
       "date": "2026-10-13T21:29:55.601Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.58",
-      "identifier": "ios-v1.2.58",
-      "appID": "com.mmdrome.player",
-      "caption": "Fix queue history replay and recycled-song continuation, preserve native queue occurrence identity, prioritize fresh songs before repeats, a",
-      "date": "2026-10-13T10:09:23.770Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
