@@ -1,3 +1,15 @@
+## 2026-10-21e — Queue redesign step 3: a skip is exactly one row (G3 closed)
+
+Step 3 of [QUEUE-DESIGN.md](QUEUE-DESIGN.md) §6 (D10). G3's shape was an inference: `next()` moved `activeIndex` while `currentTrack` still named the old row, and `advanceTargetIndex` read that mismatch as "the active row was removed" (2.4 option b) — so a second press inside the load window re-targeted the row already loading. Not queue corruption, but a lost tap.
+
+1. **The fact, not the inference.** `appState.pendingAdvanceTrackId` records the row an advance put the anchor on (`queueManager.advanceTo` is the single advance write, so every path sets it: next/prev/advanceQueue/wrap/native re-anchor), plus the two positional writers — `playTrackAt` (a positional pick supersedes an in-flight skip) and `queueManager.selectTrack` (a library press also leaves the anchor ahead of the audio). `setCurrentTrack` clears it when the audio names that row. The fact is session-only and never persisted: it describes a transition, not queue state.
+2. **The resolver.** `advanceTargetIndex(q, combined, playingId, pendingTrackId?)` returns `activeIndex + 1` when the anchor still names the pending row, before the removal rule can run. Validation is against the LIVE anchor, so a real removal (the anchor now names a different row) still takes the positional rule, and a stale fact can never mask one. Duplicate copies need no special case: the advance is positional, so it moves to the sibling ROW and the next press leaves it — id equality never short-circuits anything.
+3. **One recorded side effect.** An unresolvable id (`playAll` with a missing id) used to re-target itself forever while `currentTrack` was stale. With the fact it is a transition like any other: the first advance still resolves null (the caller stops), and a later advance skips PAST it. The J3 row and its test are rewritten; G4 is now only the missing library validation.
+
+**Verification:** `npm test` 1420/1420, `npm run check` 0 errors / 0 warnings, full e2e 67/67, ui-review 8/8 (Chromium, production bundle). The G3 known-gap test became "two Next presses in the same tick skip TWO rows", with two new pins beside it (duplicate copies advance by row; a stale pending fact never masks an active-row removal). The browser pin fires two clicks in ONE task (`page.evaluate`, both handlers synchronously) so it lands inside the load window, then asserts the now-playing row is the row two ahead of the starting one — by track id/entry id, because the post-load promotion appends that row to the user tail (its index legitimately moves).
+
+**Next:** step 4 — the fresh-context rebuild that closes G1/G2 (promote the audible row, reset recents, full rebuild on a filter/sort edit).
+
 ## 2026-10-21d — Queue redesign step 2: a press starts ITS OWN row, promotion appends, skips resolve by occurrence
 
 Step 2 of [QUEUE-DESIGN.md](QUEUE-DESIGN.md) §6 (D1/D2/D5). Step 1 made duplicates representable; this step changes what the user's actions mean under that model.

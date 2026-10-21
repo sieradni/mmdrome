@@ -50,6 +50,7 @@ import {
   setActiveQueueIndex,
   autoQueueFilters,
   autoQueueSort,
+  pendingAdvanceTrackId,
 } from '../stores/appState'
 import { persistQueue } from './queuePersistence'
 import { currentEqState, eqBypassed } from './eq/eqStore'
@@ -1191,7 +1192,7 @@ export class PlaybackManager {
     // active-row removal the row AT activeIndex IS the next row (the playing
     // track left the queue), so `activeIndex + 1` would arm one PAST the
     // highlighted successor — a stale arm that skips it on the fade.
-    const nextIdx = advanceTargetIndex(q, combined, get(currentTrack)?.trackId)
+    const nextIdx = advanceTargetIndex(q, combined, get(currentTrack)?.trackId, get(pendingAdvanceTrackId))
     if (nextIdx >= 0 && nextIdx < combined.length) {
       // The target ID is captured from THIS snapshot — the re-validation below
       // must compare ids, never indices (a removal can slide a different row
@@ -1209,7 +1210,7 @@ export class PlaybackManager {
         // re-arm, which owns the fresh target.
         const liveQ = get(queue)
         const liveCombined = this._qm.getCombinedQueue()
-        const liveTarget = advanceTargetIndex(liveQ, liveCombined, get(currentTrack)?.trackId)
+        const liveTarget = advanceTargetIndex(liveQ, liveCombined, get(currentTrack)?.trackId, get(pendingAdvanceTrackId))
         if (!(liveTarget >= 0 && liveTarget < liveCombined.length && liveCombined[liveTarget] === targetId)) {
           return
         }
@@ -1268,7 +1269,7 @@ export class PlaybackManager {
     // Playing-track-aware: after an active-row removal (2.4 option b) the row
     // AT activeIndex is the next playable one — `activeIndex + 1 < length`
     // would wrongly read as "queue ended" and stop/wrap.
-    const target = advanceTargetIndex(q, combined, get(currentTrack)?.trackId)
+    const target = advanceTargetIndex(q, combined, get(currentTrack)?.trackId, get(pendingAdvanceTrackId))
     return target >= 0 && target < combined.length
   }
 
@@ -1610,6 +1611,9 @@ export class PlaybackManager {
     } else {
       setActiveQueueIndex(index)
     }
+    // A positional pick supersedes an in-flight skip (D10): the anchor is now
+    // THIS row, so a Next press advances past it instead of replaying it.
+    pendingAdvanceTrackId.set(combined[index] ?? null)
     const track = this._qm.findTrack(combined[index])
     if (track) {
       await this._loadTrack(track)
@@ -1722,7 +1726,7 @@ export class PlaybackManager {
     const combined = this._qm.getCombinedQueue()
     const q = get(queue)
     const playingId = get(currentTrack)?.trackId
-    const nextIndex = advanceTargetIndex(q, combined, playingId)
+    const nextIndex = advanceTargetIndex(q, combined, playingId, get(pendingAdvanceTrackId))
     if (nextIndex >= 0 && nextIndex < combined.length) {
       const currentId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : undefined
       // Never pre-mark the next row (it's about to play) — after an active-row

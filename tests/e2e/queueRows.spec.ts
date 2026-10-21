@@ -335,3 +335,46 @@ test('pressing a library song queues and plays a NEW row instead of jumping to a
   expect(playing[0].track).toBe(firstId)
   expect(playing[0].index).toBe(2)
 })
+
+test('two Next presses skip two rows (G3: the second press is never re-targeted at the first)', async ({ page }) => {
+  await bootBig(page)
+  const rows = page.locator('[data-track-id]')
+  // Four presses fill Up next with four user rows; the fourth is playing.
+  for (let i = 0; i < 4; i++) {
+    await rows.nth(i).click()
+    await page.waitForTimeout(700)
+  }
+  await openQueue(page)
+
+  const readRows = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('div.z-40 .queue-track-item')].map((el) => ({
+        index: Number((el as HTMLElement).dataset.combinedIndex),
+        track: (el as HTMLElement).dataset.trackId ?? '',
+      })),
+    )
+  const before = await readRows()
+  const start = before.find((r) => r.index >= 0 && r.index === 3)
+  expect(start, 'the fourth pressed row is the audible one').toBeTruthy()
+  const expected = before.filter((r) => r.index === 5)[0]
+  expect(expected, 'two rows ahead are mounted').toBeTruthy()
+
+  // TWO presses in ONE task: the second lands while the first row is still
+  // loading (the D10 window). The old rule read that as "the active row was
+  // removed" and re-loaded it, so the press was lost.
+  await page.evaluate(() => {
+    const next = document.querySelector('[aria-label="Next track"]') as HTMLButtonElement | null
+    if (!next) throw new Error('Next control missing')
+    next.click()
+    next.click()
+  })
+  await page.waitForTimeout(1200)
+
+  const playing = page.locator('div.z-40 .ui-now-playing-row')
+  await expect(playing).toHaveCount(1)
+  // The row TWO ahead is the one playing. (Its index becomes the user tail when
+  // the post-load promotion appends it, so identity — not a fixed index — is
+  // what this asserts; the row ONE ahead must not be the audible one.)
+  await expect(playing).toHaveAttribute('data-track-id', expected.track)
+  await expect(playing).toHaveAttribute('data-entry-id', `user:${expected.track}`)
+})

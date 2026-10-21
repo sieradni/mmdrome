@@ -33,6 +33,7 @@ import {
   setCurrentTrack,
   setPlaybackState,
   sleepTimer,
+  pendingAdvanceTrackId,
   type Track,
 } from '../src/stores/appState'
 
@@ -179,25 +180,54 @@ function combined(): string[] {
 
 // --- tests ---------------------------------------------------------------
 
-test('two Next presses in the same tick skip only ONE row (KNOWN GAP: the anchor moves before currentTrack does)', async () => {
+test('two Next presses in the same tick skip TWO rows (D10 / G3)', async () => {
   reset()
   const m = makeManager()
 
   await Promise.all([m.next(), m.next()])
 
-  // Press #1 advances the anchor 0→1 and starts the async load, but
-  // currentTrack still names t0 until that load resolves. Press #2 then sees
-  // `combined[activeIndex] !== playingId` — the shape `advanceTargetIndex`
-  // reads as "the active row was REMOVED" (2.4 option b) — and re-targets the
-  // SAME row. The user's second tap is lost, and t1 is loaded twice.
-  assert.equal(get(queue).activeIndex, 1, 'KNOWN GAP: the second press does not advance')
-  assert.equal(get(currentTrack)?.trackId, 't1', 'the same row is re-loaded')
-  assert.equal(combined()[1], 't1')
+  // Press #1 advances the anchor 0→1 and starts the async load. Press #2 lands
+  // while `currentTrack` still names t0 — the D10 pending fact records that the
+  // anchor is AHEAD of the audio, so the mismatch is a transition, never an
+  // active-row removal, and the second press advances again.
+  assert.equal(get(queue).activeIndex, 2, 'one row per press')
+  assert.equal(get(currentTrack)?.trackId, 't2', 'the last pressed row is the one that plays')
+  assert.equal(combined()[get(queue).activeIndex], 't2')
+})
 
-  // Control: once the first load has SETTLED (currentTrack === the anchor),
-  // the next press advances normally. The gap is transition-scoped.
+test('two Next presses over duplicate copies land on the second COPY, then past it', async () => {
+  // [A, A, B]: the first press moves to the sibling copy of the SAME song, the
+  // second must leave it — id equality may never short-circuit the advance.
+  reset(['a0', 'a0', 'b0'])
+  queue.set({ userQueue: ['a0', 'a0', 'b0'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  setCurrentTrack(track('a0'))
+  const m = makeManager()
+
+  await m.next()
+  assert.equal(get(queue).activeIndex, 1, 'the sibling occurrence, addressed by ROW')
+  assert.equal(combined()[1], 'a0')
+
   await m.next()
   assert.equal(get(queue).activeIndex, 2)
+  assert.equal(get(currentTrack)?.trackId, 'b0')
+})
+
+test('a stale pending advance never masks an active-row removal (positional rule survives)', async () => {
+  reset()
+  const m = makeManager()
+
+  // The moment after an advance: the anchor names t1 with its load pending —
+  // then the user removes that row before it plays. The anchor keeps its index
+  // (t2 slides into it), so the pending fact no longer matches the anchor and
+  // the positional removal rule decides: the row AT the anchor is next.
+  pendingAdvanceTrackId.set('t1')
+  const removed = queueManager.removeFromUserQueue(1)
+  assert.equal(removed, 't1')
+
+  await m.next()
+
+  assert.equal(get(queue).activeIndex, 1)
+  assert.equal(combined()[1], 't2', 'the row AT the anchor is the next playable one')
   assert.equal(get(currentTrack)?.trackId, 't2')
 })
 

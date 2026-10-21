@@ -561,13 +561,25 @@ export function removeFromUserQueue(q: QueueState, index: number): QueueState | 
  * "queue ended" → stop/wrap). When there is no playing track at all
  * (`playingId` undefined — stopped, or a truly empty queue), the target stays
  * `activeIndex + 1` (the end-of-queue refill path targets the first new row).
+ *
+ * `pendingTrackId` (D10, 2026-10-21e) is the explicit "the anchor is ahead of
+ * the audio" fact: an advance moved the anchor onto that row and its load has
+ * not landed yet. While the anchor still names it, the mismatch against
+ * `playingId` is a TRANSITION, not a removal — the next target is
+ * `activeIndex + 1`, so a second press skips a second row instead of
+ * re-loading the first. When the anchor no longer names it (a real removal,
+ * an unrelated write), the positional removal rule applies unchanged.
  */
 export function advanceTargetIndex(
   q: QueueState,
   combined: string[],
   playingId: string | undefined,
+  pendingTrackId?: string | null,
 ): number {
   const currentId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : undefined
+  if (pendingTrackId !== undefined && pendingTrackId !== null && currentId === pendingTrackId) {
+    return q.activeIndex + 1
+  }
   return playingId !== undefined && currentId !== playingId ? q.activeIndex : q.activeIndex + 1
 }
 

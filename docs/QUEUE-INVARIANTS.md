@@ -7,13 +7,14 @@ Status: **partly implemented**. Step 1 (2026-10-21c) shipped the OCCURRENCE mode
 occurrence, restore is a raw pass-through, native snapshots carry per-occurrence entry ids (§2, B2/B10, N1).
 Step 2 (2026-10-21d) shipped press semantics: a library press appends and plays its own row (C7), promotion
 appends instead of moving (C3), "Play next" inserts a copy instead of reordering (C8), and the crossfade
-reconcile resolves the ARMED occurrence (C4). Everything else still describes the code as it was, and every
-remaining known gap is real.
+reconcile resolves the ARMED occurrence (C4). Step 3 (2026-10-21e) made a skip exact: the anchor-ahead-of-
+audio fact (D10) means two presses are two rows, duplicate copies included (B12) — G3 CLOSED. Everything
+else still describes the code as it was, and every remaining known gap is real.
 
-> **Still not implemented (steps 3–6):** a filter/sort edit still rewrites the fill in place without
+> **Still not implemented (steps 4–6):** a filter/sort edit still rewrites the fill in place without
 > promoting the audible row or resetting `recentTrackIds` (D7 → G1/G2), manual Next at the tail is still a
-> no-op under loop-all (D8), the auto queue cannot be switched off (D9), a same-tick Next still loses a press
-> (D10 → G3), and the auto fill has no repeat pass (D6). Those rows say so; do not pre-fix them.
+> no-op under loop-all (D8), the auto queue cannot be switched off (D9), the auto fill has no repeat pass
+> (D6), and `playAll` does not validate ids against the library (G4). Those rows say so; do not pre-fix them.
 
 ## 0. What this file is
 
@@ -35,9 +36,9 @@ load-bearing, which are deliberate tradeoffs, and which are accidental.
    native/on-device half is not; see E5 in `AGENTS.md` (no local Swift toolchain) and the physical-iOS
    ledger item in the 2026-10-17 streaming plan.
 
-Verification for this document (2026-10-21d, steps 1–2 landed): `npm test` (1418 passing), `npm run check`
-(0 errors / 0 warnings), the full e2e suite (66 passing) and the ui-review suite (8 passing), including the
-rows' browser specs — `queueRows` (10), `queuedragdup` (2), `queueContinuation` (1), `queueflood` (2),
+Verification for this document (2026-10-21e, steps 1–3 landed): `npm test` (1420 passing), `npm run check`
+(0 errors / 0 warnings), the full e2e suite (67 passing) and the ui-review suite (8 passing), including the
+rows' browser specs — `queueRows` (11), `queuedragdup` (2), `queueContinuation` (1), `queueflood` (2),
 `persistence` (3).
 
 **Status vocabulary (closed set — every row carries exactly one of these):**
@@ -98,7 +99,7 @@ rows' browser specs — `queueRows` (10), `queuedragdup` (2), `queueContinuation
 | B9 | A queue mutation never leaves a stale armed crossfade target; removal of the armed row re-arms or disarms. | `tests/playbackManagerAdvance.test.ts` — "removing the ARMED next row re-arms the crossfade target past the removal", "…tail next row disarms the arm", "…stale re-arm whose target was removed mid-resolve is dropped", "queue-write bursts coalesce into ONE re-arm" | pinned |
 | B10 | A drag carries the source occurrence (`queueEntryId`); a cross-section duplicate drag moves the occurrence the user grabbed — the auto copy when the user grabbed that one — never a same-id neighbour. | `tests/queueMutation.test.ts` — "applyDragDrop: a cross-section duplicate resolves to the dragged AUTO occurrence (G5 closed)", "…with two user copies the dragged one moves and the other stays"; `tests/e2e/queuedragdup.spec.ts` — "three copies of one song are independent rows" | pinned (G5 closed) |
 | B11 | A filter/sort change while an AUTO row plays must keep the anchor on that row. | `tests/queueManagerFill.test.ts` — "a filter change that still matches the playing auto row keeps it queued AND anchored" / "…EXCLUDES the playing auto row… (KNOWN GAP)" / "a sort change mid-play rebuilds the auto order without re-anchoring… (KNOWN GAP)" / "…drops the LAST playing auto row leaves activeIndex past the end (KNOWN GAP)" | known gap **G1/G2** |
-| B12 | Two Next presses in the same tick must skip two rows. | `tests/playbackManagerNav.test.ts` — "two Next presses in the same tick skip only ONE row (KNOWN GAP…)" | known gap **G3** |
+| B12 | Two Next presses inside one load window skip TWO rows (D10): the anchor-ahead-of-audio fact is never read as a removal. Duplicate rows advance by ROW, so the second press leaves a sibling copy instead of stopping on it. | `tests/playbackManagerNav.test.ts` — "two Next presses in the same tick skip TWO rows (D10 / G3)", "two Next presses over duplicate copies land on the second COPY, then past it", "a stale pending advance never masks an active-row removal"; `tests/e2e/queueRows.spec.ts` — "two Next presses skip two rows (G3…)" | pinned (G3 closed) |
 | B13 | Next then Previous in the same tick returns to the starting row, with both left rows cooled. | `tests/playbackManagerNav.test.ts` — "Next then Previous in the same tick returns to the starting row" | new |
 | B14 | On web, removing the PLAYING row skips to its successor immediately; removing a different OCCURRENCE of the same song does not (id equality alone is not enough once duplicates exist). | `tests/playbackManagerAdvance.test.ts` — "removing the PLAYING row skips to the next track immediately (2.7)", "removing a DUPLICATE of the playing row never skips playback (occurrence identity)"; `tests/e2e/queueRows.spec.ts` — duplicate-rows spec (the playing row survives the copy removal) | pinned |
 
@@ -190,7 +191,7 @@ rows' browser specs — `queueRows` (10), `queuedragdup` (2), `queueContinuation
 | --- | --- | --- | --- |
 | J1 | `playAll` replaces the user section, clears the auto tail, anchors row 0 and resets the recency window. | `tests/queueBulkImport.test.ts` — "playAll with the actively playing track inside the import anchors on row 0", "playAll resets the anti-repeat window and drops the auto tail in the same flow" | new |
 | J2 | `playAll([])` leaves an empty queue with `activeIndex 0`; the next advance refills the auto tail and skips its head. | `tests/queueBulkImport.test.ts` — "playAll([]) clears the queue; the next advance refills the auto tail and skips its head (known gap)" | known gap **G4** |
-| J3 | `playAll` does not dedupe and does not validate against the library; advancing onto an unknown id can stall on it. | `tests/queueBulkImport.test.ts` — "playAll writes duplicate ids verbatim (KNOWN GAP…)", "playAll keeps ids missing from the library queued; advancing onto one stalls until playback stops" | known gap **G4** |
+| J3 | `playAll` does not validate against the library. An unknown id stays queued; the FIRST advance onto it resolves null (the caller stops), and a later advance now skips PAST it (D10) instead of re-targeting it. | `tests/queueBulkImport.test.ts` — "playAll writes duplicate ids verbatim…", "playAll keeps ids missing from the library queued; the first advance stops, a later advance skips the row (D10)" | known gap **G4** (validation only) |
 | J4 | `playNext` on an empty queue appends without inventing an anchor (`-1` until playback selects one). | `tests/queueBulkImport.test.ts` — "playNext on an empty queue appends the row and keeps the anchor unset…" | new |
 
 ## 12. Browser-level pins (the surfaces the pure tests cannot see)
@@ -243,22 +244,30 @@ duplicates renders.
 - **Decision needed:** the same three options as G1, applied at the rebuild choke point. A shared
   "preserve the audible occurrence across a fill rewrite" helper would close G1+G2 together.
 
-### G3 — A Next press inside the load window does not advance (OPEN — step 3)
-- **Shape:** `next()` advances `activeIndex` synchronously, but `currentTrack` is only written after the new
-  source resolves. A second press inside that window sees `combined[activeIndex] !== playingId`, which
-  `advanceTargetIndex` interprets as "the active row was removed" (2.4 option b) and re-targets the SAME
-  row. The second tap is lost and the row is re-loaded.
-- **Impact:** a quick double-tap on Next during a slow load skips one row instead of two; the reload can also
-  restart audio at 0:00. Not a queue-corruption bug — the anchor stays valid.
-- **Evidence:** `tests/playbackManagerNav.test.ts` — "two Next presses in the same tick skip only ONE row".
-- **Decision needed:** either write `currentTrack` optimistically at advance time, or carry an explicit
-  "load in flight / expected row" fact so `advanceTargetIndex` can distinguish a transition from a removal.
+### G3 — CLOSED (2026-10-21e): a skip is exactly one row, with or without a load in flight
+- **Shape (was):** `next()` advanced `activeIndex` synchronously while `currentTrack` still named the old
+  row. A second press inside that window saw `combined[activeIndex] !== playingId`, which
+  `advanceTargetIndex` read as "the active row was removed" (2.4 option b) and re-targeted the SAME row —
+  the second tap was lost.
+- **Fix:** `appState.pendingAdvanceTrackId` records the row an advance (or a positional pick / library
+  press) put the anchor on, and `advanceTargetIndex(q, combined, playingId, pendingTrackId)` treats a
+  matching anchor as a TRANSITION → `activeIndex + 1`. The fact is validated against the live anchor, so
+  a real removal (the anchor names a different row) still takes the positional rule, and
+  `setCurrentTrack` clears it once the audio catches up.
+- **Evidence:** `tests/playbackManagerNav.test.ts` — "two Next presses in the same tick skip TWO rows",
+  "two Next presses over duplicate copies land on the second COPY, then past it", "a stale pending advance
+  never masks an active-row removal"; `tests/e2e/queueRows.spec.ts` — "two Next presses skip two rows"
+  (two clicks in ONE task, now-playing row asserted); `tests/queueMutation.test.ts` —
+  `advanceTargetIndex` pins (now with the pending fact).
+- **Side effect recorded:** an UNRESOLVABLE id no longer re-targets itself on the next advance (the
+  pending fact is a transition, not a removal) — the first advance still resolves null and the caller
+  stops. G4's remaining shape is the missing library validation, not a stall loop.
 
-### G4 — `playAll` is an unguarded bulk boundary
-- **Shape:** no section dedupe, no library validation, `activeIndex: 0` even for an empty array. A duplicate
-  id is a fatal each-key collision in QueueView; an unknown id stalls the advance chain on it (the stale
-  `currentTrack` keeps re-targeting the same row until playback stops); an empty import plus a later advance
-  refills the auto tail and skips its head.
+### G4 — `playAll` is an unguarded bulk boundary (PARTLY NARROWED: duplicates render since step 1, unknown ids skip since step 3)
+- **Shape:** no library validation, `activeIndex: 0` even for an empty array; an unknown id stays queued and
+  its first advance resolves null (playback stops — the caller's stop path is the only thing that prevents a
+  hang); an empty import plus a later advance refills the auto tail and skips its head. The duplicate half
+  is GONE: occurrence keys render (step 1) and D10 no longer lets an unresolvable row re-target itself.
 - **Impact:** today every caller passes unique library ids, so this is a latent boundary. Phase 3 playlists are
   exactly the kind of caller that can violate it (server playlists may repeat tracks or contain ids the local
   library no longer knows).

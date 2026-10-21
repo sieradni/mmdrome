@@ -14,6 +14,7 @@ import {
   queueWrapNotice,
   autoQueueEmptyNotice,
   currentTrack,
+  pendingAdvanceTrackId,
 } from '../stores/appState'
 import type { Track, QueueState } from '../stores/appState'
 
@@ -98,12 +99,17 @@ class QueueManager {
    * persists through the same choke point every other write uses.
    */
   selectTrack(trackId: string): void {
+    let wrote = false
     queue.update((q) => {
       const updated = queueMutation.pressTrack(q, trackId)
       if (updated === null) return q
       persistQueue('selectTrack', updated)
+      wrote = true
       return updated
     })
+    // A press also puts the anchor ahead of the audio (the appended row is
+    // loading) — a quick Next after it must advance, not re-load the press.
+    if (wrote) pendingAdvanceTrackId.set(trackId)
   }
 
   /** Moves the auto OCCURRENCE at `autoIndex` to the end of the user queue
@@ -193,6 +199,10 @@ class QueueManager {
       persistQueue('advanceTo', updated)
       return updated
     })
+    // D10: the anchor is now ahead of the audio until this row's load lands.
+    // The fact is validated against the anchor at read time, so any other
+    // anchor write silently invalidates it.
+    pendingAdvanceTrackId.set(this.getCombinedQueue()[index] ?? null)
   }
 
   /**
@@ -312,7 +322,7 @@ class QueueManager {
     const combined = this.getCombinedQueue()
     const playingId = get(currentTrack)?.trackId
     const currentId = q.activeIndex >= 0 && q.activeIndex < combined.length ? combined[q.activeIndex] : undefined
-    const nextIndex = queueMutation.advanceTargetIndex(q, combined, playingId)
+    const nextIndex = queueMutation.advanceTargetIndex(q, combined, playingId, get(pendingAdvanceTrackId))
     // The track leaving the active slot: normally `currentId` (the ended
     // track); after an active-row removal it's the removed PLAYING track
     // (already inscribed by the removal — re-inscribing is idempotent). Never

@@ -4,7 +4,7 @@ Status: **PARTLY IMPLEMENTED (steps 1–2 of §6, 2026-10-21c/d).** This is the 
 as-built behavior — and the tests that currently pin it — live in [QUEUE-INVARIANTS.md](QUEUE-INVARIANTS.md).
 Landed: D3/D4/D5, D11, D13 and D1's press semantics (+ the crossfade occurrence identity that D1 needs).
 Not landed: D2's optional auto-copy drop on `+`, D6 (repeat pass), D7 (fresh context → G1/G2), D8, D9,
-D10, D12, D14's tail rules. Until a rule's row in the matrix says otherwise, do not cite it as shipped.
+D12's library validation, D14's tail rules. D10 landed with step 3 (2026-10-21e). Until a rule's row in the matrix says otherwise, do not cite it as shipped.
 
 Date: 2026-10-21 (decisions taken across the 2026-10-21 review, follow-up to Phase 2A).
 Supersedes: the duplicate/order half of QUEUE-INVARIANTS §15, and rows A1–A9, B11–B12, E2/E4, J2–J4,
@@ -273,7 +273,13 @@ No Swift change is expected for D1–D14. The native engine consumes snapshots a
    pure pins in `tests/crossfadeReconcile.test.ts`. Browser: `queueRows` D1 press spec, `queuedragdup`
    cross-section drag restored. Deliberately NOT done: D2's SHOULD-drop of an auto copy on `+` (still
    open in the design, so the code does not guess).
-3. **Skip exactness (D10)** — rewrite the G3 known-gap test into "two presses = two rows".
+3. **Skip exactness — LANDED 2026-10-21e (G3 CLOSED).** `appState.pendingAdvanceTrackId` carries the
+   "anchor is ahead of the audio" fact (set by `advanceTo`, `playTrackAt`, `selectTrack`; cleared by
+   `setCurrentTrack`), and `advanceTargetIndex` reads a matching anchor as a transition instead of a removal.
+   Pins: `playbackManagerNav` (two presses = two rows; duplicate copies advance by ROW; a stale fact never
+   masks a removal), the browser `queueRows` "two Next presses skip two rows", and the queueMutation resolver
+   table. Recorded side effect: an unresolvable id no longer re-targets itself on the next advance (the first
+   advance still resolves null and the caller stops) — G4's remaining shape is the missing validation.
 4. **Fresh context (D7)** — promote-before-rewrite, reset recents, full rebuild; rewrite B11/E4/E9
    and close G1/G2.
 5. **Tail rules + auto-off (D8/D9)** — persisted toggle, UI, wrap/stop/restart, Previous no-op;

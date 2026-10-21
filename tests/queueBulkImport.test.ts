@@ -106,7 +106,7 @@ test('playAll preserves duplicate ids verbatim — duplicates are legal occurren
   assertOccurrenceOrder(get(queue), ['a', 'a', 'b', 'a'])
 })
 
-test('playAll keeps ids missing from the library queued; advancing onto one stalls until playback stops', () => {
+test('playAll keeps ids missing from the library queued; the first advance stops, a later advance skips the row (D10)', () => {
   reset(['a', 'b'])
   setCurrentTrack(track('a'))
   queueManager.playAll(['a', 'gone', 'b'])
@@ -123,15 +123,14 @@ test('playAll keeps ids missing from the library queued; advancing onto one stal
   assert.equal(combined()[q.activeIndex], 'gone', 'KNOWN GAP: the anchor can rest on an unresolvable id')
   assert.ok(q.recentTrackIds.includes('a'), 'the leaving track still cools down (one write)')
 
-  // While the stale currentTrack lingers, advanceTargetIndex reads the mismatch
-  // as "the active row was removed" and RE-TARGETS the same missing row — the
-  // stall. Only the stop (currentTrack cleared) moves past it.
-  assert.equal(queueManager.advanceQueue(), null, 're-targets the unresolvable row while currentTrack is stale')
-  assert.equal(get(queue).activeIndex, 1)
-
-  setCurrentTrack(null)
-  assert.equal(queueManager.advanceQueue()?.trackId, 'b', 'after the stop, the next advance resolves again')
+  // D10 (2026-10-21e): the anchor is AHEAD of the audio, so the next advance is
+  // a normal +1 — it moves PAST the unresolvable row instead of re-targeting it
+  // (the old stale-currentTrack stall). What remains of G4 is the missing
+  // validation: the first advance resolved null and only the caller's stop
+  // prevented playback from hanging on it.
+  assert.equal(queueManager.advanceQueue()?.trackId, 'b', 'a second advance skips the missing row')
   assert.equal(get(queue).activeIndex, 2)
+  assert.equal(get(currentTrack)?.trackId, 'a', 'currentTrack stayed stale through both advances (G4: no validation)')
 })
 
 test('playAll with the actively playing track inside the import anchors on row 0 (the import is authoritative)', () => {

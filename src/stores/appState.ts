@@ -383,6 +383,17 @@ export const queueWrapNotice = writable<boolean>(false)
  *  the auto queue is empty instead of showing nothing at all. */
 export const autoQueueEmptyNotice = writable<boolean>(false)
 
+/**
+ * D10 skip fact (2026-10-21e): the track id an advance (or a positional pick)
+ * moved the anchor onto while the audio is still on the PREVIOUS row. A load
+ * takes time, so for a moment `combined[activeIndex] !== currentTrack.trackId`
+ * is not "the active row was removed" — it is "the anchor is ahead of the
+ * audio". `advanceTargetIndex` reads this to keep a second press advancing
+ * instead of re-targeting the row already loading. Cleared as soon as
+ * `setCurrentTrack` names that row (the anchor and the audio agree again).
+ */
+export const pendingAdvanceTrackId = writable<string | null>(null)
+
 export function setLibrary(tracks: Track[], complete = true): void {
   // A full (error-free) library load replaces the source of truth — reconcile
   // the queue and metadata cache against it so stale ids can't stall playback
@@ -672,6 +683,10 @@ async function loadSettings(): Promise<void> {
 
 export function setCurrentTrack(track: Track | null): void {
   currentTrack.set(track)
+  // The audio caught up with the anchor: the skip-in-flight fact is spent.
+  // (A same-id load — duplicates — is equally spent: id equality already makes
+  // the normal advance rule apply.)
+  if (track && get(pendingAdvanceTrackId) === track.trackId) pendingAdvanceTrackId.set(null)
 }
 
 export function setPlaybackState(state: PlaybackState): void {
