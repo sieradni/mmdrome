@@ -1,3 +1,17 @@
+## 2026-10-21g — Audit repair: the matrix says what the code does, and G6 is named
+
+An independent audit of steps 1–4 (ceb0b18, d94971f, 7660752, 54a93e3) found the shipped matrix lying in §9 and citing dead tests elsewhere. Nothing behavioral changed except one new characterization pin; this entry records the repair and its method.
+
+1. **§9 described the pre-occurrence restore.** H2 still said restore "re-anchors the active row BY ID after dedupe" and cited a test that has not existed since step 1 — while A5 in the same file says rows come back verbatim with the stored anchor. Two rows, mutually exclusive rules. H2 now states the verbatim pass-through + bounds check (`clampStoredActiveIndex`) and cites the real pins. H4 said "re-anchors by id"; the code and the test say **by count** (`reconcileQueueWithLibrary` subtracts exactly the rows removed above the anchor), so the row and its two citations were rewritten.
+2. **Five more citations pointed at titles that were renamed during the redesign** — D2 (and its now-false "the queue restore keeps the first" clause), D3, E2, J3, B7 (a parenthetical had been stuffed INSIDE the quoted name, so the quote never matched). All re-pointed; D2 now says what is true, that sanitize is the only dedupe left in the load path.
+3. **E9 asserted the opposite of B11.** It opened with "no fill path edits the user section", which the fresh-context promotion does. Rewritten: every fill path writes only `autoQueue` and never `activeIndex`; the rule-change promotion is the one user-section write and is precisely what makes that safe.
+4. **G6 named, with a pin.** The audit probed a case the model cannot express: a same-id copy inserted ABOVE a crossfade-armed row renames the armed row and hands its entry id to the newcomer, so the fade-end reconcile repoints the anchor to the inserted copy — silently, not as a fallback. Reachable mid-fade via a fresh-context rebuild or a tier-3 duplicate. `tests/crossfadeReconcile.test.ts` pins the current behavior with an unchanged-ordinal control; matrix row C9 carries it as `known limitation G6`, C4 names the hole, and §13 explains why an ordinal cannot fix it (a row-born id is an identity-model change, not a reconcile patch).
+5. **The G5 section was also wrong in prose**: it cited helpers that do not exist (`resolveEntry`/`entryOccupancy`), an entry-id shape that is actually the Svelte row key, and an id-only `applyDragDrop` overload that was never written. Corrected.
+
+**Method (reusable):** a `tests/<path>` marker in a matrix row owns the quoted names up to the next marker, and each name must prefix a real title in that file. Checked mechanically: 210 cited names, 0 unresolved after the repair.
+
+**Verification:** `npm test` 1422/1422, `npm run check` 0 errors / 0 warnings, full e2e 68/68, ui-review 8/8. No behavior change beyond the added pin.
+
 ## 2026-10-21f — Queue redesign step 4: a filter/sort edit is a fresh context (G1 and G2 closed)
 
 Step 4 of [QUEUE-DESIGN.md](QUEUE-DESIGN.md) §6 (D7). G1 and G2 were one defect with two triggers: a fill that rewrote `autoQueue` while leaving `activeIndex` where it was. Under the old kept-prefix patch, tightening a filter could prune the row the anchor named (or push it past the end), and a rebuild could re-include the playing row at a different position — both silently repointed playback, and the anchor is the native refresh payload's position, so it was a skip/replay class of bug, not a highlight.

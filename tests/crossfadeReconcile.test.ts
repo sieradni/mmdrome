@@ -165,3 +165,52 @@ test('entry id resolves to the same index → none (no store write)', () => {
   )
   assert.deepEqual(r, { kind: 'none' })
 })
+
+// ── KNOWN LIMITATION G6: ordinal identity breaks on a same-id insert above ──
+test('LIMITATION (G6): a same-id copy inserted ABOVE the armed row mid-fade repoints to the inserted copy', () => {
+  // Entry ids are (section, id, ordinal). Inserting a copy of the SAME song
+  // above the armed row renames the armed row (its ordinal becomes 1) and
+  // hands its old entry id (`auto:b`) to the newcomer — so the resolver
+  // answers with a row the user never armed, with no rescue and no mismatch
+  // signal. Reachable mid-fade: a fresh-context rebuild (D7) or a tier-3
+  // duplicate can land a same-id copy above the armed row.
+  //
+  // Pinned as the CURRENT behavior (a limitation of the identity model), not
+  // as an endorsement. The audio is the same song, so the transition is
+  // inaudible; the ANCHOR and the promotion's cooled prefix belong to a
+  // different ROW.
+  const armedAt = 3
+  const shifted = ['u', 'a', 'b', 'b', 'x'] // user ['u','a']; auto ['b'(new), 'b'(armed), 'x']
+  const r = reconcileCrossfadeTarget(
+    input({
+      targetId: 'b',
+      combined: shifted,
+      userQueue: ['u', 'a'],
+      userLength: 2,
+      activeIndex: armedAt,
+      targetEntryId: 'auto:b',
+    }),
+  )
+  assert.deepEqual(r, { kind: 'repoint', index: 2 }, 'G6: the reconcile points at the INSERTED copy')
+  assert.equal(shifted[armedAt], 'b', 'the armed row sits one past the row it repointed to')
+
+  // The guarantee only holds while the armed row KEEPS its ordinal: with no
+  // same-id insert, the same entry id names it exactly and the reconcile is a
+  // no-op at its index.
+  const stable = ['u', 'a', 'b', 'x']
+  assert.deepEqual(
+    reconcileCrossfadeTarget(
+      input({
+        targetId: 'b',
+        combined: stable,
+        userQueue: ['u', 'a'],
+        userLength: 2,
+        activeIndex: 2,
+        targetEntryId: 'auto:b',
+      }),
+    ),
+    { kind: 'none' },
+    'control: an unchanged ordinal resolves to the armed row itself',
+  )
+})
+
