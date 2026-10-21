@@ -4,6 +4,14 @@ Date: 2026-10-21
 Phase: 2A of [2026-10-18-holistic-polish-and-roadmap.md](plans/2026-10-18-holistic-polish-and-roadmap.md) — "Queue Pool Hardening & View-Layer Deduplication".
 Status: **characterization only**. No queue or playback behavior was changed to produce this document.
 
+> **Target design (2026-10-21b, NOT implemented):** [QUEUE-DESIGN.md](QUEUE-DESIGN.md) records the
+> agreed rules that will replace parts of this snapshot — duplicates are legal in the user queue and
+> on auto-pool exhaustion, pressing a song never jumps to an old copy, each row is an independent
+> occurrence, a filter/sort edit resets the cooldown and rebuilds the pool, the auto queue can be
+> switched off, and the tail/loop rules change. This file remains the truth about the CODE until those
+> changes land; the rows they rewrite are listed in QUEUE-DESIGN.md §4. Do not cite the design as
+> shipped behavior, and do not "pre-fix" a row to match it.
+
 ## 0. What this file is
 
 The intended behavior of the queue/playback system, one row per invariant, each row naming the test that
@@ -196,6 +204,12 @@ shuffle round-trip) and **H7** (§9, queue restore after a reload).
 Each is pinned by a passing test that asserts the CURRENT behavior. Do not "fix" a gap by deleting its row;
 rewrite the row and the test with the new rule, and record the decision in `docs/DEVLOG.md`.
 
+**Agreed direction (2026-10-21b, not implemented):** G1/G2 close structurally (the audible row is
+promoted before any auto rewrite, and a filter/sort edit is a full rebuild), G3 closes with an explicit
+skip fact, G5 closes with occurrence-based drag identity, and G4 becomes the bulk-import contract.
+See [QUEUE-DESIGN.md](QUEUE-DESIGN.md) §2 (D7, D10, D11, D12). Until those commits land, every gap
+below still describes the code.
+
 ### G1 — A filter change mid-play does not re-anchor the playing AUTO row
 - **Shape:** `replenishAutoQueue` writes `autoQueue = kept + fill` and never touches `activeIndex`. When the
   playing row stops matching the tightened filter, it is pruned; the index stays put and now names a
@@ -322,6 +336,12 @@ undecided. Phase 3 should settle them before a playlist surface inherits them.
 
 ### Q1 — Should manual Next wrap at the combined tail under loop-all?
 
+- **Decided 2026-10-21b (NOT implemented):** yes under loop-all (wrap to `userQueue[0]`), stop playback
+  at the tail under loop-none, and loop the song under loop-one. Previous at the first row becomes a
+  no-op in every mode (the current restart/wrap is removed as too inconsistent to promise). Auto-off
+  is defined as the direct form of a filter matching nothing, so repeat-all behaves identically in
+  both cases. See [QUEUE-DESIGN.md](QUEUE-DESIGN.md) D8. This row keeps pinning the CURRENT no-op
+  until the implementing commit rewrites L2, L3 and this section together.
 - **Current behavior:** row L2 — `next()` is a no-op at the tail under loop-all, the mode where a natural
   end DOES wrap (`tests/playbackManagerNav.test.ts` — "Next at the queue tail is a no-op under loop-all").
   The code path never reads `loopMode`, so the other modes behave the same, but only this case is pinned.

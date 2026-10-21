@@ -1,7 +1,7 @@
 # Holistic UI Polish, Queue Boundary Hardening & Feature Roadmap
 
 Date: 2026-10-18 (Phase 2A closed 2026-10-21)
-Status: Active roadmap. Phase 1 is implemented and design-approved (real-device review still outstanding). **Phase 2A is CLOSED (2026-10-21)** — deliverable: [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md); it found five gaps, registered in its §13. Phases 2B, 2C and 3 are NOT complete.
+Status: Active roadmap. Phase 1 is implemented and design-approved (real-device review still outstanding). **Phase 2A is CLOSED (2026-10-21)** — deliverable: [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md); it found five gaps, registered in its §13. **Phase 2D (queue semantics redesign) is AGREED and NOT implemented (2026-10-21b)** — contract: [docs/QUEUE-DESIGN.md](../QUEUE-DESIGN.md). Phases 2B, 2C and 3 are NOT complete.
 
 ## 1. Guiding Principles & Guardrails
 
@@ -72,6 +72,12 @@ Status: Active roadmap. Phase 1 is implemented and design-approved (real-device 
 - **Solution**:
   - Extract pure `starSegments(rating)` + `StarRatingDisplay.svelte` and `RatingEditor.svelte` (encapsulating the C4 scanner-race lock), cutting ~200 lines of duplicated view code.
 
+#### 2D. Queue Semantics Redesign (AGREED 2026-10-21b — not implemented)
+- **Contract:** [docs/QUEUE-DESIGN.md](../QUEUE-DESIGN.md). The matrix stays the as-built truth until each rule lands with its test.
+- **Premises that changed:** pressing a song starts that song (no jump to an old copy); duplicates are legal in the user queue and in auto only on pool exhaustion; a filter/sort edit is a fresh context (promote the audible row, reset the cooldown, rebuild).
+- **Consequences:** occurrence identity replaces id identity (keys, remove, drag, native entry ids, restore); G1/G2 close structurally; G3 closes with an explicit skip fact; G5 closes with occurrence drag; G4 becomes the import contract; repeat-all gains a real meaning once the auto queue can be switched off.
+- **Order:** identity → press semantics → skip exactness → fresh-context rebuild → tail rules + auto-off → repeat pass → playlists. Steps 1–2 are the foundation; do not start playlists before step 6.
+
 #### 2C. Modularize `SettingsView.svelte`
 - **Problem**: `SettingsView.svelte` is 2,606 lines containing 6 distinct tabs plus the File Matching workbench and Push modal.
 - **Solution**:
@@ -81,6 +87,8 @@ Status: Active roadmap. Phase 1 is implemented and design-approved (real-device 
 
 ### Phase 3: Playlists & Saved Filter Presets (Boundary-Safe)
 
+**v1 scope (agreed 2026-10-21b): server playlists + queue export only.** No local playlist store; M3U/PLS/XSPF file import is a later increment, because it needs the path-matching table and the unresolved-entry review UI. Full contract, format research and import rules: [docs/QUEUE-DESIGN.md](../QUEUE-DESIGN.md) §7.
+
 #### 3A. Saved Filter/Sort Presets ("Smart Views")
 - Pure persisted store `filterPresets` (`id`, `name`, `filters`, `sortBy`, `sortAsc`).
 - Minimal chip strip in `FilterSortBar` / Queue filter modal to save/apply a preset in one tap—zero changes to `queueMutation` or `autoQueuePlan` internals.
@@ -88,6 +96,8 @@ Status: Active roadmap. Phase 1 is implemented and design-approved (real-device 
 #### 3B. Navidrome Server Playlists + Queue Export
 - Stateless Subsonic endpoints in `navidromeApi.ts`: `getPlaylists`, `getPlaylist`, `createPlaylist`, `updatePlaylist`, `deletePlaylist`.
 - "Save Queue as Playlist" in `QueueView` and "Play / Add to Queue" from a clean Playlists sheet, feeding directly into the existing `queueManager` bulk methods.
+- Import preserves server order **and duplicates** (the queue can represent them after 2D); unresolved ids are dropped with a count and a review list; zero resolved never starts playback; the source playlist is never mutated.
+- Play vs. Add copy states the auto-queue consequence: with auto off the playlist ends at its last row; with auto on suggestions continue.
 
 ---
 
@@ -115,15 +125,16 @@ This is a completion ledger, not a promise that all phases are done. Update it a
 ### Next highest-value work — strict order
 1. **Review this UI prototype**, refine, then pin agreed behavior with browser tests. Do not start a broad visual rewrite before this feedback.
 2. **[DONE 2026-10-21] Queue/playback reliability characterization** (2A), before playlist implementation. Invariant matrix + characterization tests landed; no refactor was performed, and the gaps it exposed are registered rather than patched. See "Phase 2A closure" at the end of this file and [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md).
-3. **Small, test-backed reliability extractions**, only where the matrix proves duplication or drift. Keep queue mutations in their existing choke point and playback transport ownership unchanged.
-4. Shared rating editor/display and Settings decomposition in separately reviewable, behavior-preserving increments.
-5. Saved view/filter presets, with separate explicit apply-to-auto-queue action. No hidden queue changes when selecting a library preset.
-6. Playlist demo and API capability check, then boundary-safe implementation only after the reliability gate below.
+3. **Queue semantics redesign (2D)** — [QUEUE-DESIGN.md](../QUEUE-DESIGN.md) §6 order, starting with row identity + duplicates. Every step updates its matrix row and test in the same commit.
+4. **Small, test-backed reliability extractions**, only where the matrix proves duplication or drift. Keep queue mutations in their existing choke point and playback transport ownership unchanged.
+5. Shared rating editor/display and Settings decomposition in separately reviewable, behavior-preserving increments.
+6. Saved view/filter presets, with separate explicit apply-to-auto-queue action. No hidden queue changes when selecting a library preset.
+7. Server playlists + queue export (3B) after 2D step 6; file import after the review UI exists.
 
 ### Reliability gate before playlists — ALL 8 CLOSED 2026-10-21
 - [x] Document intended behavior for user vs auto queue, promotion/history, active anchor, recent cooldown, tier exhaustion/wrap, shuffle, loop-one/all, and independent auto sort/filter settings. → [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md) §1–§11 (76 invariants, every row pointing at a passing test).
 - [x] Characterize bulk play/enqueue with empty input, missing library IDs, repeated IDs, a track present in both sections, and active track within the imported list. → `tests/queueBulkImport.test.ts` (7 tests); the unguarded cases are registered as matrix gap **G4**.
-- [x] Preserve within-section unique IDs, section-prefixed keys, active identity across mutations, and existing refill/anchor rotation. → pinned by `tests/queueMutation.test.ts` (incl. the 10k×6 fuzz), `tests/queueContinuation.test.ts`, `tests/queueManagerFill.test.ts`. Playlist duplicate/order semantics are now an EXPLICIT registered decision (matrix §15: first-occurrence collapse on import, verbatim export) rather than an open assumption.
+- [x] Preserve within-section unique IDs, section-prefixed keys, active identity across mutations, and existing refill/anchor rotation. → pinned by `tests/queueMutation.test.ts` (incl. the 10k×6 fuzz), `tests/queueContinuation.test.ts`, `tests/queueManagerFill.test.ts`. The as-built uniqueness rule is now superseded by the 2D decision (duplicates legal); the matrix row rewrite lands with that change. Playlist duplicate/order semantics are registered in [QUEUE-DESIGN.md](../QUEUE-DESIGN.md) §7.3: import preserves both.
 - [x] Test restore with stale IDs/duplicates, clear/remove/drag around active, rapid Next/Previous, and sort/filter changes while playing. → `tests/queueRestore.test.ts`, `tests/queueRestoreAnchor.test.ts`, `tests/queueMutation.test.ts` (4 new drag/remove cases), `tests/playbackManagerNav.test.ts` (6), `tests/queueManagerFill.test.ts` (4).
 - [x] Cover native snapshot/refresh/trackChanged identity reconciliation, stale events, and web/native advance parity. → `tests/queueContinuation.test.ts`, `tests/nativeTransport.test.ts`, `tests/playbackManagerNative.test.ts`, `tests/nativeReconcile.test.ts`, plus the new same-tick web nav suite. A passing Node suite still does NOT verify the native engine on a phone — the 2026-10-17 physical acceptance item remains open.
 - [x] Run relevant queue mutation/fill/manager/transport suites plus queue drag/row browser tests. → `npm test` 1382/1382; `npx playwright test` queueRows + queuedragdup + queueContinuation + queueflood = 12/12 passing. No assertions were weakened and no queue/playback behavior was changed.
@@ -190,4 +201,18 @@ This is a completion ledger, not a promise that all phases are done. Update it a
 
 **Verification:** `npm run check` 0 errors / 0 warnings; `npm test` 1382/1382; `npx playwright test tests/e2e/{queueRows,queuedragdup,queueContinuation,queueflood}.spec.ts` 12/12. No queue or playback behavior changed for this increment. On-device native verification remains outstanding (2026-10-17 plan), and the playlist endpoint check is docs/source-level only — no live server was available.
 
-**Next:** decide G1/G2 (one shared "preserve the audible occurrence across a fill rewrite" rule) before Phase 3 playlists; 2B (rating editor/display extraction) and 2C (Settings decomposition) remain open and are independent of the queue.
+### Phase 2A audit closure + 2D design agreement (2026-10-21b)
+
+**Audit pass committed** as `3f4bb61` ("Close the queue matrix's audit holes"): H7 now has a real reload proof in `tests/e2e/persistence.spec.ts` (rendered sections + anchor snapshotted, reloaded, compared); B1/E9 carry their G1/G2 caveat inline; L2 is an open product question (Q1) rather than an invented intent; the citation/status-vocabulary defects are fixed. Verification: `npm run check` 0/0, `npm test` 1382/1382.
+
+**2D decisions (recorded in full in [docs/QUEUE-DESIGN.md](../QUEUE-DESIGN.md)):**
+- Pressing a song starts that song: drop its auto copy, append a user occurrence, play. Only the active row is an exemption (resume, no clone). Auto-row presses consume the skipped prefix; user-row presses stay positional.
+- User-queue duplicates are legal; + always appends. Auto duplicates appear only when a refill can add no new id (unique pass first, then cycle the existing suggestions).
+- Row identity is the occurrence: occurrence-scoped keys, row-scoped removal, occurrence drag payload, occurrence-aware native entry ids, restore/reconcile without dedupe.
+- Any filter/sort edit (including the library→auto apply) promotes the audible auto row, clears `recentTrackIds`, discards the kept prefix and rebuilds. Shuffle rebuilds but does NOT reset recents. This closes G1/G2 structurally.
+- Skip exactness via an explicit pending-target fact (two presses = two rows).
+- Auto queue can be switched off; off clears the tail. Auto-off is defined as the direct form of a filter matching nothing, so repeat-all has one definition: loop-all wraps to `userQueue[0]`, loop-none stops, loop-one loops the song, Previous at the first row is a no-op.
+- The played pile grows intentionally; no automatic cap (clear-above/below/all remain).
+- Playlist v1 = server playlists + queue export; file import deferred (formats researched in QUEUE-DESIGN §7.5).
+
+**Next:** implement 2D in the order listed above (row identity and duplicates first); 2B (rating editor/display extraction) and 2C (Settings decomposition) remain open and independent. The native pause bug is tracked separately in QUEUE-DESIGN §8 and needs a physical device run.

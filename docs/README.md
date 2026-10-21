@@ -17,6 +17,7 @@ Use this index to find the right guide without needing to know the repository la
 
 - [Developer knowledge base](../AGENTS.md) — architecture map, design rules, and test-enforced invariants.
 - [Queue & playback invariant matrix](QUEUE-INVARIANTS.md) — every intended queue/playback behavior with the test that pins it, the known gaps, and the Phase 3 playlist boundary decisions.
+- [Queue & playlist target design](QUEUE-DESIGN.md) — the agreed (not yet implemented) queue rules, the decision ledger, the implementation order, and the playlist/format contract.
 - [Developer log](DEVLOG.md) — dated implementation rationale and field findings.
 - [Plans](plans/) — active and historical engineering plans.
 
