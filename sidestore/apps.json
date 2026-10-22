@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.63",
-      "versionDate": "2026-10-21T08:23:38.984Z",
-      "versionDescription": "Reliable WebDAV push: writes now respect the destination file's ETag on Nextcloud-style servers and report the cause when a server refuses a write. The push review pane is capped so the screen above and below stays reachable on iOS, shows no colored border, and opens the full track details from its art or title.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.63/mmdrome.ipa",
+      "version": "1.2.64",
+      "versionDate": "2026-10-22T06:18:51.505Z",
+      "versionDescription": "Loved tracks now reach Last.fm and ListenBrainz: a completed listen sends the current loved state, ListenBrainz hearts use the documented MBID feedback API, and Settings now has a Loved Tracks mode (loved tag, rating threshold, both, or off).",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.64/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.64",
+          "buildVersion": "68",
+          "date": "2026-10-22T06:18:51.505Z",
+          "localizedDescription": "Loved tracks now reach Last.fm and ListenBrainz: a completed listen sends the current loved state, ListenBrainz hearts use the documented MBID feedback API, and Settings now has a Loved Tracks mode (loved tag, rating threshold, both, or off).",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.64/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5218724
+        },
         {
           "version": "1.2.63",
           "buildVersion": "67",
@@ -620,6 +629,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.64",
+      "identifier": "ios-v1.2.64",
+      "appID": "com.mmdrome.player",
+      "caption": "Loved tracks now reach Last.fm and ListenBrainz: a completed listen sends the current loved state, ListenBrainz hearts use the documented MB",
+      "date": "2026-10-22T06:18:51.505Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.63",
       "identifier": "ios-v1.2.63",
       "appID": "com.mmdrome.player",
@@ -652,15 +670,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Prevent queue skipping during server failures. Reject non-audio responses, correct playback status and cover timing, and improve interruptio",
       "date": "2026-10-17T23:03:34.376Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.59",
-      "identifier": "ios-v1.2.59",
-      "appID": "com.mmdrome.player",
-      "caption": "Recover dead IndexedDB connections transparently and make failed storage recovery actionable",
-      "date": "2026-10-13T21:29:55.601Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
