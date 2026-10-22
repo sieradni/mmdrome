@@ -27,7 +27,8 @@
           "date": "2026-10-22T06:18:51.505Z",
           "localizedDescription": "Loved tracks now reach Last.fm and ListenBrainz: a completed listen sends the current loved state, ListenBrainz hearts use the documented MBID feedback API, and Settings now has a Loved Tracks mode (loved tag, rating threshold, both, or off).",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.64/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5218724
         },
         {
           "version": "1.2.63",
