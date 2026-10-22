@@ -1,5 +1,5 @@
 import { get } from 'svelte/store'
-import { currentTrack, currentTime, settings } from '../stores/appState'
+import { currentTrack, currentTime, metadataCache, settings } from '../stores/appState'
 import { getCachedConfig, submitNowPlaying, submitScrobble } from './navidromeApi'
 import type { Track, SettingsMap } from '../stores/appState'
 import { effectiveLfmCreds, getCachedLfmSession } from './lastfmAuth'
@@ -8,6 +8,7 @@ import { lbSubmitListen } from './listenbrainzApi'
 import { scrobbleFlushEngine } from './scrobbleFlush'
 import { effectiveLowData } from './networkMode'
 import { credentialsHealthy, authBaseKey } from './authHealth'
+import { loveSignalsOf, resolveLovePolicy, shouldScrobbleAsLoved } from './scrobbleLove'
 
 /**
  * Client-side listening tracker. Feeds Navidrome's Subsonic `scrobble` endpoint
@@ -24,7 +25,15 @@ import { credentialsHealthy, authBaseKey } from './authHealth'
  * Policy (Last.fm-style): a listen counts when the track played ≥ 50% (or ≥ 4 min
  * for long tracks). Subscribes to the shared `currentTrack`/`currentTime` stores so a
  * single module covers both the web (timeupdate) and native (position poll) engines.
- */
+ *
+ * Loved state travels with the completed listen (2026-10-21): the shared
+ * `scrobbleLove` policy decides ONCE per listen whether the track should be
+ * loved at the services, and both direct legs deliver that state. This is what
+ * makes an ALREADY-loved track (tag, Navidrome star, another device) reach
+ * Last.fm/ListenBrainz — the old mirror only fired on an explicit local ♥ flip.
+ * Only the positive direction is delivered here: a play must never UN-love a
+ * track (the local row may be stale, and an unlove would wipe a heart set
+ * elsewhere). */
 
 const MIN_LISTEN_SECONDS = 240
 const SCROBBLE_RATIO = 0.5
@@ -69,6 +78,9 @@ export interface ScrobbleDestinations {
   lastfmNowPlaying(track: Track): void
   listenbrainzScrobble(event: ListenEvent): void
   listenbrainzNowPlaying(track: Track): void
+  /** Positive-only heart delivery at listen completion (see the module note). */
+  lastfmLove(event: ListenEvent): void
+  listenbrainzLove(event: ListenEvent): void
 }
 
 function hasIdentity(artist?: string, title?: string): boolean {
@@ -201,7 +213,31 @@ function defaultDestinations(): ScrobbleDestinations {
         // Fire-and-forget heartbeat.
       })
     },
+    lastfmLove(event) {
+      const s = get(settings)
+      if (!shouldLastfmScrobble(s, getCachedLfmSession(), event.artist, event.title)) return
+      void scrobbleFlushEngine.enqueue('lfm-love', event.artist, event.title)
+        .catch((err) => console.warn('[scrobble] love enqueue failed:', err))
+    },
+    listenbrainzLove(event) {
+      const s = get(settings)
+      if (!shouldListenbrainzScrobble(s, event.artist, event.title)) return
+      void scrobbleFlushEngine.enqueue('lb-love', event.artist, event.title)
+        .catch((err) => console.warn('[scrobble] love enqueue failed:', err))
+    },
   }
+}
+
+/**
+ * The default "should this listen be loved" read: the shared policy over the
+ * live metadata row, captured at listen completion. `loveFor` stays injectable
+ * so the dispatch contract is pinned without stores.
+ */
+function defaultLoveFor(track: Track): boolean {
+  return shouldScrobbleAsLoved(
+    loveSignalsOf(get(metadataCache).get(track.trackId)),
+    resolveLovePolicy(get(settings)),
+  )
 }
 
 /**
@@ -231,9 +267,11 @@ export class ScrobbleManager {
   private curTrackId: string | null = null
   private unsubs: (() => void)[] = []
   private destinations: ScrobbleDestinations
+  private loveFor: (track: Track) => boolean
 
-  constructor(destinations: ScrobbleDestinations = defaultDestinations()) {
+  constructor(destinations: ScrobbleDestinations = defaultDestinations(), loveFor: (track: Track) => boolean = defaultLoveFor) {
     this.destinations = destinations
+    this.loveFor = loveFor
   }
 
   /** Kept for the playbackManager.init() contract; gating is per-destination now. */
@@ -302,6 +340,11 @@ export class ScrobbleManager {
     this.destinations.navidromeScrobble(ph.track, ph.startedAt)
     this.destinations.lastfmScrobble(event)
     this.destinations.listenbrainzScrobble(event)
+    // Already-loved tracks report as loved here, not only on a ♥ flip.
+    if (this.loveFor(ph.track)) {
+      this.destinations.lastfmLove(event)
+      this.destinations.listenbrainzLove(event)
+    }
   }
 }
 

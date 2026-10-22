@@ -10,6 +10,7 @@ import {
   type PendingScrobbleRow,
 } from './db'
 import {
+  isHeartKind,
   LFM_SCROBBLE_BATCH_MAX,
   planFlush,
   type ScrobbleKind,
@@ -89,9 +90,10 @@ function defaultDeps(): SubmitDeps {
     lbListen: (entry, playingNow) =>
       lbSubmitListen(lbToken(), { artist: entry.artist, track: entry.track, album: entry.album, duration: entry.duration }, playingNow ? { playingNow: true } : { listenedAtSec: entry.timestamp }),
     lbFeedback: async (artist, track, score) => {
-      const mbid = await lbLookupRecordingMbid(artist, track)
+      const token = lbToken()
+      const mbid = await lbLookupRecordingMbid(token, artist, track)
       if (!mbid) throw new NoMbidMatchError()
-      await lbSubmitFeedback(lbToken(), mbid, score)
+      await lbSubmitFeedback(token, mbid, score)
     },
   }
 }
@@ -107,6 +109,13 @@ function lbToken(): string {
   const token = get(settings).listenbrainzToken
   if (!token) throw new Error('ListenBrainz not connected')
   return token
+}
+
+interface SubmitOutcome {
+  /** Still queued for a retry. */
+  failed: PendingScrobbleRow[]
+  /** Removed for good — the destination has no representation for them. */
+  discarded: PendingScrobbleRow[]
 }
 
 export interface FlushStatus {
@@ -250,21 +259,42 @@ export class ScrobbleFlushEngine {
     const deliverable = rows.filter((_, i) => !goneIdx.includes(i))
     if (deliverable.length === 0) return true
 
-    // One kind per cycle — each destination has its own call shape.
-    const kindOrder: ScrobbleKind[] = ['lfm-scrobble', 'lb-listen', 'lfm-love', 'lfm-unlove', 'lb-love', 'lb-unlove']
-    const kind = kindOrder.find((k) => deliverable.some((r) => r.kind === k))
-    if (!kind) return false
+    // Listens first (their value decays server-side), then ALL heart kinds as
+    // ONE group in queue order. Grouping hearts by kind name would replay a
+    // ♥ off → on toggle as (on, off) and leave the services unloved while the
+    // UI says loved; the row's `seq` order IS the state transition order, and
+    // `deliverable` already carries it.
+    let group: PendingScrobbleRow[]
+    if (deliverable.some((r) => r.kind === 'lfm-scrobble')) {
+      group = deliverable.filter((r) => r.kind === 'lfm-scrobble').slice(0, this.deps.batchSize())
+    } else if (deliverable.some((r) => r.kind === 'lb-listen')) {
+      group = deliverable.filter((r) => r.kind === 'lb-listen').slice(0, SINGLE_KIND_CYCLE_CAP)
+    } else {
+      group = deliverable.filter((r) => isHeartKind(r.kind)).slice(0, SINGLE_KIND_CYCLE_CAP)
+    }
+    if (group.length === 0) return false
 
-    const group = deliverable.filter((r) => r.kind === kind).slice(0, kind === 'lfm-scrobble' ? this.deps.batchSize() : SINGLE_KIND_CYCLE_CAP)
     try {
-      const failed = await this.submitGroup(kind, group)
-      const okRows = group.filter((r) => !failed.includes(r))
-      if (okRows.length > 0) {
-        await this.store.remove(okRows.map((r) => r.seq!).filter((seq) => seq !== undefined))
-        scrobbleFlushStatus.update((s) => ({ ...s, pending: s.pending - okRows.length }))
+      const { failed, discarded } = await this.submitGroup(group)
+      // Book-keeping happens ONCE here. A discarded row (LB: no MBID match) is
+      // gone from the durable queue, so counting it as delivered as well used
+      // to decrement `pending` twice — the store drifted negative and a
+      // negative count silences the periodic auto-flush until the next boot.
+      const settled = group.filter((r) => !failed.includes(r) && !discarded.includes(r))
+      const removable = [...settled, ...discarded].map((r) => r.seq!).filter((seq) => seq !== undefined)
+      if (removable.length > 0) await this.store.remove(removable)
+      if (settled.length > 0) {
+        scrobbleFlushStatus.update((s) => ({ ...s, pending: s.pending - settled.length }))
+      }
+      if (discarded.length > 0) {
+        scrobbleFlushStatus.update((s) => ({
+          ...s,
+          pending: s.pending - discarded.length,
+          skippedNoMbid: s.skippedNoMbid + discarded.length,
+        }))
       }
       if (failed.length > 0) {
-        await this.store.markFailed(group.filter((r) => failed.includes(r)))
+        await this.store.markFailed(failed)
         this.failures++
         this.scheduleRetry(this.lastFailureWasRateLimit)
         scrobbleFlushStatus.update((s) => ({ ...s, lastError: this.lastErrorMessage ?? 'Submission failed' }))
@@ -283,42 +313,51 @@ export class ScrobbleFlushEngine {
     }
   }
 
-  /** Submits the group; returns the FAILED rows. Throws nothing (per-row errors collected). */
-  private async submitGroup(kind: ScrobbleKind, group: PendingScrobbleRow[]): Promise<PendingScrobbleRow[]> {
+  /** Submits the group; reports FAILED rows and permanently DISCARDED ones (no
+   *  MBID match). Throws nothing (per-row errors are collected). */
+  private async submitGroup(group: PendingScrobbleRow[]): Promise<SubmitOutcome> {
     this.lastFailureWasRateLimit = false
     this.lastErrorMessage = null
-    if (kind === 'lfm-scrobble') {
+    // Only lfm-scrobble batches; every other kind is one call per row, and a
+    // heart group may mix kinds (queue order is preserved).
+    if (group[0]?.kind === 'lfm-scrobble') {
       await this.deps.lfmScrobble(group.map(toMeta))
-      return []
+      return { failed: [], discarded: [] }
     }
     const failed: PendingScrobbleRow[] = []
-    for (const row of group) {
+    const discarded: PendingScrobbleRow[] = []
+    for (let i = 0; i < group.length; i++) {
+      const row = group[i]
       try {
-        if (kind === 'lfm-love' || kind === 'lfm-unlove') {
-          await this.deps.lfmLove(row.artist, row.track, kind === 'lfm-love')
-        } else if (kind === 'lb-listen') {
+        if (row.kind === 'lfm-love' || row.kind === 'lfm-unlove') {
+          await this.deps.lfmLove(row.artist, row.track, row.kind === 'lfm-love')
+        } else if (row.kind === 'lb-listen') {
           await this.deps.lbListen(row, false)
-        } else if (kind === 'lb-love' || kind === 'lb-unlove') {
+        } else if (row.kind === 'lb-love' || row.kind === 'lb-unlove') {
           // Heart polarity lives in the kind: love → score 1, unlove → 0
           // (0 removes the feedback server-side).
-          await this.deps.lbFeedback(row.artist, row.track, kind === 'lb-love' ? 1 : 0)
+          await this.deps.lbFeedback(row.artist, row.track, row.kind === 'lb-love' ? 1 : 0)
         }
       } catch (err) {
         if (err instanceof NoMbidMatchError) {
-          // Nothing to map to — drop permanently with a surfaced counter.
-          await this.store.remove(row.seq !== undefined ? [row.seq] : [])
-          scrobbleFlushStatus.update((s) => ({ ...s, pending: s.pending - 1, skippedNoMbid: s.skippedNoMbid + 1 }))
+          // Nothing to map to — cycleOnce drops it permanently and surfaces the
+          // `skippedNoMbid` counter.
+          discarded.push(row)
           continue
         }
         failed.push(row)
         if (!this.lastErrorMessage) this.lastErrorMessage = describeErr(err)
         if (this.isRateLimit(err)) {
           this.lastFailureWasRateLimit = true
+          // A rate limited row aborts the rest of the group. Those rows were
+          // NEVER attempted — leaving them out of `failed` made cycleOnce count
+          // them as delivered and delete them (up to 24 hearts silently lost).
+          failed.push(...group.slice(i + 1))
           break
         }
       }
     }
-    return failed
+    return { failed, discarded }
   }
 
   private isRateLimit(err: unknown): boolean {

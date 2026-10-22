@@ -10,6 +10,7 @@ import { sanitizeRecent } from '$lib/recentWindow'
 import type { LibrarySortKey } from '$lib/libraryFilters'
 import { planPendingRelink } from '$lib/pendingRelink'
 import { dbgAlways, dbgDanger } from '$lib/debugLog'
+import { DEFAULT_LOVE_POLICY } from '$lib/scrobbleLove'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
 
@@ -114,6 +115,14 @@ export interface SettingsMap {
   lastfmScrobbling?: boolean
   listenbrainzScrobbling?: boolean
   listenbrainzToken?: string
+  /** Love-scrobbling policy (2026-10-21): WHICH local signal marks a track as
+   *  loved for Last.fm/ListenBrainz. Independent flags — ♥ only (the historical
+   *  behavior), rating only, either, or neither. Read through
+   *  `scrobbleLove.ts` `resolveLovePolicy`; never gate hearts on a raw flag. */
+  scrobbleLoveFromLoved?: boolean
+  scrobbleLoveFromRating?: boolean
+  /** Inclusive 0–100 rating cutoff for `scrobbleLoveFromRating`. */
+  scrobbleLoveRatingThreshold?: number
   /** BYO Last.fm API credentials override the compiled defaults. */
   lastfmApiKey?: string
   lastfmApiSecret?: string
@@ -672,7 +681,7 @@ export async function initStores(): Promise<void> {
 }
 
 async function loadSettings(): Promise<void> {
-  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'lastfmApiKey', 'lastfmApiSecret', 'lowDataMode', 'lowDataOnCellular', 'transcodeMode', 'transcodeFormat', 'transcodeBitrate', 'transcodeProbe', 'iosAudioMixing', 'seekEpochs']
+  const keys: (keyof SettingsMap)[] = ['preloadTracks', 'crossfadeDuration', 'webdavUrl', 'webdavUser', 'webdavToken', 'navidromeUrl', 'navidromeUser', 'navidromePassword', 'replayGainMode', 'scrobbling', 'ratingSource', 'syncToNavidrome', 'writeTagsInNavidromeMode', 'lastfmScrobbling', 'listenbrainzScrobbling', 'listenbrainzToken', 'scrobbleLoveFromLoved', 'scrobbleLoveFromRating', 'scrobbleLoveRatingThreshold', 'lastfmApiKey', 'lastfmApiSecret', 'lowDataMode', 'lowDataOnCellular', 'transcodeMode', 'transcodeFormat', 'transcodeBitrate', 'transcodeProbe', 'iosAudioMixing', 'seekEpochs']
   const entries = await Promise.all(keys.map(async (key) => {
     const value = await getSetting(key)
     return [key, value] as [typeof key, unknown]
@@ -716,6 +725,11 @@ export function applyDefaultSettings(): void {
   settings.update((s) => ({
     replayGainMode: s.replayGainMode ?? 'track',
     crossfadeDuration: s.crossfadeDuration ?? 6,
+    // Love scrobbling (2026-10-21): defaults preserve the historical "♥ flag
+    // only" behavior for an install that never set the keys.
+    scrobbleLoveFromLoved: s.scrobbleLoveFromLoved ?? DEFAULT_LOVE_POLICY.fromLovedFlag,
+    scrobbleLoveFromRating: s.scrobbleLoveFromRating ?? DEFAULT_LOVE_POLICY.fromRating,
+    scrobbleLoveRatingThreshold: s.scrobbleLoveRatingThreshold ?? DEFAULT_LOVE_POLICY.ratingThreshold,
     iosAudioMixing: s.iosAudioMixing ?? 'exclusive',
     // Phase 2 (2026-10-07): the seek-epoch kill switch defaults to 'auto' —
     // an absent key must mean the feature is ON, never undefined-mode.

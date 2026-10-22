@@ -6,7 +6,8 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { settings, currentTrack, currentTime, type Track } from '../src/stores/appState'
+import { settings, currentTrack, currentTime, metadataCache, type Track } from '../src/stores/appState'
+import type { LocalMetadataStore } from '../src/lib/db'
 import {
   ScrobbleManager,
   shouldNavidromeScrobble,
@@ -38,8 +39,22 @@ function spyDestinations() {
     lastfmNowPlaying: () => { calls.push('lfm-np') },
     listenbrainzScrobble: (event) => { calls.push('lb'); events.push(event) },
     listenbrainzNowPlaying: () => { calls.push('lb-np') },
+    lastfmLove: () => { calls.push('lfm-love') },
+    listenbrainzLove: () => { calls.push('lb-love') },
   }
   return { calls, events, dests }
+}
+
+function metadataRow(trackId: string, over: Partial<LocalMetadataStore> = {}): LocalMetadataStore {
+  return {
+    trackId,
+    rating: 0,
+    loved: false,
+    fileType: 'mp3',
+    syncStatus: 'synced',
+    lastModifiedLocally: Date.now(),
+    ...over,
+  }
 }
 
 /** Drives the shared stores past the 4-minute floor in <=5 s ticks so the
@@ -131,6 +146,71 @@ test('a short listen under the threshold dispatches nothing', async () => {
   currentTrack.set(null)
   await new Promise((r) => setTimeout(r, 0))
   assert.ok(!calls.includes('lfm') && !calls.includes('lb') && !calls.some((c) => c.startsWith('nav-scrobble')))
+  manager.disable()
+})
+
+test('a track that was ALREADY loved reports as loved when its listen completes', async (t) => {
+  // The 2026-10-21 field report: hearts only ever reached the services on a
+  // local ♥ flip, so a library loved before the service was connected (or via
+  // tags / another device) never arrived as loved. The policy is read from the
+  // live metadata row at listen completion, not from a change event.
+  const { calls, dests } = spyDestinations()
+  settings.set({ scrobbling: true })
+  metadataCache.set(new Map([['navidrome-loved', metadataRow('navidrome-loved', { loved: true })]]))
+  t.after(() => metadataCache.set(new Map()))
+  const manager = new ScrobbleManager(dests)
+  manager.init()
+  manager.enable()
+
+  await playThrough(trackFixture({ trackId: 'navidrome-loved' }))
+
+  assert.ok(calls.includes('lfm') && calls.includes('lb'), 'listens still dispatched')
+  assert.ok(calls.includes('lfm-love'), 'Last.fm love delivered for an already-loved track')
+  assert.ok(calls.includes('lb-love'), 'ListenBrainz love delivered for an already-loved track')
+  manager.disable()
+})
+
+test('an unloved track delivers no heart (a play never invents love)', async (t) => {
+  const { calls, dests } = spyDestinations()
+  settings.set({ scrobbling: true })
+  metadataCache.set(new Map([['navidrome-plain', metadataRow('navidrome-plain', { rating: 100 })]]))
+  t.after(() => metadataCache.set(new Map()))
+  const manager = new ScrobbleManager(dests)
+  manager.init()
+  manager.enable()
+
+  await playThrough(trackFixture({ trackId: 'navidrome-plain' }))
+
+  // rating-only love is OFF by default, so a high rating alone must not send.
+  assert.ok(!calls.includes('lfm-love') && !calls.includes('lb-love'))
+  manager.disable()
+})
+
+test('the rating signal drives hearts when enabled, independently of the ♥ flag', async (t) => {
+  const { calls, dests } = spyDestinations()
+  settings.set({
+    scrobbling: true,
+    scrobbleLoveFromLoved: false,
+    scrobbleLoveFromRating: true,
+    scrobbleLoveRatingThreshold: 80,
+  })
+  metadataCache.set(new Map([
+    ['navidrome-high', metadataRow('navidrome-high', { rating: 90 })],
+    ['navidrome-heart-only', metadataRow('navidrome-heart-only', { loved: true, rating: 10 })],
+  ]))
+  t.after(() => metadataCache.set(new Map()))
+  const manager = new ScrobbleManager(dests)
+  manager.init()
+  manager.enable()
+
+  await playThrough(trackFixture({ trackId: 'navidrome-high' }))
+  assert.ok(calls.includes('lfm-love') && calls.includes('lb-love'), 'rating ≥ threshold loves')
+
+  const before = calls.filter((c) => c.endsWith('-love')).length
+  calls.length = 0
+  await playThrough(trackFixture({ trackId: 'navidrome-heart-only' }))
+  assert.equal(calls.filter((c) => c.endsWith('-love')).length, 0, '♥ alone must not love when the ♥ signal is off')
+  assert.ok(before > 0)
   manager.disable()
 })
 

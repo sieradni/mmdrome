@@ -32,6 +32,13 @@ export const AUTH_POLL_TIMEOUT_MS = 10 * 60 * 1000
  *  `lb-love`/`lb-unlove` → ListenBrainz feedback score 1/0. */
 export type ScrobbleKind = 'lfm-scrobble' | 'lfm-love' | 'lfm-unlove' | 'lb-listen' | 'lb-love' | 'lb-unlove'
 
+/** Heart kinds carry a state transition, so their DELIVERY ORDER is the state:
+ *  the flush engine must replay them strictly in enqueue order (a ♥ off → on
+ *  cycle that is grouped by kind name would end up unloved). */
+export function isHeartKind(kind: ScrobbleKind): boolean {
+  return kind === 'lfm-love' || kind === 'lfm-unlove' || kind === 'lb-love' || kind === 'lb-unlove'
+}
+
 /** Kinds whose value decays server-side (Last.fm rejects listens older than ~2 weeks). */
 const TIME_SENSITIVE_KINDS: ReadonlySet<string> = new Set(['lfm-scrobble', 'lb-listen'])
 

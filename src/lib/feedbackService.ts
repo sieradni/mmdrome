@@ -7,6 +7,7 @@ import { getCachedConfig, setNavidromeRating, setNavidromeStarred } from './navi
 import { credentialsHealthy, authBaseKey } from './authHealth'
 import { getCachedLfmSession } from './lastfmAuth'
 import { scrobbleFlushEngine } from './scrobbleFlush'
+import { loveSignalsOf, planLoveChange, resolveLovePolicy, type LoveChangePlan } from './scrobbleLove'
 
 /**
  * Single place where rating/loved changes from the UI are committed. Routes to the
@@ -29,6 +30,16 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
   const syncToNavidrome = get(settings).syncToNavidrome ?? false
   const writeTags = get(settings).writeTagsInNavidromeMode ?? false
   const existing = get(metadataCache).get(track.trackId)
+  // One decision, made BEFORE the cache row is replaced: `existing` is the
+  // previous state, `{rating, loved}` the new one. The policy decides whether
+  // the EFFECTIVE love state moved — with a rating signal active, a ♥ toggle
+  // that leaves the track above the threshold delivers nothing, and a rating
+  // crossing the threshold delivers even when the ♥ flag never moved.
+  const loveChange = planLoveChange(
+    loveSignalsOf(existing),
+    { loved, rating },
+    resolveLovePolicy(get(settings)),
+  )
 
   if (source === 'navidrome') {
     const meta: LocalMetadataStore = {
@@ -58,7 +69,7 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
     // cleared (rating 0 with a nonzero prior local value) without wiping a
     // server-side rating a track just gets a ♥ for.
     void pushToNavidrome(track, rating, loved, existing?.rating ?? 0)
-    fanOutHearts(track, loved, existing?.loved ?? false)
+    fanOutHearts(track, loveChange)
     return
   }
 
@@ -87,29 +98,30 @@ export function commitFeedback(track: Track, rating: number, loved: boolean): vo
     void pushToNavidrome(track, rating, loved, existing?.rating ?? 0)
   }
 
-  fanOutHearts(track, loved, existing?.loved ?? false)
+  fanOutHearts(track, loveChange)
 }
 
 /**
- * Outward-only heart mirror to the direct scrobbler services (2026-08-25).
- * Fires ONLY on an actual local loved-flag flip — a rating edit with unchanged
- * heart must not re-deliver. Queued durably (survives offline) and idempotent
- * server-side; there is deliberately NO reverse import (Last.fm exposes no
- * love timestamps, so a merge basis doesn't exist).
+ * Outward-only heart mirror to the direct scrobbler services (2026-08-25;
+ * policy-driven since 2026-10-21). `planLoveChange` already decided whether the
+ * effective state moved and what polarity it moved to — this function only
+ * delivers. Queued durably (survives offline) and idempotent server-side; there
+ * is deliberately NO reverse import (Last.fm exposes no love timestamps, so a
+ * merge basis doesn't exist).
  */
-function fanOutHearts(track: Track, loved: boolean, prevLoved: boolean): void {
-  if (loved === prevLoved) return
+function fanOutHearts(track: Track, change: LoveChangePlan): void {
+  if (!change.deliver) return
   const artist = track.artist?.trim()
   const title = track.title?.trim()
   if (!artist || !title) return
 
   const s = get(settings)
   if (s.lastfmScrobbling && getCachedLfmSession()) {
-    void scrobbleFlushEngine.enqueue(loved ? 'lfm-love' : 'lfm-unlove', artist, title)
+    void scrobbleFlushEngine.enqueue(change.loved ? 'lfm-love' : 'lfm-unlove', artist, title)
       .catch((err) => console.warn('[scrobble] heart enqueue failed:', err))
   }
   if (s.listenbrainzScrobbling && s.listenbrainzToken) {
-    void scrobbleFlushEngine.enqueue(loved ? 'lb-love' : 'lb-unlove', artist, title)
+    void scrobbleFlushEngine.enqueue(change.loved ? 'lb-love' : 'lb-unlove', artist, title)
       .catch((err) => console.warn('[scrobble] heart enqueue failed:', err))
   }
 }

@@ -65,27 +65,47 @@ test('playing_now omits listened_at entirely', async (t) => {
   assert.equal('listened_at' in body.payload[0], false)
 })
 
-test('lookup returns the first recording MBID and null when none match', async (t) => {
-  const { calls, restore } = stubFetch((_url) => ({ recording_mbids: [{ recording_mbid: 'mbid-1' }] }))
+test('lookup uses the documented singular recording_mbid shape, token-auth and trailing slash', async (t) => {
+  // Contract: GET /1/metadata/lookup/?artist_name=…&recording_name=… returns
+  // (at most) a SINGULAR recording_mbid, and requires the user token. The old
+  // `recording_mbids[0].recording_mbid` read was an invented shape, so every
+  // heart resolved to "no match" and was dropped.
+  const { calls, restore } = stubFetch(() => ({
+    artist_credit_name: 'Artist',
+    artist_mbids: ['artist-mbid'],
+    recording_mbid: 'mbid-1',
+    recording_name: 'Track',
+    release_mbid: 'release-mbid',
+    release_name: 'Album',
+  }))
   t.after(restore)
-  const mbid = await lbLookupRecordingMbid('Artist', 'Track')
+  const mbid = await lbLookupRecordingMbid('lb-tok', 'Artist', 'Track')
   assert.equal(mbid, 'mbid-1')
   const url = new URL(calls[0].url)
-  assert.equal(url.pathname, '/1/metadata/lookup')
+  assert.equal(url.pathname, '/1/metadata/lookup/')
   assert.equal(url.searchParams.get('artist_name'), 'Artist')
   assert.equal(url.searchParams.get('recording_name'), 'Track')
+  assert.equal((calls[0].init.headers as Record<string, string>).Authorization, 'Token lb-tok')
 
-  const empty = stubFetch(() => ({}))
+  // 200 with no match: the field is absent or empty — both mean "no match".
+  const empty = stubFetch(() => ({ artist_credit_name: '', recording_mbid: '' }))
   t.after(empty.restore)
-  assert.equal(await lbLookupRecordingMbid('X', 'Y'), null)
+  assert.equal(await lbLookupRecordingMbid('lb-tok', 'X', 'Y'), null)
+  const absent = stubFetch(() => ({ artist_credit_name: '' }))
+  t.after(absent.restore)
+  assert.equal(await lbLookupRecordingMbid('lb-tok', 'X', 'Z'), null)
 })
 
-test('feedback submits the mbid + score envelope; HTTP failures raise typed errors', async (t) => {
+test('feedback posts ONE recording-feedback object; HTTP failures raise typed errors', async (t) => {
+  // Contract: POST /1/feedback/recording-feedback with a single
+  // { recording_mbid, score } object (1 = love, 0 = remove).
   const { calls, restore } = stubFetch(() => ({ status: 'ok' }))
   t.after(restore)
   await lbSubmitFeedback('lb-tok', 'mbid-1', 1)
+  assert.equal(new URL(calls[0].url).pathname, '/1/feedback/recording-feedback')
+  assert.equal(calls[0].init.method, 'POST')
   const body = JSON.parse(String(calls[0].init.body))
-  assert.deepEqual(body.recordings[0], { recording_mbid: 'mbid-1', score: 1 })
+  assert.deepEqual(body, { recording_mbid: 'mbid-1', score: 1 })
 
   const failing = stubFetch(() => new Error('should not be reached'))
   t.after(failing.restore)

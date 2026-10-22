@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ScrobbleFlushEngine, NoMbidMatchError, scrobbleFlushStatus, type FlushStore } from '../src/lib/scrobbleFlush'
 import { get } from 'svelte/store'
+import { settings } from '../src/stores/appState'
 import { LastfmError } from '../src/lib/lastfmApi'
 import type { PendingScrobbleRow } from '../src/lib/db'
 import type { ScrobbleMeta } from '../src/lib/lastfmCore'
@@ -165,10 +166,67 @@ test('LB feedback with no MBID match is skipped permanently with a surfaced coun
     lbFeedback: async () => { throw new NoMbidMatchError() },
   }))
   await engine.enqueue('lb-love', 'Obscure', 'Track')
+  const pendingBefore = get(scrobbleFlushStatus).pending
+  const skippedBefore = get(scrobbleFlushStatus).skippedNoMbid
 
   await engine.runNow()
   assert.equal(store.rows.length, 0)
-  assert.ok(get(scrobbleFlushStatus).skippedNoMbid >= 1)
+  assert.equal(get(scrobbleFlushStatus).skippedNoMbid, skippedBefore + 1)
+  // The row was removed ONCE and counted ONCE. Double-counting it drifted
+  // `pending` negative, which silences the periodic auto-flush.
+  assert.equal(get(scrobbleFlushStatus).pending, pendingBefore - 1)
+})
+
+test('heart rows are delivered in enqueue order across kinds (toggle state cannot invert)', async () => {
+  // Field-relevant ordering: ♥ off → on queues unlove then love. Grouping by
+  // KIND NAME sent every love before every unlove, so a rapid re-love ended
+  // unloved at the services. Queue order is the state transition order.
+  const store = memoryStore()
+  const calls: string[] = []
+  const engine = engineWith(store, spyDeps({
+    lfmLove: async (_a, _t, loved) => { calls.push(`lfm:${loved}`) },
+    lbFeedback: async (_a, _t, score) => { calls.push(`lb:${score}`) },
+  }))
+  await engine.enqueue('lfm-unlove', 'A', 'T1')
+  await engine.enqueue('lfm-love', 'A', 'T1')
+  await engine.enqueue('lb-unlove', 'A', 'T2')
+  await engine.enqueue('lb-love', 'A', 'T2')
+
+  await engine.runNow()
+  assert.deepEqual(calls, ['lfm:false', 'lfm:true', 'lb:0', 'lb:1'], 'per-destination order is preserved')
+  assert.equal(store.rows.length, 0)
+})
+
+test('the DEFAULT LB heart path really reaches the wire: lookup then recording-feedback', async (t) => {
+  // End-to-end of the two real defects (2026-10-21): the shipped lookup read an
+  // invented `recording_mbids[]` shape without a token, and feedback posted a
+  // bulk envelope to a non-existent endpoint. Every LB heart died as
+  // "no MBID match". This drives the DEFAULT deps through stubbed fetch.
+  const originalFetch = globalThis.fetch
+  const calls: { url: string; init: RequestInit }[] = []
+  globalThis.fetch = (async (input: unknown, init?: RequestInit) => {
+    const url = String(input)
+    const request = init ?? { method: 'GET' }
+    calls.push({ url, init: request })
+    const body = url.includes('/1/metadata/lookup/')
+      ? { artist_credit_name: 'Artist', recording_mbid: 'recording-mbid-1', recording_name: 'Track' }
+      : { status: 'ok' }
+    return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+  }) as typeof fetch
+  t.after(() => { globalThis.fetch = originalFetch })
+
+  settings.set({ listenbrainzScrobbling: true, listenbrainzToken: 'lb-tok' })
+  const store = memoryStore()
+  const engine = new ScrobbleFlushEngine(store, undefined, { backoffMs: 0, autoKick: false })
+  await engine.enqueue('lb-love', 'Artist', 'Track')
+  await engine.runNow()
+
+  assert.equal(store.rows.length, 0, 'the heart drained')
+  assert.equal(calls.length, 2, 'lookup + feedback')
+  assert.equal(new URL(calls[0].url).pathname, '/1/metadata/lookup/')
+  assert.equal((calls[0].init.headers as Record<string, string>).Authorization, 'Token lb-tok')
+  assert.equal(new URL(calls[1].url).pathname, '/1/feedback/recording-feedback')
+  assert.deepEqual(JSON.parse(String(calls[1].init.body)), { recording_mbid: 'recording-mbid-1', score: 1 })
 })
 
 test('rate limiting aborts the remaining group but still records what succeeded', async () => {
@@ -180,9 +238,13 @@ test('rate limiting aborts the remaining group but still records what succeeded'
   }))
   await engine.enqueue('lfm-love', 'A', 'ok1')
   await engine.enqueue('lfm-love', 'A', 'fail')
+  await engine.enqueue('lfm-love', 'A', 'never-attempted')
 
   await engine.runNow()
-  assert.deepEqual(store.rows.map((r) => r.track), ['fail'], 'the rate-limited row stays; earlier successes drained')
+  // Rows after the rate limit were never sent — they must stay queued, never
+  // be mistaken for delivered (which deleted up to 24 hearts).
+  assert.deepEqual(store.rows.map((r) => r.track), ['fail', 'never-attempted'])
+  assert.deepEqual(store.rows.map((r) => r.attempts), [1, 1], 'unattempted rows are retried, not lost')
 })
 
 test('a failed cycle surfaces lastError; success clears it', async () => {

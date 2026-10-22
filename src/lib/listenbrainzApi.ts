@@ -6,6 +6,18 @@
  * Hearts: the feedback endpoint keys on recording MBIDs, so a love/unlove is a
  * two-step chain — metadata lookup by artist/track name → feedback submit.
  * A track with no MBID match is skipped gracefully (counted), never an error.
+ *
+ * Both halves are pinned against the published contract (verified 2026-10-21
+ * against listenbrainz.readthedocs.io):
+ *  - `GET /1/metadata/lookup/` REQUIRES the user token and answers with a
+ *    SINGULAR `recording_mbid` (200 does not imply a match — an unmatched
+ *    lookup just carries an empty/absent field).
+ *  - feedback is `POST /1/feedback/recording-feedback` with ONE object,
+ *    `{ recording_mbid, score }` (1 = love, -1 = hate, 0 = remove).
+ * The old code read an invented `recording_mbids[]` array, sent no token to the
+ * lookup, and posted a bulk `{ recordings: [...] }` envelope to a
+ * non-existent endpoint — every ListenBrainz heart failed and was silently
+ * counted as "no MBID match".
  */
 
 const LB_ROOT = 'https://api.listenbrainz.org'
@@ -91,20 +103,22 @@ export async function lbSubmitListen(
   await lbJson(token, '/1/submit-listens', { method: 'POST', body: JSON.stringify(body) })
 }
 
-/** Metadata lookup by name; returns the top recording MBID or null (no match). */
-export async function lbLookupRecordingMbid(artist: string, track: string): Promise<string | null> {
+/** Metadata lookup by name; returns the matched recording MBID or null. */
+export async function lbLookupRecordingMbid(token: string, artist: string, track: string): Promise<string | null> {
   const search = new URLSearchParams({ artist_name: artist, recording_name: track })
-  const resp = await fetchWithTimeout(`${LB_ROOT}/1/metadata/lookup?${search.toString()}`, { method: 'GET' })
-  if (!resp.ok) throw new ListenBrainzError(resp.status)
-  const data = (await resp.json()) as { recording_mbids?: { recording_mbid?: string }[] }
-  const first = data.recording_mbids?.[0]?.recording_mbid
-  return typeof first === 'string' ? first : null
+  const data = (await lbJson(token, `/1/metadata/lookup/?${search.toString()}`, { method: 'GET' })) as {
+    recording_mbid?: unknown
+  }
+  const mbid = data?.recording_mbid
+  // 200 only means "the lookup ran" — an unmatched recording answers with an
+  // empty/absent field, which is a no-match, not an error.
+  return typeof mbid === 'string' && mbid.trim() ? mbid : null
 }
 
 /** score: 1 = love, 0 = remove feedback (the unlove direction). */
 export async function lbSubmitFeedback(token: string, mbid: string, score: 1 | 0 | -1): Promise<void> {
-  await lbJson(token, '/1/feedback/submit-log', {
+  await lbJson(token, '/1/feedback/recording-feedback', {
     method: 'POST',
-    body: JSON.stringify({ recordings: [{ recording_mbid: mbid, score }] }),
+    body: JSON.stringify({ recording_mbid: mbid, score }),
   })
 }
