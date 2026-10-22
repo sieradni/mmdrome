@@ -35,6 +35,7 @@
   import { accentHue, appFont, ACCENT_HUES, FONT_OPTIONS, NEUTRAL_ACCENT } from '../lib/appearance'
   import { ensureFormatProbe } from '../lib/formatProbe'
   import { lbValidateToken } from '../lib/listenbrainzApi'
+  import { resolveLovePolicy } from '../lib/scrobbleLove'
   import { getCachedConfig, setCachedConfig, cachedConfigMatches } from '../lib/navidromeApi'
   import { resetCredentials, authBaseKey } from '../lib/authHealth'
   import { getSetting } from '../lib/db'
@@ -257,6 +258,47 @@
 
   function setListenbrainzScrobbling() {
     updateSetting('listenbrainzScrobbling', !($settings.listenbrainzScrobbling ?? false))
+  }
+
+  // ── Loved-track scrobbling policy (2026-10-21) ──────────────────────────
+  // Four modes over the two stored signals. The policy resolution is the SAME
+  // one the scrobblers read (`scrobbleLove.resolveLovePolicy`), so this UI can
+  // never disagree with what gets sent. Hearts are evaluated per play/flip, so
+  // a change applies from the next one without a restart.
+  type LoveMode = 'off' | 'loved' | 'rating' | 'both'
+  const loveModes: { id: LoveMode; label: string }[] = [
+    { id: 'off', label: 'Off' },
+    { id: 'loved', label: 'Loved' },
+    { id: 'rating', label: 'Rating' },
+    { id: 'both', label: 'Both' },
+  ]
+  let lovePolicy = $derived(resolveLovePolicy($settings))
+  let loveMode = $derived<LoveMode>(
+    lovePolicy.fromLovedFlag
+      ? (lovePolicy.fromRating ? 'both' : 'loved')
+      : (lovePolicy.fromRating ? 'rating' : 'off'),
+  )
+  let loveSummary = $derived.by(() => {
+    const threshold = lovePolicy.ratingThreshold
+    if (loveMode === 'off') return 'No track is scrobbled as loved — plays still scrobble normally.'
+    if (loveMode === 'loved') return 'Tracks marked ♥ are scrobbled as loved.'
+    if (loveMode === 'rating') return `Tracks rated ${threshold} or higher are scrobbled as loved.`
+    return `Tracks marked ♥ or rated ${threshold} or higher are scrobbled as loved.`
+  })
+
+  function setLoveMode(mode: LoveMode) {
+    const fromRating = mode === 'rating' || mode === 'both'
+    updateSetting('scrobbleLoveFromLoved', mode === 'loved' || mode === 'both')
+    updateSetting('scrobbleLoveFromRating', fromRating)
+    // Persist the threshold the moment the rating signal becomes active: the
+    // row shows the resolved value (default 80) from the start, so the stored
+    // row must carry that same number — an absent key would silently inherit a
+    // future default the user never saw.
+    if (fromRating) updateSetting('scrobbleLoveRatingThreshold', lovePolicy.ratingThreshold)
+  }
+
+  function setLoveThreshold(val: number) {
+    updateSetting('scrobbleLoveRatingThreshold', val)
   }
 
   let lfmError = $state('')
@@ -1741,6 +1783,44 @@
                 <p class="text-muted">Overrides the built-in mmdrome credentials (from last.fm/api/account/create).</p>
               </div>
             </details>
+          </div>
+        </section>
+
+        <!-- Loved tracks: the ONE policy both direct scrobblers read. -->
+        <section class="px-4 py-4">
+          <h3 class="mb-3 text-base font-medium text-primary">Loved Tracks</h3>
+          <p class="mb-2 text-sm text-muted">Which tracks are sent to Last.fm / ListenBrainz as loved. ♥ means the love tag on your files, a Navidrome star, or a heart you set here. A change applies from the next play or heart — nothing is re-sent retroactively.</p>
+          <div class="space-y-3">
+            <div class="flex flex-wrap gap-2">
+              {#each loveModes as opt (opt.id)}
+                <button
+                  onclick={() => setLoveMode(opt.id)}
+                  aria-pressed={loveMode === opt.id}
+                  data-testid={`love-mode-${opt.id}`}
+                  class="btn-sm border border-white/15 hover:bg-white/5"
+                  class:chip-on={loveMode === opt.id}
+                  class:text-muted={loveMode !== opt.id}
+                >{opt.label}</button>
+              {/each}
+            </div>
+            <div>
+              <p class="mb-1 text-sm text-muted">Minimum rating</p>
+              <div class="flex items-center gap-3">
+                <AppSlider
+                  value={lovePolicy.ratingThreshold}
+                  min={10}
+                  max={100}
+                  step={10}
+                  disabled={!lovePolicy.fromRating}
+                  label="Minimum rating to scrobble as loved"
+                  valueText={(v) => `${v} or higher`}
+                  onInput={setLoveThreshold}
+                  class="flex-1"
+                />
+                <span class="w-10 text-right text-sm text-muted">{lovePolicy.ratingThreshold}</span>
+              </div>
+            </div>
+            <p class="text-sm {loveMode === 'off' ? 'text-yellow-500/90' : 'text-muted'}" role="status" data-testid="love-summary">{loveSummary}</p>
           </div>
         </section>
       {/if}

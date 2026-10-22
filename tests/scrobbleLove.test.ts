@@ -27,7 +27,7 @@ test('rating signal is inclusive at the threshold and refuses an unrated track',
   assert.equal(shouldScrobbleAsLoved({ loved: false, rating: 80 }, p), true)
   assert.equal(shouldScrobbleAsLoved({ loved: false, rating: 79 }, p), false)
   assert.equal(shouldScrobbleAsLoved({ loved: true, rating: 10 }, p), false, '♥ is ignored when its signal is off')
-  assert.equal(shouldScrobbleAsLoved({ loved: false, rating: 0 }, policy({ fromRating: true, ratingThreshold: 1 })), false, 'unrated is never loved')
+  assert.equal(shouldScrobbleAsLoved({ loved: false, rating: 0 }, policy({ fromRating: true, ratingThreshold: 10 })), false, 'unrated is never loved')
 })
 
 test('both signals = either one qualifies; neither = never', () => {
@@ -51,8 +51,12 @@ test('a missing metadata row is never loved (no row = no signal)', () => {
 test('threshold normalization tolerates legacy/noisy values', () => {
   assert.equal(normalizeLoveRatingThreshold(undefined), DEFAULT_LOVE_POLICY.ratingThreshold)
   assert.equal(normalizeLoveRatingThreshold(Number.NaN), DEFAULT_LOVE_POLICY.ratingThreshold)
-  assert.equal(normalizeLoveRatingThreshold(0), 1)
-  assert.equal(normalizeLoveRatingThreshold(-20), 1)
+  // The rating scale is 0–100 in steps of 10, so the cutoff floor is 10 — the
+  // settings slider's own minimum, i.e. the policy can never hold a value the
+  // UI cannot show.
+  assert.equal(normalizeLoveRatingThreshold(0), 10)
+  assert.equal(normalizeLoveRatingThreshold(5), 10)
+  assert.equal(normalizeLoveRatingThreshold(-20), 10)
   assert.equal(normalizeLoveRatingThreshold(150), 100)
   assert.equal(normalizeLoveRatingThreshold(79.6), 80)
   assert.equal(resolveLovePolicy({ scrobbleLoveRatingThreshold: Number.NaN }).ratingThreshold, 80)

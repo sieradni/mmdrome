@@ -44,7 +44,9 @@ export type LovePolicySettings = Pick<
   'scrobbleLoveFromLoved' | 'scrobbleLoveFromRating' | 'scrobbleLoveRatingThreshold'
 >
 
-export const LOVE_RATING_MIN = 1
+/** The app's rating scale is 0–100 in steps of 10 (0 = unrated), so 10 is the
+ *  lowest meaningful cutoff and the threshold UI's floor matches it exactly. */
+export const LOVE_RATING_MIN = 10
 export const LOVE_RATING_MAX = 100
 
 /** Historical behavior for an install that has never touched the new keys. */
@@ -54,7 +56,8 @@ export const DEFAULT_LOVE_POLICY: LovePolicy = {
   ratingThreshold: 80,
 }
 
-/** Clamps a persisted threshold into the meaningful band (0/NaN/150 are data noise). */
+/** Clamps a persisted threshold into the meaningful band (0/NaN/5/150 are data noise).
+ *  Never returns a value the settings row cannot display. */
 export function normalizeLoveRatingThreshold(value: number | undefined): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_LOVE_POLICY.ratingThreshold
   return Math.min(LOVE_RATING_MAX, Math.max(LOVE_RATING_MIN, Math.round(value)))

@@ -214,6 +214,24 @@ test('the rating signal drives hearts when enabled, independently of the ♥ fla
   manager.disable()
 })
 
+test('the Off mode silences hearts even for a loved, highly rated track', async (t) => {
+  // The settings UI's explicit "neither" state must reach the scrobble path —
+  // plays still scrobble, but no heart is ever sent.
+  const { calls, dests } = spyDestinations()
+  settings.set({ scrobbling: true, scrobbleLoveFromLoved: false, scrobbleLoveFromRating: false })
+  metadataCache.set(new Map([['navidrome-none', metadataRow('navidrome-none', { loved: true, rating: 100 })]]))
+  t.after(() => metadataCache.set(new Map()))
+  const manager = new ScrobbleManager(dests)
+  manager.init()
+  manager.enable()
+
+  await playThrough(trackFixture({ trackId: 'navidrome-none' }))
+
+  assert.ok(calls.includes('lfm') && calls.includes('lb'), 'plays are unaffected')
+  assert.ok(!calls.includes('lfm-love') && !calls.includes('lb-love'))
+  manager.disable()
+})
+
 test('a non-navidrome track still reaches the direct legs (spy level)', async () => {
   const { calls, events, dests } = spyDestinations()
   settings.set({ scrobbling: true })

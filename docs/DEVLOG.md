@@ -1,3 +1,15 @@
+## 2026-10-21j — The love policy gets a face: four modes and an honest threshold
+
+The policy landed in 2026-10-21i with no way to reach it. Settings → Scrobbling now owns a **Loved Tracks** section, placed after Direct Services and built from the tab's existing primitives: a chip row for the four mutually exclusive modes (Off / Loved / Rating / Both — the same `btn-sm border + chip-on + aria-pressed` pattern as Ratings Source), an `AppSlider` row for the threshold, and a `role="status"` summary line.
+
+Honesty decisions worth keeping: (1) the threshold slider is **disabled** (`aria-disabled`, `pointer-events-none`, `opacity-40`) whenever the rating signal is off, and enabling the rating mode persists the displayed fallback so an absent key can never silently inherit a different future default; (2) `LOVE_RATING_MIN` moved 1 → 10 — the app's rating scale is 0–100 in steps of 10 (0 = unrated), so the policy can no longer hold a cutoff the slider cannot show, and the slider's 10–100 domain IS the normalized domain; (3) the summary states the outcome in words, including "No track is scrobbled as loved — plays still scrobble normally" for Off, and the intro defines ♥ (love tag / Navidrome star / a heart set here).
+
+The view derives its mode from the SAME `resolveLovePolicy` the scrobblers read and writes through `updateSetting`, so there is no second copy of the mode mapping and a change applies to the next play or heart flip without a restart. Nothing is re-sent retroactively — said in the copy, because the setting cannot retract a heart already delivered.
+
+**Verification:** new `tests/e2e/lovesetting.spec.ts` (all four modes reachable, the threshold inert without the rating signal, the three Dexie rows written with the UI's values, and the mode + threshold surviving a reload and re-render from `loadSettings`); a Node pin that the Off mode silences hearts even for a loved 100-rated track while plays still dispatch. Full e2e 70/70, unit 1437/1437, `npm run check` clean. Manual browser pass at 390 px and 320 px: chips stay on one row, the slider row and summary fit with no horizontal overflow.
+
+**Known gap:** the control is preview-verified in this session's browser and pinned by e2e; the live Last.fm/ListenBrainz round trip still needs real credentials.
+
 ## 2026-10-21i — Hearts were a change event, and ListenBrainz's contract had been invented
 
 Two field reports ("Last.fm only scrobbles loved for some songs, maybe only newly changed" and "ListenBrainz never scrobbles loved at all") turned out to be one design defect and three API-contract defects.
