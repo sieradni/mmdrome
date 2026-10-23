@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.64",
-      "versionDate": "2026-10-22T06:18:51.505Z",
-      "versionDescription": "Loved tracks now reach Last.fm and ListenBrainz: a completed listen sends the current loved state, ListenBrainz hearts use the documented MBID feedback API, and Settings now has a Loved Tracks mode (loved tag, rating threshold, both, or off).",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.64/mmdrome.ipa",
+      "version": "1.2.65",
+      "versionDate": "2026-10-23T01:36:35.566Z",
+      "versionDescription": "Native playback reliability: authoritative play/pause intent, shared lock-screen/accessory command handling, and Now Playing publication fixes",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.65/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.65",
+          "buildVersion": "69",
+          "date": "2026-10-23T01:36:35.566Z",
+          "localizedDescription": "Native playback reliability: authoritative play/pause intent, shared lock-screen/accessory command handling, and Now Playing publication fixes",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.65/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.64",
           "buildVersion": "68",
@@ -629,6 +637,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.65",
+      "identifier": "ios-v1.2.65",
+      "appID": "com.mmdrome.player",
+      "caption": "Native playback reliability: authoritative play/pause intent, shared lock-screen/accessory command handling, and Now Playing publication fix",
+      "date": "2026-10-23T01:36:35.566Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.64",
       "identifier": "ios-v1.2.64",
       "appID": "com.mmdrome.player",
@@ -661,15 +678,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Improve streaming startup and buffering recovery, show loading progress during downloads, and prevent failed streams from restarting during ",
       "date": "2026-10-18T04:49:13.291Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.60",
-      "identifier": "ios-v1.2.60",
-      "appID": "com.mmdrome.player",
-      "caption": "Prevent queue skipping during server failures. Reject non-audio responses, correct playback status and cover timing, and improve interruptio",
-      "date": "2026-10-17T23:03:34.376Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
