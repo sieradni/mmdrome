@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.66",
-      "versionDate": "2026-10-23T02:40:15.031Z",
-      "versionDescription": "Transport self-test in the debug HUD plus a switchable output-graph pause experiment for the lock-screen play/pause report",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.66/mmdrome.ipa",
+      "version": "1.2.67",
+      "versionDate": "2026-10-23T13:21:50.139Z",
+      "versionDescription": "Output graph pauses on every accepted Pause (the stale lock-screen fix, now unconditional); the TRANSPORT self-test drops its A/B switch and grades only what the native payload proves, with two former false verdicts fixed.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.67/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.67",
+          "buildVersion": "71",
+          "date": "2026-10-23T13:21:50.139Z",
+          "localizedDescription": "Output graph pauses on every accepted Pause (the stale lock-screen fix, now unconditional); the TRANSPORT self-test drops its A/B switch and grades only what the native payload proves, with two former false verdicts fixed.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.67/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.66",
           "buildVersion": "70",
@@ -647,6 +655,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.67",
+      "identifier": "ios-v1.2.67",
+      "appID": "com.mmdrome.player",
+      "caption": "Output graph pauses on every accepted Pause (the stale lock-screen fix, now unconditional); the TRANSPORT self-test drops its A/B switch and",
+      "date": "2026-10-23T13:21:50.139Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.66",
       "identifier": "ios-v1.2.66",
       "appID": "com.mmdrome.player",
@@ -679,15 +696,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Reliable WebDAV push: writes now respect the destination file's ETag on Nextcloud-style servers and report the cause when a server refuses a",
       "date": "2026-10-21T08:23:38.984Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.62",
-      "identifier": "ios-v1.2.62",
-      "appID": "com.mmdrome.player",
-      "caption": "Push review now shows track art, metadata, and rating/loved changes before writing; clearer activity and control tooltips across the player;",
-      "date": "2026-10-20T21:57:07.500Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
