@@ -27,7 +27,8 @@
           "date": "2026-10-23T02:40:15.031Z",
           "localizedDescription": "Transport self-test in the debug HUD plus a switchable output-graph pause experiment for the lock-screen play/pause report",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.66/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5249525
         },
         {
           "version": "1.2.65",
