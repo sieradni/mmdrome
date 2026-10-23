@@ -382,6 +382,15 @@ public final class NativeAudioEngine: NSObject {
     private var cachedPosition: Double = 0
 
     private var isPlaying = false
+    /// TRANSPORT EXPERIMENT (2026-10-22e): whether a USER Pause also pauses the
+    /// OUTPUT GRAPH, or only its player nodes. This is a hypothesis under test,
+    /// not settled policy — the reported stale lock-screen button has never
+    /// been reproduced on this machine — so it is RUNTIME SELECTABLE from the
+    /// HUD's transport self-test instead of compiled in. Default ON: it is the
+    /// candidate fix and the L1 lead. Turning it OFF restores the pre-1.2.66
+    /// behavior in the SAME build, which is the only way to A/B the hypothesis
+    /// on one device without two installs.
+    public var graphPauseOnUserPause = true
     /// True once a schedule exists that can be resumed (vs. an empty queue).
     private var hasLiveSchedule = false
     /// Phase 1 (2026-10-07, seek-intent plan): a seek that landed before any
@@ -1593,6 +1602,11 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func pause(cancelRetries: Bool = true) {
+        // L1 (2026-10-22): the call that actually FLIPS accepted intent is a
+        // USER Pause, and only that call may touch the output graph. Internal
+        // idempotent pauses (buffering teardown, crossfade quieting) must not
+        // stop rendering audio that is still meant to play.
+        let authoritativeUserPause = cancelRetries && control.desiredPlaying
         if cancelRetries {
             if control.desiredPlaying { control.request(playing: false) }
             cancelEngineRecovery()
@@ -1635,6 +1649,24 @@ public final class NativeAudioEngine: NSObject {
         // A mid-fade pause may have ramped the active gain toward 0 — restore
         // the track's full gain so the next arm starts from a clean base.
         refreshActiveGain()
+        // L1 — PAUSE THE OUTPUT GRAPH, not just its player nodes (2026-10-22).
+        // A still-running AVAudioEngine keeps pulling the audio device and the
+        // app keeps reading as audio-active, so iOS kept presenting the system
+        // transport as PLAYING after an app-originated Pause (the reported
+        // stale lock-screen button). The graph pause must land BEFORE
+        // `setPlaying(false)` so the resulting state edge publishes a
+        // publication whose `isRunning` already matches what the system sees;
+        // `stopPlayback()` has always paused the graph the same way. Play is
+        // unaffected: `resumeAcceptedIntent` runs the guarded
+        // `ensureEngineRunning` BEFORE any schedule or node play, so a paused
+        // graph is restarted through the existing activation/recovery ladder
+        // (never a direct `activeNode.play()` into a stopped engine).
+        if authoritativeUserPause, graphPauseOnUserPause, engine.isRunning {
+            engine.pause()
+            eventAdd(.info, "engine", "pause() paused output graph (user pause, position=\(String(format: "%.1f", cachedPosition)))")
+        } else if authoritativeUserPause, !graphPauseOnUserPause {
+            eventAdd(.info, "engine", "pause() kept output graph RUNNING (experiment: graphPauseOnUserPause=off)")
+        }
         setPlaying(false)
     }
 
@@ -2444,6 +2476,7 @@ public final class NativeAudioEngine: NSObject {
         return [
             "desiredPlaying": control.desiredPlaying, "intentRevision": control.revision,
             "playbackSession": control.session, "isPlaying": isPlaying, "isRunning": engine.isRunning,
+            "graphPauseOnUserPause": graphPauseOnUserPause,
             "activeNodePlaying": activeNode.isPlaying, "standbyNodePlaying": standbyNode.isPlaying,
             "activeTrackId": currentTrackId, "activeQueueEntryId": currentQueueEntryId ?? "",
             "scheduleGeneration": scheduleGeneration, "standbyGeneration": standbyScheduleGeneration,
@@ -2460,6 +2493,7 @@ public final class NativeAudioEngine: NSObject {
         return [
             "isRunning": engine.isRunning,
             "isPlaying": isPlaying,
+            "graphPauseOnUserPause": graphPauseOnUserPause,
             "desiredPlaying": control.desiredPlaying,
             "intentRevision": control.revision,
             "playbackSession": control.session,

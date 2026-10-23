@@ -20,6 +20,7 @@
     setEnabledDomains,
   } from '../lib/debugLog'
   import { runStreamSelfTest, getLastStreamVerifyBundle } from '../lib/streamVerifyRunner'
+  import { captureTransportSelfTest, readGraphPauseOnUserPause, setGraphPauseOnUserPause } from '../lib/transportSelfTestRunner'
   import { thumbLoaderDebugSnapshot } from '../lib/thumbLoader'
   import { fillProvenanceGroups } from '../lib/queueProvenance'
   import { matchesAutoQueueFilters } from '../lib/autoQueuePlan'
@@ -46,7 +47,7 @@
   // 2026-09-17: section collapse state — the state dumps are bulky; the trail
   // and log are the diagnosis surfaces and stay open. Sections persist only
   // for the session (no Dexie: debug-only preference).
-  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false, covers: false, events: false, jsEvents: true, verify: false })
+  let openSections = $state<Record<string, boolean>>({ js: false, native: true, trail: true, log: true, thumbs: false, covers: false, events: false, jsEvents: true, verify: false, transport: false })
   // Structured native events (2026-09-19): the engine's danger verdicts
   // (premature drops, evictions, aborts, stale drops) land here via the
   // incremental `getDebugEvents` poll — a bug that fired BEFORE the HUD was
@@ -101,6 +102,52 @@
       ;(window as any).__streamSelfTestText = verifyText
       pushError('self-test report copied')
     } catch {}
+  }
+
+  // Transport self-test (2026-10-22e) — the lock-screen play/pause report.
+  // Two halves: a SWITCH (does a user Pause also pause the output graph?) so one
+  // build can A/B the hypothesis on the reporting device, and a one-press
+  // CAPTURE that folds the native control transcript into verdicts and copies
+  // them. Capture is read-only; only the switch changes behavior, deliberately.
+  let transportBusy = $state(false)
+  let transportText = $state('')
+  let transportVerdict = $state('')
+  let graphPauseOn = $state(true)
+
+  async function toggleGraphPause() {
+    // Read the ENGINE's value first: the button must never flip a stale local
+    // copy and leave the HUD describing a condition the engine is not in.
+    const current = (await readGraphPauseOnUserPause()) ?? graphPauseOn
+    graphPauseOn = await setGraphPauseOnUserPause(!current)
+    pushError(`graph pause on Pause: ${graphPauseOn ? 'ON' : 'OFF'}`)
+  }
+
+  async function runTransportTest() {
+    if (transportBusy) return
+    transportBusy = true
+    transportText = 'reading the native control transcript…'
+    try {
+      const res = await captureTransportSelfTest()
+      if (!res) {
+        transportText = 'transport self-test: native bridge unavailable (web engine has no output graph)'
+        return
+      }
+      transportText = res.report
+      transportVerdict = res.verdict
+      if (typeof res.analysis.graphPauseOnUserPause === 'boolean') {
+        graphPauseOn = res.analysis.graphPauseOnUserPause
+      }
+      // Auto-copy: the whole point is paste-ready output.
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(res.report)
+        ;(window as any).__transportSelfTestText = res.report
+      } catch {}
+      pushError(`transport self-test: ${res.verdict} — report copied`)
+    } catch (e: any) {
+      transportText = `transport self-test failed: ${String(e?.message ?? e)}`
+    } finally {
+      transportBusy = false
+    }
   }
 
   /**
@@ -650,6 +697,42 @@
               Press Run test: probes the real transcode URL now and, with “watch 90s” ticked,
               captures the native stream events (a track already playing is still picked up).
               The report is copied to the clipboard automatically.
+            </div>
+          {/if}
+        {/if}
+      </div>
+
+      <!-- Transport self-test (2026-10-22e): the lock-screen play/pause report.
+           The switch is the A/B (one build, both conditions); Run folds the
+           native control transcript into verdicts and copies them. Reproduce
+           FIRST (pause, look at the lock screen, press the control) — the
+           transcript is native-retained, so a bug that fired before the HUD
+           was open is still there. No check here can see the glyph itself. -->
+      <div class="mb-1 rounded bg-white/5 p-2">
+        <button onclick={() => toggleSection('transport')} class="mb-1 flex w-full items-center justify-between font-bold text-yellow-300">
+          <span>{openSections.transport ? '▾' : '▸'} TRANSPORT {transportVerdict ? `(${transportVerdict})` : ''}</span>
+        </button>
+        {#if openSections.transport}
+          <div class="mb-1 flex items-center gap-1 text-[10px]">
+            <span class="text-white/50">graph pause on Pause</span>
+            <button onclick={toggleGraphPause}
+              class="rounded px-2 py-0.5 {graphPauseOn ? 'bg-cyan-500/40' : 'bg-white/10 hover:bg-white/20'}">
+              {graphPauseOn ? 'ON' : 'OFF'}
+            </button>
+          </div>
+          <div class="mb-1 flex items-center gap-2">
+            <button onclick={runTransportTest} disabled={transportBusy} class="rounded bg-cyan-500/30 px-2 py-0.5 hover:bg-cyan-500/50 disabled:opacity-40">
+              {transportBusy ? 'reading…' : 'Capture'}
+            </button>
+            <span class="text-[10px] text-white/40">{transportVerdict || 'not run'}</span>
+          </div>
+          {#if transportText}
+            <pre class="max-h-60 overflow-auto whitespace-pre-wrap break-words text-[9px]">{transportText}</pre>
+          {:else}
+            <div class="text-[10px] text-white/30">
+              Pause from the app, note the lock-screen button, press the system control,
+              then press Capture. Flip the switch OFF and repeat to compare both conditions
+              in this one build. The report is copied automatically.
             </div>
           {/if}
         {/if}

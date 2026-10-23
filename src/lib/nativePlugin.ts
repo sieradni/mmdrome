@@ -117,6 +117,12 @@ interface BackgroundAudioPlugin {
    *  Clear all button calls this so a field session can count from zero
    *  without a relaunch. Registered in pluginMethods (the §3.4 gate). */
   resetRetryBranch(): Promise<void>
+  /** Transport experiment (2026-10-22e): select whether a USER Pause also
+   *  pauses the OUTPUT GRAPH (true, the candidate fix) or keeps it running
+   *  (false, the pre-1.2.66 behavior). Two conditions in ONE build is what
+   *  makes the stale-lock-screen hypothesis A/B-able on the reporting device.
+   *  Registered in pluginMethods (the §3.4 gate). */
+  setTransportExperiment(options: { graphPauseOnUserPause: boolean }): Promise<{ graphPauseOnUserPause: boolean }>
   /** Explicit audio-engine restart (native only): clears the surfaced
    *  "engine unavailable" state and forces a full AVAudioEngine graph
    *  rebuild. Registered in pluginMethods (the §3.4 gate). */
@@ -249,6 +255,14 @@ export class NativeAudioEngineApp {
   async resetRetryBranch(): Promise<void> {
     if (!this.isNative()) return
     await BackgroundAudio.resetRetryBranch().catch(() => {})
+  }
+
+  /** Transport experiment selector (2026-10-22e). No-op off-native: the web
+   *  engine has no output graph to pause, so the request resolves to the
+   *  caller's value and nothing else changes. */
+  async setTransportExperiment(options: { graphPauseOnUserPause: boolean }): Promise<{ graphPauseOnUserPause: boolean }> {
+    if (!this.isNative()) return { graphPauseOnUserPause: options.graphPauseOnUserPause }
+    return await BackgroundAudio.setTransportExperiment(options)
   }
 
   /** Explicit audio-engine restart (2026-10-04). No-op off-native: the web

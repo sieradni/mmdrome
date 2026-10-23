@@ -42,6 +42,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "getDebugEvents", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setDebugDomains", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "resetRetryBranch", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setTransportExperiment", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "restartAudioEngine", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getNetworkState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getSpectrum", returnType: CAPPluginReturnPromise),
@@ -665,6 +666,25 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             guard let self else { call.resolve(); return }
             self.engine.resetRetryBranchStats()
             call.resolve()
+        }
+    }
+
+    /// TRANSPORT EXPERIMENT (2026-10-22e): select whether a user Pause also
+    /// pauses the OUTPUT GRAPH. The HUD's transport self-test flips this so ONE
+    /// build can A/B the reported stale-lock-screen-button hypothesis on the
+    /// device that reports it — no second install, no rebuild. The change is
+    /// recorded in the control transcript (`kind: experiment`) so a later dump
+    /// proves which condition each Pause in the history ran under.
+    /// MUST be in `pluginMethods` above — Capacitor's getMethod gate silently
+    /// drops unregistered names and the JS promise never resolves (§3.4).
+    @objc func setTransportExperiment(_ call: CAPPluginCall) {
+        let enabled = call.getBool("graphPauseOnUserPause", true)
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(); return }
+            self.engine.graphPauseOnUserPause = enabled
+            self.recordControl(["kind": "experiment", "graphPauseOnUserPause": enabled,
+                "engine": self.engine.controlState()])
+            call.resolve(["graphPauseOnUserPause": enabled])
         }
     }
 
