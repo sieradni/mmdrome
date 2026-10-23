@@ -27,7 +27,8 @@
           "date": "2026-10-23T01:36:35.566Z",
           "localizedDescription": "Native playback reliability: authoritative play/pause intent, shared lock-screen/accessory command handling, and Now Playing publication fixes",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.65/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5244105
         },
         {
           "version": "1.2.64",
