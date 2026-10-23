@@ -27,7 +27,8 @@
           "date": "2026-10-23T13:21:50.139Z",
           "localizedDescription": "Output graph pauses on every accepted Pause (the stale lock-screen fix, now unconditional); the TRANSPORT self-test drops its A/B switch and grades only what the native payload proves, with two former false verdicts fixed.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.67/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5247275
         },
         {
           "version": "1.2.66",
