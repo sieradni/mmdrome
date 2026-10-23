@@ -10,12 +10,11 @@ import BackgroundAudioCore
 ///   to the audio engine.
 final class NowPlayingController {
 
-    var onPlay: (() -> Void)?
-    var onPause: (() -> Void)?
-    var onToggle: (() -> Void)?
-    var onNext: (() -> Void)?
-    var onPrevious: (() -> Void)?
-    var onSeek: ((Double) -> Void)?
+    var onCommand: ((PlaybackCommand, Double) -> PlaybackCommandResult)?
+    private let registration = RemoteCommandRegistration()
+    private var publication = NowPlayingPublication()
+    private var cleared = true
+    var publicationSink: (([String: Any]) -> Void)?
 
     private var cachedArtwork: UIImage?
     private var artworkTrackId: String?
@@ -58,58 +57,109 @@ final class NowPlayingController {
     private var currentTrackId: String?
 
     func setupRemoteCommands() {
+        precondition(Thread.isMainThread)
+        guard onCommand != nil else { return }
         let center = MPRemoteCommandCenter.shared()
-
-        center.playCommand.addTarget { [weak self] _ in
-            self?.onPlay?()
-            return .success
-        }
-        center.pauseCommand.addTarget { [weak self] _ in
-            self?.onPause?()
-            return .success
-        }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            self?.onToggle?()
-            return .success
-        }
-        center.nextTrackCommand.addTarget { [weak self] _ in
-            self?.onNext?()
-            return .success
-        }
-        center.previousTrackCommand.addTarget { [weak self] _ in
-            self?.onPrevious?()
-            return .success
-        }
-        center.changePlaybackPositionCommand.addTarget { [weak self] event in
-            guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
-                return .commandFailed
+        registration.install {
+            let commands: [(MPRemoteCommand, PlaybackCommand)] = [
+                (center.playCommand, .play), (center.pauseCommand, .pause),
+                (center.togglePlayPauseCommand, .toggle), (center.nextTrackCommand, .next),
+                (center.previousTrackCommand, .previous)]
+            var removals: [() -> Void] = commands.map { command, semantic in
+                let token = command.addTarget { [weak self] _ in
+                    self?.receive(semantic) ?? .commandFailed
+                }
+                return { command.removeTarget(token) }
             }
-            self?.onSeek?(positionEvent.positionTime)
-            return .success
+            let command = center.changePlaybackPositionCommand
+            let token = command.addTarget { [weak self] event in
+                guard let event = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
+                return self?.receive(.seek(event.positionTime)) ?? .commandFailed
+            }
+            removals.append { command.removeTarget(token) }
+            return removals
         }
-
         center.skipForwardCommand.isEnabled = false
         center.skipBackwardCommand.isEnabled = false
         center.seekForwardCommand.isEnabled = false
         center.seekBackwardCommand.isEnabled = false
+        setCommandsEnabled(currentTrackId != nil)
     }
 
-    func update(track: NativeTrack?, queueCount: Int, position: Double, playing: Bool, speed: Double, duration: Double) {
+    private func receive(_ command: PlaybackCommand) -> MPRemoteCommandHandlerStatus {
+        // Acknowledgement follows actual main-thread acceptance, never an
+        // optimistic success for a weak nil owner or merely queued work.
+        let receivedAt = ProcessInfo.processInfo.systemUptime
+        let accept: () -> PlaybackCommandResult = { [weak self] in
+            self?.onCommand?(command, receivedAt) ?? .unavailable
+        }
+        let result = Thread.isMainThread ? accept() : DispatchQueue.main.sync(execute: accept)
+        switch result {
+        case .accepted: return .success
+        case .noContent: return .noSuchContent
+        case .invalid, .unavailable: return .commandFailed
+        }
+    }
+
+    private func setCommandsEnabled(_ enabled: Bool) {
+        let center = MPRemoteCommandCenter.shared()
+        let commands: [MPRemoteCommand] = [center.playCommand, center.pauseCommand, center.togglePlayPauseCommand,
+            center.nextTrackCommand, center.previousTrackCommand, center.changePlaybackPositionCommand]
+        commands.forEach { $0.isEnabled = enabled }
+        // Pause stays enabled for pending/buffering Play, not only rendering.
+    }
+
+    func teardownRemoteCommands() { registration.removeAll() }
+
+    func debugState() -> [String: Any] {
+        let current = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
+        return [
+            "revision": publication.revision, "publisher": publication.publisher,
+            "publishedAt": publication.publishedAt, "registrationCount": registration.count,
+            "suppressedTicks": publication.suppressedTicks, "staleArtwork": publication.staleArtwork,
+            "assignedTrackId": publication.snapshot?.trackId ?? "",
+            "assignedEntryId": publication.snapshot?.entryId ?? "",
+            "assignedRate": publication.snapshot?.rate ?? 0,
+            "assignedElapsed": publication.snapshot?.position ?? 0,
+            "assignedDefaultRate": publication.snapshot?.defaultRate ?? 0,
+            "readableRate": current[MPNowPlayingInfoPropertyPlaybackRate] ?? NSNull(),
+            "readableElapsed": current[MPNowPlayingInfoPropertyElapsedPlaybackTime] ?? NSNull(),
+            "readableDefaultRate": current[MPNowPlayingInfoPropertyDefaultPlaybackRate] ?? NSNull(),
+            "readableTrackId": current[MPNowPlayingInfoPropertyExternalContentIdentifier] ?? "",
+            "cleared": cleared]
+    }
+
+    func update(track: NativeTrack?, queueCount: Int, position: Double, playing: Bool, speed: Double, duration: Double, publisher: String = "state") {
+        precondition(Thread.isMainThread)
         guard let track = track else {
             currentTrackId = nil
+            lastInfo = [:]
+            cachedArtwork = nil
+            artworkTrackId = nil
+            artworkGuard = ArtworkRequestGuard()
+            cleared = true
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            setCommandsEnabled(false)
+            if publication.publish(nil, publisher: publisher, now: ProcessInfo.processInfo.systemUptime) {
+                publicationSink?(debugState())
+            }
             return
         }
 
+        cleared = false
         currentTrackId = track.trackId
+        setCommandsEnabled(true)
+        let snapshot = NowPlayingPublication.Snapshot(trackId: track.trackId,
+            entryId: track.queueEntryId ?? "", position: position, playing: playing, speed: speed)
         var info = lastInfo
         info[MPMediaItemPropertyTitle] = track.title
         info[MPMediaItemPropertyArtist] = track.artist
         info[MPMediaItemPropertyAlbumTitle] = track.album
         info[MPMediaItemPropertyPlaybackDuration] = duration > 0 ? duration : track.duration
-        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
-        info[MPNowPlayingInfoPropertyPlaybackRate] = playing ? speed : 0
-        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = speed
+        info[MPNowPlayingInfoPropertyExternalContentIdentifier] = track.trackId
+        info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = snapshot.position
+        info[MPNowPlayingInfoPropertyPlaybackRate] = snapshot.rate
+        info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = snapshot.defaultRate
         info[MPNowPlayingInfoPropertyPlaybackQueueIndex] = track.index
         info[MPNowPlayingInfoPropertyPlaybackQueueCount] = queueCount
 
@@ -121,6 +171,9 @@ final class NowPlayingController {
 
         lastInfo = info
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        if publication.publish(snapshot, publisher: publisher, now: ProcessInfo.processInfo.systemUptime) {
+            publicationSink?(debugState())
+        }
 
         if let coverUrl = track.coverUrl, coverUrl.isFileURL == false, coverUrl.scheme != "blob", artworkTrackId != track.trackId {
             // Backoff gate: a recently failed id waits out its exponential
@@ -164,7 +217,8 @@ final class NowPlayingController {
                 self.artworkFailureAttempt[trackId] = nil
                 // Drop out-of-order completions (older fetch finishing last) and
                 // completions for a track that is no longer current (TODO 4.4).
-                guard let currentTrackId = self.currentTrackId,
+                guard self.publication.permitsArtwork(trackId: trackId),
+                      let currentTrackId = self.currentTrackId,
                       self.artworkGuard.shouldApply(completedTrackId: trackId, currentTrackId: currentTrackId) else {
                     // The guard WORKING is expected churn, not a fault (2026-09-21
                     // ring hygiene): rapid track changes fire several completions
@@ -188,7 +242,10 @@ final class NowPlayingController {
                 // Re-apply now playing info so the artwork appears on the lock screen.
                 if var info = MPNowPlayingInfoCenter.default().nowPlayingInfo {
                     info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    self.lastInfo = info
                     MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+                    self.publication.publish(self.publication.snapshot, publisher: "artwork", now: ProcessInfo.processInfo.systemUptime)
+                    self.publicationSink?(self.debugState())
                 }
             }
         }.resume()

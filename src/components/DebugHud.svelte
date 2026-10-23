@@ -25,6 +25,7 @@
   import { matchesAutoQueueFilters } from '../lib/autoQueuePlan'
   import { coverStatsSummary } from '../lib/coverStats'
   import { audioManager } from '../lib/audioManager'
+  import { appVersion, buildTime, commitHash } from '../lib/version'
 
   let { onclose }: { onclose?: () => void } = $props()
 
@@ -253,6 +254,7 @@
     )
     const payload = {
       time: new Date().toISOString(),
+      build: { appVersion, buildTime, commitHash },
       js: {
         currentTrackId: ct?.trackId ?? null,
         currentTrackTitle: ct?.title ?? null,

@@ -1,16 +1,17 @@
 # mmdrome — Technical Debt & Refactor Plan
 
-**Status: Phases 0–7 CLOSED as of 2026-08-25. Phase 8 (direct scrobbling) CLOSED 2026-08-25. No open items.**
+**Status: Historical refactor phases 0-8 are CLOSED. Current field-reliability work is OPEN (2026-10-22); see the active register below.**
 
-History is in git log and `docs/DEVLOG.md`. This file is the live plan — cleared for future work.
+History is in git log and `docs/DEVLOG.md`. Detailed current work lives in the linked plans; this file provides entry points without duplicating their checklists.
 
 Legend: `[ ]` open · `[x]` done · HIGH/MED/LOW impact · anchors are file + symbol (grep the symbol). **[DECISION]** needs a product call before implementation. **Verification per item = `npm run check` AND `npm test`** (`npm run build` before CI pushes); suites go in `tests/` (zero-dep, per F3).
 
 ---
 
-## No open tasks
+## Active work
 
-_No open debt items. Add new phases below as needed._
+- [ ] **Field reliability and push diagnostics (2026-10-22):** [investigation and implementation register](docs/plans/2026-10-22-field-reliability-and-push-diagnostics.md). Reopened lock-screen/AirPods stale play/pause state, authoritative pause intent across recovery/download callbacks, accurate WebDAV outcomes and write boundaries, retained diagnostics, and recurring audio transfer failures. Bluetooth hardware repair is excluded. Native intent/command/publication implementation is now in the working tree with local JS gates passing; Swift/plugin checks, adapter execution and physical-device acceptance remain open. Ordinary Pause's output-graph hypothesis is not resolved. Push/transfer fixes remain open.
+- [ ] **Existing queue/UI/feature roadmap:** [holistic roadmap](docs/plans/2026-10-18-holistic-polish-and-roadmap.md), [queue target design](docs/QUEUE-DESIGN.md), and [as-built invariant matrix](docs/QUEUE-INVARIANTS.md). Preserve their individual completion states; the old refactor-phase closure is not an app-wide "nothing outstanding" claim.
 
 ---
 

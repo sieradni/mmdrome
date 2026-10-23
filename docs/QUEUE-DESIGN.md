@@ -388,26 +388,30 @@ has documented issues for all of them.
 Import path when it lands: read the local file → resolve → play or create a server playlist through
 the API. The server stays the store of record; the file is transport.
 
-## 8. Native iOS pause bug (open, needs a device)
+## 8. Native iOS pause bug (reopened 2026-10-22; device verification outstanding)
 
-Report: after pausing, the transport still presents as playing (elapsed frozen), a single tap does
-not resume, and the state resets on the next track.
+The current report is more precise: app or AirPods Pause stops audio, but the system still displays
+Pause; accessory resume does nothing; one lock-screen press repairs the displayed state and the
+next starts audio. The earlier attempted fix did not resolve this. Bluetooth hardware trouble is
+separate and excluded.
 
-Source findings (no device/toolchain here, so not confirmed on hardware):
+**Authoritative investigation, proposed changes and acceptance matrix:**
+[field-reliability register §3](plans/2026-10-22-field-reliability-and-push-diagnostics.md#3-native-control-investigation).
 
-- `AudioEngine.pause()` begins with `guard isPlaying else { return }`. If the internal flag is
-  already false (a buffering/staged start, or a desynced state), the call returns without pausing
-  nodes and **without `onPlaybackStateChanged`**, so nothing refreshes `MPNowPlayingInfoCenter`.
-- `NowPlayingController.update` writes `MPNowPlayingInfoPropertyPlaybackRate = playing ? speed : 0`
-  and the elapsed time; the 1 s refresh timer starts on "playing" and stops on "paused". If the
-  pause edge never fires, the published rate can stay at 1 while the engine is silent.
-- The JS layer sets its own `playbackState` optimistically for in-app pauses, so the symptom is most
-  visible for pauses that originate outside the app (lock screen, headphones, interruption).
+The earlier explanation here was incomplete. `pause()` now clears staged intent before its
+`isPlaying` guard, and app bridge Play/Pause/Toggle already force a Now Playing refresh. Normal
+state changes also publish rate and elapsed together. Remote callbacks lack that unconditional
+refresh, but this alone cannot explain the clarified in-app reproduction. Ordinary Pause leaves
+the audio engine running while its player nodes are paused: this is a leading device experiment,
+not a proven OS-icon cause. Separately, engine-recovery resume intent and full-download callbacks
+could outlive explicit Pause. The 2026-10-22b working-tree implementation adds authoritative intent,
+source/timer ownership and shared bridge/remote publication; Apple build/test gates, adapter execution
+and the graph-lifecycle experiment remain open in the register. Do not mark this fixed from metadata
+assignments or compilation alone.
 
-Planned fix direction: make a pause request authoritative (clear staged intent, publish paused,
-refresh now-playing even when the flag already says false), publish rate + elapsed together on every
-state edge, and add both to `getDebugState` so a future dump can prove it. **Verification must be a
-physical iOS run** — E5 stands: this checkout has no Swift toolchain.
+**Physical iPhone lock-screen/Control Center/accessory verification remains required (E5).** The
+October 22 dump supplies playback evidence but no command/publication transcript of the stale
+icon, so root-cause discrimination is still open; it is no longer accurate to say no dump exists.
 
 ## 9. Non-goals
 
@@ -424,4 +428,4 @@ physical iOS run** — E5 stands: this checkout has no Swift toolchain.
    panel first; mirror only if it feels hidden.
 3. Playlist "Replace" confirmation copy (destructive) — needed when the action lands.
 4. M3U import scope (which formats in the first file-import cut) — after v1 playlists.
-5. Native pause fix — blocked on a device dump; no claim until then.
+5. Native pause fix — reopened; command/publication evidence, graph-lifecycle investigation and physical-device acceptance remain open in the [October 22 register](plans/2026-10-22-field-reliability-and-push-diagnostics.md).

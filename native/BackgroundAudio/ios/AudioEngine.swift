@@ -235,6 +235,20 @@ public final class NativeAudioEngine: NSObject {
     /// without this a recovered engine would start silent, since `isPlaying`
     /// was never allowed to flip true. 2026-10-04.
     private var resumeAfterEngineRecovery = false
+    private var control = PlaybackControl()
+
+    private func cancelEngineRecovery() {
+        engineRecoveryTimer?.invalidate()
+        engineRecoveryTimer = nil
+        resumeAfterEngineRecovery = false
+    }
+
+    private func beginPlaybackSession(autoPlay: Bool, replacingOccurrence: Bool = true) {
+        cancelEngineRecovery()
+        cancelActiveLoadRetries()
+        if replacingOccurrence { control.replace(playing: autoPlay) }
+        else { control.request(playing: autoPlay) }
+    }
     /// The ladder's deferred retry (`retryLater` rung).
     private var engineRecoveryTimer: Timer?
     /// `.AVAudioEngineConfigurationChange` observer for the CURRENT engine
@@ -739,7 +753,8 @@ public final class NativeAudioEngine: NSObject {
     }
 
     /// Starts the engine if needed, driving the bounded recovery ladder.
-    /// Returns whether the engine IS RUNNING afterward. Callers MUST check the
+    /// Returns whether the caller may use its CURRENT graph nodes afterward.
+    /// A rebuild returns false even if its replacement graph started. Callers MUST check the
     /// result before `player.play()` — playing into a stopped engine raises an
     /// NSException (SIGABRT; the 1.2.14 play crash). Deliberately NOT
     /// `@discardableResult` (the bare call in play() was the 1.2.14 crash
@@ -752,8 +767,11 @@ public final class NativeAudioEngine: NSObject {
     /// every start failed with -50 until a full relaunch. Every failure now
     /// goes through `EngineRecoveryPolicy` (retry → one rebuild → surface),
     /// and a surfaced engine short-circuits so the app stops thrashing.
-    private func ensureEngineRunning() -> Bool {
-        guard !engine.isRunning else { return true }
+    private func ensureEngineRunning(reactivateSession: Bool = false) -> Bool {
+        // Only explicit Play may test a possibly stale interruption. Automatic
+        // configuration/growth/recovery work must wait for resume permission.
+        guard control.mayAttemptStart(explicitPlay: reactivateSession) else { return false }
+        guard !engine.isRunning || interruptionActive || reactivateSession else { return true }
         if engineUnavailable { return false }
         guard let failure = activateSessionAndStart() else {
             noteEngineStartSucceeded()
@@ -776,6 +794,10 @@ public final class NativeAudioEngine: NSObject {
             eventAdd(.danger, "engine", "session activate failed \(errorEvidence(ns))")
             return EngineRecoveryPolicy.classifySessionError(ns)
         }
+        // Explicit Play can prove a missed interruption end stale even when
+        // the graph kept running silently. Session activation above is the
+        // evidence; never call start() twice on an already running graph.
+        if engine.isRunning { return nil }
         installSpectrumTapIfNeeded()
         engine.prepare()
         do {
@@ -816,7 +838,10 @@ public final class NativeAudioEngine: NSObject {
     private func handleEngineStartFailure(_ failure: EngineFailureKind) -> Bool {
         // The failing call is always a play/schedule site, so a play was
         // intended: remember to resume once recovery succeeds.
+        guard control.desiredPlaying else { return false }
         resumeAfterEngineRecovery = true
+        cachedPosition = currentPosition
+        setPlaying(false)
         consecutiveEngineStartFailures += 1
         // Only `sessionNotActive` is consistent with a genuinely active
         // interruption; any other kind proves the session was activatable, so
@@ -842,7 +867,10 @@ public final class NativeAudioEngine: NSObject {
             // it recurse into a second rebuild from inside itself.
             guard !isRebuildingAudioStack else { return false }
             rebuildAudioStack()
-            return engine.isRunning
+            // The rebuild owns rescheduling on NEW nodes. The caller may hold
+            // a player from the retired graph, so it must never fall through
+            // to play() on that captured node, even after successful recovery.
+            return false
         case .surfaceUnavailable:
             surfaceEngineUnavailable()
             return false
@@ -851,10 +879,12 @@ public final class NativeAudioEngine: NSObject {
 
     /// Schedule the ladder's next automatic attempt.
     private func scheduleEngineRecovery(after delaySeconds: TimeInterval) {
-        guard !engineUnavailable else { return }
+        guard !engineUnavailable, control.mayRender else { return }
+        let intent = control.lease
         engineRecoveryTimer?.invalidate()
-        let timer = Timer(timeInterval: delaySeconds, repeats: false) { [weak self] _ in
-            guard let self else { return }
+        let timer = Timer(timeInterval: delaySeconds, repeats: false) { [weak self] timer in
+            guard let self, self.engineRecoveryTimer === timer,
+                  self.control.permits(intent) else { return }
             self.engineRecoveryTimer = nil
             if self.ensureEngineRunning() {
                 self.resumeCurrentAfterRecovery()
@@ -895,6 +925,7 @@ public final class NativeAudioEngine: NSObject {
     private func clearStaleInterruptionFlag(reason: String) {
         guard interruptionActive else { return }
         interruptionActive = false
+        control.clearStaleInterruption()
         staleInterruptionClears += 1
         eventAdd(.info, "engine", "interruption flag cleared as STALE — \(reason); no ended edge was delivered")
         onStaleInterruptionCleared?()
@@ -908,6 +939,12 @@ public final class NativeAudioEngine: NSObject {
         guard interruptionActive != active else { return }
         interruptionActive = active
         if active {
+            control.beginInterruption()
+            // Automatic recovery cannot activate the session before iOS has
+            // granted resume permission. A deliberate Play remains a fresh
+            // attempt, and may prove a missing end edge stale.
+            cancelEngineRecovery()
+            cancelActiveLoadRetries()
             interruptionBeginCount += 1
         } else {
             interruptionEndCount += 1
@@ -924,9 +961,22 @@ public final class NativeAudioEngine: NSObject {
             engineUnavailable = false
             onEngineRecovered?()
         }
-        if !engine.isRunning {
-            scheduleEngineRecovery(after: EngineRecoveryPolicy.firstRetryDelaySeconds)
+        // Resume permission is applied by resumeAfterInterruption AFTER the
+        // controller has read shouldResume. Never start a timer on this edge.
+    }
+
+    public func resumeAfterInterruption(shouldResume: Bool) {
+        guard control.interrupted else { return }
+        let resume = control.endInterruption(shouldResume: shouldResume)
+        guard resume else {
+            stagedAutoPlay = false
+            cancelEngineRecovery()
+            cancelActiveLoadRetries()
+            return
         }
+        // Even a still-running graph may have lost session ownership. An
+        // allowed interruption end must reactivate before touching its nodes.
+        resumeAcceptedIntent(reactivateSession: true)
     }
 
     /// Explicit user-requested restart (bridge `restartAudioEngine`): clears
@@ -938,6 +988,8 @@ public final class NativeAudioEngine: NSObject {
         // successful rebuild clears it via noteEngineStartSucceeded (which
         // also notifies JS), so the banner only disappears on a REAL recovery.
         // A user-requested restart means "make it play again".
+        guard currentTrack() != nil else { return }
+        control.request(playing: true)
         resumeAfterEngineRecovery = true
         engineRecoveryTimer?.invalidate()
         engineRecoveryTimer = nil
@@ -946,20 +998,23 @@ public final class NativeAudioEngine: NSObject {
 
     /// After a successful non-rebuild recovery, restart the interrupted play.
     private func resumeCurrentAfterRecovery() {
-        guard resumeAfterEngineRecovery else { return }
+        guard resumeAfterEngineRecovery, control.mayRender else { return }
         resumeAfterEngineRecovery = false
         guard tracks.indices.contains(activeIndex) else { return }
         eventAdd(.info, "engine", "resuming current track after engine recovery")
-        play()
+        resumeAcceptedIntent()
     }
 
     /// The `.AVAudioEngineConfigurationChange` handler: the graph's config
     /// changed underneath us and the engine stopped. Hand it to the ladder.
     private func handleEngineConfigurationChanged() {
         guard !isRebuildingAudioStack else { return }
-        guard !engine.isRunning else { return }
+        guard !engine.isRunning, control.desiredPlaying else { return }
         eventAdd(.danger, "engine", "AVAudioEngineConfigurationChange with the engine stopped — attempting recovery")
-        _ = ensureEngineRunning()
+        cachedPosition = currentPosition
+        setPlaying(false)
+        resumeAfterEngineRecovery = true
+        if ensureEngineRunning() { resumeCurrentAfterRecovery() }
     }
 
     /// Tear the whole audio stack down and rebuild it (2026-10-04). Recreates
@@ -974,12 +1029,19 @@ public final class NativeAudioEngine: NSObject {
         isRebuildingAudioStack = true
         defer { isRebuildingAudioStack = false }
 
-        // A failed play() never let `isPlaying` flip true, so the interrupted
-        // intent is carried separately (resumeAfterEngineRecovery).
-        let resumePlaying = isPlaying || resumeAfterEngineRecovery
+        // Rendering is not intent: preserve the latest accepted control state,
+        // including a Pause accepted during an older failed start.
+        let resumePlaying = control.mayRender
         let resumeIndex = activeIndex
-        let resumePosition = max(0, currentPosition)
+        let resumePosition = max(0, pendingSeekTrackId == currentTrackId ? (pendingSeekSeconds ?? currentPosition) : currentPosition)
+        if tracks.indices.contains(resumeIndex) {
+            pendingSeekTrackId = tracks[resumeIndex].trackId
+            pendingSeekSeconds = resumePosition
+        }
         let hadTrack = tracks.indices.contains(resumeIndex)
+        let growingProgress = lastFirstScheduleProgress
+        let resumableStaged = stagedSchedule
+        let resumableSource = stagedSourceURL
         eventAdd(
             .danger, "engine",
             "rebuilding audio stack (wasPlaying=\(resumePlaying) position=\(String(format: "%.2f", resumePosition)))")
@@ -993,9 +1055,19 @@ public final class NativeAudioEngine: NSObject {
         paramRestartTimer = nil
         cancelScheduled()
         hasLiveSchedule = false
+        setPlaying(false)
         cachedPosition = resumePosition
         positionBias = 0
         teardownStagedState()
+        // The writer and its bytes survive a graph rebuild. Keep its latest
+        // delivered source so the next arrival need not wait for a 512 KiB rung.
+        lastFirstScheduleProgress = growingProgress
+        stagedSchedule = resumableStaged
+        // The old node's promised segments are gone, even if graph startup
+        // fails below. Mark this as a held staged position so recovery/Play
+        // reschedules from it rather than chaining onto a retired promise.
+        stagedSchedule?.isStalled = true
+        stagedSourceURL = resumableSource
 
         if let observer = configurationChangeObserver {
             NotificationCenter.default.removeObserver(observer)
@@ -1035,16 +1107,34 @@ public final class NativeAudioEngine: NSObject {
         refreshActiveGain()
         applyFilters(lastFilters, bypassed: lastFiltersBypassed)
 
-        guard activateSessionAndStart() == nil else {
-            eventAdd(.danger, "engine", "rebuild start failed — the ladder owns the next attempt")
-            return
+        // Reconstructing a paused graph must not activate audio ownership or
+        // start output. A later deliberate Play uses the normal guarded start.
+        if resumePlaying {
+            if let failure = activateSessionAndStart() {
+                _ = handleEngineStartFailure(failure)
+                eventAdd(.danger, "engine", "rebuild start failed — recovery remains pending")
+                return
+            }
+            noteEngineStartSucceeded()
         }
-        noteEngineStartSucceeded()
-        eventAdd(.info, "engine", "audio stack rebuilt and started")
+        eventAdd(.info, "engine", "audio stack rebuilt (outputStarted=\(resumePlaying))")
 
-        if hadTrack {
-            scheduleCurrentTrack(from: cachedPosition, autoPlay: resumePlaying)
+        if hadTrack, let track = currentTrack() {
+            if resumableStaged != nil && resumableSource != nil {
+                pendingSeekSeconds = nil
+                pendingSeekTrackId = nil
+                scheduleCurrentTrack(from: cachedPosition, autoPlay: resumePlaying)
+            } else if growingProgress == nil, loader.localURL(for: track) != nil {
+                pendingSeekSeconds = nil
+                pendingSeekTrackId = nil
+                scheduleCurrentTrack(from: cachedPosition, autoPlay: resumePlaying)
+            } else if growingProgress == nil, !loadInFlight(for: track) {
+                pendingSeekTrackId = track.trackId
+                pendingSeekSeconds = cachedPosition
+                loadAndStart(currentIndex: activeIndex, autoPlay: resumePlaying)
+            }
         }
+        if lastFirstScheduleProgress != nil { streamGrowthPump.request() }
         resumeAfterEngineRecovery = false
     }
 
@@ -1159,6 +1249,7 @@ public final class NativeAudioEngine: NSObject {
         prefetchGeneration += 1
         guard !tracks.isEmpty else { return }
         let clamped = self.activeIndex
+        beginPlaybackSession(autoPlay: autoPlay)
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
         let newId = tracks.indices.contains(clamped) ? tracks[clamped].trackId : ""
         if autoPlay && !newId.isEmpty && (newId != oldId || tracks[clamped].queueEntryId != oldEntryId) {
@@ -1226,7 +1317,17 @@ public final class NativeAudioEngine: NSObject {
                 recentlyPlayedTrackIds.removeLast(recentlyPlayedTrackIds.count - 8)
             }
         }
+        let replacingOccurrence = clamped != activeIndex || origin == .engineAdvance
+        if replacingOccurrence {
+            // Same-song copies are different listening occurrences. Their old
+            // staged schedule/seek cannot serve the new row just because ids match.
+            teardownStagedState()
+            discardSeekEpoch()
+            pendingSeekSeconds = nil
+            pendingSeekTrackId = nil
+        }
         activeIndex = clamped
+        beginPlaybackSession(autoPlay: autoPlay, replacingOccurrence: replacingOccurrence)
         syncPreloadWindow()
         loadAndStart(currentIndex: clamped, autoPlay: autoPlay)
         let newTrackId = tracks.indices.contains(clamped) ? tracks[clamped].trackId : ""
@@ -1239,6 +1340,8 @@ public final class NativeAudioEngine: NSObject {
     /// `tracks[activeIndex].trackId` must match the currently playing track; the
     /// JS side re-sends the full current combined queue after its own promotions.
     public func refreshQueue(tracks: [NativeTrack], activeIndex: Int) {
+        // Tail refresh is not an explicit stop. Removing the last queued row
+        // lets its audible occurrence play out (queue invariant B2).
         guard !tracks.isEmpty else { return }
         let snapshotActiveId = tracks.indices.contains(activeIndex) ? tracks[activeIndex].trackId : ""
         let decision = queueRefreshDecision(
@@ -1371,6 +1474,15 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func play() {
+        guard currentTrack() != nil else { return }
+        // Explicit duplicate Play is idempotent. Toggle is resolved against
+        // desired intent by the shared command interpreter, not rendering.
+        if !control.desiredPlaying || control.interrupted { control.request(playing: true) }
+        resumeAcceptedIntent(reactivateSession: true)
+    }
+
+    private func resumeAcceptedIntent(reactivateSession: Bool = false) {
+        guard control.desiredPlaying, currentTrack() != nil else { return }
         eventAdd(.info, "engine", "play() waitingAtTrackEnd=\(waitingAtTrackEnd) hasLiveSchedule=\(hasLiveSchedule) paramsDirty=\(paramsDirty) isPlaying=\(isPlaying)")
         // The start MUST be guarded here: the plain-resume tail below executes
         // activeNode.play() DIRECTLY (no schedule hop), and a player.play()
@@ -1380,7 +1492,7 @@ public final class NativeAudioEngine: NSObject {
         // Degrade honestly into the bounded recovery ladder (2026-10-04),
         // which retries/rebuilds and resumes the play itself — NOT via the JS
         // retry ladder, which would advance the queue into the same failure.
-        guard ensureEngineRunning() else {
+        guard ensureEngineRunning(reactivateSession: reactivateSession) else {
             // The recovery ladder owns this failure: it retries, rebuilds, and
             // resumes the play itself on success. Deliberately NO onError —
             // the JS retry ladder gives up after 2 tries and advances to the
@@ -1389,7 +1501,10 @@ public final class NativeAudioEngine: NSObject {
             // failed engine reports through onEngineUnavailable instead.
             return
         }
-        guard !tracks.isEmpty else { return }
+        guard control.mayRender else { return }
+        if isPlaying { return }
+        // A valid paused first schedule may have formed during interruption.
+        // Restore autoplay for future arrivals, without rewriting its bytes.
         // An end-of-track sleep paused us right as the previous track finished;
         // its segment is gone, so resume by advancing like a natural next track.
         // This keeps the engine and the JS play state in lockstep (onTrackChanged
@@ -1438,15 +1553,21 @@ public final class NativeAudioEngine: NSObject {
             }
             return
         case .restartTrack:
+            // A Play during a full download changes LIVE intent, not load
+            // ownership. Its existing completion will schedule the same bytes.
+            if let track = currentTrack(), loadInFlight(for: track) { return }
             // Nothing scheduled (fresh queue or finished queue): (re)start the
             // current track. `loadAndStart` itself guards a same-row restart
             // with live staged state.
             loadAndStart(currentIndex: activeIndex, autoPlay: true)
             return
         case .restartForParams:
-            // A param change happened while paused — resume via a fresh
-            // schedule so the new speed/pitch take effect on the plan.
-            restartForParams()
+            // Apply paused parameter edits from the held position; the timer's
+            // restartForParams guard intentionally requires active rendering.
+            let position = cachedPosition
+            cancelScheduled()
+            hasLiveSchedule = false
+            scheduleCurrentTrack(from: position, autoPlay: true)
             return
         case .plainResume:
             break
@@ -1460,7 +1581,7 @@ public final class NativeAudioEngine: NSObject {
         // successor fills even under loop-one — harmless, a skip needs it).
         prefetchUpcoming(from: activeIndex)
         activeNode.play()
-        standbyNode.play()
+        // Pause tears down the fade. Never restart a quiet/exhausted standby.
         setPlaying(true)
         if let deferred = deferredStagedEnd {
             handleStagedCompletion(index: deferred.index, generation: deferred.generation, trackId: deferred.trackId, node: deferred.node, consumedEndFrames: deferred.endFrames)
@@ -1472,14 +1593,21 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func pause(cancelRetries: Bool = true) {
-        if cancelRetries { cancelActiveLoadRetries() }
+        if cancelRetries {
+            if control.desiredPlaying { control.request(playing: false) }
+            cancelEngineRecovery()
+            cancelActiveLoadRetries()
+        }
+        paramRestartTimer?.invalidate()
+        paramRestartTimer = nil
         // Buffering already sets isPlaying=false. Preserve pause intent even
         // then, and while the first readable lead is still being assembled.
         if cancelRetries {
             stagedAutoPlay = false
             if stagedSchedule?.isStalled == true { stagedSchedule?.userPaused = true }
         }
-        guard isPlaying else { return }
+        // Even an idempotent Pause quiets both nodes/fade automation. A
+        // buffering or failed-start state must not bypass this boundary.
         eventAdd(.info, "engine", "pause() position=\(String(format: "%.1f", currentPosition)) crossfade=\(crossfade.phase)")
         cachedPosition = currentPosition
         // A user pause during a staged buffering stall must not be overridden
@@ -1511,7 +1639,7 @@ public final class NativeAudioEngine: NSObject {
     }
 
     public func togglePlayPause() {
-        isPlaying ? pause() : play()
+        control.desiredPlaying ? pause() : play()
     }
 
     public func seek(to seconds: Double) {
@@ -1544,7 +1672,7 @@ public final class NativeAudioEngine: NSObject {
         // schedule and playback legs INSIDE this call, and they must land on
         // this seek's probe rather than on nothing.
         beginSeekProbe(trackId: track.trackId, target: target)
-        let handled = scheduleCurrentTrack(from: target, autoPlay: isPlaying)
+        let handled = scheduleCurrentTrack(from: target, autoPlay: control.mayRender)
         if !handled {
             pendingSeekSeconds = target
             pendingSeekTrackId = track.trackId
@@ -1561,7 +1689,7 @@ public final class NativeAudioEngine: NSObject {
         var strategy = handled ? "local" : "parked"
         if stagedSchedule?.isStalled == true { strategy = handled ? "staged-stall" : "parked-stalled" }
         if epochWanted {
-            if openSeekEpochIfWorthwhile(track: track, target: target, autoPlay: isPlaying) {
+            if openSeekEpochIfWorthwhile(track: track, target: target, autoPlay: control.mayRender) {
                 strategy += "+epoch"
             }
         }
@@ -1946,6 +2074,8 @@ public final class NativeAudioEngine: NSObject {
     /// schedule and the long-haul kick (either may fire; the other
     /// invalidates).
     func scheduleActiveLoadRetry(track: NativeTrack, failure: ActiveLoadFailure) {
+        guard control.mayRender else { return }
+        let intent = control.lease
         let requested = TrackVariant(url: track.url)
         let key = transcodeCacheKey(trackId: track.trackId, variant: requested)
         let count = (activeLoadRetryCount[key] ?? 0) + 1
@@ -1980,14 +2110,16 @@ public final class NativeAudioEngine: NSObject {
         // Observed, not assumed (2026-10-02g): the HUD's retry counters are fed
         // here, at the decision, so a dump can show the branch firing.
         retryBranchStats.record(strategy: retryStrategy)
-        activeLoadRetryTimer = Timer(timeInterval: retryDelay, repeats: false) { [weak self] _ in
-            guard let self else { return }
+        activeLoadRetryTimer = Timer(timeInterval: retryDelay, repeats: false) { [weak self] timer in
+            guard let self, self.activeLoadRetryTimer === timer,
+                  self.control.permits(intent) else { return }
             self.activeLoadRetryTimer = nil
             self.retryActiveLoad(track: track, attempt: attempt, failure: failure)
         }
         RunLoop.main.add(activeLoadRetryTimer!, forMode: .common)
-        activeLoadLongHaulTimer = Timer(timeInterval: Self.longHaulKickSeconds, repeats: false) { [weak self] _ in
-            guard let self else { return }
+        activeLoadLongHaulTimer = Timer(timeInterval: Self.longHaulKickSeconds, repeats: false) { [weak self] timer in
+            guard let self, self.activeLoadLongHaulTimer === timer,
+                  self.control.permits(intent) else { return }
             self.activeLoadLongHaulTimer = nil
             guard self.activeLoadRetryTimer != nil else { return }
             // No retry fired for a full minute: the scheduled attempt is
@@ -2006,7 +2138,7 @@ public final class NativeAudioEngine: NSObject {
     /// failed attempt routes the writer's continuation or fresh start);
     /// otherwise the download task Range-resumes the retained prefix.
     private func retryActiveLoad(track: NativeTrack, attempt: Int, failure: ActiveLoadFailure) {
-        guard tracks.indices.contains(activeIndex),
+        guard control.mayRender, tracks.indices.contains(activeIndex),
               tracks[activeIndex].trackId == track.trackId else { return }
         if loader.hasActiveWriter {
             // A continuation writer is already recovering this key — never
@@ -2029,15 +2161,18 @@ public final class NativeAudioEngine: NSObject {
         if loader.streamDecision(for: track) {
             startStagedLoadForRetry(track: track, index: activeIndex, autoPlay: true)
         } else {
-            let generation = scheduleGeneration
+            let source = control.beginSource()
             loader.prefetch(track) { [weak self] url, error in
                 guard let self else { return }
-                guard generation == self.scheduleGeneration else { return }
+                guard self.control.ownsSource(source), !self.hasLiveSchedule else { return }
                 guard self.tracks.indices.contains(self.activeIndex),
                       self.tracks[self.activeIndex].trackId == track.trackId else { return }
                 if let url {
                     self.eventAdd(.info, "loader", "active-load retry \(attempt) succeeded for \(track.trackId) — scheduling")
-                    self.scheduleCurrentTrack(from: 0, autoPlay: true)
+                    let start = self.pendingSeekTrackId == track.trackId ? self.pendingSeekSeconds : nil
+                    self.pendingSeekSeconds = nil
+                    self.pendingSeekTrackId = nil
+                    self.scheduleCurrentTrack(from: PlayIntent.firstScheduleStartSeconds(pendingSeekSeconds: start), autoPlay: self.control.mayRender)
                 } else {
                     self.eventAdd(.info, "loader", "active-load retry \(attempt) failed for \(track.trackId): \(error?.localizedDescription ?? "?") — rescheduling \(error.map { self.transferEvidence($0) } ?? "")")
                     // NO per-attempt onError: a foreground user watching the
@@ -2058,18 +2193,21 @@ public final class NativeAudioEngine: NSObject {
     /// mid-recovery). Mirrors startStagedLoad's writer arm exactly.
     private func startStagedLoadForRetry(track: NativeTrack, index: Int, autoPlay: Bool) {
         if !loader.hasActiveWriter {
-            stagedAutoPlay = autoPlay
+            stagedAutoPlay = autoPlay && control.desiredPlaying
             eventAdd(.info, "stream", "staged load start row \(index) id=\(track.trackId) autoplay=\(autoPlay) (native retry)")
             let guardedTrackId = track.trackId
+            let owner = control.beginSource()
             loader.streamLoad(track, onProgress: { [weak self] progress in
                 guard let self = self else { return }
                 guard self.tracks.indices.contains(self.activeIndex),
-                      self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+                      self.tracks[self.activeIndex].trackId == guardedTrackId,
+                  self.control.ownsSource(owner) else { return }
                 self.extendStagedSchedule(progress: progress)
             }, onFinished: { [weak self] progress, error in
                 guard let self = self else { return }
                 guard self.tracks.indices.contains(self.activeIndex),
-                      self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+                      self.tracks[self.activeIndex].trackId == guardedTrackId,
+                  self.control.ownsSource(owner) else { return }
                 if let progress {
                     self.completeStagedSchedule(progress: progress)
                 } else if let error = error {
@@ -2084,7 +2222,8 @@ public final class NativeAudioEngine: NSObject {
             }, onArrival: { [weak self] deliveredBytes in
                 guard let self = self else { return }
                 guard self.tracks.indices.contains(self.activeIndex),
-                      self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+                      self.tracks[self.activeIndex].trackId == guardedTrackId,
+                  self.control.ownsSource(owner) else { return }
                 self.recordStreamArrival(deliveredBytes: deliveredBytes)
             })
         } else {
@@ -2125,6 +2264,9 @@ public final class NativeAudioEngine: NSObject {
     /// report (the JS machine is suspended). Every yield site routes through
     /// here — that is what keeps the sites from drifting.
     private func handleYieldedActiveLoadFailure(track: NativeTrack, failure: ActiveLoadFailure) {
+        // Late failures may finish/cache evidence, but cannot recreate retry
+        // ownership (native OR JS) after a newer Pause.
+        guard control.mayRender else { return }
         if failure.stopsQueue {
             cancelActiveLoadRetries()
             pause()
@@ -2275,6 +2417,7 @@ public final class NativeAudioEngine: NSObject {
 
     public var currentIndex: Int { activeIndex }
     public var isCurrentlyPlaying: Bool { isPlaying }
+    public var desiredPlaying: Bool { control.desiredPlaying }
     public var queueCount: Int { tracks.count }
     public var currentTrackId: String { currentTrack()?.trackId ?? "" }
     public var currentQueueEntryId: String? { currentTrack()?.queueEntryId }
@@ -2295,6 +2438,21 @@ public final class NativeAudioEngine: NSObject {
         )
     }
 
+    /// Small, side-effect-free command snapshot: never call the full loader /
+    /// decoder diagnostics while acknowledging an accessory command.
+    public func controlState() -> [String: Any] {
+        return [
+            "desiredPlaying": control.desiredPlaying, "intentRevision": control.revision,
+            "playbackSession": control.session, "isPlaying": isPlaying, "isRunning": engine.isRunning,
+            "activeNodePlaying": activeNode.isPlaying, "standbyNodePlaying": standbyNode.isPlaying,
+            "activeTrackId": currentTrackId, "activeQueueEntryId": currentQueueEntryId ?? "",
+            "scheduleGeneration": scheduleGeneration, "standbyGeneration": standbyScheduleGeneration,
+            "currentPosition": currentPosition, "interruptionActive": interruptionActive,
+            "engineRecoveryPending": engineRecoveryTimer != nil,
+            "resumeAfterEngineRecovery": resumeAfterEngineRecovery,
+            "hasLiveSchedule": hasLiveSchedule, "crossfadePhase": "\(crossfade.phase)"]
+    }
+
     public func debugState() -> [String: Any] {
         let track = tracks.indices.contains(activeIndex) ? tracks[activeIndex] : nil
         let hasLocal = track.flatMap { loader.localURL(for: $0) != nil } ?? false
@@ -2302,6 +2460,13 @@ public final class NativeAudioEngine: NSObject {
         return [
             "isRunning": engine.isRunning,
             "isPlaying": isPlaying,
+            "desiredPlaying": control.desiredPlaying,
+            "intentRevision": control.revision,
+            "playbackSession": control.session,
+            "engineRecoveryPending": engineRecoveryTimer != nil,
+            "resumeAfterEngineRecovery": resumeAfterEngineRecovery,
+            "activeNodePlaying": activeNode.isPlaying,
+            "standbyNodePlaying": standbyNode.isPlaying,
             "hasLiveSchedule": hasLiveSchedule,
             // Recovery (2026-10-04): the ladder's live state, so a dump shows
             // whether an engine failure is being handled or has given up.
@@ -2428,6 +2593,9 @@ public final class NativeAudioEngine: NSObject {
 
     /// Position within the current track, in seconds.
     public var currentPosition: Double {
+        // Paused reads must not drift on a still-running output graph or a
+        // retired node clock. Pause freezes this value before changing state.
+        guard isPlaying else { return cachedPosition }
         let measured = nodeElapsedSeconds(activeNode)
         if let measured { return max(0, measured + positionBias) }
         return cachedPosition
@@ -2531,8 +2699,10 @@ public final class NativeAudioEngine: NSObject {
         if let epoch = seekEpoch, epoch.trackId != track.trackId { discardSeekEpoch() }
         cancelScheduled()
         hasLiveSchedule = false
-        positionBias = 0
-        cachedPosition = 0
+        setPlaying(false)
+        let parked = pendingSeekTrackId == track.trackId ? pendingSeekSeconds : nil
+        cachedPosition = PlayIntent.firstScheduleStartSeconds(pendingSeekSeconds: parked)
+        positionBias = cachedPosition
         // A new load abandons any staged state (the staged path never spans
         // tracks; the previous track's writer is torn down by evict/cleanup
         // or finishes independently).
@@ -2559,13 +2729,13 @@ public final class NativeAudioEngine: NSObject {
             return
         }
 
-        let generation = scheduleGeneration
+        let source = control.beginSource()
         loader.prefetch(track) { [weak self] url, error in
             guard let self = self else { return }
             // The user moved on (next-skip, another load) while this file was
             // downloading — leave the newer schedule alone.
-            guard generation == self.scheduleGeneration else {
-                eventAdd(.info, "engine", "loadAndStart dropped stale generation \(generation) vs \(self.scheduleGeneration) for \(track.trackId)")
+            guard self.control.ownsSource(source) else {
+                eventAdd(.info, "engine", "loadAndStart dropped superseded playback session for \(track.trackId)")
                 return
             }
             guard let url = url else {
@@ -2589,9 +2759,12 @@ public final class NativeAudioEngine: NSObject {
                 // was never supposed to load — the amplifier behind the
                 // 1.2.28 same-track loop. Same semantics as the stale
                 // generation guard above: a newer schedule owns the engine.
-                eventAdd(.info, "engine", "loadAndStart dropped divergent track \(track.trackId) vs \(current) gen=\(generation) active=\(self.activeIndex)")
+                eventAdd(.info, "engine", "loadAndStart dropped divergent track \(track.trackId) vs \(current) session=\(source.session) active=\(self.activeIndex)")
                 return
             }
+            // A seek/rebuild may already have scheduled these bytes while
+            // completion was queued. Never replace a newer live schedule.
+            guard !self.hasLiveSchedule else { return }
             let currentIndex = self.activeIndex
             self.loader.cleanup(
                 currentIndex: currentIndex,
@@ -2607,7 +2780,7 @@ public final class NativeAudioEngine: NSObject {
             self.pendingSeekTrackId = nil
             self.scheduleCurrentTrack(
                 from: PlayIntent.firstScheduleStartSeconds(pendingSeekSeconds: parked),
-                autoPlay: autoPlay)
+                autoPlay: self.control.mayRender)
             // NOTE for A15 Phase 2: a staged load (streamDecision said yes in
             // loadAndStart above) never reaches this prefetchUpcoming — its
             // writer owns the bandwidth and the chain arms at the writer's
@@ -2841,6 +3014,9 @@ public final class NativeAudioEngine: NSObject {
     /// completion to apply.
     @discardableResult
     private func scheduleCurrentTrack(from seconds: Double, autoPlay: Bool) -> Bool {
+        // THE final audible-start gate. Captured autoplay is only a request;
+        // live user intent/interruption permission authorizes every schedule.
+        let autoPlay = autoPlay && control.mayRender
         // Never-judged until this schedule proves its own length: an early
         // return (not-ready, corrupt, zero-frame) must not leave the previous
         // track's segment length behind for the gate to misread.
@@ -2856,7 +3032,7 @@ public final class NativeAudioEngine: NSObject {
                 // like a stream failure (the scratch may still exist for a
                 // Range-continue; the JS retry re-engages).
                 teardownStagedState()
-                onError?("Stream source unreadable: \(track.title)")
+                reportScheduleError("Stream source unreadable: \(track.title)")
                 return false
             }
             let sr = file.processingFormat.sampleRate
@@ -2894,7 +3070,7 @@ public final class NativeAudioEngine: NSObject {
                 // Both numbers are ABSOLUTE (this source's reach on the row's
                 // timeline), so an epoch's message compares like for like.
                 eventAdd(.info, "stream", "schedule target past delivered end id=\(track.trackId) (seek \(String(format: "%.1f", seconds))s vs endable \(String(format: "%.1f", Double(baseFrames + localEndable) / sr))s) — buffering")
-                staged.userPaused = !autoPlay
+                staged.userPaused = !control.desiredPlaying
                 staged.isStalled = true
                 staged.stalledAtFrames = baseFrames + min(startFrame, localEndable)
                 staged.lastProgressAt = Date()
@@ -2921,7 +3097,7 @@ public final class NativeAudioEngine: NSObject {
             // schedule only exists because the user (or the auto-resume)
             // asked to play.
             staged.isStalled = false
-            staged.userPaused = false
+            staged.userPaused = !control.desiredPlaying
             stagedSchedule = staged
             activeGain.outputVolume = Float(track.replayGainLinear(mode: replayGainMode))
             standbyGain.outputVolume = 0
@@ -2987,7 +3163,7 @@ public final class NativeAudioEngine: NSObject {
                 eventAdd(.info, "stream", "source not ready for \(track.trackId) — parking position \(String(format: "%.1f", seconds))s until the load schedules")
                 return false
             }
-            onError?("Track not ready: \(track.title)")
+            reportScheduleError("Track not ready: \(track.title)")
             return false
         }
         guard let file = try? AVAudioFile(forReading: localURL) else {
@@ -2995,7 +3171,7 @@ public final class NativeAudioEngine: NSObject {
             // re-fetches instead of replaying a poisoned file forever.
             // Variant-scoped: the good variants of this track survive.
             loader.evict(track.trackId, variant: TrackVariant(url: track.url))
-            onError?("Unsupported audio file: \(track.title)")
+            reportScheduleError("Unsupported audio file: \(track.title)")
             return false
         }
 
@@ -3013,7 +3189,7 @@ public final class NativeAudioEngine: NSObject {
             if totalFrames <= 0 {
                 eventAdd(.danger, "engine", "zero-frame file for \(track.trackId) — evicting for re-fetch")
                 loader.evict(track.trackId, variant: TrackVariant(url: track.url))
-                onError?("Track file unreadable: \(track.title)")
+                reportScheduleError("Track file unreadable: \(track.title)")
                 return false
             } else {
                 // Seek/metadata landed past the real end of a DECODABLE file
@@ -3108,6 +3284,14 @@ public final class NativeAudioEngine: NSObject {
         return true
     }
 
+    private func reportScheduleError(_ message: String) {
+        // A late file success may reveal decoder failure while building a
+        // PAUSED schedule. Retain the evidence, but do not start JS retries
+        // (or consume queue rows) against the user's newer Pause.
+        eventAdd(.danger, "engine", message)
+        if control.mayRender { onError?(message) }
+    }
+
     /// Phase 1 (2026-10-07): is a load for THIS row demonstrably in flight?
     /// A schedule attempt that finds no local file while true must PARK the
     /// position (the load's completion re-schedules) rather than report a
@@ -3199,7 +3383,7 @@ public final class NativeAudioEngine: NSObject {
     /// schedules the honest estimate. A writer failure before any schedule
     /// falls back to the normal `loadAndStart` path via the JS retry.
     private func startStagedLoad(track: NativeTrack, index: Int, autoPlay: Bool) {
-        stagedAutoPlay = autoPlay
+        stagedAutoPlay = autoPlay && control.desiredPlaying
         eventAdd(.info, "stream", "staged load start row \(index) id=\(track.trackId) autoplay=\(autoPlay)")
         // GUARD BY TRACK IDENTITY, not scheduleGeneration: the resume path
         // (and any seek/param restart) calls cancelScheduled(), which bumps
@@ -3209,15 +3393,18 @@ public final class NativeAudioEngine: NSObject {
         // while the writer runs (loadAndStart tears down staged state on a
         // new load; evict kills the writer outright).
         let guardedTrackId = track.trackId
+        let owner = control.beginSource()
         loader.streamLoad(track, onProgress: { [weak self] progress in
             guard let self = self else { return }
             guard self.tracks.indices.contains(self.activeIndex),
-                  self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+                  self.tracks[self.activeIndex].trackId == guardedTrackId,
+                  self.control.ownsSource(owner) else { return }
             self.extendStagedSchedule(progress: progress)
         }, onFinished: { [weak self] progress, error in
             guard let self = self else { return }
             guard self.tracks.indices.contains(self.activeIndex),
-                  self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+                  self.tracks[self.activeIndex].trackId == guardedTrackId,
+                  self.control.ownsSource(owner) else { return }
             if let progress {
                 // The writer promoted a COMPLETE file through the gate chain:
                 // chain the full-file remainder so the natural end is exact.
@@ -3248,7 +3435,8 @@ public final class NativeAudioEngine: NSObject {
             // (onProgress) cannot serve this role on a trickle link.
             guard let self = self else { return }
             guard self.tracks.indices.contains(self.activeIndex),
-                  self.tracks[self.activeIndex].trackId == guardedTrackId else { return }
+                  self.tracks[self.activeIndex].trackId == guardedTrackId,
+                  self.control.ownsSource(owner) else { return }
             self.recordStreamArrival(deliveredBytes: deliveredBytes)
         })
     }
@@ -3321,9 +3509,10 @@ public final class NativeAudioEngine: NSObject {
         // A row change silences the transfer first (`discardSeekEpoch` in
         // `loadAndStart`), so a stale delivery cannot arrive at all.
         let guardedTrackId = track.trackId
+        let owner = control.beginSource()
         let isActiveRow: () -> Bool = { [weak self] in
             guard let self = self, self.tracks.indices.contains(self.activeIndex) else { return false }
-            return self.tracks[self.activeIndex].trackId == guardedTrackId
+            return self.control.ownsSource(owner) && self.tracks[self.activeIndex].trackId == guardedTrackId
         }
         loader.streamLoad(track, epoch: transfer, onProgress: { [weak self] progress in
             guard let self = self, progress.isEpoch, isActiveRow() else { return }
@@ -3561,7 +3750,7 @@ public final class NativeAudioEngine: NSObject {
             announcedBytes: staged.announcedBytes, isComplete: false, sampleRate: staged.sampleRate)
         let position = staged.isStalled ? cachedPosition : currentPosition
         let action = StreamGrowth.decide(
-            firstSchedule: false, stalled: staged.isStalled, userPaused: staged.userPaused,
+            firstSchedule: false, stalled: staged.isStalled, userPaused: !control.desiredPlaying || staged.userPaused,
             interrupted: interruptionActive, positionSeconds: position,
             trackEndSeconds: track.duration, scheduledEndFrames: staged.scheduledEndFrames,
             schedulableEndFrames: endable, sampleRate: staged.sampleRate, speed: speed)
@@ -3872,7 +4061,7 @@ public final class NativeAudioEngine: NSObject {
     /// has not paused (play the remaining tail, which the full-length
     /// schedule below covers).
     private func resumeStalledAfterComplete() {
-        guard var staged = stagedSchedule, staged.isStalled, !staged.userPaused, !interruptionActive else { return }
+        guard control.mayRender, var staged = stagedSchedule, staged.isStalled, !staged.userPaused, !interruptionActive else { return }
         staged.isStalled = false
         stagedSchedule = staged
         let resumeAt = cachedPosition
@@ -3910,6 +4099,7 @@ public final class NativeAudioEngine: NSObject {
     /// tick only fires when NO bytes arrived for `stallGiveUpSeconds`.
     private func streamMonitorTick() {
         guard let staged = stagedSchedule, staged.isStalled else { return }
+        guard control.desiredPlaying, !interruptionActive else { return }
         // Completion can arrive during an interruption which began while
         // already buffering (no audible-playing intent in SessionController).
         // The stream still owns its automatic resume intent after it clears.
@@ -3964,6 +4154,7 @@ public final class NativeAudioEngine: NSObject {
     /// engine legs nil'd, so the onError below is the ONLY report (no double
     /// engage) and no later rung can resurrect the staged schedule.
     private func doGiveUpAfterRescueSkip() {
+        guard control.desiredPlaying, !interruptionActive else { return }
         let title = tracks.indices.contains(activeIndex) ? tracks[activeIndex].title : "track"
         eventAdd(.danger, "stream", "stall give-up after \(Int(StreamSchedule.stallGiveUpSeconds)) s of no progress at \(String(format: "%.1f", cachedPosition))s — handing to JS retry (Range-continues the prefix)")
         loader.cancelActiveWriterRetainingScratch()
@@ -4239,6 +4430,28 @@ public final class NativeAudioEngine: NSObject {
                 return
             }
 
+            // A real EOF can already be queued when Pause is accepted. Park
+            // its resume position rather than advancing while user intent is
+            // paused. Play will consume that parked end exactly once.
+            guard self.control.mayRender else {
+                // A premature/truncated EOF is not an end-of-queue intent.
+                // Leave it parked for explicit Play/recovery, not an advance.
+                self.hasLiveSchedule = false
+                if DownloadSanity.isPrematureCompletion(evidence: evidence) {
+                    // An exhausted truncated node cannot be plain-resumed.
+                    // Keep the held position, evict poisoned bytes, and let
+                    // the next explicit Play reload without advancing/retry now.
+                    if let track = self.currentTrack() {
+                        self.loader.evict(track.trackId, variant: TrackVariant(url: track.url))
+                        self.pendingSeekTrackId = track.trackId
+                        self.pendingSeekSeconds = self.cachedPosition
+                    }
+                } else {
+                    self.waitingAtTrackEnd = true
+                }
+                return
+            }
+
             // 2026-09-18 LDM multi-skip, final gate: elapsed-time sanity. If
             // the measured position sits >= 1 s before the SCHEDULED SEGMENT's
             // own length, this completion cannot be a real end-of-track: a
@@ -4339,6 +4552,8 @@ public final class NativeAudioEngine: NSObject {
         eventAdd(.info, "engine", "stopPlayback position=\(String(format: "%.1f", currentPosition)) row \(activeIndex) (\(currentTrackId))")
         // ACTIVE-LOAD RETRY (2026-09-24 dump-2): any teardown — stop, sleep
         // end, queue end — must also disarm the loader's retry timer.
+        control.stop()
+        cancelEngineRecovery()
         cancelActiveLoadRetries()
         paramRestartTimer?.invalidate()
         paramRestartTimer = nil
@@ -4594,7 +4809,7 @@ public final class NativeAudioEngine: NSObject {
         // arrive with a stopped engine. Re-start it; a failed start idles the
         // fade (the monitor re-evaluates next tick) instead of raising in
         // AVAudioPlayerNodeImpl::StartImpl.
-        guard ensureEngineRunning() else {
+        guard control.mayRender, ensureEngineRunning() else {
             crossfade = .idle
             return
         }
@@ -4761,6 +4976,7 @@ public final class NativeAudioEngine: NSObject {
         crossfade = .idle
 
         activeIndex = targetIndex
+        beginPlaybackSession(autoPlay: true)
         // The former standby's completion is this track's natural-end trigger
         // and flows through the premature-completion gate (1.2.41: judged on
         // the .dataPlayedBack node capture this finalize itself is riding) —

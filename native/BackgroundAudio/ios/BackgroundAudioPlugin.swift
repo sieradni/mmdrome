@@ -1,5 +1,6 @@
 import Foundation
 import Capacitor
+import UIKit
 import BackgroundAudioCore
 
 @objc(BackgroundAudioPlugin)
@@ -54,6 +55,68 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private let nowPlaying = NowPlayingController()
     private var nowPlayingTimer: Timer?
     private var lastNetworkState: (Bool, Bool)?
+    private let nativeSessionId = UUID().uuidString
+    private var commandId = 0
+    private var controlTranscript: [[String: Any]] = []
+    private var controlTranscriptDropped = 0
+    private static let controlTranscriptCapacity = 160
+
+    private func recordControl(_ entry: [String: Any]) {
+        var entry = entry
+        entry["t"] = ProcessInfo.processInfo.systemUptime
+        entry["commandId"] = commandId
+        entry["appState"] = UIApplication.shared.applicationState.rawValue
+        if controlTranscript.count == Self.controlTranscriptCapacity {
+            controlTranscript.removeFirst()
+            controlTranscriptDropped += 1
+        }
+        controlTranscript.append(entry)
+    }
+
+    /// Main-thread acceptance/publication boundary shared by app and remote.
+    @discardableResult
+    private func interpret(_ command: PlaybackCommand, origin: String, receivedAt: Double) -> PlaybackCommandResult {
+        precondition(Thread.isMainThread)
+        commandId += 1
+        let executedAt = ProcessInfo.processInfo.systemUptime
+        let before = engine.controlState()
+        let result = PlaybackCommandInterpreter.perform(command,
+            hasContent: engine.currentTrack() != nil, desiredPlaying: engine.desiredPlaying,
+            execute: { semantic in
+                switch semantic {
+                case .play: self.engine.play()
+                case .pause: self.engine.pause()
+                case .toggle: preconditionFailure("toggle must resolve to explicit intent")
+                case .next: self.engine.next()
+                case .previous: self.engine.previous()
+                case .seek(let position): self.engine.seek(to: position)
+                }
+            }, publish: {
+                self.notifyPlaybackState()
+                self.refreshNowPlaying(publisher: "command:\(origin)")
+            })
+        let after = engine.controlState()
+        let intentChanged = (before["intentRevision"] as? UInt64) != (after["intentRevision"] as? UInt64)
+        let effect = result != .accepted ? "rejected" :
+            (intentChanged ? (engine.isCurrentlyPlaying ? "rendering" : "accepted-not-rendering") : "idempotent-or-position-command")
+        recordControl([
+            "kind": "command", "semantic": command.name, "origin": origin,
+            "receivedAt": receivedAt, "executedAt": executedAt,
+            "completedAt": ProcessInfo.processInfo.systemUptime,
+            "result": result.rawValue, "effect": effect,
+            "before": before, "after": after,
+            "publicationRevision": nowPlaying.debugState()["revision"] ?? 0])
+        return result
+    }
+
+    private func bridgeCommand(_ command: PlaybackCommand, call: CAPPluginCall) {
+        let receivedAt = ProcessInfo.processInfo.systemUptime
+        performOnMain { [weak self] in
+            guard let self else { call.resolve(["accepted": false, "reason": "unavailable"]); return }
+            let result = self.interpret(command, origin: "app-bridge", receivedAt: receivedAt)
+            call.resolve(["accepted": result == .accepted, "reason": result.rawValue])
+        }
+    }
     /// Phase 4 (2026-10-02): trailing debounce for the network-change prefetch
     /// re-arm. Main-thread-only — the monitor callback hops to main and the
     /// scheduled fire runs on main.
@@ -184,9 +247,21 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
 
         session.configure(
-            onPause: { [weak self] cancelRetries in self?.performOnMain { self?.engine.pause(cancelRetries: cancelRetries) } },
-            onResume: { [weak self] in self?.performOnMain { self?.engine.play() } },
-            isPlaying: { [weak self] in self?.performOnMainSync { self?.engine.isCurrentlyPlaying ?? false } ?? false }
+            onPause: { [weak self] cancelRetries in
+                self?.performOnMain {
+                    self?.engine.pause(cancelRetries: cancelRetries)
+                    self?.notifyPlaybackState()
+                    self?.refreshNowPlaying(publisher: cancelRetries ? "route-pause" : "interruption-begin")
+                }
+            },
+            onResume: { [weak self] shouldResume in
+                self?.performOnMain {
+                    self?.engine.resumeAfterInterruption(shouldResume: shouldResume)
+                    self?.notifyPlaybackState()
+                    self?.refreshNowPlaying(publisher: "interruption-end")
+                }
+            },
+            desiredPlaying: { [weak self] in self?.performOnMainSync { self?.engine.desiredPlaying ?? false } ?? false }
         )
 
         engine.onTrackChanged = { [weak self] trackId, entryId in
@@ -198,7 +273,10 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         engine.onPlaybackStateChanged = { [weak self] playing in
             guard let self = self else { return }
-            self.notifyListeners("playbackStateChanged", data: ["playing": playing])
+            // Rendering can stop transiently inside setQueueAndPlay/retry.
+            // Do not advertise that internal teardown as an accepted Pause:
+            // it would reset JS's bounded retry history on every reload.
+            self.notifyPlaybackState(includeIntent: playing)
             if playing {
                 self.startNowPlayingTimer()
             } else {
@@ -229,7 +307,8 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
         engine.onSleepTimerFired = { [weak self] in
             self?.notifyListeners("sleepTimerFired", data: [:])
-            self?.refreshNowPlaying()
+            self?.notifyPlaybackState()
+            self?.refreshNowPlaying(publisher: "sleep-timer")
         }
         // Seek-epoch lifecycle (Phase 2, 2026-10-07): an epoch is a third
         // POSITIONING actor beside engage/refreshQueue — JS records it in the
@@ -245,17 +324,23 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             self?.notifyListeners("preloadProgress", data: data)
         }
 
-        nowPlaying.setupRemoteCommands()
-        nowPlaying.onPlay = { [weak self] in self?.performOnMain { self?.engine.play() } }
-        nowPlaying.onPause = { [weak self] in self?.performOnMain { self?.engine.pause() } }
-        nowPlaying.onToggle = { [weak self] in self?.performOnMain { self?.engine.togglePlayPause() } }
-        nowPlaying.onNext = { [weak self] in self?.performOnMain { self?.engine.next() } }
-        nowPlaying.onPrevious = { [weak self] in self?.performOnMain { self?.engine.previous() } }
-        nowPlaying.onSeek = { [weak self] position in self?.performOnMain { self?.engine.seek(to: position) } }
+        nowPlaying.onCommand = { [weak self] command, receivedAt in
+            guard let self else { return .unavailable }
+            return self.interpret(command, origin: "remote-command", receivedAt: receivedAt)
+        }
+        nowPlaying.publicationSink = { [weak self] snapshot in
+            guard let self else { return }
+            self.recordControl(["kind": "publication", "snapshot": snapshot,
+                "engine": self.engine.controlState(),
+                "timerActive": self.nowPlayingTimer != nil])
+        }
+        // Callbacks exist BEFORE registering/enabling any system target.
+        performOnMain { [weak self] in self?.nowPlaying.setupRemoteCommands() }
     }
 
     deinit {
         nowPlayingTimer?.invalidate()
+        nowPlaying.teardownRemoteCommands()
     }
 
     // MARK: - Commands
@@ -313,6 +398,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
             self.engine.setQueue(tracks: tracks, activeIndex: activeIndex, loopMode: loopMode)
+            self.refreshNowPlaying(publisher: "set-queue")
             call.resolve()
         }
     }
@@ -348,6 +434,7 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
             self.engine.refreshQueue(tracks: tracks, activeIndex: activeIndex)
+            self.refreshNowPlaying(publisher: "refresh-queue")
             call.resolve()
         }
     }
@@ -367,70 +454,32 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
             self.engine.playTrack(at: index, autoPlay: autoPlay)
+            self.refreshNowPlaying(publisher: "play-track")
             call.resolve()
         }
     }
 
-    @objc func play(_ call: CAPPluginCall) {
-        performOnMain { [weak self] in
-            guard let self else { call.resolve(); return }
-            self.engine.play()
-            self.refreshNowPlaying()
-            call.resolve()
-        }
-    }
+    @objc func play(_ call: CAPPluginCall) { bridgeCommand(.play, call: call) }
 
-    @objc func pause(_ call: CAPPluginCall) {
-        performOnMain { [weak self] in
-            guard let self else { call.resolve(); return }
-            self.engine.pause()
-            // The engine's onPlaybackStateChanged only fires when isPlaying actually
-            // flips; refreshing unconditionally guarantees the lock screen / control
-            // center reflects the paused state even when the guard short-circuits.
-            self.refreshNowPlaying()
-            call.resolve()
-        }
-    }
+    @objc func pause(_ call: CAPPluginCall) { bridgeCommand(.pause, call: call) }
 
-    @objc func toggle(_ call: CAPPluginCall) {
-        performOnMain { [weak self] in
-            guard let self else { call.resolve(); return }
-            self.engine.togglePlayPause()
-            self.refreshNowPlaying()
-            call.resolve()
-        }
-    }
+    @objc func toggle(_ call: CAPPluginCall) { bridgeCommand(.toggle, call: call) }
 
     @objc func seek(_ call: CAPPluginCall) {
         let position = call.getDouble("position", 0)
-        performOnMain { [weak self] in
-            guard let self else { call.resolve(); return }
-            self.engine.seek(to: position)
-            call.resolve()
-        }
+        bridgeCommand(.seek(position), call: call)
     }
 
-    @objc func next(_ call: CAPPluginCall) {
-        performOnMain { [weak self] in
-            guard let self else { call.resolve(); return }
-            self.engine.next()
-            call.resolve()
-        }
-    }
+    @objc func next(_ call: CAPPluginCall) { bridgeCommand(.next, call: call) }
 
-    @objc func previous(_ call: CAPPluginCall) {
-        performOnMain { [weak self] in
-            guard let self else { call.resolve(); return }
-            self.engine.previous()
-            call.resolve()
-        }
-    }
+    @objc func previous(_ call: CAPPluginCall) { bridgeCommand(.previous, call: call) }
 
     @objc func setSpeed(_ call: CAPPluginCall) {
         let speed = call.getDouble("speed", 1)
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
             self.engine.setSpeed(speed)
+            self.refreshNowPlaying(publisher: "speed")
             call.resolve()
         }
     }
@@ -577,7 +626,17 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     @objc func getDebugState(_ call: CAPPluginCall) {
         performOnMain { [weak self] in
             guard let self else { call.resolve(); return }
-            call.resolve(self.engine.debugState())
+            var state = self.engine.debugState()
+            state["controlTranscript"] = self.controlTranscript
+            state["controlTranscriptDropped"] = self.controlTranscriptDropped
+            state["nowPlaying"] = self.nowPlaying.debugState()
+            state["nowPlayingTimerActive"] = self.nowPlayingTimer != nil
+            state["nativeSessionId"] = self.nativeSessionId
+            state["osVersion"] = ProcessInfo.processInfo.operatingSystemVersionString
+            state["nativeBuildVersion"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+            state["nativeAppVersion"] = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+            state["clock"] = ["uptime": ProcessInfo.processInfo.systemUptime, "epochMs": Date().timeIntervalSince1970 * 1000]
+            call.resolve(state)
         }
     }
 
@@ -721,7 +780,15 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     // MARK: - Now Playing
 
-    private func refreshNowPlaying() {
+    private func notifyPlaybackState(includeIntent: Bool = true) {
+        // Intent is included at semantic command/session/sleep boundaries.
+        // Rendering-only transitions cannot claim an explicit user Pause.
+        var data: [String: Any] = ["playing": engine.isCurrentlyPlaying]
+        if includeIntent { data["desiredPlaying"] = engine.desiredPlaying }
+        notifyListeners("playbackStateChanged", data: data)
+    }
+
+    private func refreshNowPlaying(publisher: String = "state") {
         let state = engine.state()
         nowPlaying.update(
             track: engine.currentTrack(),
@@ -729,14 +796,15 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
             position: state.position,
             playing: state.playing,
             speed: state.speed,
-            duration: state.duration
+            duration: state.duration,
+            publisher: publisher
         )
     }
 
     private func startNowPlayingTimer() {
         stopNowPlayingTimer()
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            self?.refreshNowPlaying()
+            self?.refreshNowPlaying(publisher: "timer")
         }
         nowPlayingTimer = timer
         RunLoop.main.add(timer, forMode: .common)

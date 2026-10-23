@@ -139,7 +139,7 @@ interface BackgroundAudioPlugin {
   ): Promise<PluginListenerHandle>
   addListener(
     eventName: 'playbackStateChanged',
-    listenerFunc: (data: { playing: boolean }) => void
+    listenerFunc: (data: { playing: boolean; desiredPlaying?: boolean }) => void
   ): Promise<PluginListenerHandle>
   addListener(eventName: 'ended', listenerFunc: () => void): Promise<PluginListenerHandle>
   addListener(eventName: 'error', listenerFunc: (data: { message: string; recovery?: 'stop' }) => void): Promise<PluginListenerHandle>
@@ -190,7 +190,7 @@ export interface NativeEventsPage {
 
 export interface NativeEngineCallbacks {
   onTrackChanged: (trackId: string, queueEntryId?: string) => void
-  onPlaybackStateChanged: (playing: boolean) => void
+  onPlaybackStateChanged: (playing: boolean, desiredPlaying?: boolean) => void
   onQueueEnded: () => void
   onError: (message: string, recovery?: 'stop') => void
   /** The native audio engine surfaced as UNAVAILABLE — the recovery ladder
@@ -303,7 +303,7 @@ export class NativeAudioEngineApp {
     this.listeners.push(
       await plugin.addListener('playbackStateChanged', (data) => {
         trailBridge('event', `playbackState ${data.playing ? 'playing' : 'paused'}`)
-        this.callbacks?.onPlaybackStateChanged(data.playing)
+        this.callbacks?.onPlaybackStateChanged(data.playing, data.desiredPlaying)
       }),
     )
     this.listeners.push(

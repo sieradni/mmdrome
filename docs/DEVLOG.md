@@ -1,4 +1,57 @@
-## 2026-10-21j — The love policy gets a face: four modes and an honest threshold
+## 2026-10-22c — Release-readiness review: intent boundaries must not reset retry budgets
+
+Reviewed the uncommitted native control implementation; no release performed. Found an integration regression: publishing `desiredPlaying=false` on every rendering edge includes the transient stop inside a retry's `setQueueAndPlay`, which resets JS retry history on every reload. Native rendering stops now omit intent; semantic command/session/sleep boundaries still publish it, including no-op Pause. The transport latches accepted intent so late errors cannot recreate retry/queue-advance ownership after local or remote Pause. Retry revisions also reject callbacks queued before cancellation, even after a later Play. The legacy split setQueue/playTrackAt respects a Pause arriving between commands.
+
+Automatic graph work now waits for interruption permission; only explicit Play can probe a possibly stale interruption. Explicit Play and an eligible interruption end reactivate even if the graph still reports running. Native timers verify their exact Timer identity before mutating shared handles. A rebuild marks retained staged state stalled because its node promises were retired; recovery must reschedule, not extend nonexistent segments. A premature EOF delivered after Pause evicts poisoned bytes and parks the held position for later Play. Restored empty refresh to a no-op: treating a tail refresh as stop violated the documented play-out-after-last-row-removal behavior.
+
+Verification on final code: `npm run check` clean; full `npm test` 1443/1443; affected transport/manager/reconcile run 146/146; fresh production build plus Chromium smoke 1/1; whitespace check clean. Initial check caught a union-typed test assertion, corrected without weakening the expected event; final checks rerun. Four additional JS regressions and one additional Swift core regression (19 new Swift tests total). Swift execution remains blocked (`swift` missing, exit 127); no Xcode/AVFoundation/MediaPlayer adapter or physical-device checks claimed. Existing build warnings remain. Release recommendation **HOLD** until Apple gates and the original lock-screen/AirPods acceptance protocol pass; ordinary Pause output-graph policy remains deliberately unresolved, not guessed from metadata assignments.
+
+## 2026-10-22b — Native control intent and publication implementation; device closure still open
+
+Implemented in the working tree, not committed/released: `PlaybackControl` separates desired Play from rendering, interruption permission, occurrence/session and byte-source ownership. Pause/teardown invalidate recovery and retry intent; full-download/staged/epoch/retry callbacks consult live permission without discarding bytes. Source ownership survives seek/node rescheduling and graph rebuild but is superseded by replacement loads. Toggle inverts accepted intent, not the buffering state. A rebuild never returns permission for the original caller to play a captured node from the retired graph; paused rebuilds do not activate/start output. Paused position is frozen and parameter resume preserves it. Same-song queue copies reset staged/seek ownership when changing occurrences.
+
+Bridge and remote adapters share the production `PlaybackCommandInterpreter`; accepted commands publish even when idempotent or pending. Remote acknowledgement waits for main-thread acceptance, and registration owns/removes its exact targets idempotently. `NowPlayingPublication` revisions span state/command/timer/artwork/clear; artwork patches current metadata, clear resets cached state, timer ticks do not flood the separate bounded control transcript. Dump includes assigned/readable dictionary, graph/node/intent/generation/occurrence state, receipt/execution/completion times, overflow, native build/OS/session/clock and JS build identity. These are assignment evidence, not an observation of the actual iOS button.
+
+One cross-platform boundary mattered: native Pause while already buffering must also cancel the JS retry timer. The optional `desiredPlaying` event field now drives that cancellation; legacy rendering-only events and interruption/buffering do not cancel legitimate retry ownership. Two production transport regressions pin the difference.
+
+Verification: `npm run check` 0 errors/0 warnings; affected transport/manager/reconcile suites 104/104; full `npm test` 1439/1439; production build/Chromium smoke 1/1. Existing TagLib externalization, chunk-size and ineffective-dynamic-import warnings remain. Added 18 Swift core tests (12 control, 6 publication/registration), NOT run here: this Windows checkout has neither Swift nor Xcode. The existing CI gates must compile/test the edited revision; no push/CI dispatch was authorized/performed.
+
+**Not closed:** ordinary explicit Pause still leaves the output graph running. Its proposed graph-pause comparison needs hardware before choosing policy. MediaPlayer/AVFoundation adapter execution and the complete iPhone/Control Center/AirPods acceptance matrix remain outstanding. The [field register](plans/2026-10-22-field-reliability-and-push-diagnostics.md) records exact implementation evidence, provisional timing budgets and remaining gates without checking off an unverified device fix. No unrelated push, transfer or queue-feature work was implemented.
+
+## 2026-10-22 - Reopen system play/pause state; preserve the field/push backlog
+
+The user confirms the affected build is current and the earlier lock-screen fix had no visible
+effect. Clarified reproduction: app or AirPods Pause stops audio while the system still shows
+Pause; the next accessory press does nothing; one lock-screen press repairs the presentation and
+the next resumes. Bluetooth/earbud hardware problems are separate and excluded from app diagnosis.
+
+Repository review found the explicit command split (`a9bc72e`) intact and the forced refresh
+(`24d9d36`) present only in app bridge handlers, not remote callbacks. Normal in-app Pause already
+publishes rate zero and elapsed together, so a missing-refresh-only explanation is insufficient.
+Ordinary Pause leaves AVAudioEngine running with paused nodes; compare graph pause on a physical
+device before calling it the cause. Two additional source findings: Pause/stop do not explicitly
+invalidate the engine-recovery resume timer/flag, and full-download completions retain an earlier
+autoplay value across Pause (retry success also schedules with literal true). Neither is claimed
+as the root cause of the clarified stale-icon report. Native command/publication evidence and
+adapter-level race coverage are missing.
+
+The supplied `Pasted text.txt` was parsed completely and its workspace copy deleted as requested.
+It has 708 consecutive native events without reported ring drops, 15 Opus prefetch transfer
+failures (10 affected IDs later play), and no WebDAV push-stage/batch evidence. Its empty HUD
+`errorLog` does not mean no failures; stored codec-probe version is not running build identity;
+`CACHED fallback` also labels successful cache reuse. No current-build push cause can be inferred
+from those audio errors or from the unrelated audio-cache count 27.
+
+The [field-reliability register](plans/2026-10-22-field-reliability-and-push-diagnostics.md) preserves
+the exact report, evidence limits, source anchors, prioritized control/push/transfer/diagnostic
+work, race and mixed-outcome tests, device acceptance and existing open roadmap gates. Push audit
+also found revalidation before GET rather than at the later write boundary, remote/local outcome
+conflation, failure-reserved duplicate paths, incomplete temp-cleanup evidence, and missing
+body-timeout/error context. These are outstanding work, not a diagnosis of the reported 27 rows.
+TODO, the docs index, holistic roadmap, queue-design pause entry and AGENTS point to this register.
+Documentation only; no playback, write behavior, tests or release changed by this investigation.
+
+## 2026-10-21j - The love policy gets a face: four modes and an honest threshold
 
 The policy landed in 2026-10-21i with no way to reach it. Settings → Scrobbling now owns a **Loved Tracks** section, placed after Direct Services and built from the tab's existing primitives: a chip row for the four mutually exclusive modes (Off / Loved / Rating / Both — the same `btn-sm border + chip-on + aria-pressed` pattern as Ratings Source), an `AppSlider` row for the threshold, and a `role="status"` summary line.
 

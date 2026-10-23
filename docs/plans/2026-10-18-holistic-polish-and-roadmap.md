@@ -1,6 +1,9 @@
 # Holistic UI Polish, Queue Boundary Hardening & Feature Roadmap
 
 Date: 2026-10-18 (Phase 2A closed 2026-10-21)
+
+**2026-10-22 reliability priority:** before treating playback/push polish as complete, work through the [field-reliability register](2026-10-22-field-reliability-and-push-diagnostics.md). It preserves the current-build push report, the clarified stale lock-screen/AirPods state, source-confirmed pause races, diagnostic gaps, and closure gates. This is investigation/documentation, not a landed fix. Bluetooth hardware trouble is explicitly excluded; existing feature work below retains its own status.
+
 Status: Active roadmap. Phase 1 is implemented and design-approved (real-device review still outstanding). **Phase 2A is CLOSED (2026-10-21)** — deliverable: [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md); it found five gaps, registered in its §13. **Phase 2D (queue semantics redesign) is AGREED and NOT implemented (2026-10-21b)** — contract: [docs/QUEUE-DESIGN.md](../QUEUE-DESIGN.md). Phases 2B, 2C and 3 are NOT complete.
 
 ## 1. Guiding Principles & Guardrails

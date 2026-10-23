@@ -77,7 +77,7 @@ class FakeClient implements NativeEngineClient {
   pluginInst: FakePlugin
   callbacks: {
     onTrackChanged(trackId: string, queueEntryId?: string): void
-    onPlaybackStateChanged(playing: boolean): void
+    onPlaybackStateChanged(playing: boolean, desiredPlaying?: boolean): void
     onQueueEnded(): void
     onError(message: string, recovery?: 'stop'): void
     onEngineUnavailable?(): void
@@ -92,7 +92,7 @@ class FakeClient implements NativeEngineClient {
 
   async init(callbacks: {
     onTrackChanged(trackId: string, queueEntryId?: string): void
-    onPlaybackStateChanged(playing: boolean): void
+    onPlaybackStateChanged(playing: boolean, desiredPlaying?: boolean): void
     onQueueEnded(): void
     onError(message: string, recovery?: 'stop'): void
     onEngineUnavailable?(): void
@@ -1029,6 +1029,105 @@ test('pause cancels a pending retry instead of restarting playback later', async
   assert.deepEqual(retried, [])
 })
 
+
+test('remote Pause while already buffering cancels the JS retry without a bridge pause call', async () => {
+  const { transport, client, plugin, timers } = setupTimed()
+  const retried: string[] = []
+  transport.onRetry = (id) => retried.push(id)
+  await transport.init()
+  await transport.engage(tracks, 0, 'none')
+  client.callbacks!.onError('temporary cut')
+  client.callbacks!.onPlaybackStateChanged(false, false)
+  timers.fireAll()
+  assert.deepEqual(retried, [])
+  assert.deepEqual(plugin.commands, [])
+})
+
+test('buffering, interruption and legacy rendering-only events preserve JS retry ownership', async () => {
+  for (const desiredPlaying of [true, undefined]) {
+    const { transport, client, timers } = setupTimed()
+    const retried: string[] = []
+    transport.onRetry = (id) => retried.push(id)
+    await transport.init()
+    await transport.engage(tracks, 0, 'none')
+    client.callbacks!.onError('temporary cut')
+    client.callbacks!.onPlaybackStateChanged(false, desiredPlaying)
+    timers.fireAll()
+    assert.deepEqual(retried, ['t1'])
+  }
+})
+
+test('late errors after local or remote Pause cannot recreate retries or consume rows', async () => {
+  for (const remote of [false, true]) {
+    const { transport, client, timers } = setupTimed()
+    const retried: string[] = []
+    const ended: TransportEndedEvent[] = []
+    transport.onRetry = (id) => retried.push(id)
+    transport.onTrackEnded = (event) => ended.push(event)
+    await transport.init()
+    await transport.engage(tracks, 0, 'none')
+    if (remote) client.callbacks!.onPlaybackStateChanged(false, false)
+    else await transport.pause()
+    for (let index = 0; index < 5; index++) client.callbacks!.onError('late failure')
+    timers.fireAll()
+    assert.deepEqual(retried, [])
+    assert.deepEqual(ended, [])
+    assert.equal(timers.entries.length, 0)
+    await transport.play()
+    client.callbacks!.onError('new Play failed')
+    timers.fireAll()
+    assert.deepEqual(retried, ['t1'], 'a new explicit Play gets fresh retry ownership')
+  }
+})
+
+test('a cancelled timer already queued cannot revive after Pause then Play', async () => {
+  const { transport, client, timers } = setupTimed()
+  const retried: string[] = []
+  transport.onRetry = (id) => retried.push(id)
+  await transport.init()
+  await transport.engage(tracks, 0, 'none')
+  client.callbacks!.onError('first failure')
+  const obsolete = timers.entries[0].fn
+  await transport.pause()
+  await transport.play()
+  client.callbacks!.onError('new failure')
+  obsolete() // simulate cancellation racing an already queued callback
+  assert.deepEqual(retried, [])
+  timers.fireAll()
+  assert.deepEqual(retried, ['t1'])
+})
+
+test('rendering-only teardown during retry reload preserves the bounded retry budget', async () => {
+  const { transport, client, timers } = setupTimed()
+  const ended: TransportEndedEvent[] = []
+  transport.onTrackEnded = (event) => ended.push(event)
+  await transport.init()
+  await transport.engage(tracks, 0, 'none')
+  for (let attempt = 0; attempt < 2; attempt++) {
+    client.callbacks!.onError('persistent failure')
+    timers.fireAll()
+    const reload = transport.engage(tracks, 0, 'none')
+    client.callbacks!.onPlaybackStateChanged(false) // internal setQueue stop, NOT user intent
+    await reload
+  }
+  client.callbacks!.onError('still broken')
+  assert.deepEqual(ended, [{ kind: 'natural', fromError: true }])
+})
+
+test('Pause during the legacy split engage prevents its second command from autoplaying', async () => {
+  for (const remote of [false, true]) {
+    const { transport, client, plugin } = setupTimed()
+    await transport.init()
+    let release!: () => void
+    plugin.setQueueGate = new Promise<void>((resolve) => { release = resolve })
+    const engaging = transport.engage(tracks, 0, 'none')
+    if (remote) client.callbacks!.onPlaybackStateChanged(false, false)
+    else await transport.pause()
+    release()
+    assert.equal(await engaging, true)
+    assert.deepEqual(plugin.playTrackAtCalls, [{ index: 0, autoPlay: false }])
+  }
+})
 
 test('a shared outage stops after three failed rows instead of consuming the queue', async () => {
   const { transport, client, timers } = setupTimed()

@@ -17,8 +17,8 @@ final class SessionController {
     /// User/route pauses cancel retries; interruptions preserve a pending
     /// load so its native recovery can continue when the session returns.
     private var onPause: ((Bool) -> Void)?
-    private var onResume: (() -> Void)?
-    private var isPlaying: () -> Bool = { false }
+    private var onResume: ((Bool) -> Void)?
+    private var desiredPlaying: () -> Bool = { false }
     private var interruption = InterruptionState()
     /// True while an AVAudioSession interruption is in progress. The engine's
     /// recovery policy reads this (via `onInterruptionStateChanged` →
@@ -27,7 +27,7 @@ final class SessionController {
     /// rebuilding or surfacing.
     private(set) var isInterrupted = false
     /// Fired whenever `isInterrupted` flips. The plugin mirrors it onto the
-    /// engine; on the falling edge the engine also gets a fresh recovery run.
+    /// engine; resume permission follows separately after reading shouldResume.
     var onInterruptionStateChanged: ((Bool) -> Void)?
     /// Fired on `mediaServicesWereReset` / `mediaServicesWereLost`: the audio
     /// services were torn down underneath the app and EVERY audio resource
@@ -69,14 +69,15 @@ final class SessionController {
     }
 
     /// Applies a new sharing mode live (no restart needed): re-sets the
-    /// category and re-activates the session. Called from the
+    /// category, activating only for eligible playback intent. Called from the
     /// `setAudioMixing` bridge (and never from anywhere else).
     func setMixingMode(_ mode: String) {
         mixingMode = mode
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .default, options: Self.categoryOptions(for: mode))
-            try session.setActive(true)
+            // A preference edit while paused must not reacquire the session.
+            if desiredPlaying() && !isInterrupted { try session.setActive(true) }
             self.event(.info, "setMixingMode → \(mode)")
         } catch {
             // Non-fatal: keep playing under the previous category.
@@ -84,15 +85,15 @@ final class SessionController {
         }
     }
 
-    func configure(onPause: @escaping (Bool) -> Void, onResume: @escaping () -> Void, isPlaying: @escaping () -> Bool) {
+    func configure(onPause: @escaping (Bool) -> Void, onResume: @escaping (Bool) -> Void, desiredPlaying: @escaping () -> Bool) {
         self.onPause = onPause
         self.onResume = onResume
-        self.isPlaying = isPlaying
+        self.desiredPlaying = desiredPlaying
 
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .default, options: Self.categoryOptions(for: mixingMode))
-            try session.setActive(true)
+            // Activation belongs to an accepted Play, not plugin boot.
         } catch {
             // Non-fatal: playback will work in foreground, background may be suspended.
             self.event(.danger, "configure category/activate FAILED (mode \(mixingMode)) \(errorEvidence(error)) — background may suspend")
@@ -145,7 +146,7 @@ final class SessionController {
               let type = AVAudioSession.InterruptionType(rawValue: rawType) else { return }
         switch type {
         case .began:
-            guard interruption.begin(isPlaying: isPlaying()) else { return }
+            guard interruption.begin(isPlaying: desiredPlaying()) else { return }
             // Flip the interruption flag BEFORE pausing: the engine's recovery
             // policy keys on it, and a play() racing the pause must already see
             // "interrupted" so it waits instead of rebuilding a doomed graph.
@@ -156,12 +157,12 @@ final class SessionController {
             setInterrupted(false)
             let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
                 .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? false
-            let resume = interruption.end(shouldResume: shouldResume)
-            self.event(.info, "interruption ended shouldResume=\(shouldResume) → \(resume ? "resume" : "stay paused")")
-            if resume {
-                reactivateSessionAfterInterruption()
-                onResume?()
-            }
+            let snapshotEligible = interruption.end(shouldResume: shouldResume)
+            self.event(.info, "interruption ended shouldResume=\(shouldResume) snapshotEligible=\(snapshotEligible) — live engine intent decides resume")
+            // Engine intent owns the final decision, including a Play/Pause
+            // accepted while interrupted. Do not unconditionally call play()
+            // from an older wasPlaying snapshot or activate before that check.
+            onResume?(shouldResume)
         @unknown default:
             break
         }
@@ -172,18 +173,6 @@ final class SessionController {
         guard isInterrupted != value else { return }
         isInterrupted = value
         onInterruptionStateChanged?(value)
-    }
-
-    /// One best-effort session re-activation after an interruption ends.
-    private func reactivateSessionAfterInterruption() {
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.playback, mode: .default, options: Self.categoryOptions(for: mixingMode))
-            try session.setActive(true)
-            self.event(.info, "interruption ended → session re-activated")
-        } catch {
-            self.event(.danger, "interruption ended → session re-activation FAILED \(errorEvidence(error))")
-        }
     }
 
     /// The engine proved an interruption flag was STALE — a start succeeded

@@ -115,7 +115,7 @@ export interface NativePluginClient {
 export interface NativeEngineClient {
   init(callbacks: {
   onTrackChanged(trackId: string, queueEntryId?: string): void
-  onPlaybackStateChanged(playing: boolean): void
+  onPlaybackStateChanged(playing: boolean, desiredPlaying?: boolean): void
   onQueueEnded(): void
   onError(message: string, recovery?: 'stop'): void
   /** Seek-epoch lifecycle (Phase 2, 2026-10-07) — telemetry only, forwarded
@@ -183,6 +183,10 @@ export class NativeTransport {
   private _lastTrackId: string | null = null
   private _failedTracks = new Set<string>()
   private _loadFailed = false
+  // User intent survives rendering-only buffering/teardown notifications.
+  // Legacy builds have no intent field, so local commands still own it.
+  private _desiredPlaying = true
+  private _retryRevision = 0
   get loadFailed(): boolean { return this._loadFailed }
 
   private _retryTrackId: string | null = null
@@ -231,7 +235,12 @@ export class NativeTransport {
         if (this._engaged) this._lastTrackId = trackId
         this.onTrackChanged?.(trackId, entryId)
       },
-      onPlaybackStateChanged: (playing) => {
+      onPlaybackStateChanged: (playing, desiredPlaying) => {
+        // A remote/user Pause can arrive while rendering is already false.
+        // Only explicit intent=false cancels retries; buffering/interruption
+        // and legacy native builds (field absent) keep their retry ownership.
+        if (desiredPlaying !== undefined) this._desiredPlaying = desiredPlaying
+        if (desiredPlaying === false) this._resetRetry()
         if (playing) this._loadFailed = false
         this.onPlaybackState?.(playing ? 'playing' : 'paused')
       },
@@ -351,6 +360,7 @@ export class NativeTransport {
       return false
     }
     this._loadFailed = false
+    this._desiredPlaying = true
     this._lastTrackId = active.trackId
     const retryTarget = this._retryTrackId
     const mem = this._seekMemory
@@ -377,7 +387,9 @@ export class NativeTransport {
           activeIndex: request.activeIndex,
           loopMode: request.loopMode,
         })
-        await plugin.playTrackAt({ index: request.activeIndex, autoPlay: true })
+        // A Pause accepted while the legacy setQueue bridge was settling
+        // must also win over the second half of this split command.
+        await plugin.playTrackAt({ index: request.activeIndex, autoPlay: this._desiredPlaying })
       }
     } catch (err) {
       console.error('[native] failed to start playback:', err)
@@ -455,6 +467,7 @@ export class NativeTransport {
    * would restart the engine and kill the live playback being recovered.
    */
   adopt(trackId: string): void {
+    this._desiredPlaying = true
     this._engaged = true
     this._lastTrackId = trackId
     this._client.setPositionPolling(true, (state) => this._receivePoll(state))
@@ -504,11 +517,13 @@ export class NativeTransport {
   }
 
   play(): Promise<void> {
+    this._desiredPlaying = true
     this._failedTracks.clear()
     return this._client.plugin().play()
   }
 
   pause(): Promise<void> {
+    this._desiredPlaying = false
     this._resetRetry()
     return this._client.plugin().pause()
   }
@@ -557,11 +572,14 @@ export class NativeTransport {
     this._loadFailed = true
     const last = this._lastTrackId
     if (recovery === 'stop') {
+      this._desiredPlaying = false
       this._resetRetry()
       this.onPlaybackState?.('paused')
       return
     }
-    if (last === null) return
+    // A late error is evidence, not a new Play command. In particular it
+    // cannot recreate a retry or burn through rows after an accessory Pause.
+    if (last === null || !this._desiredPlaying) return
     this.onPlaybackState?.('paused')
     if (this._retryTrackId !== last) this._resetRetry()
     const decision = this._retry.onError()
@@ -588,7 +606,11 @@ export class NativeTransport {
       this._retryCancel()
       this._retryCancel = null
     }
+    const revision = ++this._retryRevision
     this._retryCancel = this._timers.schedule(decision.delayMs, () => {
+      // Cancellation can race a queued callback. A later Pause/Play or retry
+      // must not revive the old owner, even on the same track.
+      if (revision !== this._retryRevision || !this._desiredPlaying) return
       this._retryCancel = null
       if (this._retryTrackId !== null && this._retryTrackId === this._lastTrackId) {
         trailBridge('event', `retry ${this._retryTrackId}`)
@@ -605,6 +627,7 @@ export class NativeTransport {
   }
 
   private _resetRetry(): void {
+    this._retryRevision++
     this._retry.reset()
     this._retryTrackId = null
     if (this._retryCancel !== null) {
