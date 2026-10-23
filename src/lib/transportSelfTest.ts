@@ -1,67 +1,42 @@
 /**
- * Transport self-test core (2026-10-22e).
+ * Transport self-test core (2026-10-22e, reduced 2026-10-23).
  *
- * The reported failure — "pause in the app but the lock screen still shows a
- * Pause button" — has survived one release. Its remaining candidate causes all
- * live on the NATIVE side of the bridge, in a place no JS test can reach, and
- * the one fact that would settle it (which button iOS paints) cannot be read by
- * any API: `MPNowPlayingInfoCenter` only ever answers with what the APP
- * assigned. So this module does the part that CAN be decided from evidence,
- * automatically and in one press:
+ * Folds the native `controlTranscript` into verdicts about the lock-screen
+ * play/pause report, whose cause is now settled: a user Pause that left the
+ * `AVAudioEngine` running kept the app reading as audio-active, so iOS kept
+ * presenting "playing"; pausing the output graph fixed it on the reporting
+ * device (A/B on 1.2.66, recorded in docs/plans/2026-10-22-field-reliability…).
  *
- *   1. Did an app-originated Pause actually publish rate 0? (If it did not, the
- *      metadata theory is alive and the graph theory is irrelevant.)
- *   2. Was the output graph still RUNNING after that Pause? (The L1 signature:
- *      the app keeps reading as audio-active, so the system keeps presenting
- *      "playing".)
- *   3. Did the system send a Pause while the app was ALREADY paused? That can
- *      only happen if the system believes playback continues — it is proof of
- *      the stale state that needs no eyes on the lock screen.
- *   4. Was the "press twice" symptom an extra tap? A stale Pause immediately
- *      followed by a Play from the accessory, inside a short window.
- *   5. After a graph-paused Pause, does a Play restart the graph and publish
- *      playing again? (The risk the graph pause introduces: a resume that
- *      publishes "playing" over an engine that never restarted.)
+ * What survives is the passive instrument: did the app publish a paused
+ * dictionary, did the graph actually stop, did the system ask for a Pause the app
+ * had already made (only a stale system state does that — the one stale-icon
+ * proof that needs no eyes), and did a resume restart the graph. The glyph
+ * itself is still unanswerable from any API, so it is never claimed: the bundle
+ * says so in its own last line.
  *
- * Everything here is pure: it folds the `controlTranscript` that
- * `getDebugState()` already returns (see `BackgroundAudioPlugin.recordControl`)
- * and never touches a plugin, a clock or the DOM — the runner adapts. The HUD
- * renders the rows and copies the bundle; the paste-ready form keeps the RAW
- * transcript tail so a reviewer can re-derive any verdict without the app.
+ * Two rules the field bundles taught (2026-10-23); both are pinned by tests
+ * because both were shipped wrong first:
  *
- * Deliberately NOT a "did the icon look right" check. It cannot be, and a
- * module that pretended otherwise would be the same mistake as trusting an
- * assigned dictionary.
+ *  1. A command's publication is emitted BEFORE the command record and shares
+ *     its outer `commandId`. Attribution is by that id — a forward scan graded a
+ *     pause with the NEXT command's rate and found nothing for the last command
+ *     in the ring.
+ *  2. A command's graph state is read from its publication's `engine` snapshot,
+ *     falling back to the command's own `after`. Reading only the command
+ *     snapshot condemned a resume that the very next publication proved healthy.
  */
 
 /** One entry of the native control transcript (`[String: Any]` over the bridge). */
 export type TranscriptEntry = Record<string, unknown>
 
-/** The flat snapshot `NowPlayingController.debugState()` records per publication. */
-interface PublicationSnapshot {
-  revision?: number
-  publisher?: string
-  assignedRate?: number
-  assignedElapsed?: number
-  readableRate?: number
-  readableElapsed?: number
-  readableTrackId?: string
-  cleared?: boolean
-}
-
-/** The engine's side-effect-free command snapshot (`AudioEngine.controlState()`). */
+/** The engine's side-effect-free snapshot (`AudioEngine.controlState()`). */
 interface ControlSnapshot {
   desiredPlaying?: boolean
-  intentRevision?: number
   isPlaying?: boolean
   isRunning?: boolean
-  activeNodePlaying?: boolean
-  interruptionActive?: boolean
-  hasLiveSchedule?: boolean
-  graphPauseOnUserPause?: boolean
 }
 
-export type CheckStatus = 'pass' | 'fail' | 'unknown' | 'info'
+export type CheckStatus = 'pass' | 'fail' | 'unknown'
 
 export interface CheckRow {
   id: string
@@ -74,7 +49,7 @@ export interface CheckRow {
 export interface PauseObservation {
   commandId: number
   origin: string
-  /** Engine graph state recorded AFTER the command was accepted. */
+  /** Output-graph state after the command: its publication, else its `after`. */
   graphRunningAfter: boolean | null
   /** What the app assigned to the Now Playing dictionary for that command. */
   assignedRate: number | null
@@ -89,8 +64,6 @@ export interface TransportAnalysis {
   pauses: PauseObservation[]
   /** Remote Pause→Play pairs inside the extra-tap window. */
   extraTaps: { stalePauseCommandId: number; playCommandId: number; gapMs: number }[]
-  /** The experiment setting in force at capture time (null if unrecorded). */
-  graphPauseOnUserPause: boolean | null
 }
 
 /**
@@ -106,8 +79,7 @@ const asObj = (v: unknown): Record<string, unknown> =>
 
 /** Native timestamps are monotonic SECONDS since process start, not epoch ms. */
 function secondsOf(entry: TranscriptEntry): number | null {
-  const t = entry.t
-  return isNum(t) ? t : null
+  return isNum(entry.t) ? entry.t : null
 }
 
 function controlOf(entry: TranscriptEntry, key: 'before' | 'after'): ControlSnapshot {
@@ -115,43 +87,45 @@ function controlOf(entry: TranscriptEntry, key: 'before' | 'after'): ControlSnap
 }
 
 /**
- * The publication that belongs to a command. Commands and their resulting
- * publication land back to back (`interpret` publishes inside the command), but
- * artwork/timer publications can interleave, so this takes the first
- * publication at or after the command's own entry and no further than the next
- * command.
+ * The publication belonging to each command, keyed by `commandId`. A command
+ * publishes its dictionary and then records itself, so both rows carry the id;
+ * `command:<origin>` is that command's own write and outranks the ambient
+ * `state` edge it may also follow. Ambient rows carry `commandId: 0` and are
+ * never attributed to a command.
  */
-function publicationFor(
-  transcript: TranscriptEntry[],
-  commandIndex: number,
-): PublicationSnapshot | null {
-  for (let i = commandIndex + 1; i < transcript.length; i++) {
-    const entry = transcript[i]
-    const kind = entry.kind
-    if (kind === 'command') return null
-    if (kind === 'publication') return asObj(entry.snapshot) as PublicationSnapshot
+function publicationByCommand(transcript: TranscriptEntry[]): Map<number, TranscriptEntry> {
+  const byId = new Map<number, TranscriptEntry>()
+  for (const entry of transcript) {
+    if (entry.kind !== 'publication') continue
+    const id = entry.commandId
+    if (!isNum(id) || id <= 0) continue
+    const publisher = String(asObj(entry.snapshot).publisher ?? '')
+    if (!byId.has(id) || publisher.startsWith('command:')) byId.set(id, entry)
   }
-  return null
+  return byId
 }
 
 /**
- * Fold the transcript into verdicts. `opts.graphPauseOnUserPause` is the
- * setting the capture reports; it decides what checks 2 and 5 EXPECT, not what
- * they observe — an observation that contradicts the setting is itself a
- * finding (the toggle did not reach the engine).
+ * Publish-then-render: the publication's `engine` snapshot is the state the
+ * system was told about, so it is the truth; a command without one falls back to
+ * its own `after`. Returns null when neither row carries a boolean.
  */
-export function analyzeTransportTranscript(
-  transcript: TranscriptEntry[],
-  opts: { graphPauseOnUserPause?: boolean | null } = {},
-): TransportAnalysis {
-  const setting = isBool(opts.graphPauseOnUserPause) ? opts.graphPauseOnUserPause : null
+function graphRunningAfter(
+  publication: TranscriptEntry | undefined,
+  after: ControlSnapshot,
+): boolean | null {
+  const engine = asObj(publication?.engine)
+  if (isBool(engine.isRunning)) return engine.isRunning
+  return isBool(after.isRunning) ? after.isRunning : null
+}
+
+/** Fold the transcript into verdicts. */
+export function analyzeTransportTranscript(transcript: TranscriptEntry[]): TransportAnalysis {
   const rows: CheckRow[] = []
   const pauses: PauseObservation[] = []
   const extraTaps: TransportAnalysis['extraTaps'] = []
 
-  const commands = transcript
-    .map((entry, index) => ({ entry, index }))
-    .filter(({ entry }) => entry.kind === 'command')
+  const commands = transcript.filter((entry) => entry.kind === 'command')
 
   if (commands.length === 0) {
     return {
@@ -165,34 +139,31 @@ export function analyzeTransportTranscript(
       ],
       pauses: [],
       extraTaps: [],
-      graphPauseOnUserPause: setting,
     }
   }
 
-  for (const { entry, index } of commands) {
-    const semantic = String(entry.semantic ?? '')
-    if (semantic !== 'pause') continue
-    const after = controlOf(entry, 'after')
-    const before = controlOf(entry, 'before')
-    const publication = publicationFor(transcript, index)
-    const assigned = isNum(publication?.assignedRate) ? (publication!.assignedRate as number) : null
-    const readable = isNum(publication?.readableRate) ? (publication!.readableRate as number) : null
+  const publications = publicationByCommand(transcript)
+
+  for (const entry of commands) {
+    if (entry.semantic !== 'pause') continue
+    const commandId = isNum(entry.commandId) ? entry.commandId : -1
+    const publication = publications.get(commandId)
+    const snapshot = asObj(publication?.snapshot)
     pauses.push({
-      commandId: isNum(entry.commandId) ? entry.commandId : -1,
+      commandId,
       origin: String(entry.origin ?? 'unknown'),
-      graphRunningAfter: isBool(after.isRunning) ? after.isRunning : null,
-      assignedRate: assigned,
-      readableRate: readable,
+      graphRunningAfter: graphRunningAfter(publication, controlOf(entry, 'after')),
+      assignedRate: isNum(snapshot.assignedRate) ? snapshot.assignedRate : null,
+      readableRate: isNum(snapshot.readableRate) ? snapshot.readableRate : null,
       // Already-paused intent at receipt: the system asked for a Pause the app
       // did not need. Only a stale system state produces that.
-      stale: before.desiredPlaying === false,
+      stale: controlOf(entry, 'before').desiredPlaying === false,
     })
   }
 
+  // 1 — did the app publish a paused dictionary?
   const appPauses = pauses.filter((p) => p.origin === 'app-bridge')
   const remotePauses = pauses.filter((p) => p.origin === 'remote-command')
-
-  // 1 — did the app publish a paused dictionary?
   if (appPauses.length === 0) {
     rows.push({
       id: 'app-pause-published',
@@ -201,49 +172,48 @@ export function analyzeTransportTranscript(
       detail: 'no app-origin Pause in the retained transcript',
     })
   } else {
-    const bad = appPauses.filter((p) => p.readableRate !== 0 || p.assignedRate === null)
+    const unrecorded = appPauses.filter((p) => p.assignedRate === null)
+    const wrong = appPauses.filter(
+      (p) => p.assignedRate !== null && (p.assignedRate !== 0 || p.readableRate !== 0),
+    )
+    // A proven fault outranks missing evidence; missing evidence never passes.
+    const status: CheckStatus = wrong.length > 0 ? 'fail' : unrecorded.length > 0 ? 'unknown' : 'pass'
     rows.push({
       id: 'app-pause-published',
       label: 'app Pause publishes rate 0',
-      status: bad.length === 0 ? 'pass' : 'fail',
+      status,
       detail:
-        bad.length === 0
-          ? `all ${appPauses.length} app Pause(s) read back rate 0`
-          : `${bad.length}/${appPauses.length} app Pause(s) did not read back rate 0 (commandIds ${bad
+        wrong.length > 0
+          ? `${wrong.length}/${appPauses.length} app Pause(s) did not publish/read back rate 0 (commandIds ${wrong
               .map((p) => p.commandId)
-              .join(', ')}) — the metadata path is at fault`,
+              .join(', ')}) — the lock screen has nothing but this dictionary to read`
+          : unrecorded.length > 0
+            ? `no publication recorded for app Pause(s) ${unrecorded
+                .map((p) => p.commandId)
+                .join(', ')} — the ring may have rolled; reproduce, then capture`
+            : `all ${appPauses.length} app Pause(s) published and read back rate 0`,
     })
   }
 
-  // 2 — was the output graph still running? This is the L1 discriminator.
-  const graphKnown = appPauses.filter((p) => p.graphRunningAfter !== null)
-  if (graphKnown.length === 0) {
-    rows.push({
-      id: 'graph-after-pause',
-      label: 'output graph after app Pause',
-      status: 'unknown',
-      detail: 'no app Pause carried an engine snapshot',
-    })
-  } else {
-    const running = graphKnown.filter((p) => p.graphRunningAfter === true)
-    const wantRunning = setting === false
-    const contradicts = wantRunning ? graphKnown.length - running.length : running.length
-    rows.push({
-      id: 'graph-after-pause',
-      label: 'output graph after app Pause',
-      status: contradicts === 0 ? 'pass' : 'fail',
-      detail:
-        (setting === null
-          ? 'setting not recorded — '
-          : `graphPauseOnUserPause=${setting} — `) +
-        `${running.length}/${graphKnown.length} app Pause(s) left the graph RUNNING` +
-        (contradicts === 0
-          ? ''
-          : wantRunning
-            ? ' (graph stopped although the experiment was off)'
-            : ' (graph kept running although the experiment was on) — if the lock screen is also stale, L1 is confirmed'),
-    })
-  }
+  // 2 — did every Pause stop the output graph? This is the shipped policy: a
+  // running AVAudioEngine keeps the app reading as audio-active, which is the
+  // stale lock-screen button. Any accepted Pause that leaves it running is the
+  // bug the field reported.
+  const graphKnown = pauses.filter((p) => p.graphRunningAfter !== null)
+  const graphRunning = graphKnown.filter((p) => p.graphRunningAfter === true)
+  rows.push({
+    id: 'graph-after-pause',
+    label: 'output graph after Pause',
+    status: graphKnown.length === 0 ? 'unknown' : graphRunning.length === 0 ? 'pass' : 'fail',
+    detail:
+      graphKnown.length === 0
+        ? 'no Pause carried an engine snapshot'
+        : graphRunning.length === 0
+          ? `all ${graphKnown.length} Pause(s) stopped the output graph`
+          : `${graphRunning.length}/${graphKnown.length} Pause(s) left the output graph RUNNING (commandIds ${graphRunning
+              .map((p) => p.commandId)
+              .join(', ')}) — the stale-lock-screen condition`,
+  })
 
   // 3 — a remote Pause while already paused is proof of a stale system state.
   if (remotePauses.length === 0) {
@@ -270,14 +240,13 @@ export function analyzeTransportTranscript(
 
   // 4 — the extra tap: a stale remote Pause then a remote Play inside the window.
   for (let i = 0; i < commands.length; i++) {
-    const { entry } = commands[i]
-    if (entry.kind !== 'command' || entry.semantic !== 'pause') continue
-    if (entry.origin !== 'remote-command') continue
+    const entry = commands[i]
+    if (entry.semantic !== 'pause' || entry.origin !== 'remote-command') continue
     if (controlOf(entry, 'before').desiredPlaying !== false) continue
     const pauseTs = secondsOf(entry)
     if (pauseTs === null) continue
     for (let j = i + 1; j < commands.length; j++) {
-      const next = commands[j].entry
+      const next = commands[j]
       const semantic = String(next.semantic ?? '')
       if (semantic === 'pause') break
       if (semantic !== 'play' && semantic !== 'toggle') continue
@@ -307,49 +276,42 @@ export function analyzeTransportTranscript(
             .join('; '),
   })
 
-  // 5 — the graph-pause risk: a resume that publishes playing over a dead graph.
-  if (setting === false) {
-    rows.push({
-      id: 'resume-after-graph-pause',
-      label: 'Play restarts a paused graph',
-      status: 'info',
-      detail: 'experiment off — no graph was paused, nothing to restart',
-    })
-  } else {
-    let checked = 0
-    let stranded = 0
-    let sawPlayAfterPause = false
-    for (let i = 0; i < commands.length; i++) {
-      const cur = commands[i].entry
-      if (cur.kind !== 'command' || cur.semantic !== 'play') continue
-      const prevPause = [...commands.slice(0, i)]
-        .reverse()
-        .find(({ entry }) => entry.kind === 'command' && entry.semantic === 'pause')
-      if (!prevPause) continue
-      const pausedGraph = controlOf(prevPause.entry, 'after').isRunning === false
-      if (!pausedGraph) continue
-      sawPlayAfterPause = true
-      const after = controlOf(cur, 'after')
-      if (after.isRunning === false || after.isPlaying === false) {
-        // A Play that is still buffering legitimately reports isPlaying false;
-        // only a Play whose graph never came back is the dangerous shape.
-        if (after.isRunning === false) stranded++
-      }
-      checked++
+  // 5 — the resume risk: a Play that publishes playing over a graph that never
+  // came back is silence with a playing UI. Resolved from the play's OWN
+  // publication, which is the state the system was shown.
+  let checked = 0
+  let stranded = 0
+  // Observed independently of the Play loop: a graph-stopped Pause with no Play
+  // yet is "not measured", while no graph-stopped Pause at all is "not exercised".
+  const graphStoppedPause = pauses.some((p) => p.graphRunningAfter === false)
+  for (let i = 0; i < commands.length; i++) {
+    const entry = commands[i]
+    if (entry.semantic !== 'play') continue
+    const prevPause = [...commands.slice(0, i)].reverse().find((e) => e.semantic === 'pause')
+    if (!prevPause) continue
+    const pauseId = isNum(prevPause.commandId) ? prevPause.commandId : -1
+    if (graphRunningAfter(publications.get(pauseId), controlOf(prevPause, 'after')) !== false) {
+      continue
     }
-    rows.push({
-      id: 'resume-after-graph-pause',
-      label: 'Play restarts a paused graph',
-      status: !sawPlayAfterPause ? 'unknown' : stranded === 0 ? 'pass' : 'fail',
-      detail: !sawPlayAfterPause
-        ? 'no Play followed a graph-paused Pause yet — resume and check the audio'
-        : stranded === 0
-          ? `${checked} Play(s) after a graph-paused Pause left the graph running`
-          : `${stranded}/${checked} Play(s) left the graph stopped — the resume is stranded (silence with a playing UI)`,
-    })
+    checked++
+    const playId = isNum(entry.commandId) ? entry.commandId : -1
+    if (graphRunningAfter(publications.get(playId), controlOf(entry, 'after')) === false) stranded++
   }
+  rows.push({
+    id: 'resume-after-graph-pause',
+    label: 'Play restarts a paused graph',
+    status: checked === 0 ? 'unknown' : stranded === 0 ? 'pass' : 'fail',
+    detail:
+      checked === 0
+        ? graphStoppedPause
+          ? 'a graph-stopped Pause has no following Play yet — resume and check the audio'
+          : 'no graph-stopped Pause recorded yet — pause in the app, then Play'
+        : stranded === 0
+          ? `${checked} Play(s) after a graph-stopped Pause left the graph running`
+          : `${stranded}/${checked} Play(s) left the graph stopped — the resume is stranded (silence with a playing UI)`,
+  })
 
-  return { rows, pauses, extraTaps, graphPauseOnUserPause: setting }
+  return { rows, pauses, extraTaps }
 }
 
 /** A settled verdict for the whole capture (the HUD's one-word answer). */
@@ -375,14 +337,12 @@ export function formatTransportSelfTestBundle(input: {
   const lines: string[] = []
   lines.push('=== TRANSPORT SELF-TEST (lock screen play/pause) ===')
   lines.push(`captured: ${new Date(input.capturedAtMs).toISOString()}`)
-  const ctx = input.context
-  const ctxKeys = Object.keys(ctx).sort()
-  if (ctxKeys.length > 0) {
+  const contextKeys = Object.keys(input.context).sort()
+  if (contextKeys.length > 0) {
     lines.push(
-      'context: ' + ctxKeys.map((k) => `${k}=${JSON.stringify(ctx[k])}`).join(' '),
+      'context: ' + contextKeys.map((k) => `${k}=${JSON.stringify(input.context[k])}`).join(' '),
     )
   }
-  lines.push(`experiment: graphPauseOnUserPause=${String(analysis.graphPauseOnUserPause)}`)
   lines.push(`verdict: ${overallVerdict(analysis).toUpperCase()}`)
   lines.push('')
   lines.push('CHECKS')
