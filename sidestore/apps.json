@@ -27,7 +27,8 @@
           "date": "2026-10-24T12:52:31.780Z",
           "localizedDescription": "The auto queue keeps your filter and sort order: pressing a song, or just letting it play, now shows the upcoming songs in the same order",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.68/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5247427
         },
         {
           "version": "1.2.67",
