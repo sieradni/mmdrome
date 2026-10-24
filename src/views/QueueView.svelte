@@ -81,8 +81,9 @@
   /** Auto-queue sort editor (the filter modal's Sort section). Same pick /
    *  flip / clear contract as the library sort menu: picking the active key
    *  flips direction, picking a new key sets its default direction, null
-   *  clears. Writes the PERSISTED setting, which the fill reads in both
-   *  shuffle states — the editor is always rendered (2026-10-24). */
+   *  clears. Writes the PERSISTED setting; the fill only acts on it while
+   *  shuffle is off (under shuffle the eligible pool is sampled uniformly and
+   *  the sort has no effect). The editor is always rendered (2026-10-24). */
   function setAutoSort(key: LibrarySortKey | null): void {
     autoQueueSort.update((s) => {
       if (key === null) return { ...s, sortBy: null }
