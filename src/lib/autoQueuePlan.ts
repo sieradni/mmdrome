@@ -29,6 +29,12 @@ export interface AutoQueuePlanState {
   recentTrackIds: string[]
   /** The currently playing track id (combined[activeIndex]) — rotation-tier exclusion. */
   activeId: string | undefined
+  /** The audible occurrence's index in `autoQueue`, or -1 when it is a user
+   *  row. Between an anchor move and its post-load promotion the audible row
+   *  still SITS in auto: an ordered fill must pin the rows up to and including
+   *  it (dropping them would shift the anchor off the playing song) and
+   *  continue from it. */
+  activeAutoIndex: number
   shuffle: boolean
   /** The fill's own sort order — the persisted `autoQueueSort` setting
    *  (structurally the shared `{sortBy, sortAsc}` pair). */
@@ -38,9 +44,13 @@ export interface AutoQueuePlanState {
 }
 
 export interface AutoQueueFillPlan {
-  /** keepAuto replenishes: the queued auto tracks that still match the filters (the kept prefix). */
+  /** keepAuto replenishes: the prefix that stays exactly where it is. Ordered
+   *  fill: the leading run the sorted pool still starts with (what the
+   *  continuation already has in place). Shuffle: the still-matching sampled
+   *  prefix. Empty for a rebuild (`keepAuto: false`). */
   kept: string[]
-  /** The full ordered candidate pool (tiers 1–3, sorted + anchor-rotated). */
+  /** The candidates the fill may take, in order: tiers 1–3 sorted + rotated
+   *  after the anchor (`kept` removed). */
   pool: Track[]
   /** When true, selectAutoQueueFill samples full tiers before slicing. */
   shuffle: boolean
@@ -266,12 +276,23 @@ export function filterRangesValid(f: Pick<AutoQueueFilterFields, 'minRating' | '
 
 /**
  * The fill decision (the old QueueManager._buildPool): tiers 1–3 admission,
- * then sort + anchor rotation (non-shuffle) or a shuffle marker. `kept` is
- * the still-matching auto prefix for keepAuto replenishes (when the queue is
- * already full of matching tracks the pool build is skipped — the caller's
- * no-op guard needs nothing more, and the wrap hint is false for an empty
- * pool). For rebuilds (`keepAuto: false`) the old auto tracks are ordinary
- * pool members and `kept` is empty.
+ * then sort + anchor rotation (non-shuffle) or a shuffle marker.
+ *
+ * NON-SHUFFLE is an ORDERED CONTINUATION (2026-10-24): the auto rows are
+ * ordinary candidates of the same filtered+sorted set, the tiers are ranked
+ * and rotated after the anchor (the user-queue tail — the point playback is
+ * headed from), and `kept` is the leading run of the current auto queue that
+ * this order still starts with. A pressed song, a manual jump or a re-rank
+ * therefore re-derives the whole tail; a plain advance keeps it (the consumed
+ * head was the next ordered row, so the remainder is still the continuation).
+ * `pool` then holds the ordered candidates AFTER that run, so the caller's
+ * `kept + selectAutoQueueFill(...)` always equals the leading slice of the
+ * continuation. `wrapNotice` is false whenever the pool is empty.
+ *
+ * SHUFFLE keeps a SAMPLED prefix on a keepAuto replenish: the kept rows are
+ * excluded from admission and only the still-matching ones are retained, so a
+ * replenish cannot reshuffle the audible head. The shuffle branch never ranks
+ * (its tiers stay in library order for `selectAutoQueueFill` to sample).
  */
 export function planAutoQueueFill(
   state: AutoQueuePlanState,
@@ -280,19 +301,33 @@ export function planAutoQueueFill(
 ): AutoQueueFillPlan {
   const { library: lib, userQueue, autoQueue, recentTrackIds, activeId, shuffle, sort, filters, meta } = state
   const inUser = new Set(userQueue)
-  // keepAuto: the kept prefix is computed below and the OLD auto queue (not
-  // just the kept subset) is excluded from the fill — a non-matching track
-  // being dropped cannot re-enter any tier (all tiers require a match).
-  const inAuto = new Set(opts.keepAuto ? autoQueue : [])
   const recent = new Set(recentTrackIds)
   const matches = (t: Track) => matchesAutoQueueFilters(t, filters, meta)
 
+  // Only a SHUFFLE replenish keeps its already-sampled prefix: the order below
+  // it is a permutation, so re-deriving it would reshuffle the audible head on
+  // every fill. The old queue (not just the kept subset) is excluded from
+  // admission — a non-matching track being dropped cannot re-enter any tier
+  // (all tiers require a match). A non-shuffle fill re-derives the order, so
+  // there the auto rows are ordinary candidates (inAuto stays empty) and the
+  // leading run is computed from that order below.
+  const keepsSampledPrefix = shuffle && opts.keepAuto
+  // The audible auto occurrence (and whatever sits above it) is PINNED for an
+  // ordered replenish: it is still in auto until the post-load promotion
+  // appends it, and re-deriving the tail under it would move the anchor off
+  // the playing row. The continuation then starts AFTER it.
+  const pinnedHead = !shuffle && opts.keepAuto && state.activeAutoIndex >= 0 && state.activeAutoIndex < autoQueue.length
+    ? autoQueue.slice(0, state.activeAutoIndex + 1)
+    : []
+  const anchorId = pinnedHead.length > 0 ? activeId : userQueue[userQueue.length - 1]
+  const inAuto = new Set(keepsSampledPrefix ? autoQueue : pinnedHead)
+
   let kept: string[] = []
-  if (opts.keepAuto) {
+  if (keepsSampledPrefix) {
     const libById = new Map(lib.map((t) => [t.trackId, t]))
     kept = autoQueue.filter((id) => {
       const t = libById.get(id)
-      return t && matchesAutoQueueFilters(t, filters, meta)
+      return t && matches(t)
     })
     if (kept.length >= needed) {
       // Queue already full of matching tracks — nothing to fill, and an empty
@@ -336,16 +371,33 @@ export function planAutoQueueFill(
     const ordered = [tier1, tier2, tier3].flatMap((ids) => {
       const rows = ids.map((id) => byId.get(id)!)
       rows.sort((a, b) => (orderRank.get(a.trackId) ?? 0) - (orderRank.get(b.trackId) ?? 0))
-      const rotated = rotateAfterAnchor(rows, orderRank, userQueue[userQueue.length - 1])
+      const rotated = rotateAfterAnchor(rows, orderRank, anchorId)
       if (rows.length > 0 && orderedHeadUnset) {
         wrapNotice = rotated.wrapNotice
         orderedHeadUnset = false
       }
       return rotated.pool
     })
-    return { kept, pool: ordered, shuffle: false, wrapNotice, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
+    // The ordered list is the ONE owner of the fill order: keep the leading
+    // run the current auto queue still shares with it (nothing, once the anchor
+    // moved or the order changed) and hand the caller everything after that
+    // run. `kept + selectAutoQueueFill(...)` is therefore always the leading
+    // slice of the continuation.
+    const orderedIds = ordered.map((t) => t.trackId)
+    const queuedTail = autoQueue.slice(pinnedHead.length)
+    const keepable = opts.keepAuto ? leadingRun(queuedTail, orderedIds) : 0
+    kept = [...pinnedHead, ...orderedIds.slice(0, keepable)]
+    return { kept, pool: ordered.slice(keepable), shuffle: false, wrapNotice, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
   }
-  return { kept, pool, shuffle: false, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
+  return { kept: keepsSampledPrefix ? kept : pinnedHead, pool, shuffle: false, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
+}
+
+/** Longest leading run where the queued rows still equal `ordered`, one by one
+ *  — the kept prefix of an ordered-continuation fill (0 = nothing is in place). */
+function leadingRun(queued: string[], ordered: string[]): number {
+  let i = 0
+  while (i < queued.length && i < ordered.length && queued[i] === ordered[i]) i++
+  return i
 }
 
 /** Uniform sampling within each tier, strict priority across tiers. Injectable

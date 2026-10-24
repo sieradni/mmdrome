@@ -29,7 +29,7 @@ function nativeManager(): { _onNativeTrackChanged(id: string, entryId?: string):
   return new PlaybackManager({ queueManager, isNative: () => true }) as unknown as { _onNativeTrackChanged(id: string, entryId?: string): void }
 }
 function state(over: Partial<AutoQueuePlanState> = {}): AutoQueuePlanState {
-  return { library: [], userQueue: [], autoQueue: [], recentTrackIds: [], activeId: undefined, shuffle: true, sort: { sortBy: null, sortAsc: true }, filters, meta: new Map(), ...over }
+  return { library: [], userQueue: [], autoQueue: [], recentTrackIds: [], activeId: undefined, activeAutoIndex: -1, shuffle: true, sort: { sortBy: null, sortAsc: true }, filters, meta: new Map(), ...over }
 }
 
 test('occurrence resolver preserves selection, prefers forward auto, and supports wraps/missing rows', () => {

@@ -38,6 +38,10 @@ class QueueManager {
       autoQueue: q.autoQueue,
       recentTrackIds: q.recentTrackIds,
       activeId: combined[q.activeIndex],
+      // Where the audible occurrence sits RIGHT NOW: between an anchor move and
+      // its post-load promotion it is still an AUTO row, and the ordered fill
+      // must pin it there (see AutoQueuePlanState.activeAutoIndex).
+      activeAutoIndex: q.activeIndex >= q.userQueue.length ? q.activeIndex - q.userQueue.length : -1,
       shuffle: get(shuffleEnabled),
       // The auto queue follows its OWN sort (2026-09-29 decoupling) — the
       // shared library sort is a view concern and never re-ranks the fill.
@@ -390,6 +394,7 @@ class QueueManager {
         autoQueue: base.autoQueue,
         recentTrackIds: [],
         activeId: combined[base.activeIndex],
+        activeAutoIndex: base.activeIndex >= base.userQueue.length ? base.activeIndex - base.userQueue.length : -1,
         shuffle: get(shuffleEnabled),
         sort: get(autoQueueSort),
         filters: get(autoQueueFilters),

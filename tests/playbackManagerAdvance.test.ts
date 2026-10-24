@@ -667,7 +667,11 @@ test("a library press drops the id's auto occurrence (explicit play supersedes a
   const q = get(queue)
   assert.deepEqual(q.userQueue, ['t0', 'navidrome-t1'])
   assert.ok(!q.autoQueue.includes('navidrome-t1'), "the pressed id's suggestions are gone")
-  assert.deepEqual(q.autoQueue.slice(0, 2), ['navidrome-t2', 'navidrome-t2'], 'other suggestions are untouched')
+  // The tail is re-derived around the new anchor (2026-10-24, ordered fill):
+  // the press makes t1 the queue tail, so the continuation is t2 and then the
+  // recycled t0 (tier 3 admits the user-queued track). Suggestions are not
+  // LOST — they are re-ordered to follow the pressed row, which is the point.
+  assert.deepEqual(q.autoQueue, ['navidrome-t2', 't0'], 'the tail continues from the pressed row')
   assert.equal(q.activeIndex, 1)
 })
 

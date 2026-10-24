@@ -217,6 +217,7 @@ function state(over: Partial<AutoQueuePlanState> = {}): AutoQueuePlanState {
     autoQueue: [],
     recentTrackIds: [],
     activeId: undefined,
+    activeAutoIndex: -1,
     shuffle: false,
     sort: { sortBy: null, sortAsc: true },
     filters: filters(),
@@ -263,7 +264,7 @@ test('tier 3 recycles user-queued + recent tracks and excludes the active id (B4
   assert.deepEqual(plan.tiers, { 1: ['t5', 't6'], 2: ['t3', 't4'], 3: ['t1'] })
 })
 
-test('kept is pruned when filters tighten, and the queue-full early return skips the pool', () => {
+test('kept is pruned when filters tighten, and a full queue keeps every row in place', () => {
   const ts = lib(['t1', 't2', 't3', 't4', 't5', 't6'].map((id) => track(id)))
   const meta = metaOf([['t2', 80]])
   // First pass at default filters: everything auto-queued except t1 (which is
@@ -276,14 +277,15 @@ test('kept is pruned when filters tighten, and the queue-full early return skips
   assert.deepEqual(tight.kept, ['t2'])
   assert.deepEqual(tight.pool, [])
   assert.equal(tight.wrapNotice, false, 'empty pool never carries a wrap hint')
-  // Queue already full of MATCHING tracks (50 kept of a 60-track library):
-  // the kept.length >= needed early return — no pool scan, no wrap hint.
-  // (The queued ids must exist in the library and match, or kept would be
-  // empty and this would silently test the empty-pool path instead.)
+  // Queue already full of MATCHING tracks (50 queued of a 60-track library).
+  // The ordered fill always derives the continuation (that is how it knows the
+  // queued rows are still in place), so there is no early-return shortcut:
+  // every queued row stays, and the pool is what comes AFTER them (the caller
+  // takes `needed === 0` of it).
   const many = lib(Array.from({ length: 60 }, (_, i) => track(`t${i + 1}`)))
   const full = planAutoQueueFill(state({ library: many, autoQueue: Array.from({ length: 50 }, (_, i) => `t${i + 1}`) }), 50, { keepAuto: true })
-  assert.equal(full.kept.length, 50, 'all 50 queued tracks still match — kept intact')
-  assert.deepEqual(full.pool, [], 'a full queue short-circuits before any pool scan')
+  assert.deepEqual(full.kept, Array.from({ length: 50 }, (_, i) => `t${i + 1}`), 'all 50 queued tracks are still the head of the order')
+  assert.deepEqual(full.pool.map((t) => t.trackId), Array.from({ length: 10 }, (_, i) => `t${i + 51}`), 'the pool continues after the kept run')
   assert.equal(full.wrapNotice, false)
 })
 
@@ -404,4 +406,94 @@ test('apply plan: empty and null bounds compare equal through the bound fold', (
     false,
     'null bounds == empty bounds',
   )
+})
+
+// ── the ordered continuation (2026-10-24) ──────────────────────────────
+// Non-shuffle keepAuto is not "keep whatever is queued": the tail is the next
+// rows of the filtered+sorted set from the anchor (the user-queue tail), and
+// `kept` is only the leading run that order still starts with.
+
+const AQ = (): Track[] => [
+  track('aq1', { createdAt: Date.parse('2023-03-01T00:00:00Z') }),
+  track('aq2', { createdAt: Date.parse('2023-01-01T00:00:00Z') }),
+  track('aq3', { createdAt: Date.parse('2023-06-01T00:00:00Z') }),
+  track('aq4', { createdAt: Date.parse('2023-02-01T00:00:00Z') }),
+  track('aq5', { createdAt: Date.parse('2023-05-01T00:00:00Z') }),
+  track('aq6', { createdAt: Date.parse('2023-04-01T00:00:00Z') }),
+]
+const ADDED_DESC = { sortBy: 'added', sortAsc: false } as const
+const ids = (ts: Track[]): string[] => ts.map((t) => t.trackId)
+
+test('a moved anchor re-derives the kept run instead of keeping the stale prefix', () => {
+  // Playing aq1 with Added ↓ leaves the tail aq4, aq2, aq3, aq5, aq6 (the
+  // order continues from aq1). A press on aq5 moves the anchor there.
+  const ts = AQ()
+  const plan = planAutoQueueFill(state({
+    library: ts,
+    userQueue: ['aq1', 'aq5'],
+    autoQueue: ['aq4', 'aq2', 'aq3', 'aq6'],
+    recentTrackIds: ['aq1'],
+    activeId: 'aq5',
+    sort: ADDED_DESC,
+  }), 50, { keepAuto: true })
+
+  // Added ↓ = aq3, aq5, aq6, aq1, aq4, aq2 → after aq5: aq6, aq1 (user), aq4,
+  // aq2, wrap aq3; the short pool recycles the user-queued aq1 last (B4).
+  assert.deepEqual(ids(plan.pool), ['aq6', 'aq4', 'aq2', 'aq3', 'aq1'])
+  assert.deepEqual(plan.kept, [], 'none of the stale prefix is still in place')
+  assert.equal(plan.wrapNotice, false, 'aq6 ranks after aq5 — no wrap')
+
+  // Reading the SORT is what produces that order: with no sort the pool is
+  // library order (aq6 first, then aq2, aq3, aq4), a different set of rows.
+  const unsorted = planAutoQueueFill(state({
+    library: ts,
+    userQueue: ['aq1', 'aq5'],
+    autoQueue: ['aq4', 'aq2', 'aq3', 'aq6'],
+    recentTrackIds: ['aq1'],
+    activeId: 'aq5',
+  }), 50, { keepAuto: true })
+  assert.deepEqual(ids(unsorted.pool), ['aq6', 'aq2', 'aq3', 'aq4', 'aq1'])
+})
+
+test('a tail that still is the continuation is kept in place (no churn)', () => {
+  const ts = AQ()
+  const plan = planAutoQueueFill(state({
+    library: ts,
+    userQueue: ['aq1'],
+    autoQueue: ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'],
+    activeId: 'aq1',
+    sort: ADDED_DESC,
+  }), 50, { keepAuto: true })
+
+  assert.deepEqual(plan.kept, ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'])
+  assert.deepEqual(ids(plan.pool), [], 'nothing is left to fill')
+})
+
+test('the audible auto occurrence is pinned until its promotion', () => {
+  // Between an advance and the post-load promotion the playing row still sits
+  // in auto at index 0. Re-deriving the tail under it used to drop it, which
+  // moved the anchor off the audible song before `promoteActiveTrack` ran.
+  const ts = lib(['t1', 't2', 't3', 't4'].map((id) => track(id)))
+  const plan = planAutoQueueFill(state({
+    library: ts,
+    userQueue: ['t1'],
+    autoQueue: ['t2', 't3'],
+    activeId: 't2',
+    activeAutoIndex: 0,
+  }), 50, { keepAuto: true })
+
+  assert.deepEqual(plan.kept, ['t2', 't3'], 'the audible row and the row after it stay')
+  assert.deepEqual(ids(plan.pool), ['t4', 't1'], 'the continuation starts after the pinned row (fresh before the tier-3 recycle)')
+
+  // Control: with the audible row reconciled into the user queue (the normal
+  // post-promotion state) nothing is pinned and the same order follows.
+  const promoted = planAutoQueueFill(state({
+    library: ts,
+    userQueue: ['t1', 't2'],
+    autoQueue: ['t3'],
+    activeId: 't2',
+    activeAutoIndex: -1,
+  }), 50, { keepAuto: true })
+  assert.deepEqual(promoted.kept, ['t3'])
+  assert.deepEqual(ids(promoted.pool), ['t4', 't1'])
 })

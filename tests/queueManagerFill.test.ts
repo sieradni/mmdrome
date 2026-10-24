@@ -507,3 +507,60 @@ test('searchQuery persists as a filter through the real manager', () => {
 
   assert.deepEqual(get(queue).autoQueue, ['b1'])
 })
+
+// --- ordered continuation through the real manager (2026-10-24) -------------
+// The pure decision is pinned by autoQueuePlan.test.ts; these two drive the
+// REAL entry points so a wiring regression (or a fill that stops reading the
+// sort/filters once playback is running) fails here.
+
+const AQ_LIB = (): Track[] => [
+  track('aq1', { createdAt: Date.parse('2023-03-01T00:00:00Z') }),
+  track('aq2', { createdAt: Date.parse('2023-01-01T00:00:00Z'), duration: 600 }),
+  track('aq3', { createdAt: Date.parse('2023-06-01T00:00:00Z') }),
+  track('aq4', { createdAt: Date.parse('2023-02-01T00:00:00Z') }),
+  track('aq5', { createdAt: Date.parse('2023-05-01T00:00:00Z') }),
+  track('aq6', { createdAt: Date.parse('2023-04-01T00:00:00Z') }),
+]
+
+test('a library press re-derives the auto tail from the pressed row (ordered fill)', () => {
+  reset()
+  library.set(AQ_LIB())
+  autoQueueSort.set({ sortBy: 'added', sortAsc: false })
+  // aq1 played: the Added ↓ continuation from it is aq4, aq2, aq3, aq5, aq6.
+  setQueue({ userQueue: ['aq1'], autoQueue: ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'], activeIndex: 0 })
+
+  queueManager.selectTrack('aq5')
+  queueManager.replenishAutoQueue()
+
+  const q = get(queue)
+  assert.deepEqual(q.userQueue, ['aq1', 'aq5'], 'the press appends and anchors its own row')
+  assert.equal(q.activeIndex, 1)
+  // Added ↓ = aq3, aq5, aq6, aq1, aq4, aq2 → from aq5: aq6, aq4, aq2, wrap aq3,
+  // then the short pool recycles the user-queued aq1 (B4). The old kept-prefix
+  // fill left the head at aq4 — the previous anchor's order.
+  assert.deepEqual(q.autoQueue, ['aq6', 'aq4', 'aq2', 'aq3', 'aq1'])
+})
+
+test('a filter and sort applied mid-play keep holding as playback advances', () => {
+  reset()
+  library.set(AQ_LIB())
+  setQueue({ userQueue: ['aq1'], activeIndex: 0 })
+  // The maxLength filter excludes the long aq2 for the whole session; Added ↓
+  // decides the order. A rule change is a fresh context (D7).
+  autoQueueFilterFields.set({ ...FIELDS, maxLength: 300 })
+  autoQueueSort.set({ sortBy: 'added', sortAsc: false })
+  queueManager.rebuildForFreshContext()
+  assert.deepEqual(get(queue).autoQueue, ['aq4', 'aq3', 'aq5', 'aq6'], 'Added ↓ after aq1, aq2 filtered out')
+
+  // Play the first auto row the way a load does: advance, promote, replenish.
+  queueManager.advanceTo(1, 'aq1')
+  queueManager.promoteActiveTrack()
+  queueManager.replenishAutoQueue()
+
+  const q = get(queue)
+  assert.deepEqual(q.userQueue, ['aq1', 'aq4'])
+  // Both rules still hold after the advance: aq2 (excluded) never appears, and
+  // the tail continues in Added ↓ after aq4 — aq3, aq5, aq6, then the wrap.
+  assert.deepEqual(q.autoQueue, ['aq3', 'aq5', 'aq6', 'aq1'])
+  assert.ok(!q.autoQueue.includes('aq2'), 'the filter holds across the advance')
+})

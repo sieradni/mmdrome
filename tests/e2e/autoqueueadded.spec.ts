@@ -87,6 +87,23 @@ async function bootLibraryAndPlayFirst(page: Page): Promise<void> {
   await page.waitForTimeout(1000)
 }
 
+/** Section contents by track id, read from the open queue overlay. */
+function queueSections(page: Page): Promise<{ user: (string | null)[]; auto: (string | null)[] }> {
+  return page.evaluate(() => ({
+    user: [...document.querySelectorAll('[aria-label="User queue"] .queue-track-item')].map((el) => el.getAttribute('data-track-id')),
+    auto: [...document.querySelectorAll('[aria-label="Auto queue"] .queue-track-item')].map((el) => el.getAttribute('data-track-id')),
+  }))
+}
+
+/** Leave the queue overlay (closing it lands on Now Playing when a track is
+ *  active) and close the player so the library is clickable again. */
+async function backToLibrary(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Close queue' }).click()
+  const closePlayer = page.getByRole('button', { name: 'Close player' })
+  if (await closePlayer.isVisible().catch(() => false)) await closePlayer.click()
+  await page.waitForTimeout(300)
+}
+
 test('the auto-queue editor offers Added and reorders the fill; flipping reverses it', async ({ page }) => {
   await bootLibraryAndPlayFirst(page)
 
@@ -137,4 +154,54 @@ test('a persisted autoQueueSort of added survives a reload and stays active', as
 
   // The restored fill still carries the Added ordering.
   await expect.poll(() => autoOrder(page)).toEqual(DESC)
+})
+
+// The ORDERED CONTINUATION (2026-10-24): under shuffle off the auto tail is
+// always the next rows of the filtered+sorted set from the queue's tail, not
+// the previously sampled prefix. Pressing a song re-anchors it, and the plain
+// advances after it keep following the SAME sort — the stale-prefix bug meant
+// the head kept the old position's order (here [aq4, …] after pressing aq5,
+// where the Added order requires aq6 first).
+const AFTER_PRESS_AQ5 = ['navidrome-aq6', 'navidrome-aq4', 'navidrome-aq2', 'navidrome-aq3', 'navidrome-aq1']
+const AFTER_NEXT_AQ6 = ['navidrome-aq4', 'navidrome-aq2', 'navidrome-aq3', 'navidrome-aq1', 'navidrome-aq5']
+const AFTER_NEXT_AQ4 = ['navidrome-aq2', 'navidrome-aq3', 'navidrome-aq5', 'navidrome-aq6', 'navidrome-aq1']
+// What ignoring the sort (library order) would produce after the press — the
+// rows the assertion above exists to rule out.
+const PRESS_LIBRARY_ORDER = ['navidrome-aq6', 'navidrome-aq2', 'navidrome-aq3', 'navidrome-aq4', 'navidrome-aq1']
+
+test('the auto tail re-anchors on a pressed song and keeps the sort across advances', async ({ page }) => {
+  await bootLibraryAndPlayFirst(page)
+
+  await openAutoFilters(page)
+  await filterDialog(page).getByRole('button', { name: 'Added', exact: true }).click()
+  await expect(filterDialog(page).getByRole('button', { name: 'Added ↓', exact: true })).toBeVisible()
+  await closeAutoFilters(page)
+  await expect.poll(() => autoOrder(page)).toEqual(DESC)
+
+  // PRESS a different library song (aq5): the queue tail moves, so the tail
+  // must continue AFTER it in the same Added order.
+  await backToLibrary(page)
+  await page.locator('[data-track-id="navidrome-aq5"]').click()
+  await page.waitForTimeout(1200)
+
+  await openAutoFilters(page)
+  await page.keyboard.press('Escape')
+  await expect.poll(() => queueSections(page)).toMatchObject({ auto: AFTER_PRESS_AQ5 })
+  expect((await queueSections(page)).auto).not.toEqual(PRESS_LIBRARY_ORDER)
+
+  // Letting it PLAY OUT keeps the ordering: each advance promotes the played
+  // auto row and the rest is still the continuation of the same sort.
+  await backToLibrary(page)
+  await page.locator('button[aria-label="Next track"]:visible').last().click()
+  await page.waitForTimeout(1200)
+  await openAutoFilters(page)
+  await page.keyboard.press('Escape')
+  await expect.poll(() => queueSections(page)).toMatchObject({ auto: AFTER_NEXT_AQ6 })
+
+  await backToLibrary(page)
+  await page.locator('button[aria-label="Next track"]:visible').last().click()
+  await page.waitForTimeout(1200)
+  await openAutoFilters(page)
+  await page.keyboard.press('Escape')
+  await expect.poll(() => queueSections(page)).toMatchObject({ auto: AFTER_NEXT_AQ4 })
 })
