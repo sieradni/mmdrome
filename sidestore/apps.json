@@ -27,7 +27,8 @@
           "date": "2026-10-24T13:27:51.356Z",
           "localizedDescription": "Pressing a song now ends a hand-dragged auto-queue order and puts the upcoming songs back in your filter+sort order",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.70/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5247582
         },
         {
           "version": "1.2.69",
