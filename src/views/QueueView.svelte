@@ -81,8 +81,8 @@
   /** Auto-queue sort editor (the filter modal's Sort section). Same pick /
    *  flip / clear contract as the library sort menu: picking the active key
    *  flips direction, picking a new key sets its default direction, null
-   *  clears. Writes the PERSISTED setting even while shuffle hides this
-   *  editor (the section is display-gated, not write-gated). */
+   *  clears. Writes the PERSISTED setting, which the fill reads in both
+   *  shuffle states — the editor is always rendered (2026-10-24). */
   function setAutoSort(key: LibrarySortKey | null): void {
     autoQueueSort.update((s) => {
       if (key === null) return { ...s, sortBy: null }
@@ -1102,43 +1102,42 @@
         </button>
       </div>
       <div class="space-y-4 px-5 py-4">
-        {#if !$shuffleEnabled}
-          <!-- Auto-queue SORT (2026-09-29, restyled same day after user
-               feedback): the fill follows its own sort now; edited here like
-               the library sort menu. A bordered card so the section reads as
-               its own control, not one more filter blob; re-tapping the
-               active key flips direction (the library menu's contract — the
-               separate Reverse-direction button was clutter and is gone).
-               HIDDEN while shuffle is on (shuffle permutes the pool) but the
-               setting keeps persisting underneath — no writes are gated,
-               only this editor is rendered. -->
-          <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
-            <span class="text-sm font-medium text-muted">Sort order</span>
-            <div class="mt-1.5 space-y-0.5">
-              {#each ['rating', 'loved', 'year', 'length', 'added'] as key (key)}
-                {@const k = key as LibrarySortKey}
-                <button
-                  onclick={() => setAutoSort(k)}
-                  class="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm transition-colors"
-                  class:bg-surface-hover={$autoQueueSort.sortBy === k}
-                  class:text-primary={$autoQueueSort.sortBy === k}
-                  class:text-muted={$autoQueueSort.sortBy !== k}
-                >
-                  <span>{sortLabels[k]}</span>
-                  {#if $autoQueueSort.sortBy === k}
-                    <span class="text-accent">{$autoQueueSort.sortAsc ? '↑' : '↓'}</span>
-                  {/if}
-                </button>
-              {/each}
-              {#if $autoQueueSort.sortBy}
-                <button
-                  onclick={() => setAutoSort(null)}
-                  class="mt-1 w-full rounded-t-none border-t border-white/5 px-2 py-1.5 text-xs text-muted transition-colors hover:text-primary"
-                >Clear sort</button>
-              {/if}
-            </div>
+        <!-- Auto-queue SORT (2026-09-29, restyled same day after user
+             feedback): the fill follows its own sort now; edited here like
+             the library sort menu. A bordered card so the section reads as
+             its own control, not one more filter blob; re-tapping the
+             active key flips direction (the library menu's contract — the
+             separate Reverse-direction button was clutter and is gone).
+             ALWAYS rendered since 2026-10-24 (user decision — the old
+             `{#if !$shuffleEnabled}` gate made a persisted setting look
+             missing); shuffle only changes how the pool is sampled, never
+             what this editor shows. -->
+        <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+          <span class="text-sm font-medium text-muted">Sort order</span>
+          <div class="mt-1.5 space-y-0.5">
+            {#each ['rating', 'loved', 'year', 'length', 'added'] as key (key)}
+              {@const k = key as LibrarySortKey}
+              <button
+                onclick={() => setAutoSort(k)}
+                class="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm transition-colors"
+                class:bg-surface-hover={$autoQueueSort.sortBy === k}
+                class:text-primary={$autoQueueSort.sortBy === k}
+                class:text-muted={$autoQueueSort.sortBy !== k}
+              >
+                <span>{sortLabels[k]}</span>
+                {#if $autoQueueSort.sortBy === k}
+                  <span class="text-accent">{$autoQueueSort.sortAsc ? '↑' : '↓'}</span>
+                {/if}
+              </button>
+            {/each}
+            {#if $autoQueueSort.sortBy}
+              <button
+                onclick={() => setAutoSort(null)}
+                class="mt-1 w-full rounded-t-none border-t border-white/5 px-2 py-1.5 text-xs text-muted transition-colors hover:text-primary"
+              >Clear sort</button>
+            {/if}
           </div>
-        {/if}
+        </div>
         <div>
           <span class="text-sm font-medium text-muted">Search Query</span>
           <div class="mt-1">
