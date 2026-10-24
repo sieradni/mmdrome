@@ -27,7 +27,8 @@
           "date": "2026-10-24T13:12:19.365Z",
           "localizedDescription": "A dragged auto-queue row now stays where you put it until you change the filter or sort",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.69/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5247588
         },
         {
           "version": "1.2.68",
