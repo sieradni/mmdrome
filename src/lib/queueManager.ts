@@ -1,6 +1,13 @@
 import { get } from 'svelte/store'
 import { persistQueue } from './queuePersistence'
-import { planAutoQueueFill, selectAutoQueueFill, type AutoQueuePlanState } from './autoQueuePlan'
+import {
+  handOrderRule,
+  planAutoQueueFill,
+  resolveHandOrder,
+  selectAutoQueueFill,
+  type AutoQueuePlanState,
+  type HandOrder,
+} from './autoQueuePlan'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
 import { syncFillProvenance } from './queueProvenance'
 import * as queueMutation from './queueMutation'
@@ -29,12 +36,27 @@ class QueueManager {
   /**
    * Session-only: the user hand-ordered the auto tail with a drag, so the
    * ordered replenish must keep THEIR sequence and only append at its end
-   * (2026-10-24c). A PRESS ("play this now") or a rule change (filter/sort, a
-   * shuffle toggle), or a queue replacement clears it — the live ordering wins
-   * (2026-10-24d). NEVER persisted: a fresh session re-derives from the rule,
-   * which is the documented asymmetry.
+   * (2026-10-24c). Stored as DATA — the tail the drop asserted plus the rule it
+   * was captured under — so its lifetime is decided by the state, not by call
+   * sites (2026-10-24e): `resolveHandOrder` voids it on a filter/sort/shuffle
+   * change, on a cleared/replaced tail, or on a row the drop never placed, and
+   * `replenishAutoQueue` retires it the moment it cannot be honoured. The ONE
+   * explicit ending is `endHandOrder()` — the user PICKING a position (a press,
+   * a queue-row tap), which is what makes their sequence obsolete. NEVER
+   * persisted: a fresh session re-derives from the rule.
    */
-  private _autoOrderPinned = false
+  private _handOrder: HandOrder | null = null
+
+  /**
+   * Ends a hand-ordered tail: the next fill re-derives from the live rule.
+   * Call this where the user CHOOSES a position (a press, a queue-row tap).
+   * A transport move — Next/Prev/end-of-track — deliberately does NOT end it:
+   * the hand order is the continuation the user built, and stepping through it
+   * is the point of it.
+   */
+  endHandOrder(): void {
+    this._handOrder = null
+  }
 
   getCombinedQueue(): string[] {
     const q = get(queue)
@@ -132,8 +154,8 @@ class QueueManager {
       // A press is an explicit "play this now": it ENDS a hand-dragged tail
       // (2026-10-24d), so the fill re-derives from the pressed row's place in
       // the live filter+sort. A drag still outranks the order until then, and
-      // a plain advance/Next never clears the intent.
-      this._autoOrderPinned = false
+      // a plain advance/Next never ends the intent.
+      this.endHandOrder()
       pendingAdvanceTrackId.set(trackId)
     }
   }
@@ -278,8 +300,8 @@ class QueueManager {
    * Play All flows, which reset the window).
    */
   clearQueue(): void {
-    // The tail is emptied, so there is no hand order left to honour.
-    this._autoOrderPinned = false
+    // No explicit intent reset: the emptied auto tail can no longer honour a
+    // hand order, and the next fill retires it (`resolveHandOrder`).
     this._mutateQueue((q) => queueMutation.clearQueue(q))
   }
 
@@ -306,9 +328,13 @@ class QueueManager {
     const before = get(queue).autoQueue
     this._mutateQueue((q) => queueMutation.applyDragDrop(q, draggedEntryId, targetCombinedIndex, dragStartUser, dragStartAuto))
     const after = get(queue).autoQueue
-    // A drop that changed the auto section is a hand-ordered tail. A drag
-    // that only touched the user section leaves the intent alone.
-    if (!sameIds(before, after)) this._autoOrderPinned = true
+    // A drop that changed the auto section captures a hand-ordered tail: the
+    // sequence it asserts (the tail the drop left) and the rule it was made
+    // under. A drag that only touched the user section leaves the intent alone.
+    if (!sameIds(before, after)) {
+      const { filters, sort, shuffle } = this._planState()
+      this._handOrder = { tail: [...after], rule: handOrderRule({ filters, sort, shuffle }) }
+    }
   }
 
   /**
@@ -321,7 +347,8 @@ class QueueManager {
    * explicit bulk replay supersedes anti-repeat memory.
    */
   playAll(trackIds: string[]): void {
-    this._autoOrderPinned = false
+    // No explicit intent reset: the replacement empties the auto tail, so the
+    // next fill retires the intent (`resolveHandOrder`).
     const updated: QueueState = { ...get(queue), userQueue: trackIds, autoQueue: [], activeIndex: 0 }
     queue.set(updated)
     persistQueue('playAll', updated)
@@ -369,7 +396,12 @@ class QueueManager {
    */
   replenishAutoQueue(): void {
     const state = this._planState()
-    const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: true, respectManualOrder: this._autoOrderPinned })
+    // Retirement happens HERE, at the one place the intent is read: an intent
+    // the live state cannot honour (rule changed, tail replaced or emptied, a
+    // row the drop never placed) is dropped for good, so no rebuild path has to
+    // remember to clear it.
+    if (this._handOrder && !resolveHandOrder(this._handOrder, state)) this._handOrder = null
+    const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: true, handOrder: this._handOrder })
     queueWrapNotice.set(plan.wrapNotice)
     const needed = Math.max(0, MAX_AUTO_QUEUE - plan.kept.length)
     if (needed === 0) {
@@ -414,8 +446,9 @@ class QueueManager {
    * names a USER row, and the fill below only ever writes `autoQueue`.
    */
   rebuildForFreshContext(): void {
-    // A rule change supersedes a hand-ordered tail: the new order wins.
-    this._autoOrderPinned = false
+    // A rule change supersedes a hand-ordered tail: the new order wins, and the
+    // intent is void by construction (its rule no longer matches) — the next
+    // replenish retires it, and this rebuild passes no intent at all.
     queue.update((live) => {
       const promoted = queueMutation.applyQueueMutation(live, (q) => queueMutation.promoteActiveTrack(q))
       const base: QueueState = { ...(promoted ?? live), recentTrackIds: [] }
@@ -453,8 +486,8 @@ class QueueManager {
    *  not reset the anti-repeat window. Rule changes go through
    *  `rebuildForFreshContext`. */
   rebuildAutoQueue(): void {
-    // A shuffle toggle replaces the tail wholesale; no hand order survives.
-    this._autoOrderPinned = false
+    // A shuffle toggle replaces the tail wholesale (and changes the rule's
+    // shuffle bit), so no hand order can survive; the next replenish retires it.
     const state = this._planState()
     const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
     queueWrapNotice.set(plan.wrapNotice)

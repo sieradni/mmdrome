@@ -289,21 +289,67 @@ export function filterRangesValid(f: Pick<AutoQueueFilterFields, 'minRating' | '
  * `kept + selectAutoQueueFill(...)` always equals the leading slice of the
  * continuation. `wrapNotice` is false whenever the pool is empty.
  *
- * A HAND-ORDERED tail (`respectManualOrder`, set while a drag order is in
- * effect) outranks the derived order: the tail is the user's own sequence, so
- * it stays verbatim (minus rows that no longer exist or match) and the fill
- * appends AFTER its last row. The caller clears that intent on a PRESS or a
- * rule change, which is what lets the live filter/sort win (2026-10-24c/d).
+ * A HAND-ORDERED tail (a drop the user made — `HandOrder`) outranks the
+ * derived order: the tail is the user's own sequence, so it stays verbatim
+ * (minus rows that no longer exist or match) and the fill appends AFTER its
+ * last row. The intent carries the RULE it was captured under, and
+ * `resolveHandOrder` voids it against the live state — a filter/sort/shuffle
+ * change, an emptied/replaced tail, or a row the drop never placed. Only a new
+ * PICK (the user choosing a position) ends it explicitly (2026-10-24c/d/e).
  *
  * SHUFFLE keeps a SAMPLED prefix on a keepAuto replenish: the kept rows are
  * excluded from admission and only the still-matching ones are retained, so a
  * replenish cannot reshuffle the audible head. The shuffle branch never ranks
  * (its tiers stay in library order for `selectAutoQueueFill` to sample).
  */
+/**
+ * A hand-ordered auto tail plus the RULE it was captured under (2026-10-24e).
+ * The intent is DATA, not a flag: `resolveHandOrder` decides whether it still
+ * applies to the live queue, so every rule change or queue replacement voids
+ * it by construction — no rebuild path has to remember to clear it.
+ */
+export interface HandOrder {
+  /** The auto tail as the drop left it — the sequence this intent asserts. */
+  tail: string[]
+  /** `handOrderRule` of the state it was captured under. */
+  rule: string
+}
+
+/**
+ * Identity of the ORDERING RULE: the fields whose change makes a hand order
+ * moot. Folded from the objects themselves (keys sorted), so a future filter
+ * field is part of the rule automatically — the alternative (an explicit
+ * field list) would silently let a new filter keep a stale hand order.
+ */
+export function handOrderRule(state: Pick<AutoQueuePlanState, 'filters' | 'sort' | 'shuffle'>): string {
+  const fold = (o: object) => Object.keys(o).sort().map((k) => [k, (o as Record<string, unknown>)[k] ?? null])
+  return JSON.stringify([fold(state.filters), fold(state.sort), state.shuffle])
+}
+
+/**
+ * The hand order the live queue can still honour, or null. Valid only while
+ * the rule is unchanged, the auto tail is non-empty, and the tail still STARTS
+ * on a row the drop placed. That last part is the replacement check: rows are
+ * only ever consumed from the head and appended at the end, so a live head the
+ * drop never placed means this is not the user's sequence any more (the tail
+ * was rebuilt). Rows removed from inside the tail keep the intent — the
+ * documented precedence — so no ordering check is made beyond the head.
+ */
+export function resolveHandOrder(
+  intent: HandOrder | null | undefined,
+  state: Pick<AutoQueuePlanState, 'autoQueue' | 'filters' | 'sort' | 'shuffle'>,
+): HandOrder | null {
+  if (!intent || intent.tail.length === 0) return null
+  if (intent.rule !== handOrderRule(state)) return null
+  if (state.autoQueue.length === 0) return null
+  if (!intent.tail.includes(state.autoQueue[0])) return null
+  return intent
+}
+
 export function planAutoQueueFill(
   state: AutoQueuePlanState,
   needed: number,
-  opts: { keepAuto: boolean; respectManualOrder?: boolean },
+  opts: { keepAuto: boolean; handOrder?: HandOrder | null },
 ): AutoQueueFillPlan {
   const { library: lib, userQueue, autoQueue, recentTrackIds, activeId, shuffle, sort, filters, meta } = state
   const inUser = new Set(userQueue)
@@ -320,10 +366,11 @@ export function planAutoQueueFill(
   const keepsSampledPrefix = shuffle && opts.keepAuto
   const libById = new Map(lib.map((t) => [t.trackId, t]))
   // A tail the user ordered by hand (a drag) is not re-derived: it stays as
-  // it is, and the sort only decides what gets appended after it. Rows that
-  // no longer exist or match the filters still drop out (a filter edit is a
-  // rule change that clears the intent anyway — this is the safe backstop).
-  const manualTail = !shuffle && opts.keepAuto && opts.respectManualOrder
+  // it is, and the sort only decides what gets appended after it. The intent
+  // survives only while the live state still matches what the drop asserted
+  // (`resolveHandOrder`); rows that no longer exist or match still drop out.
+  const handOrder = !shuffle && opts.keepAuto ? resolveHandOrder(opts.handOrder, state) : null
+  const manualTail = handOrder
     ? autoQueue.filter((id) => {
         const t = libById.get(id)
         return t !== undefined && matches(t)

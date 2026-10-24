@@ -1,3 +1,13 @@
+## 2026-10-24e — the hand-order intent is data, not a flag with five clear points
+
+Behaviour is unchanged from 1.2.70 (a drag outranks the derived order; a press, a queue-row tap, a filter/sort change, a shuffle toggle, Play All or Clear ends it; a plain advance/Next honours it). What changed is the LIFETIME of that intent. It was a private boolean (`_autoOrderPinned`) with five hand-maintained clear points, so a path that moved the anchor without being on that list — the queue-row tap was the live example — kept a stale hand order and nothing noticed.
+
+The intent is now DATA: `HandOrder {tail, rule}` in `autoQueuePlan.ts`, where `rule` is `handOrderRule(filters, sort, shuffle)` (folded from the objects themselves, so a future filter field is part of the rule automatically). `planAutoQueueFill` takes `handOrder` and `resolveHandOrder` decides whether it still applies: the rule must match, the auto tail must be non-empty, and its head must be a row the drop placed (rows only leave from the head and are only appended at the end, so a foreign head means the tail was rebuilt). `replenishAutoQueue` retires an intent it cannot honour at the one place it is read — so `rebuildForFreshContext`, `rebuildAutoQueue`, `playAll` and `clearQueue` no longer clear anything; the rule change and the emptied tail invalidate by construction.
+
+What data cannot see is a PICK. A tap on a row three places down is indistinguishable, as queue shape, from a transport advance, and the shipped rule needs those to differ (advance honours the hand order). So the pick is the one explicit ending: `queueManager.endHandOrder()`, called from the press (`selectTrack`) and from the queue-row tap (`PlaybackManager.playTrackAt`, the uncovered path this pass closed). A future anchor-moving path still has to say which kind it is; every rule change or replacement is now automatic.
+
+Equivalence proof, not a new rule: the full unit suite and the queue e2e set are unchanged and green (`npm test` 1468 → +2 new pins), including the drag→advance, drag→rule-change, drag→press and drag→sort e2e. New pin for the uncovered path: `tests/playbackManagerAdvance.test.ts` — "picking a queue row ends a hand-ordered auto tail" (drag `a6` to the second auto slot, tap `a2`, assert the Added continuation `a3, a4, a5, a6, a1` and that the hand order's `a6` head is NOT produced). Negative case checked: removing `endHandOrder()` from `playTrackAt` fails exactly that assertion with `actual: [a6, a3, a4, a5, a1]`; reverted. Plus the pure `tests/autoQueuePlan.test.ts` — "a hand order is void once the rule, the tail or a row stops being what the drop asserted" (rule change, emptied tail, foreign head void it; removals and a consumed head keep it).
+
 ## 2026-10-24d — a press ends a hand-dragged auto order
 
 The previous entry left one precedence open, and its own note called it out: a press KEPT the hand order, which contradicts the request's wording that pressing a song makes the auto queue adjust to the current filter and sort. Decided the other way — a press ENDS the hand order.
@@ -7,6 +17,8 @@ The previous entry left one precedence open, and its own note called it out: a p
 Pins: unit `tests/queueManagerFill.test.ts` — "a press ends the hand-ordered tail and re-derives it from the pressed row" (the drag order is asserted as the negative result it must not produce), and browser `tests/e2e/autoqueueadded.spec.ts` — "a press drops a dragged auto order and re-derives from the pressed song" (drag aq6 past aq2, press aq3, assert the Added ↓ continuation aq5, aq6, aq4, aq2 and explicitly not the dragged order). Negative check: removing the clear fails both — the e2e at the sorted-continuation assertion, the manager test at the first mismatch.
 
 Also corrected the previous entry's date: it was stamped 2026-10-25 but was written the same day as this one, so it is now 2026-10-24c.
+
+Superseded by 2026-10-24e: the flag and its clear points are gone — the same precedence now falls out of the intent being data plus the one `endHandOrder()` pick site.
 
 ## 2026-10-24c — a hand-dragged auto row survives the fill (until a press or a rule change)
 

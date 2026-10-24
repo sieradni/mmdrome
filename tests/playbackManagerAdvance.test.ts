@@ -27,6 +27,7 @@ import {
   currentTime,
   loopMode,
   sleepTimer,
+  autoQueueSort,
   setCurrentTrack,
   setPlaybackState,
   type Track,
@@ -128,6 +129,7 @@ type PrivatePM = {
   _setupNextTrack(): Promise<void>
   _rearmCrossfadeTarget(): void
   playTrackById(trackId: string): Promise<void>
+  playTrackAt(index: number): Promise<void>
   _initialized: boolean
   _armedTargetEntryId: string | null
 }
@@ -837,4 +839,47 @@ test('an error advance outside loop-one is not blocked by a stale cycle count', 
   await h.m._onTrackEnded(true)
   assert.equal(get(currentTrack)?.trackId, 'navidrome-t2')
   assert.equal(get(playbackState), 'playing')
+})
+
+// --- the hand-order intent × the queue-row tap (2026-10-24e) --------------
+// The intent's lifetime is decided by the queue state (rule change, replaced
+// or emptied tail) EXCEPT for the one thing data cannot see: the user picking
+// a position. The library press pinned that; a queue-row TAP is the other
+// anchor-moving path, and it goes through `playTrackAt` — the path this pins.
+test('picking a queue row ends a hand-ordered auto tail', async () => {
+  const h = makeHarness()
+  resetStores()
+  const mk = (id: string, n: number): Track => ({
+    trackId: id, title: id, artist: 'A', album: 'AL', duration: 300, fileType: 'mp3',
+    createdAt: Date.parse(`2023-0${n}-01T00:00:00Z`),
+  })
+  const ts = [mk('a1', 1), mk('a2', 2), mk('a3', 3), mk('a4', 4), mk('a5', 5), mk('a6', 6)]
+  try {
+    library.set(ts)
+    autoQueueSort.set({ sortBy: 'added', sortAsc: true }) // Added ↑ = a1 … a6
+    queue.set({ userQueue: ['a1'], autoQueue: ['a2', 'a3', 'a4', 'a5', 'a6'], recentTrackIds: [], activeIndex: 0 })
+    setCurrentTrack(ts[0])
+    setPlaybackState('playing')
+
+    // A hand order: drag a6 up to the second auto slot → a1 | a2, a6, a3, a4, a5.
+    queueManager.applyDragDrop('auto:a6', 2, ['a1'], ['a2', 'a3', 'a4', 'a5', 'a6'])
+    assert.deepEqual(get(queue).autoQueue, ['a2', 'a6', 'a3', 'a4', 'a5'], 'the drop hand-ordered the tail')
+
+    // The user taps the a2 row (combined index 1) — "play this now".
+    await h.m.playTrackAt(1)
+    // The post-load success path promotes the picked row out of auto.
+    queueManager.promoteActiveTrack()
+    queueManager.replenishAutoQueue()
+
+    const q = get(queue)
+    assert.deepEqual(q.userQueue, ['a1', 'a2'], 'the tap anchors its own row')
+    // The tap ENDS the hand order, so the tail is the Added ↑ continuation from
+    // a2: a3, a4, a5, a6, then the tier-3 recycle of the user row a1 (B4).
+    // Keeping the drag would have continued the hand order instead (a6 first) —
+    // asserted as the negative result below.
+    assert.deepEqual(q.autoQueue, ['a3', 'a4', 'a5', 'a6', 'a1'], 'the sorted continuation wins')
+    assert.notEqual(q.autoQueue[0], 'a6', 'the hand-ordered tail must not survive a tap')
+  } finally {
+    autoQueueSort.set({ sortBy: null, sortAsc: true })
+  }
 })

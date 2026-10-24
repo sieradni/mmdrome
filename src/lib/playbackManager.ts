@@ -1622,6 +1622,12 @@ export class PlaybackManager {
     // mark it so it cools down like any other heard track (same-index replays
     // and plain resumes stay unmarked).
     const prevIdx = get(queue).activeIndex
+    // Picking a row is the user CHOOSING a position (the queue-row tap), so a
+    // hand-dragged auto tail ends with it and the next fill re-derives from the
+    // live filter+sort — the same rule as a library press, through the last
+    // anchor-moving path that used to keep a stale hand order (2026-10-24e).
+    // A same-index replay is a resume of the current row: nothing to re-derive.
+    if (prevIdx !== index) this._qm.endHandOrder()
     if (prevIdx >= 0 && prevIdx !== index) {
       const prevId = combined[prevIdx]
       if (prevId) {

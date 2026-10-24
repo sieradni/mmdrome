@@ -10,6 +10,8 @@ import {
   matchesAutoQueueFilters,
   buildOrderRank,
   rotateAfterAnchor,
+  handOrderRule,
+  resolveHandOrder,
   planAutoQueueFill,
   filterRangesValid,
   autoQueueSettingsDiffer,
@@ -509,7 +511,8 @@ test('a hand-ordered tail is kept verbatim and the sort only appends after it', 
     sort: ADDED_DESC,
   })
 
-  const plan = planAutoQueueFill(dragged, 50, { keepAuto: true, respectManualOrder: true })
+  const intent = { tail: ['aq4', 'aq6', 'aq2'], rule: handOrderRule(dragged) }
+  const plan = planAutoQueueFill(dragged, 50, { keepAuto: true, handOrder: intent })
   assert.deepEqual(plan.kept, ['aq4', 'aq6', 'aq2'], 'the drag order survives the fill')
   // Appends continue from the LAST hand-placed row (aq2, the Added ↓ tail):
   // nothing ranks after it, so the pool wraps from the top, minus what is
@@ -523,4 +526,37 @@ test('a hand-ordered tail is kept verbatim and the sort only appends after it', 
   // Added ↓ after aq1: aq4, aq2, wrap aq3, aq5, aq6 — the drag is undone from
   // the second slot on.
   assert.deepEqual(ids(derived.pool), ['aq2', 'aq3', 'aq5', 'aq6'])
+})
+
+test('a hand order is void once the rule, the tail or a row stops being what the drop asserted', () => {
+  // The intent's lifetime is decided by the state, not by call sites: every
+  // branch below is what a rebuild/replacement/removal does to the queue, and
+  // each one either keeps or voids the hand order WITHOUT a clear call.
+  const ts = AQ()
+  const captured = state({ library: ts, userQueue: ['aq1'], autoQueue: ['aq4', 'aq6', 'aq2'], activeId: 'aq1', sort: ADDED_DESC })
+  const intent = { tail: ['aq4', 'aq6', 'aq2'], rule: handOrderRule(captured) }
+
+  assert.equal(resolveHandOrder(intent, captured), intent, 'same rule, same rows → the hand order stands')
+  assert.equal(resolveHandOrder(null, captured), null, 'no intent, nothing to honour')
+
+  // A rule change: the same rows under a different sort are a different order.
+  assert.equal(resolveHandOrder(intent, { ...captured, sort: { sortBy: 'added', sortAsc: true } }), null, 'sort change voids it')
+  // …and so does any other rule field, folded from the objects themselves.
+  assert.equal(
+    resolveHandOrder(intent, { ...captured, filters: { ...captured.filters, minRating: 50 } }),
+    null,
+    'filter change voids it',
+  )
+  assert.equal(resolveHandOrder(intent, { ...captured, shuffle: true }), null, 'a shuffle toggle voids it')
+
+  // A replaced tail (Play All / a rebuild) and an emptied one (Clear): the
+  // head is the replacement check, since rows only leave from the head and are
+  // only appended at the end.
+  assert.equal(resolveHandOrder(intent, { ...captured, autoQueue: ['aq3', 'aq5'] }), null, 'a head the drop never placed voids it')
+  assert.equal(resolveHandOrder(intent, { ...captured, autoQueue: [] }), null, 'an emptied tail voids it')
+
+  // Row removals keep the sequence: the remaining rows are still the ones the
+  // drop placed, in the order it placed them.
+  assert.equal(resolveHandOrder(intent, { ...captured, autoQueue: ['aq4', 'aq2'] }), intent, 'a removal inside the tail keeps it')
+  assert.equal(resolveHandOrder(intent, { ...captured, autoQueue: ['aq6'] }), intent, 'consuming the head keeps it')
 })
