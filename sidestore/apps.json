@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.69",
-      "versionDate": "2026-10-24T13:12:19.365Z",
-      "versionDescription": "A dragged auto-queue row now stays where you put it until you change the filter or sort",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.69/mmdrome.ipa",
+      "version": "1.2.70",
+      "versionDate": "2026-10-24T13:27:51.356Z",
+      "versionDescription": "Pressing a song now ends a hand-dragged auto-queue order and puts the upcoming songs back in your filter+sort order",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.70/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.70",
+          "buildVersion": "74",
+          "date": "2026-10-24T13:27:51.356Z",
+          "localizedDescription": "Pressing a song now ends a hand-dragged auto-queue order and puts the upcoming songs back in your filter+sort order",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.70/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.69",
           "buildVersion": "73",
@@ -674,6 +682,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.70",
+      "identifier": "ios-v1.2.70",
+      "appID": "com.mmdrome.player",
+      "caption": "Pressing a song now ends a hand-dragged auto-queue order and puts the upcoming songs back in your filter+sort order",
+      "date": "2026-10-24T13:27:51.356Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.69",
       "identifier": "ios-v1.2.69",
       "appID": "com.mmdrome.player",
@@ -706,15 +723,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Transport self-test in the debug HUD plus a switchable output-graph pause experiment for the lock-screen play/pause report",
       "date": "2026-10-23T02:40:15.031Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.65",
-      "identifier": "ios-v1.2.65",
-      "appID": "com.mmdrome.player",
-      "caption": "Native playback reliability: authoritative play/pause intent, shared lock-screen/accessory command handling, and Now Playing publication fix",
-      "date": "2026-10-23T01:36:35.566Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
