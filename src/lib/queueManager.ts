@@ -20,7 +20,21 @@ import type { Track, QueueState } from '../stores/appState'
 
 const MAX_AUTO_QUEUE = 50
 
+/** Same order, same rows — the auto-section identity check a drag needs. */
+function sameIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i])
+}
+
 class QueueManager {
+  /**
+   * Session-only: the user hand-ordered the auto tail with a drag, so the
+   * ordered replenish must keep THEIR sequence and only append at its end
+   * (2026-10-25). A rule change (filter/sort, a shuffle toggle) or a queue
+   * replacement clears it — the new ordering wins. NEVER persisted: a fresh
+   * session re-derives from the rule, which is the documented asymmetry.
+   */
+  private _autoOrderPinned = false
+
   getCombinedQueue(): string[] {
     const q = get(queue)
     return [...q.userQueue, ...q.autoQueue]
@@ -256,6 +270,8 @@ class QueueManager {
    * Play All flows, which reset the window).
    */
   clearQueue(): void {
+    // The tail is emptied, so there is no hand order left to honour.
+    this._autoOrderPinned = false
     this._mutateQueue((q) => queueMutation.clearQueue(q))
   }
 
@@ -279,7 +295,12 @@ class QueueManager {
    * preloaded row played next. Anchor-preserving via `_mutateQueue`.
    */
   applyDragDrop(draggedEntryId: string, targetCombinedIndex: number, dragStartUser: string[], dragStartAuto: string[]): void {
+    const before = get(queue).autoQueue
     this._mutateQueue((q) => queueMutation.applyDragDrop(q, draggedEntryId, targetCombinedIndex, dragStartUser, dragStartAuto))
+    const after = get(queue).autoQueue
+    // A drop that changed the auto section is a hand-ordered tail. A drag
+    // that only touched the user section leaves the intent alone.
+    if (!sameIds(before, after)) this._autoOrderPinned = true
   }
 
   /**
@@ -292,6 +313,7 @@ class QueueManager {
    * explicit bulk replay supersedes anti-repeat memory.
    */
   playAll(trackIds: string[]): void {
+    this._autoOrderPinned = false
     const updated: QueueState = { ...get(queue), userQueue: trackIds, autoQueue: [], activeIndex: 0 }
     queue.set(updated)
     persistQueue('playAll', updated)
@@ -339,7 +361,7 @@ class QueueManager {
    */
   replenishAutoQueue(): void {
     const state = this._planState()
-    const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: true })
+    const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: true, respectManualOrder: this._autoOrderPinned })
     queueWrapNotice.set(plan.wrapNotice)
     const needed = Math.max(0, MAX_AUTO_QUEUE - plan.kept.length)
     if (needed === 0) {
@@ -384,6 +406,8 @@ class QueueManager {
    * names a USER row, and the fill below only ever writes `autoQueue`.
    */
   rebuildForFreshContext(): void {
+    // A rule change supersedes a hand-ordered tail: the new order wins.
+    this._autoOrderPinned = false
     queue.update((live) => {
       const promoted = queueMutation.applyQueueMutation(live, (q) => queueMutation.promoteActiveTrack(q))
       const base: QueueState = { ...(promoted ?? live), recentTrackIds: [] }
@@ -421,6 +445,8 @@ class QueueManager {
    *  not reset the anti-repeat window. Rule changes go through
    *  `rebuildForFreshContext`. */
   rebuildAutoQueue(): void {
+    // A shuffle toggle replaces the tail wholesale; no hand order survives.
+    this._autoOrderPinned = false
     const state = this._planState()
     const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
     queueWrapNotice.set(plan.wrapNotice)

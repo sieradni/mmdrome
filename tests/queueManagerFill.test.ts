@@ -564,3 +564,32 @@ test('a filter and sort applied mid-play keep holding as playback advances', () 
   assert.deepEqual(q.autoQueue, ['aq3', 'aq5', 'aq6', 'aq1'])
   assert.ok(!q.autoQueue.includes('aq2'), 'the filter holds across the advance')
 })
+
+test('a dragged auto order survives the next advance, and a rule change re-derives it', () => {
+  reset()
+  library.set(AQ_LIB())
+  autoQueueSort.set({ sortBy: 'added', sortAsc: false })
+  // Playing aq1: Added ↓ continues aq4, aq2, aq3, aq5, aq6.
+  setQueue({ userQueue: ['aq1'], autoQueue: ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'], activeIndex: 0 })
+
+  // Drag aq6 (last) up to the second auto slot — a deliberate hand order.
+  queueManager.applyDragDrop('auto:aq6', 2, ['aq1'], ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'])
+  assert.deepEqual(get(queue).autoQueue, ['aq4', 'aq6', 'aq2', 'aq3', 'aq5'], 'the drop reordered the tail')
+
+  // Advancing plays aq4 and promotes it. The hand order must survive: only the
+  // consumed head leaves, nothing is re-sorted underneath the user.
+  queueManager.advanceTo(1, 'aq1')
+  queueManager.promoteActiveTrack()
+  queueManager.replenishAutoQueue()
+  assert.deepEqual(get(queue).autoQueue.slice(0, 4), ['aq6', 'aq2', 'aq3', 'aq5'], 'the drag order survives the advance')
+  // The derived order would have put aq2 first — that is what this rules out.
+  assert.notDeepEqual(get(queue).autoQueue.slice(0, 2), ['aq2', 'aq3'])
+
+  // A sort change is a rule change: the new ordering wins over the hand order.
+  autoQueueSort.set({ sortBy: 'added', sortAsc: true })
+  queueManager.rebuildForFreshContext()
+  // Added ↑ after the promoted aq4: aq6, aq5, aq3, aq2 (aq1/aq4 are user rows;
+  // the short pool then recycles them at the tail).
+  assert.deepEqual(get(queue).autoQueue.slice(0, 4), ['aq6', 'aq5', 'aq3', 'aq2'], 'the sort wins after a rule change')
+  assert.ok(!get(queue).autoQueue.includes('aq4') || get(queue).autoQueue.indexOf('aq4') > 3, 'nothing left of the drag head order')
+})

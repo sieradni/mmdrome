@@ -61,15 +61,34 @@ function autoOrder(page: Page): Promise<(string | null)[]> {
   )
 }
 
-/** Opens the queue overlay (idle or active island) and then the auto-filter modal. */
-async function openAutoFilters(page: Page): Promise<void> {
+/** Opens the queue overlay (idle or active island). */
+async function openQueueOverlay(page: Page): Promise<void> {
   if (!(await page.getByRole('button', { name: 'Close queue' }).isVisible().catch(() => false))) {
     await page.locator('div.ui-island[role="button"]').first().click()
     await page.getByRole('button', { name: 'Open queue' }).click()
   }
   await page.getByRole('button', { name: 'Close queue' }).waitFor({ state: 'visible' })
+  await page.waitForTimeout(400)
+}
+
+/** Opens the queue overlay and then the auto-filter modal. */
+async function openAutoFilters(page: Page): Promise<void> {
+  await openQueueOverlay(page)
   await page.getByRole('button', { name: 'Auto queue filters' }).click()
   await page.getByRole('dialog', { name: 'Auto queue filters' }).waitFor({ state: 'visible' })
+}
+
+/** Reorder the auto section by hand: grab `fromIndex`'s handle onto `toIndex`. */
+async function dragAutoRow(page: Page, fromIndex: number, toIndex: number): Promise<void> {
+  const rows = page.locator('[aria-label="Auto queue"] .queue-track-item')
+  const source = await rows.nth(fromIndex).locator('.drag-handle').boundingBox()
+  const target = await rows.nth(toIndex).boundingBox()
+  if (!source || !target) throw new Error('drag geometry missing')
+  await page.mouse.move(source.x + source.width / 2, source.y + source.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(source.x + source.width / 2, target.y + target.height / 2, { steps: 8 })
+  await page.mouse.up()
+  await page.waitForTimeout(700)
 }
 
 async function closeAutoFilters(page: Page): Promise<void> {
@@ -204,4 +223,43 @@ test('the auto tail re-anchors on a pressed song and keeps the sort across advan
   await openAutoFilters(page)
   await page.keyboard.press('Escape')
   await expect.poll(() => queueSections(page)).toMatchObject({ auto: AFTER_NEXT_AQ4 })
+})
+
+// A HAND-ORDERED tail (2026-10-25): the user dragged an auto row, so the fill
+// must not silently re-sort it. It keeps the hand order and only appends after
+// it; a filter/sort change is a rule change and DOES re-derive the tail.
+const AFTER_DRAG = ['navidrome-aq4', 'navidrome-aq2', 'navidrome-aq6', 'navidrome-aq3', 'navidrome-aq5']
+// aq4 plays next, so the hand tail aq2, aq6, aq3, aq5 must stand — the sort
+// continuation from aq4 would put aq3 before aq6.
+const AFTER_DRAG_NEXT = ['navidrome-aq2', 'navidrome-aq6', 'navidrome-aq3', 'navidrome-aq5']
+const AFTER_DRAG_SORT_FLIP = ['navidrome-aq6', 'navidrome-aq5', 'navidrome-aq3', 'navidrome-aq2']
+
+test('a dragged auto order survives the next advance and yields to a sort change', async ({ page }) => {
+  await bootLibraryAndPlayFirst(page)
+
+  await openAutoFilters(page)
+  await filterDialog(page).getByRole('button', { name: 'Added', exact: true }).click()
+  await expect(filterDialog(page).getByRole('button', { name: 'Added ↓', exact: true })).toBeVisible()
+  await closeAutoFilters(page)
+  await expect.poll(() => autoOrder(page)).toEqual(DESC)
+
+  // Hand order: dragging aq6 (last) up over the aq2 row lands it right AFTER
+  // aq2 (the row-slot rule), which is the deliberate move this pins.
+  await dragAutoRow(page, 4, 1)
+  await expect.poll(() => autoOrder(page)).toEqual(AFTER_DRAG)
+
+  // Letting it play consumes the head; the user's order for the rest stands.
+  await backToLibrary(page)
+  await page.locator('button[aria-label="Next track"]:visible').last().click()
+  await page.waitForTimeout(1200)
+  await openQueueOverlay(page)
+  await expect.poll(async () => (await queueSections(page)).auto.slice(0, 4)).toEqual(AFTER_DRAG_NEXT)
+
+  // A sort change is a rule change: Added ↑ re-derives the tail from the queue
+  // tail (aq4), so the drag is gone and the sort's continuation wins.
+  await page.getByRole('button', { name: 'Auto queue filters' }).click()
+  await filterDialog(page).getByRole('button', { name: 'Added ↓', exact: true }).click()
+  await expect(filterDialog(page).getByRole('button', { name: 'Added ↑', exact: true })).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect.poll(async () => (await queueSections(page)).auto.slice(0, 4)).toEqual(AFTER_DRAG_SORT_FLIP)
 })

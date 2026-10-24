@@ -497,3 +497,30 @@ test('the audible auto occurrence is pinned until its promotion', () => {
   assert.deepEqual(promoted.kept, ['t3'])
   assert.deepEqual(ids(promoted.pool), ['t4', 't1'])
 })
+
+test('a hand-ordered tail is kept verbatim and the sort only appends after it', () => {
+  // The user dragged aq6 to the second auto slot: aq4, aq6, aq2, aq3, aq5.
+  const ts = AQ()
+  const dragged = state({
+    library: ts,
+    userQueue: ['aq1'],
+    autoQueue: ['aq4', 'aq6', 'aq2'],
+    activeId: 'aq1',
+    sort: ADDED_DESC,
+  })
+
+  const plan = planAutoQueueFill(dragged, 50, { keepAuto: true, respectManualOrder: true })
+  assert.deepEqual(plan.kept, ['aq4', 'aq6', 'aq2'], 'the drag order survives the fill')
+  // Appends continue from the LAST hand-placed row (aq2, the Added ↓ tail):
+  // nothing ranks after it, so the pool wraps from the top, minus what is
+  // already queued (aq4, aq6) and the user-queued aq1.
+  assert.deepEqual(ids(plan.pool), ['aq3', 'aq5'], 'new rows follow the hand-placed order')
+
+  // The SAME queue without the intent is not a continuation of the sorted set,
+  // so the ordering owner re-derives it — that contrast is the whole rule.
+  const derived = planAutoQueueFill(dragged, 50, { keepAuto: true })
+  assert.deepEqual(derived.kept, ['aq4'], 'the derived order keeps only the row that already matched')
+  // Added ↓ after aq1: aq4, aq2, wrap aq3, aq5, aq6 — the drag is undone from
+  // the second slot on.
+  assert.deepEqual(ids(derived.pool), ['aq2', 'aq3', 'aq5', 'aq6'])
+})

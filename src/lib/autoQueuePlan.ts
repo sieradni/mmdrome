@@ -289,6 +289,12 @@ export function filterRangesValid(f: Pick<AutoQueueFilterFields, 'minRating' | '
  * `kept + selectAutoQueueFill(...)` always equals the leading slice of the
  * continuation. `wrapNotice` is false whenever the pool is empty.
  *
+ * A HAND-ORDERED tail (`respectManualOrder`, set while a drag order is in
+ * effect) outranks the derived order: the tail is the user's own sequence, so
+ * it stays verbatim (minus rows that no longer exist or match) and the fill
+ * appends AFTER its last row. The caller clears that intent on a rule change,
+ * which is what lets a new filter/sort win (2026-10-25).
+ *
  * SHUFFLE keeps a SAMPLED prefix on a keepAuto replenish: the kept rows are
  * excluded from admission and only the still-matching ones are retained, so a
  * replenish cannot reshuffle the audible head. The shuffle branch never ranks
@@ -297,7 +303,7 @@ export function filterRangesValid(f: Pick<AutoQueueFilterFields, 'minRating' | '
 export function planAutoQueueFill(
   state: AutoQueuePlanState,
   needed: number,
-  opts: { keepAuto: boolean },
+  opts: { keepAuto: boolean; respectManualOrder?: boolean },
 ): AutoQueueFillPlan {
   const { library: lib, userQueue, autoQueue, recentTrackIds, activeId, shuffle, sort, filters, meta } = state
   const inUser = new Set(userQueue)
@@ -312,19 +318,33 @@ export function planAutoQueueFill(
   // there the auto rows are ordinary candidates (inAuto stays empty) and the
   // leading run is computed from that order below.
   const keepsSampledPrefix = shuffle && opts.keepAuto
+  const libById = new Map(lib.map((t) => [t.trackId, t]))
+  // A tail the user ordered by hand (a drag) is not re-derived: it stays as
+  // it is, and the sort only decides what gets appended after it. Rows that
+  // no longer exist or match the filters still drop out (a filter edit is a
+  // rule change that clears the intent anyway — this is the safe backstop).
+  const manualTail = !shuffle && opts.keepAuto && opts.respectManualOrder
+    ? autoQueue.filter((id) => {
+        const t = libById.get(id)
+        return t !== undefined && matches(t)
+      })
+    : []
   // The audible auto occurrence (and whatever sits above it) is PINNED for an
   // ordered replenish: it is still in auto until the post-load promotion
   // appends it, and re-deriving the tail under it would move the anchor off
-  // the playing row. The continuation then starts AFTER it.
-  const pinnedHead = !shuffle && opts.keepAuto && state.activeAutoIndex >= 0 && state.activeAutoIndex < autoQueue.length
+  // the playing row. The continuation then starts AFTER it. A hand-ordered
+  // tail needs no extra pin — it already carries every row, the audible one
+  // included.
+  const pinnedHead = manualTail.length === 0 && !shuffle && opts.keepAuto && state.activeAutoIndex >= 0 && state.activeAutoIndex < autoQueue.length
     ? autoQueue.slice(0, state.activeAutoIndex + 1)
     : []
-  const anchorId = pinnedHead.length > 0 ? activeId : userQueue[userQueue.length - 1]
-  const inAuto = new Set(keepsSampledPrefix ? autoQueue : pinnedHead)
+  const anchorId = manualTail.length > 0
+    ? manualTail[manualTail.length - 1]
+    : pinnedHead.length > 0 ? activeId : userQueue[userQueue.length - 1]
+  const inAuto = new Set(keepsSampledPrefix ? autoQueue : manualTail.length > 0 ? manualTail : pinnedHead)
 
   let kept: string[] = []
   if (keepsSampledPrefix) {
-    const libById = new Map(lib.map((t) => [t.trackId, t]))
     kept = autoQueue.filter((id) => {
       const t = libById.get(id)
       return t && matches(t)
@@ -383,13 +403,19 @@ export function planAutoQueueFill(
     // moved or the order changed) and hand the caller everything after that
     // run. `kept + selectAutoQueueFill(...)` is therefore always the leading
     // slice of the continuation.
+    if (manualTail.length > 0) {
+      // The user's sequence wins: keep it whole and append the ordered
+      // candidates after it (`needed` slices the head of `pool`).
+      return { kept: manualTail, pool: ordered, shuffle: false, wrapNotice, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
+    }
     const orderedIds = ordered.map((t) => t.trackId)
     const queuedTail = autoQueue.slice(pinnedHead.length)
     const keepable = opts.keepAuto ? leadingRun(queuedTail, orderedIds) : 0
     kept = [...pinnedHead, ...orderedIds.slice(0, keepable)]
     return { kept, pool: ordered.slice(keepable), shuffle: false, wrapNotice, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
   }
-  return { kept: keepsSampledPrefix ? kept : pinnedHead, pool, shuffle: false, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
+  const fallbackKept = manualTail.length > 0 ? manualTail : pinnedHead
+  return { kept: keepsSampledPrefix ? kept : fallbackKept, pool, shuffle: false, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
 }
 
 /** Longest leading run where the queued rows still equal `ordered`, one by one
