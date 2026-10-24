@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.2.68",
-      "versionDate": "2026-10-24T12:52:31.780Z",
-      "versionDescription": "The auto queue keeps your filter and sort order: pressing a song, or just letting it play, now shows the upcoming songs in the same order",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.68/mmdrome.ipa",
+      "version": "1.2.69",
+      "versionDate": "2026-10-24T13:12:19.365Z",
+      "versionDescription": "A dragged auto-queue row now stays where you put it until you change the filter or sort",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.69/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.2.69",
+          "buildVersion": "73",
+          "date": "2026-10-24T13:12:19.365Z",
+          "localizedDescription": "A dragged auto-queue row now stays where you put it until you change the filter or sort",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.69/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.2.68",
           "buildVersion": "72",
@@ -665,6 +673,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.2.69",
+      "identifier": "ios-v1.2.69",
+      "appID": "com.mmdrome.player",
+      "caption": "A dragged auto-queue row now stays where you put it until you change the filter or sort",
+      "date": "2026-10-24T13:12:19.365Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.2.68",
       "identifier": "ios-v1.2.68",
       "appID": "com.mmdrome.player",
@@ -697,15 +714,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Native playback reliability: authoritative play/pause intent, shared lock-screen/accessory command handling, and Now Playing publication fix",
       "date": "2026-10-23T01:36:35.566Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.64",
-      "identifier": "ios-v1.2.64",
-      "appID": "com.mmdrome.player",
-      "caption": "Loved tracks now reach Last.fm and ListenBrainz: a completed listen sends the current loved state, ListenBrainz hearts use the documented MB",
-      "date": "2026-10-22T06:18:51.505Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
