@@ -1,10 +1,20 @@
-## 2026-10-25 — a hand-dragged auto row survives the fill (until a rule change)
+## 2026-10-24d — a press ends a hand-dragged auto order
+
+The previous entry left one precedence open, and its own note called it out: a press KEPT the hand order, which contradicts the request's wording that pressing a song makes the auto queue adjust to the current filter and sort. Decided the other way — a press ENDS the hand order.
+
+`queueManager.selectTrack` (the D1 press path, and only when it actually wrote) clears `_autoOrderPinned` alongside the anchor write, so the post-load replenish re-derives the tail from the pressed row's place in the live filter+sort. A plain advance/Next still keeps the hand order (the drag→advance rule from the previous entry), and a drag still re-pins the tail. Ordering still lives in one owner: the manager reports the fact, `planAutoQueueFill` decides the order.
+
+Pins: unit `tests/queueManagerFill.test.ts` — "a press ends the hand-ordered tail and re-derives it from the pressed row" (the drag order is asserted as the negative result it must not produce), and browser `tests/e2e/autoqueueadded.spec.ts` — "a press drops a dragged auto order and re-derives from the pressed song" (drag aq6 past aq2, press aq3, assert the Added ↓ continuation aq5, aq6, aq4, aq2 and explicitly not the dragged order). Negative check: removing the clear fails both — the e2e at the sorted-continuation assertion, the manager test at the first mismatch.
+
+Also corrected the previous entry's date: it was stamped 2026-10-25 but was written the same day as this one, so it is now 2026-10-24c.
+
+## 2026-10-24c — a hand-dragged auto row survives the fill (until a press or a rule change)
 
 Follow-up to 2026-10-24b, which made every shuffle-off replenish re-derive the tail from the filter+sort. That fixed the stale prefix but also meant a deliberate drag of an auto row was silently undone by the very next fill (an advance, a library change, …) — the queue stopped honouring an explicit move. On the built bundle (Added ↓, tail `aq4, aq2, aq3, aq5, aq6`) the drag itself always landed; it was the NEXT fill that put the sorted rows back — reproduced exactly by forcing `respectManualOrder: false` (the pre-change fill) against the new e2e.
 
 The rule is the smallest one that keeps both: **a hand order outranks the derived order until a rule change.** `QueueManager.applyDragDrop` compares the auto section before/after and sets a session-only `_autoOrderPinned` when the drop changed it; `planAutoQueueFill` takes that as `respectManualOrder`, keeps the tail verbatim (dropping rows that no longer exist or match) and appends the ordered candidates after its LAST row, so the sort still decides everything new. `rebuildForFreshContext` (a filter/sort edit), `rebuildAutoQueue` (a shuffle toggle) and `playAll`/`clearQueue` clear the intent — the new ordering wins. The flag is not persisted: a reload re-derives from the rule, which is the documented asymmetry (a restored session is a fresh context). Ordering still lives in ONE owner: the manager only reports the fact, the plan decides.
 
-Precedents kept deliberately: a PRESS does not clear the intent (the user's sequence stays the upcoming songs; the appended rows continue after it), and a single removal does not either (the remaining rows keep their order). Pins: `tests/autoQueuePlan.test.ts` (kept verbatim + appends after the last hand row, versus the derived order without the intent), `tests/queueManagerFill.test.ts` (a real `applyDragDrop`, then an advance keeps it, then a sort change re-derives it), `tests/e2e/autoqueueadded.spec.ts` (the drag through the real pointer path, an advance, then an Added flip). Negative check: forcing `respectManualOrder: false` fails the e2e at the post-advance assertion and the manager test.
+Precedent kept deliberately: a single removal does not clear the intent (the remaining rows keep their order). The press case was decided the other way the same day — see 2026-10-24d. Pins: `tests/autoQueuePlan.test.ts` (kept verbatim + appends after the last hand row, versus the derived order without the intent), `tests/queueManagerFill.test.ts` (a real `applyDragDrop`, then an advance keeps it, then a sort change re-derives it), `tests/e2e/autoqueueadded.spec.ts` (the drag through the real pointer path, an advance, then an Added flip). Negative check: forcing `respectManualOrder: false` fails the e2e at the post-advance assertion and the manager test.
 
 ## 2026-10-24b — the auto queue is the ordered continuation from the current track
 

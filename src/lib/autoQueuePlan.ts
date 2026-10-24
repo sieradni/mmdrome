@@ -292,8 +292,8 @@ export function filterRangesValid(f: Pick<AutoQueueFilterFields, 'minRating' | '
  * A HAND-ORDERED tail (`respectManualOrder`, set while a drag order is in
  * effect) outranks the derived order: the tail is the user's own sequence, so
  * it stays verbatim (minus rows that no longer exist or match) and the fill
- * appends AFTER its last row. The caller clears that intent on a rule change,
- * which is what lets a new filter/sort win (2026-10-25).
+ * appends AFTER its last row. The caller clears that intent on a PRESS or a
+ * rule change, which is what lets the live filter/sort win (2026-10-24c/d).
  *
  * SHUFFLE keeps a SAMPLED prefix on a keepAuto replenish: the kept rows are
  * excluded from admission and only the still-matching ones are retained, so a

@@ -263,3 +263,32 @@ test('a dragged auto order survives the next advance and yields to a sort change
   await page.keyboard.press('Escape')
   await expect.poll(async () => (await queueSections(page)).auto.slice(0, 4)).toEqual(AFTER_DRAG_SORT_FLIP)
 })
+
+// A PRESS ends the hand order (2026-10-24d): pressing a song says "play this
+// now", so the tail re-derives from that song's place in the live filter+sort
+// instead of staying hand-ordered. The dragged order is the negative result.
+const AFTER_PRESS_SORTED = ['navidrome-aq5', 'navidrome-aq6', 'navidrome-aq4', 'navidrome-aq2']
+const PRESS_DRAG_ORDER = ['navidrome-aq4', 'navidrome-aq2', 'navidrome-aq6', 'navidrome-aq5']
+
+test('a press drops a dragged auto order and re-derives from the pressed song', async ({ page }) => {
+  await bootLibraryAndPlayFirst(page)
+
+  await openAutoFilters(page)
+  await filterDialog(page).getByRole('button', { name: 'Added', exact: true }).click()
+  await expect(filterDialog(page).getByRole('button', { name: 'Added ↓', exact: true })).toBeVisible()
+  await closeAutoFilters(page)
+  await expect.poll(() => autoOrder(page)).toEqual(DESC)
+
+  await dragAutoRow(page, 4, 1)
+  await expect.poll(() => autoOrder(page)).toEqual(AFTER_DRAG)
+
+  // Press aq3 from the library: the hand order ends, the sorted continuation
+  // from aq3 (aq5, aq6, aq4, aq2) leads the tail.
+  await backToLibrary(page)
+  await page.locator('[data-track-id="navidrome-aq3"]').click()
+  await page.waitForTimeout(1200)
+  await openQueueOverlay(page)
+  const auto = (await queueSections(page)).auto
+  expect(auto.slice(0, 4)).toEqual(AFTER_PRESS_SORTED)
+  expect(auto.slice(0, 4)).not.toEqual(PRESS_DRAG_ORDER)
+})

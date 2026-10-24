@@ -29,9 +29,10 @@ class QueueManager {
   /**
    * Session-only: the user hand-ordered the auto tail with a drag, so the
    * ordered replenish must keep THEIR sequence and only append at its end
-   * (2026-10-25). A rule change (filter/sort, a shuffle toggle) or a queue
-   * replacement clears it — the new ordering wins. NEVER persisted: a fresh
-   * session re-derives from the rule, which is the documented asymmetry.
+   * (2026-10-24c). A PRESS ("play this now") or a rule change (filter/sort, a
+   * shuffle toggle), or a queue replacement clears it — the live ordering wins
+   * (2026-10-24d). NEVER persisted: a fresh session re-derives from the rule,
+   * which is the documented asymmetry.
    */
   private _autoOrderPinned = false
 
@@ -127,7 +128,14 @@ class QueueManager {
     })
     // A press also puts the anchor ahead of the audio (the appended row is
     // loading) — a quick Next after it must advance, not re-load the press.
-    if (wrote) pendingAdvanceTrackId.set(trackId)
+    if (wrote) {
+      // A press is an explicit "play this now": it ENDS a hand-dragged tail
+      // (2026-10-24d), so the fill re-derives from the pressed row's place in
+      // the live filter+sort. A drag still outranks the order until then, and
+      // a plain advance/Next never clears the intent.
+      this._autoOrderPinned = false
+      pendingAdvanceTrackId.set(trackId)
+    }
   }
 
   /** Moves the auto OCCURRENCE at `autoIndex` to the end of the user queue

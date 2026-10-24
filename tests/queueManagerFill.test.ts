@@ -593,3 +593,24 @@ test('a dragged auto order survives the next advance, and a rule change re-deriv
   assert.deepEqual(get(queue).autoQueue.slice(0, 4), ['aq6', 'aq5', 'aq3', 'aq2'], 'the sort wins after a rule change')
   assert.ok(!get(queue).autoQueue.includes('aq4') || get(queue).autoQueue.indexOf('aq4') > 3, 'nothing left of the drag head order')
 })
+
+test('a press ends the hand-ordered tail and re-derives it from the pressed row', () => {
+  reset()
+  library.set(AQ_LIB())
+  autoQueueSort.set({ sortBy: 'added', sortAsc: false })
+  setQueue({ userQueue: ['aq1'], autoQueue: ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'], activeIndex: 0 })
+  queueManager.applyDragDrop('auto:aq6', 2, ['aq1'], ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'])
+  assert.deepEqual(get(queue).autoQueue, ['aq4', 'aq6', 'aq2', 'aq3', 'aq5'], 'the drop hand-ordered the tail')
+
+  // A press is an explicit "play this now": the hand order ends with it, so
+  // the tail is the filter+sort continuation from the pressed row.
+  queueManager.selectTrack('aq3')
+  queueManager.replenishAutoQueue()
+
+  const q = get(queue)
+  assert.deepEqual(q.userQueue, ['aq1', 'aq3'], 'the press anchors its own row')
+  // Added ↓ = aq3, aq5, aq6, aq1, aq4, aq2 → from aq3: aq5, aq6, aq4, aq2,
+  // then the short pool recycles the user-queued aq1 (B4).
+  assert.deepEqual(q.autoQueue, ['aq5', 'aq6', 'aq4', 'aq2', 'aq1'], 'the sorted continuation wins')
+  assert.notDeepEqual(q.autoQueue.slice(0, 4), ['aq4', 'aq6', 'aq2', 'aq5'], 'the dragged order must not survive a press')
+})
