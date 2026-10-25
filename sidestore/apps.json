@@ -27,7 +27,8 @@
           "date": "2026-10-25T12:21:24.404Z",
           "localizedDescription": "The Equalizer now keeps the engine and the sliders in agreement across relaunches, opens from Settings without a track, and applies every import line it can read",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.2.71/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5249187
         },
         {
           "version": "1.2.70",
