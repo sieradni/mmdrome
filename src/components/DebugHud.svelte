@@ -351,7 +351,7 @@
       // Web-only (null on native): the engine's decision inputs — ctx state,
       // element error, crossfade/fade state, EQ branch — the getDebugState
       // parity so a web dump verifies the same assumptions a native one does.
-      engineDebug,
+      engineDebug: readEngineDebug(),
       thumbnails: getThumbDebug(),
       // Cover outcomes (P6): the post-arm half of the thumbnail story —
       // failures, ladder step-downs, mean latency, newest records. Counters
@@ -472,15 +472,20 @@
     const dangers = events.filter((e) => e.level === 'danger').length
     return dangers > 0 ? ` · ${dangers} danger` : ''
   })
-  // Web engine snapshot (getEngineDebugState — the getDebugState parity):
-  // polled per tick so the WEB panel shows the engine's decision inputs.
-  let engineDebug = $derived.by(() => {
-    void jsTick
+  // Web engine snapshot (getEngineDebugState — the getDebugState parity). One
+  // reader for both the panel (polled per tick) and the Copy dump: a dump is
+  // EVIDENCE, so it must capture the engine at copy time rather than whatever
+  // the last tick happened to see.
+  function readEngineDebug() {
     try {
       return audioManager.getEngineDebugState()
     } catch {
       return null
     }
+  }
+  let engineDebug = $derived.by(() => {
+    void jsTick
+    return readEngineDebug()
   })
   // Retry-branch counters (2026-10-02g): the native ladder's branch decisions
   // plus the pools the loader actually rotated. Native-only (getDebugState

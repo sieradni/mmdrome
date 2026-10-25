@@ -1,5 +1,4 @@
 import { SoundTouchNode } from '@soundtouchjs/audio-worklet'
-import { parseEqText } from './eq/eqParser'
 import { computeBiquadCoefficients } from './eq/eqResponseCalculator'
 import { createGraphicEqAudioBuffer } from './eq/graphicEqEngine'
 import { hasGraphicBands, bandsToCurvePoints } from './eq/eqCurveTopology'
@@ -329,6 +328,18 @@ class AudioManager {
       eqProcessorReady: this._eqProcessorReady,
       eqBypassed: this._eqBypassed,
       eqBandCount: this._eqFilterConfigs.length,
+      // The applied config itself, not just its size: an "EQ sounds wrong"
+      // report can be read against the numbers the engine actually holds
+      // (the same projection the graph draws — eqEffective).
+      eqPreampDb: this._eqPreampDb,
+      eqBands: this._eqFilterConfigs.map((c) => ({
+        type: c.type,
+        frequency: c.frequency,
+        gain: c.gain,
+        q: c.q,
+        enabled: c.enabled,
+        curve: c.curve ?? 'parametric',
+      })),
       graphicEqMode: this._graphicEqMode,
       convolverActive: this._shouldUseConvolverPath(),
       soundTouchLive: this._stNodeLive,
@@ -398,7 +409,10 @@ class AudioManager {
       this._preamp = this._ctx.createGain()
       this._preamp.gain.value = 1
       this._eqPreamp = this._ctx.createGain()
-      this._eqPreamp.gain.value = 1
+      // The EQ preamp is restored from the recorded value — the EQ config (and
+      // its preamp) can be pushed before this graph exists, and a rebuilt graph
+      // must not silently play at 0 dB while the sliders show −5.
+      this._eqPreamp.gain.value = Math.pow(10, this._eqPreampDb / 20)
 
       // Spectrum tap: a PARALLEL branch off the preamp into an AnalyserNode
       // (the only Web Audio node that reads without consuming). The main
@@ -700,26 +714,6 @@ class AudioManager {
     this._fadeInFlight = false
   }
 
-  setEqBandGain(bandIndex: number, gainDb: number): void {
-    const clamped = clamp(gainDb, -12, 12)
-
-    const filter = this._eqFilters[bandIndex]
-    if (filter) {
-      filter.gain.value = clamped
-    }
-
-    const config = this._eqFilterConfigs[bandIndex]
-    if (config) {
-      config.gain = clamped
-    }
-
-    if (this._shouldUseConvolverPath()) {
-      this._updateConvolverBuffer()
-    } else if (this._eqProcessorReady) {
-      this._sendEqConfigToWorklet()
-    }
-  }
-
   /** Live per-band frequency + gain (+ optional Q) update WITHOUT a chain
    *  rebuild — the editable graph's drag affordance and the per-row Q
    *  slider (a drag can move dozens of events per second;
@@ -751,19 +745,15 @@ class AudioManager {
     }
   }
 
-  toggleEqBypass(): void {
-    if (!this._webAudioReady) return
-    this._eqBypassed = !this._eqBypassed
-    this._reconnectChain()
-    if (this._eqWorkletNode) {
-      this._eqWorkletNode.port.postMessage({ type: 'set-bypass', bypassed: this._eqBypassed })
-    }
-  }
-
+  /** Bypass is STATE, not a graph operation: it is recorded even before the
+   *  graph exists (a boot-time push, or a persisted bypass restored on a cold
+   *  engine), because `_reconnectChain` reads it when the graph is built. The
+   *  old `!_webAudioReady` early return silently dropped that state and the
+   *  restored (or pre-graph) bypass never reached the audio. */
   setEqBypass(enabled: boolean): void {
-    if (!this._webAudioReady) return
     if (this._eqBypassed === enabled) return
     this._eqBypassed = enabled
+    if (!this._webAudioReady) return
     this._reconnectChain()
     if (this._eqWorkletNode) {
       this._eqWorkletNode.port.postMessage({ type: 'set-bypass', bypassed: this._eqBypassed })
@@ -799,18 +789,6 @@ class AudioManager {
       activeRgGain.gain.value = 1
     }
 
-  }
-
-  parseParametricEQ(configText: string): void {
-    const result = parseEqText(configText)
-    if (result.filters.length === 0) return
-
-    this.setPreampDb(result.preampDb)
-    if (result.mode === 'graphic') {
-      this.applyGraphicEQ(result.filters)
-    } else {
-      this.applyFiltersConfig(result.filters)
-    }
   }
 
   applyGraphicEQ(configs: EqFilterConfig[], curves?: EqPoint[][]): void {
@@ -987,11 +965,24 @@ class AudioManager {
     } else if (this._eqBypassed || this._eqFilters.length === 0) {
       this._soundTouch.connect(this._preamp)
     } else {
-      this._soundTouch.connect(this._eqFilters[0])
-      for (let i = 0; i < this._eqFilters.length - 1; i++) {
-        this._eqFilters[i].connect(this._eqFilters[i + 1])
+      // Only the ENABLED bands are wired in series. A disabled band cannot be
+      // neutralized by a gain of 0 — a low/highpass ignores gain — so leaving
+      // it in the chain would keep filtering while the UI draws it off (the
+      // worklet and convolver paths already skip disabled bands).
+      const live = this._eqFilters.filter(
+        (_, i) => this._eqFilterConfigs[i]?.enabled !== false
+      )
+      if (live.length === 0) {
+        // An EQ that is configured but has every band switched off is still
+        // ON: its preamp applies (the graph draws it), only the bands don't.
+        this._soundTouch.connect(this._eqPreamp)
+      } else {
+        this._soundTouch.connect(live[0])
+        for (let i = 0; i < live.length - 1; i++) {
+          live[i].connect(live[i + 1])
+        }
+        live[live.length - 1].connect(this._eqPreamp)
       }
-      this._eqFilters[this._eqFilters.length - 1].connect(this._eqPreamp)
     }
 
     this._eqPreamp.connect(this._preamp)

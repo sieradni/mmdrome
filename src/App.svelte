@@ -3,6 +3,7 @@
   import { Capacitor, SystemBars, SystemBarType, SystemBarsStyle } from '@capacitor/core'
   import { currentTrack, queue, playbackState, initStores, settings, library, navidromeConnection, navidromeLoadStatus, metadataScanState, pushState, shuffleEnabled, currentTime, effectiveDuration, toggleShuffle, loopMode, sleepTimer } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
+  import { startEqEngineSync } from './lib/eq/eqEngineSync'
   import { sleepTimerManager } from './lib/sleepTimer'
   import { loadLibraryFromNavidrome } from './lib/syncEngine'
   import { ensureTagProbeAfterRestore, tagProbeState } from './lib/metadataScanner'
@@ -216,6 +217,12 @@
     getTagLib()
     await playbackManager.init()
 
+    // EQ → engine LAST: the manager's init engaged the native engine and the
+    // EQ session is already restored, so this subscription's boot push lands on
+    // a live graph — and from here every EQ transition reaches the audio
+    // through this one path instead of per-handler pushes (eqEngineSync).
+    startEqEngineSync()
+
     if (navigator.storage?.persist) {
       navigator.storage.persist()
     }
@@ -255,9 +262,36 @@
   function navigateTo(page: 'pitchSpeed' | 'eq' | 'volume' | 'detail' | 'settings') {
     if (page === 'settings') {
       view = 'settings'; closeAll()
+    } else if (page === 'eq') {
+      openEq('trackOptions')
     } else {
       overlay = page
     }
+  }
+
+  /** Where the Equalizer returns when it closes. The EQ is ONE view reached from
+   *  two surfaces — the track-options sheet (a loaded track) and Settings (which
+   *  exists with nothing playing) — so the owner of the overlay state also owns
+   *  the back target, instead of each entry guessing. */
+  let eqReturnTo = $state<'trackOptions' | 'settings'>('trackOptions')
+
+  function openEq(from: 'trackOptions' | 'settings') {
+    eqReturnTo = from
+    overlay = 'eq'
+  }
+
+  function closeEq() {
+    // A track that ended while the EQ was open leaves no options sheet to
+    // return to; the library is the honest fallback.
+    overlay = eqReturnTo === 'trackOptions' && $currentTrack ? 'trackOptions' : null
+  }
+
+  /** The EQ's home button means the LIBRARY from either entry point (the label
+   *  says so) — closing alone would land back on Settings when that is what is
+   *  underneath. */
+  function closeEqToLibrary() {
+    view = 'songs'
+    closeAll()
   }
 
   function formatTime(sec: number): string {
@@ -469,7 +503,7 @@
     {:else if view === 'artists'}
       <ArtistsView searchQuery={searchQueryDebounced} />
     {:else if view === 'settings'}
-      <SettingsView />
+      <SettingsView oneqopen={() => openEq('settings')} />
     {/if}
   </main>
 
@@ -789,7 +823,7 @@
 <!-- ─── EQ Overlay ─── -->
 {#if overlay === 'eq'}
   <div class="fixed inset-0 z-50 flex flex-col bg-background safe-area-full">
-    <EQView onback={() => overlay = 'trackOptions'} oncloseall={closeAll} />
+    <EQView onback={closeEq} oncloseall={closeEqToLibrary} />
   </div>
 {/if}
 

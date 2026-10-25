@@ -1,4 +1,4 @@
-import { writable, get } from 'svelte/store'
+import { derived, get, writable } from 'svelte/store'
 import { db, getSetting, setSetting } from '../db'
 import { persisted } from '../persistedStore'
 import { BUILTIN_PRESETS } from './builtInPresets'
@@ -8,9 +8,7 @@ import {
   editDraft,
   planWorkingPersist,
   resolveSession,
-  reconcileOnRestore,
   startSession,
-  type EqSessionPersistencePlan,
   type EqWorkingSession,
 } from './eqSession'
 
@@ -18,81 +16,125 @@ const USER_PRESET_PREFIX = 'eq_user_preset_'
 const ACTIVE_PRESET_KEY = 'active_eq_preset'
 const CURRENT_EQ_STATE_KEY = 'current_eq_state'
 
-export const activePresetId = writable<string>('flat')
-export const userPresets = writable<EqPreset[]>([])
-/** What the engine last applied / what a track load re-applies. */
-export const currentEqState = writable<EqPreset>(BUILTIN_PRESETS[0])
 /**
- * The working session — the single source the EQ view renders from: the
- * user's edits as a dirty overlay over the active preset. Auto-persisted
- * (debounced) via commitWorkingState, so leaving the view loses nothing;
- * presets are never silently modified. Replaces the old never-persisted
- * `draftState` (removed 2026-09-13).
+ * THE EQ state: the working session (base preset snapshot + working values +
+ * dirty flag). It is the ONLY writable piece of EQ state, and every other
+ * surface-facing value is DERIVED from it, so the controls and the audio
+ * cannot disagree:
+ *
+ * - `activePresetId` — the session base id, i.e. the preset the select names;
+ *   the ENGINE-facing read is the sync subscription (eqEngineSync), which
+ *   projects the same session through `resolveAppliedEq` (eqEffective).
+ *
+ * Presets are never silently modified: edits live as a dirty overlay over the
+ * base, and the whole session (edits included) is auto-persisted, so leaving
+ * the view loses nothing. Replaces the never-persisted `draftState`
+ * (removed 2026-09-13).
  */
 export const workingEq = writable<EqWorkingSession>(startSession(BUILTIN_PRESETS[0]))
+/** The selected preset id — read-only: a preset that is not the session base
+ *  can never be shown as selected. */
+export const activePresetId = derived(workingEq, (session) => session.base.id)
+export const userPresets = writable<EqPreset[]>([])
 // Bypass is an engine-bound scalar — store-layer persistence via `persisted`,
 // restored in `initEqStore` (the eq module owns its init).
 const _eqBypassed = persisted<boolean>('eq_bypassed', false)
 export const eqBypassed = _eqBypassed.store
 
-// ── Working-state commit machinery ─────────────────────────────────────
-// One debounce timer per app. The view calls editWorkingEq (or
-// commitWorkingState directly) after every slider move — the engine push is
-// the view's job and stays INSTANT; only the Dexie leg debounces.
+// ── Working-session commit machinery ────────────────────────────────────
+// One debounce timer per app. The view calls editWorkingEq after every slider
+// move and resetWorkingEq for a new base — the engine push is eqEngineSync's
+// subscription and stays INSTANT; only the Dexie leg debounces.
 
 let _commitTimer: ReturnType<typeof setTimeout> | null = null
+/** The session the pending debounced write belongs to (the flush needs it). */
+let _pendingSession: EqWorkingSession | null = null
 
-/** Drop a pending debounced working-state write (session turned clean or a
- *  preset-level flow already persisted). */
+/** Drop a pending debounced working-state write — a new base, a revert or a
+ *  save already superseded it. */
 export function cancelPendingWorkingCommit(): void {
   if (_commitTimer !== null) {
     clearTimeout(_commitTimer)
     _commitTimer = null
   }
+  _pendingSession = null
 }
 
-function persistWorkingNow(session: EqWorkingSession): void {
-  void persistEqState(session.state, session.base.id)
+function persistNow(session: EqWorkingSession): Promise<void> {
+  return persistEqState(session.state, session.base.id)
 }
 
-/** Apply the persist plan for `session` (pure policy from eqSession): dirty
- *  → debounced write; clean after dirty → immediate write (a revert must
- *  not resurrect from a pending dirty write); clean → no writes. */
-export function commitWorkingState(session: EqWorkingSession, wasDirty: boolean): void {
-  // The engine-facing state always mirrors the working copy — playbackManager
-  // re-applies it on every track load, so it must equal what the user hears.
-  currentEqState.set(session.state)
-  const plan: EqSessionPersistencePlan = planWorkingPersist(session, wasDirty)
-  if (!plan.persist) return
-  if (plan.mode === 'immediate') {
-    cancelPendingWorkingCommit()
-    persistWorkingNow(session)
-    return
+/**
+ * THE one persistence path for a session transition (policy:
+ * eqSession.planWorkingPersist). Immediate writes return their durability
+ * promise so a save flow can await it; the debounced path resolves at once.
+ */
+function persistTransition(
+  previous: EqWorkingSession,
+  next: EqWorkingSession
+): Promise<void> {
+  const mode = planWorkingPersist(previous, next)
+  // 'none' means the session already equals what is on disk (or what a pending
+  // write holds) — writing again would be a duplicate, and cancelling the
+  // pending write would drop the only copy of those values.
+  if (mode === 'none') return Promise.resolve()
+  if (mode === 'immediate') {
+    cancelPendingWorkingCommit() // the new value supersedes a pending write
+    return persistNow(next)
   }
   if (_commitTimer !== null) clearTimeout(_commitTimer)
+  _pendingSession = next
   _commitTimer = setTimeout(() => {
     _commitTimer = null
-    persistWorkingNow(session)
+    _pendingSession = null
+    void persistNow(next)
   }, EQ_COMMIT_DEBOUNCE_MS)
+  return Promise.resolve()
+}
+
+/** Write a pending debounced edit NOW. Wired to pagehide/visibilitychange
+ *  (see below) and used by tests: iOS kills the webview without a reliable
+ *  `beforeunload`, so a slider move followed by a background must not wait
+ *  out the debounce window it may never survive. */
+export function flushWorkingEqPersistence(): void {
+  const session = _pendingSession
+  if (!session) return
+  cancelPendingWorkingCommit()
+  void persistNow(session)
 }
 
 /** The view's single edit entry: apply `edit` to the working session, mark
  *  dirtiness against the session's own base, and run the persist plan. */
 export function editWorkingEq(edit: (state: EqPreset) => EqPreset): void {
-  const wasDirty = get(workingEq).dirty
-  const prev = get(workingEq)
-  const next = editDraft(prev, edit)
+  const previous = get(workingEq)
+  const next = editDraft(previous, edit)
   workingEq.set(next)
-  commitWorkingState(next, wasDirty)
+  void persistTransition(previous, next)
 }
 
-/** Replace the working session wholesale (fresh selection, restore, save
- *  flows) and persist the clean state immediately if the old one was dirty. */
-export function resetWorkingEq(basePreset: EqPreset): void {
-  const wasDirty = get(workingEq).dirty
+/** Install a NEW base (preset selection, import, Reset All) as a CLEAN
+ *  session. The base id IS the selection, so the select and the engine always
+ *  name the same EQ — an import has no preset row and therefore shows as the
+ *  session's own base instead of the preset it replaced (and never renders
+ *  empty after a relaunch on the persisted id). Returns the durability
+ *  promise: save flows await it, the view's handlers fire and forget. */
+export function resetWorkingEq(basePreset: EqPreset): Promise<void> {
+  const previous = get(workingEq)
   const fresh = startSession(basePreset)
   workingEq.set(fresh)
-  commitWorkingState(fresh, wasDirty)
+  return persistTransition(previous, fresh)
+}
+
+// Page-lifecycle flush (viewState.ts's pattern) — the engine push is instant
+// and the Dexie leg is what can be lost; guarded so a Node import stays
+// side-effect-free.
+if (typeof document !== 'undefined') {
+  const flush = () => flushWorkingEqPersistence()
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush()
+  })
+  window.addEventListener('pagehide', flush)
+  window.addEventListener('beforeunload', flush)
 }
 
 export async function initEqStore(): Promise<void> {
@@ -110,35 +152,17 @@ export async function initEqStore(): Promise<void> {
     }
     userPresets.set(loadedUserPresets)
 
-    // Load last active state or default to Flat
+    // Load the persisted working state + base id.
     const savedState = await getSetting<EqPreset>(CURRENT_EQ_STATE_KEY)
     const savedPresetId = await getSetting<string>(ACTIVE_PRESET_KEY)
 
-    // Restore the working session FIRST (it decides what currentEqState
-    // holds: a persisted dirty overlay beats the bare preset row), then
-    // reconcile the active id — an existing active selection newer than the
-    // overlay wins (applyPreset persists immediately, the overlay debounces).
-    const session = resolveSession(savedState, savedPresetId, loadedUserPresets, BUILTIN_PRESETS[0])
-    let activeId = get(activePresetId)
-    if (savedState) currentEqState.set(session.state)
-    if (savedPresetId) {
-      const decision = reconcileOnRestore(session, savedPresetId)
-      activeId = decision.activePresetId
-      activePresetId.set(activeId)
-      if (decision.adoptSaved) {
-        workingEq.set(session)
-      } else {
-        const preset = findPresetById(activeId, loadedUserPresets)
-        if (preset) {
-          workingEq.set(startSession(preset))
-          currentEqState.set(preset)
-        }
-      }
-    } else {
-      // No persisted selection: the saved state (if any) is a self-based
-      // session (imported EQ / legacy row) — adopt it as-is.
-      workingEq.set(session)
-    }
+    // ONE restore write: the resolved session carries the base (the
+    // selection) and the working values, and every derived reader follows it.
+    // A saved overlay whose base row is gone (deleted preset, imported EQ)
+    // self-bases, so the select names the EQ that actually restored.
+    workingEq.set(
+      resolveSession(savedState, savedPresetId, loadedUserPresets, BUILTIN_PRESETS[0])
+    )
 
     // Bypass is a `persisted` store — restore it (idempotent) before any write.
     await _eqBypassed.restore()
@@ -147,35 +171,20 @@ export async function initEqStore(): Promise<void> {
   }
 }
 
-export function findPresetById(id: string, customPresets?: EqPreset[]): EqPreset | undefined {
-  const custom = customPresets ?? get(userPresets)
-  return BUILTIN_PRESETS.find((p) => p.id === id) || custom.find((p) => p.id === id)
+export function findPresetById(id: string): EqPreset | undefined {
+  return BUILTIN_PRESETS.find((p) => p.id === id) || get(userPresets).find((p) => p.id === id)
 }
 
-export async function saveUserPreset(preset: EqPreset): Promise<void> {
-  const isBuiltin = BUILTIN_PRESETS.some((p) => p.id === preset.id)
-  const cleanPreset: EqPreset = {
-    ...preset,
-    id: isBuiltin ? `custom_${Date.now()}` : preset.id,
-    isBuiltin: false,
-  }
-
-  await setSetting(`${USER_PRESET_PREFIX}${cleanPreset.id}`, cleanPreset)
-
+/** Write a user preset row in place, or append it. */
+async function writeUserPreset(preset: EqPreset): Promise<void> {
+  await setSetting(`${USER_PRESET_PREFIX}${preset.id}`, preset)
   userPresets.update((list) => {
-    const idx = list.findIndex((p) => p.id === cleanPreset.id)
-    if (idx >= 0) {
-      const updated = [...list]
-      updated[idx] = cleanPreset
-      return updated
-    }
-    return [...list, cleanPreset]
+    const idx = list.findIndex((p) => p.id === preset.id)
+    if (idx < 0) return [...list, preset]
+    const updated = [...list]
+    updated[idx] = preset
+    return updated
   })
-
-  activePresetId.set(cleanPreset.id)
-  currentEqState.set(cleanPreset)
-  resetWorkingEq(cleanPreset)
-  await persistEqState(cleanPreset, cleanPreset.id)
 }
 
 export async function deleteUserPreset(id: string): Promise<void> {
@@ -185,74 +194,16 @@ export async function deleteUserPreset(id: string): Promise<void> {
 
   userPresets.update((list) => list.filter((p) => p.id !== id))
 
-  if (get(activePresetId) === id) {
-    const defaultPreset = BUILTIN_PRESETS[0]
-    activePresetId.set(defaultPreset.id)
-    currentEqState.set(defaultPreset)
-    resetWorkingEq(defaultPreset)
-    await persistEqState(defaultPreset, defaultPreset.id)
-  }
+  if (get(activePresetId) === id) await resetWorkingEq(BUILTIN_PRESETS[0])
 }
 
+/** Select a preset: APPLY it (classic switch — a fresh selection discards the
+ *  dirty overlay; the view asks before discarding). */
 export async function applyPreset(id: string): Promise<EqPreset | undefined> {
   const preset = findPresetById(id)
   if (!preset) return undefined
-
-  activePresetId.set(id)
-  currentEqState.set(preset)
-  resetWorkingEq(preset)
-  await persistEqState(preset, id)
+  await resetWorkingEq(preset)
   return preset
-}
-
-/**
- * Legacy save-as-current (pre-session model; the view now uses
- * saveEqSession — kept because it still backs the saveUserPreset flow and
- * the eqStore test pins).
- */
-export async function saveAsCurrentPreset(draft: EqPreset): Promise<EqPreset> {
-  const activeId = get(activePresetId)
-  const preset = findPresetById(activeId)
-
-  let committed: EqPreset
-
-  if (preset && !preset.isBuiltin) {
-    committed = {
-      ...preset,
-      mode: draft.mode,
-      preampDb: draft.preampDb,
-      filters: draft.filters.map((f) => ({ ...f })),
-    }
-    await setSetting(`${USER_PRESET_PREFIX}${committed.id}`, committed)
-
-    userPresets.update((list) => {
-      const idx = list.findIndex((p) => p.id === committed.id)
-      if (idx >= 0) {
-        const updated = [...list]
-        updated[idx] = committed
-        return updated
-      }
-      return list
-    })
-  } else {
-    const name = preset ? `${preset.name} (modified)` : `User Preset ${Date.now()}`
-    committed = {
-      id: `user_${Date.now()}`,
-      name,
-      mode: draft.mode,
-      preampDb: draft.preampDb,
-      filters: draft.filters.map((f) => ({ ...f })),
-      isBuiltin: false,
-    }
-    await setSetting(`${USER_PRESET_PREFIX}${committed.id}`, committed)
-    userPresets.update((list) => [...list, committed])
-    activePresetId.set(committed.id)
-  }
-
-  currentEqState.set(committed)
-  resetWorkingEq(committed)
-  await persistEqState(committed, get(activePresetId))
-  return committed
 }
 
 /**
@@ -268,64 +219,44 @@ export async function saveAsCurrentPreset(draft: EqPreset): Promise<EqPreset> {
  * dropped them — a saved import lost its curve stack).
  */
 export async function saveEqSession(name?: string, mode: 'auto' | 'new' = 'auto'): Promise<EqPreset> {
-  const activeId = get(activePresetId)
-  const preset = findPresetById(activeId)
   const session = get(workingEq)
+  const preset = findPresetById(session.base.id)
   const draft = session.state
-  // The base id — NOT activePresetId — decides: the import flow keeps the
-  // previously active preset selected while the session base is 'imported',
-  // so an activePresetId check would happily OVERWRITE that unrelated user
-  // preset with imported values (found by the eqStore test).
+  // The base id — NOT the selected preset's row — decides: an imported base
+  // has no preset row at all (`findPresetById('imported')` is undefined), so
+  // resolving through the selection's row would create a preset from the
+  // WRONG name (or overwrite an unrelated user preset — found by the eqStore
+  // test). The base is the session's own identity.
   const baseIsImport = session.base.id === 'imported'
   const asNew = mode === 'new' || !preset || preset.isBuiltin || baseIsImport
 
-  if (!asNew) {
-    // Overwrite path: keep the preset's identity, take the working values.
-    const committed: EqPreset = {
-      ...preset,
-      mode: draft.mode,
-      preampDb: draft.preampDb,
-      filters: draft.filters.map((f) => ({ ...f })),
-      graphicEqCurves: draft.graphicEqCurves?.map((c) => c.map((p) => ({ ...p }))),
-    }
-    await setSetting(`${USER_PRESET_PREFIX}${committed.id}`, committed)
-    userPresets.update((list) => {
-      const idx = list.findIndex((p) => p.id === committed.id)
-      if (idx >= 0) {
-        const updated = [...list]
-        updated[idx] = committed
-        return updated
+  // Overwrite keeps the preset's identity and takes the working values; a new
+  // preset takes its name from the SESSION BASE (an import saved while 'Flat'
+  // is selected must not call itself "Flat (modified)").
+  const committed: EqPreset = asNew
+    ? {
+        id: `user_${Date.now()}`,
+        name: name?.trim() || `${session.base.name ?? preset?.name ?? 'User'} (modified)`,
+        mode: draft.mode,
+        preampDb: draft.preampDb,
+        filters: draft.filters.map((f) => ({ ...f })),
+        graphicEqCurves: draft.graphicEqCurves?.map((c) => c.map((p) => ({ ...p }))),
+        isBuiltin: false,
       }
-      return list
-    })
-    currentEqState.set(committed)
-    resetWorkingEq(committed)
-    await persistEqState(committed, activeId)
-    return committed
-  }
+    : {
+        ...preset,
+        mode: draft.mode,
+        preampDb: draft.preampDb,
+        filters: draft.filters.map((f) => ({ ...f })),
+        graphicEqCurves: draft.graphicEqCurves?.map((c) => c.map((p) => ({ ...p }))),
+      }
 
-  // Builtin/imported base, or an explicit Save-as-New: create a new user
-  // preset. The default name follows the SESSION BASE (an import saved while
-  // 'Flat' is selected must not call itself "Flat (modified)").
-  const committed: EqPreset = {
-    id: `user_${Date.now()}`,
-    name: name?.trim() || `${session.base.name ?? preset?.name ?? 'User'} (modified)`,
-    mode: draft.mode,
-    preampDb: draft.preampDb,
-    filters: draft.filters.map((f) => ({ ...f })),
-    graphicEqCurves: draft.graphicEqCurves?.map((c) => c.map((p) => ({ ...p }))),
-    isBuiltin: false,
-  }
-  await setSetting(`${USER_PRESET_PREFIX}${committed.id}`, committed)
-  userPresets.update((list) => [...list, committed])
-  activePresetId.set(committed.id)
-  currentEqState.set(committed)
-  resetWorkingEq(committed)
-  await persistEqState(committed, committed.id)
+  await writeUserPreset(committed)
+  await resetWorkingEq(committed)
   return committed
 }
 
-export async function persistEqState(state: EqPreset, presetId: string): Promise<void> {
+async function persistEqState(state: EqPreset, presetId: string): Promise<void> {
   await setSetting(CURRENT_EQ_STATE_KEY, state)
   await setSetting(ACTIVE_PRESET_KEY, presetId)
 }

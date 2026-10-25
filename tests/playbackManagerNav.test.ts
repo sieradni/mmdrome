@@ -62,10 +62,6 @@ class FakeAudioManager {
   preamp: GainNode | null = null
   async ensureWebAudioReady(): Promise<void> {}
   markUserSeeked(): void {}
-  setPreampDb(): void {}
-  applyGraphicEQ(): void {}
-  applyFiltersConfig(): void {}
-  setEqBypass(): void {}
   setMasterVolume(): void {}
   setReplayGainMode(): void {}
   applyReplayGain(): void {}
@@ -127,7 +123,6 @@ class FakeEngine {
   setCrossfade(): void {}
   setAudioMixing(): void {}
   setSeekEpochs(): void {}
-  pushNativeEqFromStore(): void {}
 }
 
 // --- harness -------------------------------------------------------------

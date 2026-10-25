@@ -1,10 +1,13 @@
 // Pins eqStore's persistence surface (TODO 4.6 + the 2026-09-13 working-
 // state overlay): initEqStore restore paths (userPresets scan, current state
-// + active preset id, bypass via `persisted`), saveUserPreset's builtin-name
-// → `custom_` re-id, deleteUserPreset's active-preset fallback to flat,
-// applyPreset, and the WORKING SESSION semantics: edits mark dirty against
-// the session base, dirty edits debounce-persist, a revert persists
-// immediately, and preset-level flows reset the session clean. Dexie tables
+// + active preset id, bypass via `persisted`), deleteUserPreset's
+// active-preset fallback to flat, applyPreset, saveEqSession, and the WORKING
+// SESSION semantics: edits mark dirty against the session base, dirty edits
+// debounce-persist, a revert persists immediately, preset-level flows reset
+// the session clean, and the selection (`activePresetId`) plus the
+// engine-facing state (`currentEqState`) are DERIVED from that one session
+// rather than mirrored (the divergence the 2026-10 audit could construct).
+// Dexie tables
 // share one prototype (F3): get/put/delete/filter are patched once; the
 // filter stub returns `{ key, value }` rows (the shape initEqStore's scan
 // reads), and each test resets the stores because initEqStore is not
@@ -18,15 +21,14 @@ import {
   initEqStore,
   activePresetId,
   userPresets,
-  currentEqState,
   workingEq,
   eqBypassed,
-  saveUserPreset,
   deleteUserPreset,
   applyPreset,
-  saveAsCurrentPreset,
   saveEqSession,
   editWorkingEq,
+  resetWorkingEq,
+  flushWorkingEqPersistence,
   cancelPendingWorkingCommit,
 } from '../src/lib/eq/eqStore'
 import { startSession } from '../src/lib/eq/eqSession'
@@ -39,10 +41,14 @@ import type { EqPreset } from '../src/lib/eq/eqTypes'
 
 const rows = new Map<string, unknown>()
 const presetRows: { key: string; value: EqPreset }[] = []
+/** Counts every Dexie put — distinguishes "the flush wrote once" from "the
+ *  cleared debounce fired again later". */
+let putCount = 0
 
 function clearRows(): void {
   rows.clear()
   presetRows.length = 0
+  putCount = 0
 }
 
 // All tables share Table.prototype — patch each method once, dispatch by table.
@@ -52,6 +58,7 @@ Object.getPrototypeOf(db.userSettings).get = (async function (this: { name: stri
   return value === undefined ? undefined : { key, value }
 }) as never
 Object.getPrototypeOf(db.userSettings).put = (async (entry: { key: string; value: unknown }) => {
+  putCount++
   rows.set(entry.key, entry.value)
 }) as never
 Object.getPrototypeOf(db.userSettings).delete = (async (key: string) => {
@@ -68,11 +75,20 @@ function preset(over: Partial<EqPreset> = {}): EqPreset {
 
 function resetEqStores(): void {
   cancelPendingWorkingCommit()
-  activePresetId.set('flat')
   userPresets.set([])
-  currentEqState.set(BUILTIN_PRESETS[0])
   workingEq.set(startSession(BUILTIN_PRESETS[0]))
   eqBypassed.set(false)
+}
+
+/** A user preset seeded into the persisted rows (initEqStore loads it). */
+function probePreset(preampDb = 0): EqPreset {
+  return {
+    id: 'user_probe',
+    name: 'Probe',
+    mode: 'parametric',
+    preampDb,
+    filters: BUILTIN_PRESETS[0].filters.map((f) => ({ ...f })),
+  }
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -83,7 +99,7 @@ test('initEqStore: bypass restores from the persisted row; empty preset store �
   await initEqStore()
   assert.equal(get(eqBypassed), true, 'persisted bypass restored')
   assert.equal(get(activePresetId), 'flat', 'no saved preset → flat')
-  assert.equal(get(currentEqState).id, 'flat')
+  assert.equal(get(workingEq).state.id, 'flat')
   assert.equal(get(workingEq).state.id, 'flat', 'working session mirrors flat')
   assert.equal(get(workingEq).dirty, false, 'fresh session is clean')
 })
@@ -93,21 +109,122 @@ test('initEqStore: saved state + active preset id restore together', async () =>
   rows.set('current_eq_state', preset({ id: 'user-1', name: 'Saved', preampDb: -3 }))
   rows.set('active_eq_preset', 'user-1')
   await initEqStore()
-  assert.equal(get(currentEqState).id, 'user-1')
-  assert.equal(get(currentEqState).preampDb, -3)
+  assert.equal(get(workingEq).state.id, 'user-1')
+  assert.equal(get(workingEq).state.preampDb, -3)
   assert.equal(get(activePresetId), 'user-1')
   assert.equal(get(workingEq).state.preampDb, -3, 'working session adopts the saved state')
   assert.equal(get(workingEq).dirty, false)
 })
 
-test('initEqStore: saved state without an active preset id keeps the default id', async () => {
+test('initEqStore: a state-only row self-bases and the selection follows it', async () => {
   resetEqStores()
   rows.set('current_eq_state', preset({ id: 'user-2', name: 'StateOnly' }))
   rows.delete('active_eq_preset')
   await initEqStore()
-  assert.equal(get(currentEqState).id, 'user-2')
-  assert.equal(get(activePresetId), 'flat')
+  assert.equal(get(workingEq).state.id, 'user-2')
+  // The session base IS the selection: leaving the id on 'flat' made the
+  // select name a preset the working state (and the engine) never held.
+  assert.equal(get(activePresetId), 'user-2')
   assert.equal(get(workingEq).state.id, 'user-2', 'state-only row self-bases into the session')
+})
+
+test('import over a CLEAN session persists at once and survives a relaunch', async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore() // clean Flat session, no pending edits
+  const imported: EqPreset = {
+    id: 'imported',
+    name: 'Imported',
+    mode: 'graphic',
+    preampDb: -5,
+    filters: [{ type: 'peaking', frequency: 100, gain: 6, q: 0.7, enabled: true }],
+    graphicEqCurves: [[{ frequency: 100, gainDb: 6 }, { frequency: 1000, gainDb: -2 }]],
+  }
+
+  resetWorkingEq(imported) // the store leg of EQView.handleImport
+  await sleep(20) // no debounce window to wait out
+  assert.equal((rows.get('current_eq_state') as EqPreset).preampDb, -5, 'written immediately')
+  assert.equal(rows.get('active_eq_preset'), 'imported', 'the session base id is persisted')
+  assert.equal(get(activePresetId), 'imported', 'the select names what is playing')
+
+  // Relaunch: same rows, fresh stores (module-level state is per page load).
+  cancelPendingWorkingCommit()
+  userPresets.set([])
+  workingEq.set(startSession(BUILTIN_PRESETS[0]))
+  await initEqStore()
+
+  assert.equal(get(workingEq).state.preampDb, -5, 'controls restore the import')
+  assert.deepEqual(get(workingEq).state.graphicEqCurves, imported.graphicEqCurves)
+  assert.equal(get(workingEq).dirty, false)
+  assert.equal(get(workingEq).state.preampDb, -5, 'playback applies the import')
+  assert.equal(get(activePresetId), 'imported')
+})
+
+test('an import discards a pending debounced edit instead of resurrecting it', async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore()
+  editWorkingEq((st) => {
+    st.preampDb = -2
+    return st
+  }) // schedules a debounced write of the OLD session
+  resetWorkingEq(
+    preset({ id: 'imported', name: 'Imported', mode: 'graphic', preampDb: -8, graphicEqCurves: [[{ frequency: 60, gainDb: 4 }]] })
+  )
+  await sleep(700) // the old debounce would fire here if it were not cancelled
+  assert.equal((rows.get('current_eq_state') as EqPreset).preampDb, -8, 'the import wins, not the discarded edit')
+  assert.equal(rows.get('active_eq_preset'), 'imported')
+  assert.equal(get(workingEq).state.preampDb, -8)
+})
+
+test('a SECOND import (same base id, different curve) still persists', async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore()
+  resetWorkingEq(
+    preset({ id: 'imported', name: 'Imported', mode: 'graphic', preampDb: -3, graphicEqCurves: [[{ frequency: 80, gainDb: 3 }]] })
+  )
+  await sleep(20)
+  // Same base id both times: a base-id-only trigger would write nothing here.
+  resetWorkingEq(
+    preset({ id: 'imported', name: 'Imported', mode: 'graphic', preampDb: -9, graphicEqCurves: [[{ frequency: 200, gainDb: -6 }]] })
+  )
+  await sleep(20)
+  assert.equal((rows.get('current_eq_state') as EqPreset).preampDb, -9, 'second import persisted')
+  assert.equal(get(workingEq).state.preampDb, -9)
+})
+
+test('flushWorkingEqPersistence writes a pending debounced edit exactly once', async () => {
+  resetEqStores()
+  clearRows()
+  await initEqStore()
+  editWorkingEq((st) => {
+    st.preampDb = -6
+    return st
+  })
+  assert.notEqual((rows.get('current_eq_state') as EqPreset | undefined)?.preampDb, -6, 'still debounced')
+
+  flushWorkingEqPersistence() // pagehide
+  await sleep(0) // one persist = the state row + the base-id row
+  assert.equal((rows.get('current_eq_state') as EqPreset).preampDb, -6, 'pending edit written now')
+  const afterFlush = putCount
+  await sleep(700)
+  assert.equal(putCount, afterFlush, 'the cleared debounce never fires a second write')
+
+  // Nothing pending → no write at all.
+  flushWorkingEqPersistence()
+  assert.equal(putCount, afterFlush)
+})
+
+test('restore: an active preset id with no state row applies that preset', async () => {
+  resetEqStores()
+  clearRows()
+  presetRows.push({ key: 'eq_user_preset_user-only', value: preset({ id: 'user-only', name: 'Only', preampDb: -4 }) })
+  rows.set('active_eq_preset', 'user-only')
+  await initEqStore()
+  assert.equal(get(activePresetId), 'user-only')
+  assert.equal(get(workingEq).state.preampDb, -4)
+  assert.equal(get(workingEq).state.preampDb, -4, 'the session is not left on flat')
 })
 
 test('initEqStore: user presets are loaded from the prefixed rows', async () => {
@@ -121,29 +238,33 @@ test('initEqStore: user presets are loaded from the prefixed rows', async () => 
   assert.deepEqual(get(userPresets).map((p) => p.id), ['user-a', 'user-b'])
 })
 
-test('saveUserPreset re-ids a builtin name to custom_ and persists', async () => {
+test('the selection is DERIVED from the session (it cannot diverge)', async () => {
   resetEqStores()
   clearRows()
   await initEqStore()
-  await saveUserPreset(preset({ id: 'flat', name: 'Flat' }))
-  const savedId = get(activePresetId)
-  assert.ok(savedId.startsWith('custom_'), `builtin id re-ided, got ${savedId}`)
-  assert.ok(rows.has(`eq_user_preset_${savedId}`), 'custom preset persisted')
-  assert.equal(get(userPresets).some((p) => p.id === savedId), true)
-  assert.equal(get(currentEqState).id, savedId)
-  assert.equal(get(workingEq).base.id, savedId, 'working session re-based on the saved preset')
-  assert.equal(get(workingEq).dirty, false)
-  assert.equal(get(currentEqState).isBuiltin, false)
+  assert.equal(get(activePresetId), get(workingEq).base.id, 'selection IS the session base')
+
+  editWorkingEq((st) => {
+    st.preampDb = -4
+    return st
+  })
+  assert.equal(get(workingEq).state.preampDb, -4)
+  assert.equal(get(activePresetId), 'flat', 'a dirty edit keeps the base selected')
+
+  await resetWorkingEq(preset({ id: 'user-y', name: 'Y', preampDb: -1 }))
+  assert.equal(get(workingEq).state.preampDb, -1)
+  assert.equal(get(activePresetId), 'user-y', 'a new base moves the selection with the state')
 })
 
-test('saveUserPreset with an existing custom id updates in place', async () => {
+test('a save that only creates a preset row still persists the selection', async () => {
   resetEqStores()
   clearRows()
-  presetRows.push({ key: 'eq_user_preset_user-a', value: preset({ id: 'user-a', name: 'A', preampDb: 0 }) })
   await initEqStore()
-  await saveUserPreset(preset({ id: 'user-a', name: 'A', preampDb: -6 }))
-  assert.equal(get(userPresets).find((p) => p.id === 'user-a')?.preampDb, -6)
-  assert.equal(get(userPresets).length, 1, 'updated, not duplicated')
+  // Clean Flat session, no value changes: only the base id moves. Keying the
+  // persist decision on the values alone lost the selection on relaunch.
+  const committed = await saveEqSession('Same values')
+  assert.equal(rows.get('active_eq_preset'), committed.id, 'selection written even though the values did not change')
+  assert.equal(get(activePresetId), committed.id)
 })
 
 test('deleteUserPreset of the active preset falls back to flat', async () => {
@@ -158,7 +279,7 @@ test('deleteUserPreset of the active preset falls back to flat', async () => {
   await deleteUserPreset('user-active')
   assert.equal(get(userPresets).some((p) => p.id === 'user-active'), false, 'preset removed')
   assert.equal(get(activePresetId), 'flat', 'active id falls back to flat')
-  assert.equal(get(currentEqState).id, 'flat')
+  assert.equal(get(workingEq).state.id, 'flat')
   assert.equal(get(workingEq).dirty, false, 'session reset clean on the fallback')
   assert.equal(rows.get('active_eq_preset'), 'flat', 'fallback persisted')
   assert.equal(rows.has('eq_user_preset_user-active'), false, 'deleted row removed from Dexie')
@@ -183,11 +304,11 @@ test('applyPreset sets stores and persists the active id', async () => {
   const result = await applyPreset('user-app')
   assert.equal(result?.id, 'user-app')
   assert.equal(get(activePresetId), 'user-app')
-  assert.equal(get(currentEqState).id, 'user-app')
+  assert.equal(get(workingEq).state.id, 'user-app')
   assert.equal(get(workingEq).base.id, 'user-app', 'session re-based on the selection')
   assert.equal(get(workingEq).dirty, false)
   assert.equal(rows.get('active_eq_preset'), 'user-app')
-  assert.deepEqual(rows.get('current_eq_state'), get(currentEqState), 'state persisted')
+  assert.deepEqual(rows.get('current_eq_state'), get(workingEq).state, 'state persisted')
 })
 
 test('editWorkingEq marks dirty against the base and debounce-persists (leaving the view loses nothing)', async () => {
@@ -200,7 +321,7 @@ test('editWorkingEq marks dirty against the base and debounce-persists (leaving 
   })
   assert.equal(get(workingEq).dirty, true, 'edit over flat marks dirty')
   assert.equal(get(workingEq).base.id, 'flat', 'base preset unchanged by the edit')
-  assert.equal(get(currentEqState).preampDb, -4, 'engine-facing state mirrors the edit instantly')
+  assert.equal(get(workingEq).state.preampDb, -4, 'a dirty edit keeps its values')
   assert.notEqual((rows.get('current_eq_state') as EqPreset | undefined)?.preampDb, -4, 'not yet persisted (debounce)')
   await sleep(700)
   assert.equal((rows.get('current_eq_state') as EqPreset).preampDb, -4, 'debounced write landed')
@@ -240,33 +361,19 @@ test('applyPreset while dirty resets the session clean on the new preset', async
   await applyPreset('user-x')
   assert.equal(get(workingEq).dirty, false, 'fresh selection starts clean')
   assert.equal(get(workingEq).base.id, 'user-x')
-  assert.equal(get(currentEqState).id, 'user-x')
+  assert.equal(get(workingEq).state.id, 'user-x')
   assert.equal((rows.get('current_eq_state') as EqPreset).id, 'user-x')
 })
 
-test('saveAsCurrentPreset consumes the working state and re-bases the session clean', async () => {
-  resetEqStores()
-  clearRows()
-  await initEqStore()
-  editWorkingEq((st) => {
-    st.preampDb = -7
-    return st
-  })
-  const committed = await saveAsCurrentPreset(structuredClone(get(workingEq).state))
-  assert.equal(committed.preampDb, -7)
-  assert.equal(get(activePresetId), committed.id, 'active id moved to the committed preset')
-  assert.equal(get(workingEq).dirty, false, 'session clean against the committed preset')
-  assert.equal(get(workingEq).base.id, committed.id)
-  assert.equal((rows.get('active_eq_preset') as string), committed.id, 'committed selection persisted')
-})
 
 // ── saveEqSession (2026-09-14 unified save) ──────────────────────────────
 
 test('saveEqSession overwrites a user-preset base in place and re-bases clean', async () => {
   resetEqStores()
   clearRows()
+  presetRows.push({ key: 'eq_user_preset_user_probe', value: probePreset() })
   await initEqStore()
-  await saveUserPreset({ id: 'user_probe', name: 'Probe', mode: 'parametric', preampDb: 0, filters: BUILTIN_PRESETS[0].filters.map((f) => ({ ...f })) })
+  await applyPreset('user_probe')
   assert.equal(get(activePresetId), 'user_probe')
   editWorkingEq((st) => {
     st.preampDb = -4
@@ -276,7 +383,7 @@ test('saveEqSession overwrites a user-preset base in place and re-bases clean', 
   assert.equal(committed.id, 'user_probe', 'overwrote in place')
   assert.equal(committed.preampDb, -4)
   assert.equal(get(workingEq).dirty, false, 'session re-based clean')
-  assert.equal(get(currentEqState)?.preampDb, -4)
+  assert.equal(get(workingEq).state?.preampDb, -4)
 })
 
 test('saveEqSession over a builtin creates a new preset with the default (modified) name', async () => {
@@ -341,8 +448,9 @@ test('saveEqSession over an imported base creates a new preset carrying graphicE
 test("saveEqSession mode 'new' duplicates a user-preset session instead of overwriting", async () => {
   resetEqStores()
   clearRows()
+  presetRows.push({ key: 'eq_user_preset_user_probe', value: probePreset() })
   await initEqStore()
-  await saveUserPreset({ id: 'user_probe', name: 'Probe', mode: 'parametric', preampDb: 0, filters: BUILTIN_PRESETS[0].filters.map((f) => ({ ...f })) })
+  await applyPreset('user_probe')
   editWorkingEq((st) => {
     st.preampDb = -9
     return st
@@ -368,8 +476,9 @@ test("saveEqSession mode 'new' duplicates a user-preset session instead of overw
 test('applyPreset applies the selection: session resets on it, edits do NOT carry, selection persists', async () => {
   resetEqStores()
   clearRows()
+  presetRows.push({ key: 'eq_user_preset_user_probe', value: probePreset(-6) })
   await initEqStore()
-  await saveUserPreset({ id: 'user_probe', name: 'Probe', mode: 'parametric', preampDb: -6, filters: BUILTIN_PRESETS[0].filters.map((f) => ({ ...f })) })
+  await applyPreset('user_probe')
   editWorkingEq((st) => {
     st.preampDb = -9
     return st
@@ -382,7 +491,7 @@ test('applyPreset applies the selection: session resets on it, edits do NOT carr
   assert.equal(get(workingEq).base.id, 'flat', 'the session re-based on the selection')
   assert.equal(get(workingEq).state.preampDb, 0, 'the preset was APPLIED (edits discarded — classic switch)')
   assert.equal(get(workingEq).dirty, false, 'a fresh selection is clean')
-  assert.equal(get(currentEqState)?.preampDb, 0, 'engine state mirrors the applied preset')
+  assert.equal(get(workingEq).state?.preampDb, 0, 'the applied preset is the session state')
   // The persisted rows agree (selection + applied state, not the old overlay).
   const saved = await getSetting<EqPreset>(CURRENT_EQ_STATE_KEY)
   assert.equal(saved?.preampDb, 0)

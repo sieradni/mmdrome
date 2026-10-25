@@ -4,7 +4,6 @@
   import EqSlider from '../components/EqSlider.svelte'
   import AppSlider from '../components/AppSlider.svelte'
   import EqSheetModal from '../components/EqSheetModal.svelte'
-  import { get } from 'svelte/store'
   import {
     activePresetId,
     userPresets,
@@ -18,6 +17,7 @@
     findPresetById,
   } from '../lib/eq/eqStore'
   import { parseEqText } from '../lib/eq/eqParser'
+  import { hasCurveStack, resolveAppliedEq } from '../lib/eq/eqEffective'
   import { BUILTIN_PRESETS, mergeFiltersIntoDefaultGrid } from '../lib/eq/builtInPresets'
   import {
     insertBandAt,
@@ -40,7 +40,10 @@
 
   let showImport = $state(false)
   let importText = $state('')
-  let importErrors = $state('')
+  /** The import panel's one result line. `applied` separates "what parsed is
+   *  now playing, these lines were skipped" from "nothing in this paste could
+   *  be applied" — the two cases the parser's line notices mean. */
+  let importNotice = $state<{ applied: boolean; lines: string[] } | null>(null)
 
   // ── Spectrum overlay (2026-09-15) ──────────────────────────────────────
   // Lives ONLY while this view is mounted (the sampler owns an rAF loop).
@@ -64,34 +67,41 @@
   })
 
   const presets = $derived([...BUILTIN_PRESETS, ...$userPresets])
+  /** A session-only base (an imported EQ, a legacy state row) has no preset
+   *  row to match, so without its own entry the select names the preset it
+   *  replaced — or renders EMPTY when that base id is restored from disk.
+   *  It appears as the current value but cannot be picked: it is what you are
+   *  on, not a preset to switch to. */
+  const baseIsPreset = $derived(presets.some((p) => p.id === $workingEq.base.id))
+  const presetOptions = $derived(
+    baseIsPreset ? presets : [...presets, { id: $workingEq.base.id, name: $workingEq.base.name }]
+  )
 
   // The working session is THE source of truth: edits persist automatically
   // (debounced Dexie write in the store layer), so leaving the view loses
   // nothing and no unmount hooks exist.
   const eqState = $derived($workingEq.state)
   const preampDb = $derived($workingEq.state.preampDb)
-  const isGraphicImport = $derived(
-    eqState.mode === 'graphic' && !!eqState.graphicEqCurves && eqState.graphicEqCurves.length > 0
-  )
 
-  /** Push a full preset-shaped state to the engine (the audible truth).
-   *  Graphic IMPORTS keep their raw curve stack (unchanged behavior);
-   *  everything else — parametric, hybrid, saved presets — goes through
-   *  applyFiltersConfig, which routes hybrid (any graphic band) to the
-   *  convolver internally. */
-  function applyEqToEngine(state: EqPreset) {
-    engine.setPreampDb(state.preampDb)
-    if (state.mode === 'graphic' && !state.isBuiltin && state.graphicEqCurves && state.graphicEqCurves.length > 0) {
-      engine.applyGraphicEQ(state.filters, state.graphicEqCurves)
-    } else {
-      engine.applyFiltersConfig(state.filters)
-    }
-  }
+  /** WHAT THE ENGINE WILL APPLY — one projection (eqEffective), read by the
+   *  graph, the band rows and the notices. The same function feeds the engine
+   *  push (engineFacade.applyEq via eqEngineSync), so the drawn response and
+   *  the audible one come from one derivation. Anything the engine cannot
+   *  honor (a disabled band, a band past the platform's limit, a curve this
+   *  platform has no convolver for) is described from here rather than
+   *  re-derived per surface. */
+  const applied = $derived(resolveAppliedEq(eqState, engine.eqPlatform, $eqBypassed))
+  /** The imported curve stack IS the sound on this platform (web). */
+  const curveStack = $derived(applied.path === 'curve')
+  /** The state HAS a curve stack but this platform cannot render it. */
+  const curveApproximated = $derived(hasCurveStack(eqState) && applied.path !== 'curve')
 
-  // ── Edit paths: engine push stays INSTANT; the store debounces persist ──
+  // ── Edit paths: the view writes the SESSION and nothing else. The engine
+  //    follows it through eqEngineSync's single subscription (instant — store
+  //    subscriptions are synchronous), so no handler here can apply the state
+  //    it forgot to push. ──
 
   function setGain(index: number, value: number) {
-    engine.setEqBandGain(index, value)
     editWorkingEq((st) => {
       const f = st.filters[index]
       if (f) f.gain = value
@@ -100,7 +110,6 @@
   }
 
   function onPreampChange(value: number) {
-    engine.setPreampDb(value)
     editWorkingEq((st) => {
       st.preampDb = value
       return st
@@ -108,22 +117,20 @@
   }
 
   function toggleBypass() {
-    const newVal = !$eqBypassed
-    engine.setEqBypass(newVal)
-    // The `persisted` store layer owns the Dexie write.
-    eqBypassed.set(newVal)
+    // The `persisted` store layer owns the Dexie write; the sync subscription
+    // owns the engine push.
+    eqBypassed.set(!$eqBypassed)
   }
 
   // ── Flexible band editing (graph + list share the working state) ────────
 
   function moveFilter(index: number, frequency: number, gain: number) {
-    // Live drag: per-band params without a chain rebuild (see
-    // audioManager.setEqBandParams — no disconnect/reconnect churn). Gain
-    // is clamped to the engine's ±12 range HERE too — the state must never
-    // drift from what the engine applies (the graph's dB scale can exceed
-    // ±12 when big boosts widen it).
+    // A drag writes the session; the engine gets it as a live per-band write
+    // (eqEffective.liveBandChanges — no chain rebuild per event). Gain is
+    // clamped to the engine's ±12 range HERE too — the state must never drift
+    // from what the engine applies (the graph's dB scale can exceed ±12 when
+    // big boosts widen it).
     const clampedGain = Math.max(-12, Math.min(12, gain))
-    engine.setEqBandParams(index, frequency, clampedGain)
     editWorkingEq((st) => {
       const f = st.filters[index]
       if (f) {
@@ -134,12 +141,17 @@
     })
   }
 
+  function setBandEnabled(index: number, enabled: boolean) {
+    editWorkingEq((st) => {
+      const f = st.filters[index]
+      if (f) f.enabled = enabled
+      return st
+    })
+  }
+
   function setBandQ(index: number, q: number) {
-    const f = eqState.filters[index]
-    if (!f) return
-    // Q only shapes the biquad — graphic points are curve samples. Live
-    // path (no chain rebuild), same as the drag.
-    engine.setEqBandParams(index, f.frequency, f.gain, q)
+    if (!eqState.filters[index]) return
+    // Q only shapes the biquad — graphic points are curve samples.
     editWorkingEq((st) => {
       const band = st.filters[index]
       if (band) band.q = q
@@ -158,8 +170,6 @@
       st.filters = next
       return st
     })
-    // A structural change needs the full push (band count changed).
-    applyEqToEngine(get(workingEq).state)
     return newIndex
   }
 
@@ -168,7 +178,6 @@
       st.filters = removeBandAt(st.filters, index)
       return st
     })
-    applyEqToEngine(get(workingEq).state)
   }
 
   function toggleBandCurve(index: number) {
@@ -179,8 +188,6 @@
       st.filters = withExplicitCurve(st.filters, index, next)
       return st
     })
-    // Curve type flips the engine path (biquad ↔ convolver point).
-    applyEqToEngine(get(workingEq).state)
   }
 
   function flipAllCurves() {
@@ -188,10 +195,9 @@
       st.filters = flipAllCurveTypes(st.filters)
       return st
     })
-    applyEqToEngine(get(workingEq).state)
   }
 
-  const canFlipCurves = $derived(!isGraphicImport && eqState.filters.length > 0)
+  const canFlipCurves = $derived(!curveStack && eqState.filters.length > 0)
   const anyGraphic = $derived(hasGraphicBands(eqState.filters))
 
   // ── Band editor MODAL (2026-09-15): tapping a graph dot (with its new
@@ -207,7 +213,7 @@
 
   function openBandEditor(i: number) {
     const f = eqState.filters[i]
-    if (!f || isGraphicImport) return
+    if (!f || curveStack) return
     bandModalIndex = i
     bandFreqDraft = String(f.frequency)
     bandGainDraft = String(f.gain)
@@ -261,8 +267,9 @@
 
   // ── Save MODAL (2026-09-15): the two explicit choices live in a real
   //    centered modal instead of an inline block that shifted the UI. The
-  //    SESSION BASE decides (not activePresetId — an import keeps the old
-  //    preset selected while base.id is 'imported'; same rule as the store). ──
+  //    SESSION BASE decides (same rule as the store): the base is the
+  //    session's own identity, while the selection can name an imported EQ
+  //    that has no preset row to overwrite. ──
   const basePreset = $derived(presets.find((p) => p.id === $workingEq.base.id))
   const baseIsUserPreset = $derived(!!basePreset && !basePreset.isBuiltin && $workingEq.base.id !== 'imported')
   let saveDialogOpen = $state(false)
@@ -380,7 +387,6 @@
             graphicEqCurves: undefined,
           }
         : structuredClone(base)
-    applyEqToEngine(target)
     resetWorkingEq(target)
     graphFitToken++
   }
@@ -391,15 +397,24 @@
 
   function handleImport() {
     const result = parseEqText(importText)
-    if (result.errors.length > 0) {
-      importErrors = result.errors.join('\n')
+    // Every filter it could read is applied even when other lines were
+    // unreadable: real AutoEQ/EqualizerAPO files routinely carry a line this
+    // parser cannot read, and rejecting the whole profile over one of them
+    // silently discarded the import (the 2026-10 audit's measured case).
+    if (result.filters.length === 0) {
+      importNotice = {
+        applied: false,
+        lines: result.errors.length > 0 ? result.errors : ['No EQ filters found in that text.'],
+      }
       return
     }
-    importErrors = ''
 
     let imported: EqPreset
-    if (result.mode === 'graphic') {
-      // GraphicEQ: raw curve stack via convolution (no grid merging).
+    if (result.graphicEqCurves?.length) {
+      // A parsed GraphicEQ body: raw curve stack via convolution (no grid
+      // merging). Keyed on the CURVE, not `mode` — a GraphicEQ line that
+      // yielded no readable point still sets the mode, and must not change the
+      // shape of an import made of parametric lines.
       imported = {
         id: 'imported',
         name: 'Imported',
@@ -421,11 +436,15 @@
       }
     }
 
-    applyEqToEngine(imported)
     resetWorkingEq(imported)
     graphFitToken++
-    showImport = false
-    importText = ''
+    // A skipped line keeps the panel open so the warning sits with the result
+    // it explains; a clean paste closes it like before.
+    importNotice = result.errors.length > 0 ? { applied: true, lines: result.errors } : null
+    if (!importNotice) {
+      showImport = false
+      importText = ''
+    }
   }
 
   function freqLabel(f: number): string {
@@ -470,14 +489,14 @@
           value={$activePresetId}
           onchange={handlePresetChange}
         >
-          {#each presets as p}
-            <option value={p.id}>{p.name}</option>
+          {#each presetOptions as p}
+            <option value={p.id} disabled={!baseIsPreset && p.id === $workingEq.base.id}>{p.name}</option>
           {/each}
         </select>
         <svg class="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6" /></svg>
       </div>
       {#if $workingEq.dirty}
-        <span class="shrink-0 text-[10px] font-medium text-amber-400" title="Unsaved changes over {findPresetById($workingEq.base.id)?.name ?? 'the active preset'} — they persist with the working state until you save or reset">(edited)</span>
+        <span class="shrink-0 text-[10px] font-medium text-amber-400" title="Unsaved changes over {findPresetById($workingEq.base.id)?.name ?? $workingEq.base.name} — they persist with the working state until you save or reset">(edited)</span>
       {/if}
     </div>
 
@@ -490,10 +509,10 @@
       >
         Save
       </button>
-      <button onclick={() => { showImport = !showImport; importText = ''; importErrors = '' }} class="rounded-lg bg-surface px-2.5 py-2 text-xs text-muted transition-colors hover:text-primary ring-1 ring-white/10" title="Import AutoEQ/Parametric EQ text">
+      <button onclick={() => { showImport = !showImport; importText = ''; importNotice = null }} class="rounded-lg bg-surface px-2.5 py-2 text-xs text-muted transition-colors hover:text-primary ring-1 ring-white/10" title="Import AutoEQ/Parametric EQ text">
         {showImport ? 'Close' : 'Import'}
       </button>
-      {#if !presets.find(p => p.id === $activePresetId)?.isBuiltin}
+      {#if presets.some(p => p.id === $activePresetId && !p.isBuiltin)}
         <button onclick={() => removePreset($activePresetId)} class="rounded-lg bg-surface px-2.5 py-2 text-xs text-red-400 transition-colors hover:bg-red-500/10 ring-1 ring-white/10" title="Delete preset">Delete</button>
       {/if}
     </div>
@@ -505,15 +524,42 @@
           class="h-32 w-full resize-none bg-transparent p-3 text-xs font-mono text-primary outline-none placeholder:text-muted/30"
           placeholder="Paste AutoEQ / EqualizerAPO / Peace EQ config text here..."
           bind:value={importText}
+          oninput={() => (importNotice = null)}
         ></textarea>
-        {#if importErrors}
-          <div class="px-3 pb-2 text-[10px] text-red-400/80 whitespace-pre-wrap">{importErrors}</div>
+        {#if importNotice}
+          <div role="status" class="px-3 pb-2 text-[10px] whitespace-pre-wrap {importNotice.applied ? 'text-amber-300/90' : 'text-red-400/80'}">
+            {#if importNotice.applied}
+              <p class="pb-1 font-medium">Applied everything it could read. These lines were skipped:</p>
+            {/if}
+            <p>{importNotice.lines.join('\n')}</p>
+          </div>
         {/if}
         <div class="flex justify-end gap-2 px-3 pb-3">
-          <button onclick={() => { showImport = false; importText = ''; importErrors = '' }} class="rounded px-2.5 py-1 text-xs text-muted hover:text-primary">Cancel</button>
+          <button onclick={() => { showImport = false; importText = ''; importNotice = null }} class="rounded px-2.5 py-1 text-xs text-muted hover:text-primary">Cancel</button>
           <button onclick={handleImport} class="rounded bg-white/15 px-3 py-1 text-xs font-medium text-primary hover:bg-white/25">Apply</button>
         </div>
       </div>
+    {/if}
+
+    <!-- ENGINE REALITY (eqEffective): whatever this platform cannot apply is
+         named here rather than left as a control that looks in effect. -->
+    {#if applied.overLimit > 0}
+      <p class="rounded-lg bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-300/90 ring-1 ring-amber-500/20">
+        This device runs at most {engine.eqPlatform.maxBands} bands. {applied.overLimit}
+        {applied.overLimit === 1 ? 'band is' : 'bands are'} beyond that and
+        {applied.overLimit === 1 ? 'is' : 'are'} marked off.
+      </p>
+    {/if}
+    {#if curveApproximated}
+      <p class="rounded-lg bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-300/90 ring-1 ring-amber-500/20">
+        This device has no curve convolver: the import plays as {applied.filters.length}
+        parametric bands, so its curve shape is approximated.
+      </p>
+    {/if}
+    {#if curveStack}
+      <p class="rounded-lg bg-surface px-3 py-2 text-[10px] leading-relaxed text-muted ring-1 ring-white/10">
+        This import plays its stored curve verbatim — per-band gains are not applied. Re-import to change it.
+      </p>
     {/if}
 
     <!-- PREAMP SLIDER -->
@@ -537,12 +583,13 @@
          full band editor, tap empty space to add; drag = pan, wheel/pinch =
          zoom the frequency axis) -->
     <EqGraph
-      preampDb={$eqBypassed ? 0 : preampDb}
+      preampDb={applied.preampDb}
       filters={eqState.filters}
       eqBypassed={$eqBypassed}
-      eqMode={eqState.mode}
+      path={applied.path}
+      inertIndices={applied.inertIndices}
       graphicEqCurves={eqState.graphicEqCurves}
-      editable={!isGraphicImport}
+      editable={!curveStack}
       onMoveFilter={moveFilter}
       onAddFilter={(freq) => {
         const idx = addBand(freq)
@@ -561,16 +608,20 @@
           onclick={onAddBandTap}
           class="rounded px-2.5 py-1 text-xs text-primary ring-1 ring-white/10 transition-colors hover:bg-white/10"
           title="Add a band — you pick the frequency (tapping the graph also adds a band at that spot)"
-          disabled={$eqBypassed || isGraphicImport}
+          disabled={$eqBypassed || curveStack}
         >+ Add Band</button>
-        <button
-          onclick={flipAllCurves}
-          class="rounded px-2.5 py-1 text-xs ring-1 ring-white/10 transition-colors hover:bg-white/10 {anyGraphic ? 'text-accent' : 'text-muted'}"
-          title="Convert every band: parametric (its own peak filter) ↔ graphic (a point the curve passes through)"
-          disabled={$eqBypassed || !canFlipCurves}
-        >{anyGraphic ? 'All Parametric' : 'All Graphic'}</button>
+        {#if engine.eqPlatform.appliesCurves}
+          <!-- Curve kinds are a web concept: iOS has no convolver, so every
+               band is a parametric band and this control would do nothing. -->
+          <button
+            onclick={flipAllCurves}
+            class="rounded px-2.5 py-1 text-xs ring-1 ring-white/10 transition-colors hover:bg-white/10 {anyGraphic ? 'text-accent' : 'text-muted'}"
+            title="Convert every band: parametric (its own peak filter) ↔ graphic (a point the curve passes through)"
+            disabled={$eqBypassed || !canFlipCurves}
+          >{anyGraphic ? 'All Parametric' : 'All Graphic'}</button>
+        {/if}
       </div>
-      {#if anyGraphic}
+      {#if anyGraphic && engine.eqPlatform.appliesCurves}
         <span class="text-[10px] text-muted/60" title="■ = graphic point the curve passes through; ● = parametric band with its own peak">■ graphic · ● parametric</span>
       {/if}
     </div>
@@ -581,25 +632,27 @@
     <div class="overflow-x-auto pb-1">
       <div class="flex items-stretch justify-between gap-1" style="height: 190px; min-width: min-content;">
         {#each eqState.filters as f, i (i)}
+          {@const bandOff = applied.inertIndices.has(i)}
+          {@const gainInert = bandOff || curveStack}
           <div class="flex min-w-9 flex-1 flex-col items-center gap-1">
-            <span class="text-[10px] tabular-nums text-muted/60">{formatDb(f.gain)}</span>
+            <span class="text-[10px] tabular-nums {gainInert ? 'text-muted/30' : 'text-muted/60'}">{formatDb(f.gain)}</span>
             <div class="flex min-h-0 w-full flex-1 justify-center py-1">
               <EqSlider
                 value={f.gain}
-                label="{freqLabel(f.frequency)} Hz band"
-                disabled={$eqBypassed}
+                label="{freqLabel(f.frequency)} Hz band{bandOff ? ' (off)' : ''}"
+                disabled={$eqBypassed || gainInert}
                 onInput={(v) => setGain(i, v)}
               />
             </div>
-            {#if !isGraphicImport}
+            {#if !curveStack}
               <button
                 onclick={() => openBandEditor(i)}
-                class="rounded px-1 text-[10px] leading-tight {f.curve === 'graphic' ? 'text-accent' : 'text-muted/70'} hover:text-primary"
-                title="Band settings: frequency, gain, width (Q), curve kind, remove"
+                class="rounded px-1 text-[10px] leading-tight {bandOff ? 'text-muted/40' : f.curve === 'graphic' ? 'text-accent' : 'text-muted/70'} hover:text-primary"
+                title={bandOff ? 'Band is off — tap to switch it back on' : 'Band settings: frequency, gain, width (Q), curve kind, remove'}
                 disabled={$eqBypassed}
-              >{freqLabel(f.frequency)}{f.curve === 'graphic' ? ' ■' : ''}</button>
+              >{freqLabel(f.frequency)}{f.curve === 'graphic' ? ' ■' : ''}{bandOff ? ' off' : ''}</button>
             {:else}
-              <span class="text-[10px] text-muted/50">{freqLabel(f.frequency)}</span>
+              <span class="text-[10px] text-muted/50">{freqLabel(f.frequency)}{bandOff ? ' off' : ''}</span>
             {/if}
           </div>
         {/each}
@@ -684,24 +737,43 @@
         </div>
       {/if}
 
-      <!-- Curve kind: the two explicit choices with descriptions -->
-      <div class="space-y-1.5">
-        <span class="text-[10px] text-muted">Curve type</span>
-        <button
-          onclick={() => toggleBandCurve(bandModalIndex ?? 0)}
-          class="w-full rounded-lg px-3 py-2 text-left text-xs ring-1 transition-colors {modalBand.curve === 'parametric' ? 'bg-primary/10 text-primary ring-primary/30' : 'text-muted ring-white/10 hover:bg-white/10'}"
-        >
-          ● Parametric
-          <span class="block text-[10px] text-muted/70">Its own peak/biquad filter at this frequency</span>
-        </button>
-        <button
-          onclick={() => toggleBandCurve(bandModalIndex ?? 0)}
-          class="w-full rounded-lg px-3 py-2 text-left text-xs ring-1 transition-colors {modalBand.curve === 'graphic' ? 'bg-accent/10 text-accent ring-accent/30' : 'text-muted ring-white/10 hover:bg-white/10'}"
-        >
-          ■ Graphic
-          <span class="block text-[10px] text-muted/70">A point the response curve passes through</span>
-        </button>
-      </div>
+      <!-- Curve kind: the two explicit choices with descriptions. Web only —
+           iOS applies every band as a biquad, so the choice would be a
+           control with no effect. -->
+      {#if engine.eqPlatform.appliesCurves}
+        <div class="space-y-1.5">
+          <span class="text-[10px] text-muted">Curve type</span>
+          <button
+            onclick={() => toggleBandCurve(bandModalIndex ?? 0)}
+            class="w-full rounded-lg px-3 py-2 text-left text-xs ring-1 transition-colors {modalBand.curve === 'parametric' ? 'bg-primary/10 text-primary ring-primary/30' : 'text-muted ring-white/10 hover:bg-white/10'}"
+          >
+            ● Parametric
+            <span class="block text-[10px] text-muted/70">Its own peak/biquad filter at this frequency</span>
+          </button>
+          <button
+            onclick={() => toggleBandCurve(bandModalIndex ?? 0)}
+            class="w-full rounded-lg px-3 py-2 text-left text-xs ring-1 transition-colors {modalBand.curve === 'graphic' ? 'bg-accent/10 text-accent ring-accent/30' : 'text-muted ring-white/10 hover:bg-white/10'}"
+          >
+            ■ Graphic
+            <span class="block text-[10px] text-muted/70">A point the response curve passes through</span>
+          </button>
+        </div>
+      {/if}
+
+      <!-- On / off: an off band stays in the model (drawn off, slider inert)
+           but the engine skips it. -->
+      <button
+        onclick={() => setBandEnabled(bandModalIndex ?? 0, !modalBand.enabled)}
+        class="w-full rounded-lg px-3 py-2 text-left text-xs ring-1 transition-colors {modalBand.enabled
+          ? 'text-primary ring-white/10 hover:bg-white/10'
+          : 'bg-amber-500/10 text-amber-300 ring-amber-500/25'}"
+        disabled={$eqBypassed}
+      >
+        {modalBand.enabled ? 'Band on' : 'Band off'}
+        <span class="block text-[10px] opacity-70">{modalBand.enabled
+          ? 'The engine applies this band'
+          : 'Skipped by the engine — shown off in the graph and sliders'}</span>
+      </button>
 
       <!-- Remove -->
       <button

@@ -53,7 +53,6 @@ import {
   pendingAdvanceTrackId,
 } from '../stores/appState'
 import { persistQueue } from './queuePersistence'
-import { currentEqState, eqBypassed } from './eq/eqStore'
 import { cancelScan, cancelTagProbeIfActive } from './metadataScanner'
 import type { Track } from '../stores/appState'
 
@@ -370,7 +369,6 @@ export class PlaybackManager {
     this._engine.setAudioMixing(s.iosAudioMixing ?? 'exclusive')
     this._engine.setSeekEpochs(s.seekEpochs ?? 'auto')
     this._syncNativePreload()
-    this._engine.pushNativeEqFromStore()
 
     BackgroundAudio.setReplayGainMode({ mode: s.replayGainMode ?? 'off' }).catch(() => {})
     // Phase 2 kill switch (2026-10-07): pushed at BOOT, not on the settings
@@ -1054,20 +1052,10 @@ export class PlaybackManager {
 
     await this._am.ensureWebAudioReady()
 
-    const eqState = get(currentEqState)
-    if (eqState && eqState.filters.length > 0) {
-      this._am.setPreampDb(eqState.preampDb)
-      if (eqState.mode === 'graphic' && !eqState.isBuiltin) {
-        this._am.applyGraphicEQ(eqState.filters, eqState.graphicEqCurves)
-      } else {
-        this._am.applyFiltersConfig(eqState.filters)
-      }
-    }
-
-    if (get(eqBypassed)) {
-      this._am.setEqBypass(true)
-    }
-
+    // No EQ work here: eqEngineSync is the one path that applies the EQ, and
+    // the web graph restores its stored config, preamp and bypass when it is
+    // (re)built — a second, differently-shaped application per track load was
+    // the divergence this replaced.
     this._am.setMasterVolume(get(masterGain))
 
     const el = this._am.activeElement

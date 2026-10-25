@@ -1,8 +1,9 @@
 // Pins the pure eqSession model (2026-09-13 working-state overlay):
 // dirty flagging against the session's own base (deep compare, no false
 // positives/negatives), the persist policy (debounce while dirty, immediate
-// flush on dirty→clean, nothing when clean), restore resolution (self-based
-// states, unknown bases, saved overlays vs newer selections), and the edit
+// write for any other change — new base, import, revert, a selection-only
+// save — nothing when neither the values nor the base id changed), restore
+// resolution (self-based states, unknown bases, saved overlays), and the edit
 // reducer's immutability contract.
 
 import { test } from 'node:test'
@@ -14,7 +15,6 @@ import {
   editDraft,
   planWorkingPersist,
   resolveSession,
-  reconcileOnRestore,
 } from '../src/lib/eq/eqSession'
 import { BUILTIN_PRESETS } from '../src/lib/eq/builtInPresets'
 import type { EqPreset } from '../src/lib/eq/eqTypes'
@@ -111,27 +111,30 @@ test('editDraft: base snapshot survives edits; state arrays are not shared', () 
 
 // ── planWorkingPersist ──────────────────────────────────────────────────
 
-test('planWorkingPersist: dirty debounces; clean is a no-op; dirty→clean flushes immediately', () => {
+test('planWorkingPersist: dirty debounces; unchanged is a no-op; any other change writes at once', () => {
   const clean = startSession(preset())
   const dirtyS = editDraft(clean, (st) => {
     st.preampDb = -1
     return st
   })
-  assert.deepEqual(planWorkingPersist(dirtyS, false), {
-    persist: true,
-    mode: 'debounce',
-    cancelPending: false,
-  })
-  assert.deepEqual(planWorkingPersist(clean, false), {
-    persist: false,
-    mode: 'immediate',
-    cancelPending: false,
-  })
-  assert.deepEqual(planWorkingPersist(clean, true), {
-    persist: true,
-    mode: 'immediate',
-    cancelPending: true,
-  })
+  // Same base, dirty edit → debounce (a drag must not hammer Dexie).
+  assert.equal(planWorkingPersist(clean, dirtyS), 'debounce')
+  // Nothing changed → nothing to write.
+  assert.equal(planWorkingPersist(clean, clean), 'none')
+  // Revert back to the base → write now (immediate also drops a pending write).
+  assert.equal(planWorkingPersist(dirtyS, clean), 'immediate')
+  // A CLEAN new base (import/selection/reset) over a CLEAN session still
+  // persists — keying on the previous session's dirtiness wrote nothing and
+  // an import was lost on relaunch.
+  const imported = startSession(preset({ id: 'imported', preampDb: -5 }))
+  assert.equal(planWorkingPersist(clean, imported), 'immediate')
+  // A save-as-new of an UNEDITED preset moves only the base id (same values):
+  // the selection must still be written, or the next boot forgets it.
+  const sameValues = startSession(preset({ id: 'user-copy' }))
+  assert.equal(planWorkingPersist(clean, sameValues), 'immediate')
+  // Same base id AND same values → genuinely nothing (Reset All on an
+  // untouched preset must not rewrite Dexie).
+  assert.equal(planWorkingPersist(clean, startSession(preset())), 'none')
 })
 
 test('EQ_COMMIT_DEBOUNCE_MS is under a second (edits land well before the user leaves the view)', () => {
@@ -171,14 +174,6 @@ test('resolveSession: user presets participate in base lookup', () => {
   const s = resolveSession(preset({ preampDb: 4, id: 'user-7' }), 'user-7', [userBase], BUILTIN_PRESETS[0])
   assert.equal(s.base.id, 'user-7')
   assert.equal(s.dirty, true)
-})
-
-// ── reconcileOnRestore ──────────────────────────────────────────────────
-
-test('reconcileOnRestore: matching ids adopt the saved overlay; mismatched → the selection wins', () => {
-  const session = startSession(preset({ id: 'p1' }))
-  assert.deepEqual(reconcileOnRestore(session, 'p1'), { adoptSaved: true, activePresetId: 'p1' })
-  assert.deepEqual(reconcileOnRestore(session, 'p2'), { adoptSaved: false, activePresetId: 'p2' })
 })
 
 // ── preset-switch semantics (2026-09-15, classic switch) ───────

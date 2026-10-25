@@ -74,18 +74,6 @@ class FakeAudioManager {
   async ensureWebAudioReady(): Promise<void> {
     this.calls.push('ensureWebAudioReady')
   }
-  setPreampDb(): void {
-    this.calls.push('setPreampDb')
-  }
-  applyGraphicEQ(): void {
-    this.calls.push('applyGraphicEQ')
-  }
-  applyFiltersConfig(): void {
-    this.calls.push('applyFiltersConfig')
-  }
-  setEqBypass(): void {
-    this.calls.push('setEqBypass')
-  }
   setMasterVolume(): void {
     this.calls.push('setMasterVolume')
   }

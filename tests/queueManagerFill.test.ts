@@ -96,7 +96,6 @@ class FakeEngine {
   setCrossfade(): void {}
   setAudioMixing(): void {}
   setSeekEpochs(): void {}
-  pushNativeEqFromStore(): void {}
 }
 
 test('replenish fills the auto queue from fresh tracks, excluding the playing user track', () => {

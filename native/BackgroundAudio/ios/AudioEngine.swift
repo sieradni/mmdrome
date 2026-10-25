@@ -2432,6 +2432,10 @@ public final class NativeAudioEngine: NSObject {
             band.bandwidth = Float(1.0 / max(cfg.q, 0.05))
             band.bypass = false
         }
+        // Bypass is the WHOLE EQ: the preamp belongs to it (the web chain
+        // routes around its EQ preamp node), so the two platforms apply the
+        // same thing — the UI shows a preamp of 0 dB while bypassed.
+        refreshPreamp()
     }
 
     // MARK: - State
@@ -4565,7 +4569,10 @@ public final class NativeAudioEngine: NSObject {
     }
 
     private func refreshPreamp() {
-        let linear = pow(10.0, preampDb / 20.0)
+        // A bypassed EQ applies no preamp either (web parity: the EQ preamp
+        // node is routed around). `lastFiltersBypassed` is pushed by setEq.
+        let db = lastFiltersBypassed ? 0 : preampDb
+        let linear = pow(10.0, db / 20.0)
         preamp.outputVolume = Float(linear * masterVolume)
     }
 

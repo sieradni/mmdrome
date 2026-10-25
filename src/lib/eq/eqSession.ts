@@ -4,18 +4,20 @@ import { BUILTIN_PRESETS } from './builtInPresets'
 /**
  * Pure working-EQ session model: a DIRTY OVERLAY over the active preset.
  *
- * The working state survives leaving the EQ view (debounce-persisted by the
- * store layer, eqStore.commitWorkingState) WITHOUT changing what "presets"
+ * The working state survives leaving the EQ view (persisted by the store
+ * layer's one transition path, eqStore) WITHOUT changing what "presets"
  * mean: `base` keeps a snapshot of the preset the session diverged from,
  * presets are never silently modified, and the dirty flag drives the UI's
  * "(edited)" marker.
  *
- * Persist policy lives HERE (one decision point): dirty → debounced write;
- * clean → no writes, and turning clean from dirty flushes IMMEDIATELY
- * (revert-to-preset, fresh selection, preset save) so a stale overlay can
- * never resurrect from disk. The engine push is NOT part of this module —
- * the view pushes on every edit so audio always matches the sliders
- * instantly; persistence is the only debounced leg.
+ * Persist policy lives HERE (one decision point, `planWorkingPersist`): a
+ * dirty edit debounces, an unchanged session writes nothing, and any other
+ * change — the working values (a revert) or the base id (preset selection,
+ * import, Reset All, a save that creates a new preset with identical values)
+ * — writes IMMEDIATELY and cancels a pending write, so a stale overlay can
+ * never resurrect from disk. The engine push is NOT part of this module either:
+ * eqEngineSync's subscription applies every session transition to the audio
+ * instantly (engineFacade.applyEq); persistence is the only debounced leg.
  */
 
 export const EQ_COMMIT_DEBOUNCE_MS = 600
@@ -104,34 +106,41 @@ export function editDraft(
   }
 }
 
-export interface EqSessionPersistencePlan {
-  /** The store layer must schedule (or run) a Dexie write of the session. */
-  persist: boolean
-  /** How to persist: 'debounce' coalesces rapid slider moves (the engine
-   *  push is never part of this), 'immediate' writes synchronously. */
-  mode: 'debounce' | 'immediate'
-  /** The session turned clean — drop any pending debounced write first. */
-  cancelPending: boolean
-}
+/**
+ * What the store layer does with a transition: 'none' writes nothing, 'debounce'
+ * coalesces rapid slider moves (the engine push is never part of this), and
+ * 'immediate' writes at once and drops any pending write — the new value
+ * supersedes it. One field, because the two can never disagree.
+ */
+export type EqPersistMode = 'none' | 'debounce' | 'immediate'
 
 /**
- * Persist policy for the CURRENT session (pure, decided per state change):
- * dirty sessions debounce a write; clean sessions write nothing, and a
- * dirty→clean transition (revert, preset selection, preset save) cancels
- * the pending write and persists the clean state IMMEDIATELY so the row on
- * disk matches what the stores hold before the next slider move can start
- * a new debounce. `wasDirty` is the dirty flag before this change.
+ * Persist policy for a session TRANSITION — the ONE decision point for what
+ * reaches disk. Every trigger reduces to "did the working state change?":
+ *
+ * - the state and the base id are both unchanged → nothing to write;
+ * - a DIRTY edit → debounce (a slider drag must not hammer Dexie);
+ * - a CLEAN value or a different base id → write IMMEDIATELY and cancel any
+ *   pending debounced write. That covers a new base (preset selection,
+ *   import, Reset All), a revert back to the base, and a save that only moves
+ *   the selection onto a new preset row.
+ *
+ * Keying on the CHANGE, never on the previous session's dirty flag, is what
+ * makes an import over a clean session persist: `dirty` describes the new
+ * session against its own base, and a fresh import is clean by construction,
+ * so a dirty-only policy wrote NOTHING and the import died on relaunch. The
+ * comparison covers a second import (same base id 'imported', different
+ * state) AND a save-as-new of an unedited preset (same state, new base id —
+ * a values-only comparison would lose the selection on relaunch).
  */
 export function planWorkingPersist(
-  session: EqWorkingSession,
-  wasDirty: boolean
-): EqSessionPersistencePlan {
-  if (session.dirty) {
-    return { persist: true, mode: 'debounce', cancelPending: false }
-  }
-  return wasDirty
-    ? { persist: true, mode: 'immediate', cancelPending: true }
-    : { persist: false, mode: 'immediate', cancelPending: false }
+  previous: EqWorkingSession,
+  next: EqWorkingSession
+): EqPersistMode {
+  const stateChanged = !sessionEqualsPreset(previous.state, next.state)
+  const baseChanged = previous.base.id !== next.base.id
+  if (!stateChanged && !baseChanged) return 'none'
+  return stateChanged && next.dirty ? 'debounce' : 'immediate'
 }
 
 /**
@@ -161,24 +170,3 @@ export function resolveSession(
   return session
 }
 
-/**
- * Pure restore decision: does the persisted working overlay survive the
- * boot, or did a newer preset selection win? applyPreset persists the
- * selection IMMEDIATELY while the overlay debounces — so when the persisted
- * base id and the persisted active id disagree, the selection is the newer
- * intent and the saved overlay must NOT resurrect over it.
- */
-export function reconcileOnRestore(
-  session: EqWorkingSession,
-  activeId: string
-): { adoptSaved: boolean; activePresetId: string } {
-  if (session.base.id === activeId) {
-    return { adoptSaved: true, activePresetId: activeId }
-  }
-  return { adoptSaved: false, activePresetId: activeId }
-}
-
-/** The id of the preset a session is based on (read-only convenience). */
-export function sessionBaseId(session: EqWorkingSession): string {
-  return session.base.id
-}

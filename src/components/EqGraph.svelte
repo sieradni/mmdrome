@@ -4,13 +4,21 @@
   import { effectiveCurve } from '../lib/eq/eqCurveTopology'
   import { spectrumBandEdges, visibleBands } from '../lib/eq/spectrumCore'
   import type { EqFilterConfig, EqPoint, EqCurveType } from '../lib/eq/eqTypes'
+  import type { EqPath } from '../lib/eq/eqEffective'
   import type { FrequencyPoint } from '../lib/eq/eqResponseCalculator'
 
   interface Props {
     preampDb?: number
+    /** Every band in the model (the handles); `inertIndices` marks the ones
+     *  the engine does not run. */
     filters?: EqFilterConfig[]
     eqBypassed?: boolean
-    eqMode?: 'parametric' | 'graphic'
+    /** The response shape the ENGINE renders for this state — resolved by
+     *  eqEffective, never re-derived here. */
+    path?: EqPath
+    /** Bands that are not in effect (disabled, or past the platform's band
+     *  limit): drawn off, never rendered in the response. */
+    inertIndices?: ReadonlySet<number>
     graphicEqCurves?: EqPoint[][]
     /** Editor mode: handles become draggable, tap-to-add and ×-to-remove. */
     editable?: boolean
@@ -28,7 +36,8 @@
     preampDb = 0,
     filters = [],
     eqBypassed = false,
-    eqMode = 'parametric' as 'parametric' | 'graphic',
+    path = 'parametric' as EqPath,
+    inertIndices = new Set<number>(),
     graphicEqCurves,
     editable = false,
     onMoveFilter,
@@ -152,38 +161,29 @@
     return halfH - (clampedDb / maxAbsGain) * halfH
   }
 
-  /** Convolver-path parity (2026-09-15): when ANY enabled band is a graphic
-   *  point the ENGINE renders the whole EQ through the FFT convolver as ONE
-   *  interpolated curve over ALL enabled band points
-   *  (audioManager._updateConvolverBuffer → bandsToCurvePoints →
-   *  createGraphicEqAudioBuffer) — a convolver cannot be summed with the
-   *  biquad chain, so parametric bands contribute their GAIN as points.
-   *  The display previously ADDED the per-biquad response sum on TOP of the
-   *  interpolated curve: a peaking filter's skirt spreads across neighbors,
-   *  so dragging one dot shifted the calculated position of the surrounding
-   *  dots AND the drawn curve double-counted gains against what you hear.
-   *  Render the same single curve the engine renders — the drawn line
-   *  passes through every dot by construction and the dots are mutually
-   *  independent. Graphic IMPORT mode already rendered this way; hybrid
-   *  import overlays keep their dedicated curves. 300 points so a
-   *  zoomed-in view stays smooth. */
-  const hybrid = $derived(filters.some((f) => f.enabled && effectiveCurve(f) === 'graphic'))
+  /** The bands the engine actually runs — the response is drawn from THESE,
+   *  so a disabled or out-of-range band cannot inflate the curve it is not
+   *  part of (2026-10-25: the graph used to draw values the engine skipped). */
+  const appliedFilters = $derived(filters.filter((_, i) => !inertIndices.has(i)))
 
-  // Frequency response points
+  /** Response points — `path` comes from eqEffective, i.e. it is exactly what
+   *  the engine renders: the imported curve stack verbatim, one interpolated
+   *  line through the band points (web hybrid/convolver), or the biquad sum
+   *  (all-parametric, and everything on iOS). 300 samples so a zoomed-in view
+   *  stays smooth. */
   let points = $derived.by<FrequencyPoint[]>(() => {
     if (eqBypassed) return calculateTotalResponse(0, [], 300)
-    if (eqMode === 'graphic') {
+    if (path === 'curve') {
       return calculateGraphicTotalResponse(preampDb, filters, graphicEqCurves, 300)
     }
-    if (hybrid) {
-      // One interpolated curve through ALL enabled band points — the exact
-      // input the convolver path renders. `calculateGraphicTotalResponse`
-      // with undefined curves falls back to `filtersToPoints(filters)`
-      // (frequency-sorted, enabled-only), matching `bandsToCurvePoints`.
-      const curve = calculateGraphicTotalResponse(0, filters, undefined, 300)
+    if (path === 'graphic') {
+      // `calculateGraphicTotalResponse` with undefined curves falls back to
+      // `filtersToPoints(filters)` (frequency-sorted, enabled-only), matching
+      // `bandsToCurvePoints` in the engine.
+      const curve = calculateGraphicTotalResponse(0, appliedFilters, undefined, 300)
       return curve.map((p) => ({ frequency: p.frequency, gainDb: p.gainDb + preampDb }))
     }
-    return calculateTotalResponse(preampDb, filters, 300)
+    return calculateTotalResponse(preampDb, appliedFilters, 300)
   })
 
   let pathD = $derived.by(() => {
@@ -234,18 +234,25 @@
       kind: EqCurveType
       freq: number
       gain: number
+      inert: boolean
     }[] = []
-    // Track the FULL filters index — disabled bands shift an enabled-only
-    // counter, and these indexes feed the move/remove callbacks.
+    // Track the FULL filters index — inert bands shift an applied-only
+    // counter, and these indexes feed the move/remove callbacks. A band that
+    // is not in effect is still drawn (at its own gain, off) instead of
+    // silently disappearing: an invisible band cannot be turned back on.
     filters.forEach((f, i) => {
-      if (!f.enabled) return
+      const inert = inertIndices.has(i)
       nodes.push({
         index: i,
         x: freqToX(f.frequency),
-        y: dbToY(curveDbAt(f.frequency)),
-        kind: effectiveCurve(f),
+        y: dbToY(inert ? f.gain + preampDb : curveDbAt(f.frequency)),
+        // Only the interpolated path has per-band curve kinds. An
+        // all-parametric response (which is every state on iOS) runs every
+        // band as the same biquad, so the kind is the applied one.
+        kind: path === 'graphic' ? effectiveCurve(f) : 'parametric',
         freq: f.frequency,
         gain: f.gain,
+        inert,
       })
     })
     return nodes
@@ -291,11 +298,22 @@
     return Math.round(db / GAIN_STEP) * GAIN_STEP
   }
 
+  /** A tapped dot takes REAL focus: the band editor hands focus back to the
+   *  element that opened it (ModalShell restores the pre-open active element),
+   *  and a pointer tap does not focus a <g> by itself — handleHandleDown
+   *  preventDefaults the default, and an inert dot has no pointerdown handler
+   *  at all. Without this, closing the editor dropped focus on whatever was
+   *  focused before (a control behind the EQ overlay). */
+  function focusHandle(e: MouseEvent | PointerEvent) {
+    ;(e.currentTarget as SVGElement | null)?.focus()
+  }
+
   function handleHandleDown(index: number) {
     return (e: PointerEvent) => {
       if (!editable || eqBypassed) return
       e.preventDefault()
       e.stopPropagation() // the graph's pan gesture must not start from a dot
+      focusHandle(e)
       captureSafe(e.currentTarget as Element, e.pointerId)
       dragIndex = index
       dragMoved = false
@@ -493,6 +511,33 @@
     f >= 1000 ? `${(f / 1000).toFixed(f >= 10000 ? 0 : 1).replace(/\.0$/, '')}k` : `${f}`
 </script>
 
+{#snippet bandMarker(node: (typeof bandNodes)[number])}
+  <!-- Hit target: far larger than the visible dot -->
+  <circle cx={node.x} cy={node.y} r="22" fill="transparent" />
+  {#if node.kind === 'graphic'}
+    <rect
+      x={node.x - (dragIndex === node.index ? 6 : 5)}
+      y={node.y - (dragIndex === node.index ? 6 : 5)}
+      width={(dragIndex === node.index ? 6 : 5) * 2}
+      height={(dragIndex === node.index ? 6 : 5) * 2}
+      class={node.inert
+        ? 'fill-background stroke-muted/50 stroke-[2]'
+        : 'fill-background stroke-primary stroke-[2]'}
+    />
+  {:else}
+    <circle
+      cx={node.x}
+      cy={node.y}
+      r={dragIndex === node.index ? 6 : 5}
+      class={node.inert
+        ? 'fill-background stroke-muted/50 stroke-[2]'
+        : editable
+          ? 'fill-primary stroke-background stroke-[2]'
+          : 'fill-background stroke-primary stroke-[2] shadow-md'}
+    />
+  {/if}
+{/snippet}
+
 <div class="relative w-full overflow-hidden rounded-xl bg-surface/80 p-3 backdrop-blur border border-white/5 shadow-inner">
   <div class="relative h-44 w-full" bind:clientWidth={width} bind:clientHeight={height}>
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions --><!-- Tap-to-add is a pointer affordance; the keyboard-editable path is the
@@ -587,21 +632,26 @@
 
       <!-- Band Handles: round solid = parametric biquad; square hollow =
            graphic curve point (the two curve kinds are visually distinct).
-           Each carries a 22 px INVISIBLE hit circle — a 5 px dot alone is
-           unusable on a phone (2026-09-15 "dots are hard to press"). -->
+           A band that is NOT in effect (disabled, or past the platform's band
+           limit) is drawn hollow/muted at its own gain and stays TAPPABLE
+           (the editor is where it can be switched on) — never draggable,
+           because the engine does not run it. Each carries a 22 px INVISIBLE
+           hit circle: a 5 px dot alone is unusable on a phone (2026-09-15
+           "dots are hard to press"). -->
       {#if !eqBypassed}
         {#each bandNodes as node (node.index)}
-          {#if editable && !eqBypassed}
+          {#if editable}
             <g
               data-eq-handle="1"
               role="button"
               tabindex="0"
-              aria-label="{node.kind === 'graphic' ? 'Curve point' : 'Parametric band'} {fmtGrid(node.freq)} Hz — tap to edit, drag to move"
-              class="cursor-grab touch-none"
-              onpointerdown={handleHandleDown(node.index)}
-              onpointermove={handleHandleMove}
-              onpointerup={() => handleHandleUp(node.index)}
-              onpointercancel={() => handleHandleUp(null)}
+              aria-label="{node.kind === 'graphic' ? 'Curve point' : 'Parametric band'} {fmtGrid(node.freq)} Hz{node.inert ? ', off' : ''} — tap to edit{node.inert ? '' : ', drag to move'}"
+              class={node.inert ? 'cursor-pointer touch-none' : 'cursor-grab touch-none'}
+              onpointerdown={node.inert ? undefined : handleHandleDown(node.index)}
+              onpointermove={node.inert ? undefined : handleHandleMove}
+              onpointerup={node.inert ? undefined : () => handleHandleUp(node.index)}
+              onpointercancel={node.inert ? undefined : () => handleHandleUp(null)}
+              onclick={node.inert ? (e) => { focusHandle(e); onBandTap?.(node.index) } : undefined}
               onkeydown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
@@ -609,43 +659,10 @@
                 }
               }}
             >
-              <!-- Hit target: far larger than the visible dot -->
-              <circle cx={node.x} cy={node.y} r="22" fill="transparent" />
-              {#if node.kind === 'graphic'}
-                <rect
-                  x={node.x - (dragIndex === node.index ? 6 : 5)}
-                  y={node.y - (dragIndex === node.index ? 6 : 5)}
-                  width={dragIndex === node.index ? 12 : 10}
-                  height={dragIndex === node.index ? 12 : 10}
-                  class="fill-background stroke-primary stroke-[2]"
-                />
-              {:else}
-                <circle
-                  cx={node.x}
-                  cy={node.y}
-                  r={dragIndex === node.index ? 6 : 5}
-                  class="fill-primary stroke-background stroke-[2]"
-                />
-              {/if}
+              {@render bandMarker(node)}
             </g>
           {:else}
-            <circle cx={node.x} cy={node.y} r="22" fill="transparent" />
-            {#if node.kind === 'graphic'}
-              <rect
-                x={node.x - 5}
-                y={node.y - 5}
-                width="10"
-                height="10"
-                class="fill-background stroke-primary stroke-[2]"
-              />
-            {:else}
-              <circle
-                cx={node.x}
-                cy={node.y}
-                r="5"
-                class="fill-background stroke-primary stroke-[2] shadow-md"
-              />
-            {/if}
+            <g data-eq-handle="1">{@render bandMarker(node)}</g>
           {/if}
         {/each}
       {/if}

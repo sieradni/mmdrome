@@ -1,12 +1,18 @@
 import { Capacitor } from '@capacitor/core'
-import { get } from 'svelte/store'
 import { audioManager } from './audioManager'
 import { BackgroundAudio, type NativeFilterSnapshot } from './nativePlugin'
-import { eqBypassed, currentEqState } from './eq/eqStore'
 import { playbackSpeed, pitchOctaves, tapeMode, snapTolerance, masterGain } from '../stores/appState'
 import { snapPitchToSemitone } from './playbackCore/pitchSnap'
 import { mapBinsToBandsInto } from './eq/spectrumCore'
-import type { EqFilterConfig, EqPoint } from './eq/eqTypes'
+import {
+  liveBandChanges,
+  resolveAppliedEq,
+  NATIVE_EQ_PLATFORM,
+  WEB_EQ_PLATFORM,
+  type AppliedEq,
+  type EqPlatform,
+} from './eq/eqEffective'
+import type { EqPreset } from './eq/eqTypes'
 
 /**
  * Engine facade shared by views (EQ, pitch/speed, volume) and the playback
@@ -22,11 +28,19 @@ class EngineFacade {
   private _tapeMode = false
   private _snapTolerance = 0.15
   private _volume = 1
-  private _bypassed = false
-  private _filters: EqFilterConfig[] = []
+  /** The last EQ applied to THIS engine — what a new transition is diffed
+   *  against (live band writes vs a full re-materialization, and whether the
+   *  preamp even moved on the native bridge). */
+  private _applied: { state: EqPreset; applied: AppliedEq } | null = null
 
   get isNative(): boolean {
     return Capacitor.isNativePlatform()
+  }
+
+  /** What this platform's EQ can do (band limit, curve support) — the view
+   *  reads it so its controls describe the same projection the push applies. */
+  get eqPlatform(): EqPlatform {
+    return this.isNative ? NATIVE_EQ_PLATFORM : WEB_EQ_PLATFORM
   }
 
   get speed(): number {
@@ -158,78 +172,48 @@ class EngineFacade {
     BackgroundAudio.restartAudioEngine().catch(() => {})
   }
 
-  setEqBypass(bypassed: boolean): void {
-    if (this.isNative) {
-      this._bypassed = bypassed
-      this._pushNativeEq()
-    } else {
-      audioManager.setEqBypass(bypassed)
-    }
-  }
+  /**
+   * THE engine-facing EQ write — the only one. `eqEngineSync` calls it for every
+   * transition of the EQ session (a slider edit, preset switch, import, Reset
+   * All, preset deletion) and every bypass flip, so a state change cannot
+   * forget to reach the audio.
+   *
+   * `resolveAppliedEq` decides WHAT runs (disabled bands skipped, iOS's band
+   * cap, bypassed preamp); `liveBandChanges` decides HOW it lands — same band
+   * set → per-band writes with no chain rebuild, otherwise a full
+   * re-materialization. Native takes the whole snapshot: AVAudioUnitEQ has no
+   * live rewire worth maintaining, and its snapshot is already band-limited.
+   */
+  applyEq(state: EqPreset, bypassed: boolean): void {
+    const applied = resolveAppliedEq(state, this.eqPlatform, bypassed)
+    const previous = this._applied
+    this._applied = { state, applied }
 
-  setPreampDb(db: number): void {
     if (this.isNative) {
-      BackgroundAudio.setPreampDb({ db }).catch(() => {})
-    } else {
-      audioManager.setPreampDb(db)
+      this._pushNativeEq(applied, bypassed, previous?.applied.preampDb !== applied.preampDb)
+      return
     }
-  }
 
-  setEqBandGain(index: number, gainDb: number): void {
-    if (this.isNative) {
-      if (this._filters[index]) {
-        this._filters[index].gain = gainDb
+    audioManager.setEqBypass(bypassed)
+    audioManager.setPreampDb(applied.preampDb)
+
+    const live =
+      previous &&
+      previous.applied.path === applied.path &&
+      previous.state.graphicEqCurves === state.graphicEqCurves
+        ? liveBandChanges(previous.state.filters, state.filters)
+        : null
+    if (live) {
+      for (const i of live) {
+        const f = state.filters[i]
+        audioManager.setEqBandParams(i, f.frequency, f.gain, f.q)
       }
-      this._pushNativeEq()
-    } else {
-      audioManager.setEqBandGain(index, gainDb)
+      return
     }
-  }
-
-  /** Live per-band frequency + gain (+ optional Q). Web updates in place
-   *  with NO chain rebuild; native folds the change into its existing setEq
-   *  snapshot push. */
-  setEqBandParams(index: number, frequency: number, gainDb: number, q?: number): void {
-    if (this.isNative) {
-      const f = this._filters[index]
-      if (f) {
-        f.frequency = frequency
-        f.gain = gainDb
-        if (q !== undefined) f.q = q
-      }
-      this._pushNativeEq()
-    } else {
-      audioManager.setEqBandParams(index, frequency, gainDb, q)
-    }
-  }
-
-  applyFiltersConfig(filters: EqFilterConfig[]): void {
-    if (this.isNative) {
-      this._filters = filters.map((f) => ({ ...f }))
-      this._pushNativeEq()
-    } else {
-      audioManager.applyFiltersConfig(filters)
-    }
-  }
-
-  applyGraphicEQ(filters: EqFilterConfig[], curves?: EqPoint[][]): void {
-    if (this.isNative) {
-      void curves // GraphicEQ interpolation curves are ignored on native (24-band parametric mapping)
-      this._filters = filters.map((f) => ({ ...f }))
-      this._pushNativeEq()
-    } else {
-      audioManager.applyGraphicEQ(filters, curves)
-    }
-  }
-
-  /** Push the current EQ store state to the native engine (used at init). */
-  pushNativeEqFromStore(): void {
-    if (!this.isNative) return
-    const state = get(currentEqState)
-    this._bypassed = get(eqBypassed)
-    this._filters = state.filters.map((f) => ({ ...f }))
-    this._pushNativeEq()
-    BackgroundAudio.setPreampDb({ db: state.preampDb }).catch(() => {})
+    // A curve stack plays its stored points verbatim; the band list is only
+    // context there, so the FULL model goes over (bands off must not drop it).
+    if (applied.path === 'curve') audioManager.applyGraphicEQ(state.filters, state.graphicEqCurves)
+    else audioManager.applyFiltersConfig(state.filters)
   }
 
   /**
@@ -268,8 +252,11 @@ class EngineFacade {
 
   private _binScratch = new Float32Array(1024)
 
-  private _pushNativeEq(): void {
-    const filters: NativeFilterSnapshot[] = this._filters.map((f) => ({
+  private _pushNativeEq(applied: AppliedEq, bypassed: boolean, pushPreamp: boolean): void {
+    // Only the bands the engine can run are sent: the same projection the view
+    // renders from, so nothing past the platform's limit is silently dropped
+    // by the Swift side.
+    const filters: NativeFilterSnapshot[] = applied.filters.map((f) => ({
       type: f.type,
       frequency: f.frequency,
       gain: f.gain,
@@ -277,7 +264,10 @@ class EngineFacade {
       enabled: f.enabled,
       curve: f.curve,
     }))
-    BackgroundAudio.setEq({ filters, bypassed: this._bypassed }).catch(() => {})
+    BackgroundAudio.setEq({ filters, bypassed }).catch(() => {})
+    // The preamp rides its own bridge method; a drag only moved a band, and a
+    // second IPC per pointermove is pure latency.
+    if (pushPreamp) BackgroundAudio.setPreampDb({ db: applied.preampDb }).catch(() => {})
   }
 }
 

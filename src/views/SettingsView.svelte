@@ -39,9 +39,15 @@
   import { getCachedConfig, setCachedConfig, cachedConfigMatches } from '../lib/navidromeApi'
   import { resetCredentials, authBaseKey } from '../lib/authHealth'
   import { getSetting } from '../lib/db'
+  import { eqBypassed } from '../lib/eq/eqStore'
   import { tick } from 'svelte'
   import type { Track, SettingsMap } from '../stores/appState'
   import type { WebdavFileEntry } from '../lib/db'
+
+  /** `oneqopen` opens the app's ONE Equalizer view (App owns that overlay
+   *  state): the EQ lives behind a playing track's Options sheet, and Settings
+   *  is the surface that exists with nothing loaded. */
+  let { oneqopen }: { oneqopen: () => void } = $props()
 
   type SettingsTab = 'sources' | 'scrobbling' | 'playback' | 'library' | 'appearance' | 'about'
 
@@ -1826,6 +1832,31 @@
       {/if}
 
       {#if tab === 'playback'}
+        <!-- Equalizer (2026-10-25c): the only EQ entry that does not need a
+             loaded track. It opens the SAME overlay the track-options sheet
+             opens — no second view, no second open-state. -->
+        <section class="px-4 py-4">
+          <button
+            type="button"
+            onclick={oneqopen}
+            aria-label="Open Equalizer"
+            data-testid="open-equalizer"
+            class="flex w-full items-center gap-3 rounded-lg bg-surface-hover px-4 py-3 text-left transition-colors hover:bg-white/10"
+          >
+            <span class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-white/5 text-accent">
+              <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M10 20h4V4h-4v16zm-6 0h4v-8H4v8zM16 9v11h4V9h-4z" /></svg>
+            </span>
+            <span class="min-w-0 flex-1">
+              <span class="block text-base text-primary">Equalizer</span>
+              <span class="block text-sm text-muted">Presets, per-band editing and AutoEQ import — works with nothing playing.</span>
+            </span>
+            {#if $eqBypassed}
+              <span class="flex-shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-300">Bypassed</span>
+            {/if}
+            <svg class="h-4 w-4 flex-shrink-0 text-muted/60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6" /></svg>
+          </button>
+        </section>
+
         <!-- Data & Network -->
         <section class="px-4 py-4">
           <h3 class="mb-3 text-base font-medium text-primary">Data &amp; Network</h3>

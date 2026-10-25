@@ -35,7 +35,6 @@ class FakeEngine {
   setAudioMixing(mode: string): void { this.calls.push(`setAudioMixing:${mode}`) }
 
   setSeekEpochs(): void {}
-  pushNativeEqFromStore(): void { this.calls.push('pushNativeEqFromStore') }
 }
 
 class FakeQueueManager {

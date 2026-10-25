@@ -51,7 +51,16 @@
       destroy() {
         observer.disconnect()
         node.close()
-        if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus()
+        // Hand focus back to whatever opened the dialog. The guard covers SVG
+        // too: the EQ's band handles are `<g tabindex="0">` nodes, and an
+        // `instanceof HTMLElement` check silently skipped restoring focus to
+        // them (closing a band editor left focus on <body>).
+        if (
+          (previousFocus instanceof HTMLElement || previousFocus instanceof SVGElement) &&
+          previousFocus.isConnected
+        ) {
+          previousFocus.focus()
+        }
       },
     }
   }
