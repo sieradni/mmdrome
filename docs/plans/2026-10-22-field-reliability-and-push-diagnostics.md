@@ -1,7 +1,7 @@
 # Field reliability: lock-screen state, push outcomes, and transfer evidence
 
 Date: 2026-10-22
-Status: **IMPLEMENTED & VERIFIED (W-01…W-10, D-01…D-04, N-01…N-04, L-01…L-06). Native control implementation (`80d6adc`, `ba94fb8`) is committed, shipped in 1.2.65–1.2.67, verified by iOS CI (`swift test` + `xcodebuild` green through 1.2.71), and confirmed on hardware (closed for development purposes).**
+Status: **IMPLEMENTED & VERIFIED (W-01…W-10, D-01…D-04, N-01…N-04, L-01…L-06). Native control implementation (`80d6adc`, `ba94fb8`) is committed, shipped in 1.2.65–1.2.67, verified by iOS CI (`swift test` + `xcodebuild` green through 1.2.71), and confirmed on hardware (closed for development purposes). The push/transfer/shared diagnostic work (W/N/D) shipped in **1.4.0** (build 77); its tag run 40483491089 was green in all five jobs.**
 Source review: `d2f27ba` (checkout package version 1.2.64). The user confirms the affected build is current; the dump itself does not contain an authoritative running version/commit.
 
 This is the working register for the October 22 reports. Keep findings, proposed work, automated verification, and physical-device acceptance separate. A passing compile or a metadata assignment does not close a reported lock-screen failure.
@@ -140,7 +140,7 @@ Both real bundles were re-folded against the reduced core before this section wa
 
 Regression sources: `PlaybackControlTests.swift` (13 tests including automatic-vs-explicit start permission, fake-clock delayed effects and 256 short intent traces), `NowPlayingPublicationTests.swift` (6 tests), and six new `tests/nativeTransport.test.ts` regressions (including local/remote late failures, cancelled timer delivery, retry-reload budget and legacy split-engage Pause). These Swift tests run in the `ios.yml` pure-core gate and have **passed on CI across 1.2.65 through 1.2.71**, alongside the AVFoundation growing-file reader gate and full plugin `xcodebuild`.
 
-Current evidence (2026-10-27): `npm run check` 0 errors/0 warnings; full `npm test` 1514/1514; iOS CI (`ios.yml`) green on 1.2.65–1.2.71; L1 device comparison confirmed on 1.2.66 (A/B) and 1.2.67 (unconditional). Closed for development purposes.
+Current evidence (2026-10-27): `npm run check` 0 errors/0 warnings; full `npm test` 1537/1537; iOS CI (`ios.yml`) green on 1.2.65–1.2.71 and on the 1.4.0 release commit and tag; L1 device comparison confirmed on 1.2.66 (A/B) and 1.2.67 (unconditional). Closed for development purposes.
 
 ### 3.4 Device protocol and closure criteria
 

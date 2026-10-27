@@ -1,3 +1,11 @@
+## 2026-10-27d — 1.4.0 shipped
+
+The four commits since 1.3.0 went out through `release:full`, not by hand: clean-tree preflight → gates (`check`, 1537 unit tests, the bundle smoke spec) → `release:ios` bump (`package.json`, both `MARKETING_VERSION` configs, build 77, the deliberately sizeless SideStore entry) → branch CI on `4d046f0` → solo `ios-v1.4.0` tag → the tag run published `mmdrome.ipa` → CI's `finalize-release` stamped the size and deployed the mirror, so Phase 6 only reconciled (`--ff-only` onto the finalize commit) and Phase 7 skipped its own deploy. No manual version edit, no local artifact.
+
+What a person gets: saved library views (3A), a Push report that names each file's terminal disposition and its remote-vs-local state, the Filters dialog on `ModalShell`, and MOVEs reported as MOVEs instead of generic write failures.
+
+**Verified surfaces (2026-10-27):** tag `ios-v1.4.0` = `4d046f0` on origin; tag run 40483491089 green in all five jobs (validate, growing-file reader, build unsigned `.ipa`, publish, finalize); GitHub Release `ios-v1.4.0` published with `mmdrome.ipa` = 5 263 738 bytes; `sidestore/apps.json` on main = 1.4.0 / build 77 / size 5 263 738; the Pages mirror and jsDelivr both serve 1.4.0 at that exact size.
+
 ## 2026-10-27c — the Push report and saved views get their own components
 
 Two surfaces had grown inside hosts that had no business rendering them, and both were still hand-rolled dialogs in a file that already carried three. The move is structural only — the pinned specs (`filterpresets`, `pushchanges`' mixed-outcome case) pass unchanged, which is the evidence that nothing was rewritten.
