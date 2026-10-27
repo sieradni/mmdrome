@@ -137,6 +137,20 @@ export function applyPreset(state: LibraryFilterState, preset: FilterPreset): Li
   }
 }
 
+/**
+ * Applies the saved view named by `id` — the ONE apply path shared by the chip
+ * strip and the manager list, so both resolve an id the same way. Returns
+ * `null` for an unknown id (a stale chip must not write anything).
+ */
+export function applyPresetById(
+  state: LibraryFilterState,
+  presets: readonly FilterPreset[],
+  id: string,
+): LibraryFilterState | null {
+  const preset = presets.find((p) => p.id === id)
+  return preset ? applyPreset(state, preset) : null
+}
+
 /** True when the live state already equals the preset (drives the chip highlight). */
 export function presetIsActive(preset: FilterPreset, state: LibraryFilterState): boolean {
   if (state.sortBy !== preset.sortBy || state.sortAsc !== preset.sortAsc) return false

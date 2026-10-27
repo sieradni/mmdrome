@@ -7,6 +7,7 @@ import {
   PRESET_MAX_COUNT,
   PRESET_NAME_MAX,
   applyPreset,
+  applyPresetById,
   decodeFilterPresets,
   filtersFromState,
   planSavePreset,
@@ -150,6 +151,12 @@ test('applyPreset clears a sort the preset did not save', () => {
   const applied = applyPreset(state({ sortBy: 'added', sortAsc: false }), preset({ sortBy: null, sortAsc: true }))
   assert.equal(applied.sortBy, null)
   assert.equal(applied.sortAsc, true)
+})
+
+test('applyPresetById resolves the id once for both surfaces and ignores a stale chip', () => {
+  const list = [preset({ id: 'a', name: 'A', sortBy: 'year', sortAsc: true })]
+  assert.equal(applyPresetById(state(), list, 'a')?.sortBy, 'year')
+  assert.equal(applyPresetById(state(), list, 'gone'), null, 'a removed view must not write anything')
 })
 
 test('presetIsActive matches the exact saved combination only', () => {

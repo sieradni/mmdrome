@@ -1,3 +1,15 @@
+## 2026-10-27c — the Push report and saved views get their own components
+
+Two surfaces had grown inside hosts that had no business rendering them, and both were still hand-rolled dialogs in a file that already carried three. The move is structural only — the pinned specs (`filterpresets`, `pushchanges`' mixed-outcome case) pass unchanged, which is the evidence that nothing was rewritten.
+
+- **`PushReportPanel.svelte`** is now the one renderer of `PushRunReport`: counts, run metadata, grouped causes with the next action, the per-row parenthetical and the truncation notice. It takes the report as a prop, so it owns presentation while appState keeps the only owner of the state (`lastPushReport`, persisted for W-09). `SettingsView` shrank by ~50 lines to one tag.
+- **Saved views split by concern**: `SavedViewsStrip.svelte` (chips, one-tap apply) and `SavedViewsPanel.svelte` (name + save, list, remove, its own input state). Neither holds policy — naming, replace-in-place, the cap and the decode boundary stay in the pure `filterPresets` core; both read the persisted store.
+- **The Filters dialog moved onto `ModalShell`**, which is what finally puts the preset manager inside the app's one modal primitive rather than a fourth `fixed inset-0` overlay. Same `role=dialog` label, same `Close filters` control, same backdrop/Esc dismissal — and now real focus containment and an inert background for free.
+
+Deliberately left alone: the Sort dialog and the apply-to-auto-queue confirm still use their own overlays. They are not part of the saved-views or push-report concerns, and migrating them is a separate reviewable change.
+
+**Verification:** `npm run check` 0 errors / 0 warnings; `npm test` 1536/1536; `filterpresets` + `pushchanges` mixed-outcome specs pass unchanged; `applyautoqueue`, `sortadded`, `queuefresh`, `viewstate` 7/7 (the Filters dialog is reachable and scrollable at 349 px, `:modal` true, Esc closes and syncs `filterOpen`, the strip sits above the pills without overlap).
+
 ## 2026-10-27b — the Push report finally gets driven, and it was lying about the stage
 
 Everything in the Push report was typechecked and nothing had ever rendered it. One browser spec now drives a single run containing one refused MOVE (403), one LOST MOVE response (connection reset before any reply) and one failed local reconcile, plus 200 orphaned pending edits so the run crosses `MAX_RETAINED_REPORT_ROWS` and the truncation notice is real rather than hypothetical. It asserts the quiet summary line, the grouped causes (including the "run Scan for changes" instruction that only the committed-but-locally-failed case gets), each row's `disposition (stage, … remote X, local Y)` parenthetical, the `<details>` truncation line, and — after a reload — that the same retained report is still in the HUD Copy payload (`window.__debugHudText`).
