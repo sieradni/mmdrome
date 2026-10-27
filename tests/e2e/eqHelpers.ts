@@ -66,6 +66,43 @@ export async function openEqualizerFromSettings(page: Page): Promise<void> {
   await expect(page.getByRole('button', { name: 'Import' })).toBeVisible()
 }
 
+/** Reads one `userSettings` row straight out of IndexedDB. */
+export async function readPersistedSetting(page: Page, key: string): Promise<unknown> {
+  return page.evaluate(async (settingKey) => {
+    const db: IDBDatabase = await new Promise((res, rej) => {
+      const req = indexedDB.open('mmdrome')
+      req.onsuccess = () => res(req.result)
+      req.onerror = () => rej(req.error)
+    })
+    const value = await new Promise<unknown>((res) => {
+      const req = db.transaction('userSettings', 'readonly').objectStore('userSettings').get(settingKey)
+      req.onsuccess = () => res((req.result as { value?: unknown } | undefined)?.value)
+      req.onerror = () => res(undefined)
+    })
+    db.close()
+    return value
+  }, key)
+}
+
+/**
+ * Waits until a `persisted` store's row is readable with the expected value.
+ *
+ * Persistence is fire-and-forget by design (`persistedStore` subscribes and
+ * calls `setSetting`, whose Dexie commit is asynchronous), so a reload issued in
+ * the same instant as a toggle can beat the commit — that window is a kill, not
+ * a restore, and the app cannot close it. Once the row is visible the contract
+ * this spec asserts begins: a relaunch must restore that value. Without this
+ * wait the CI run of 2026-10-27 read a default because the reload landed first.
+ */
+export async function waitForPersistedSetting(page: Page, key: string, expected: unknown): Promise<void> {
+  await expect
+    .poll(() => readPersistedSetting(page, key), {
+      timeout: 5_000,
+      message: `setting "${key}" never became ${JSON.stringify(expected)}`,
+    })
+    .toEqual(expected)
+}
+
 export async function relaunch(page: Page): Promise<void> {
   await page.reload({ waitUntil: 'networkidle' })
   await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })

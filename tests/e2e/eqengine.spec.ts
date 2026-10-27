@@ -7,6 +7,7 @@ import {
   readEngineEq,
   readUiEq,
   relaunch,
+  waitForPersistedSetting,
 } from './eqHelpers'
 
 // The ENGINE side of the EQ (2026-10 audit defect): a preset switch and a
@@ -55,6 +56,9 @@ test('a bypassed EQ is still bypassed in the engine after a reload', async ({ pa
   await page.locator('[data-eq-preset-select]').selectOption('bass_boost')
   await page.getByRole('button', { name: 'Active' }).click()
   await expect(page.getByRole('button', { name: 'Bypassed' })).toBeVisible()
+  // The bypass is a fire-and-forget `persisted` store: reload only once its row
+  // is durable, or this test races a kill instead of the restore it pins.
+  await waitForPersistedSetting(page, 'eq_bypassed', true)
 
   await relaunch(page)
   await gotoEqualizer(page)
