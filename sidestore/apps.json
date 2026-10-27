@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.4.0",
-      "versionDate": "2026-10-27T09:43:05.850Z",
-      "versionDescription": "Saved library views: pin a filter and sort as a chip and return to it in one tap. The WebDAV Push report now tells you what happened to each file — refused by the server, failed on this device, or uncertain — and says so when a run is too long to list. The Filters dialog now behaves like the app's other dialogs: focus stays inside and the page behind it is inert. File moves are reported as moves instead of generic write failures.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.0/mmdrome.ipa",
+      "version": "1.4.1",
+      "versionDate": "2026-10-27T11:01:14.912Z",
+      "versionDescription": "A rejected sign-in no longer reads as being offline. If your Navidrome password changes, the app now says the sign-in failed — on the status line above your library, on the Sources screen, on the cached-library line and on the WebDAV connection test — instead of implying your device is offline. Nothing else changed in this build.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.1/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.4.1",
+          "buildVersion": "78",
+          "date": "2026-10-27T11:01:14.912Z",
+          "localizedDescription": "A rejected sign-in no longer reads as being offline. If your Navidrome password changes, the app now says the sign-in failed — on the status line above your library, on the Sources screen, on the cached-library line and on the WebDAV connection test — instead of implying your device is offline. Nothing else changed in this build.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.1/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5264093
+        },
         {
           "version": "1.4.0",
           "buildVersion": "77",
@@ -710,6 +719,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.4.1",
+      "identifier": "ios-v1.4.1",
+      "appID": "com.mmdrome.player",
+      "caption": "A rejected sign-in no longer reads as being offline. If your Navidrome password changes, the app now says the sign-in failed — on the status",
+      "date": "2026-10-27T11:01:14.912Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.4.0",
       "identifier": "ios-v1.4.0",
       "appID": "com.mmdrome.player",
@@ -742,15 +760,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Pressing a song now ends a hand-dragged auto-queue order and puts the upcoming songs back in your filter+sort order",
       "date": "2026-10-24T13:27:51.356Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.69",
-      "identifier": "ios-v1.2.69",
-      "appID": "com.mmdrome.player",
-      "caption": "A dragged auto-queue row now stays where you put it until you change the filter or sort",
-      "date": "2026-10-24T13:12:19.365Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
