@@ -27,7 +27,8 @@
           "date": "2026-10-27T09:43:05.850Z",
           "localizedDescription": "Saved library views: pin a filter and sort as a chip and return to it in one tap. The WebDAV Push report now tells you what happened to each file — refused by the server, failed on this device, or uncertain — and says so when a run is too long to list. The Filters dialog now behaves like the app's other dialogs: focus stays inside and the page behind it is inert. File moves are reported as moves instead of generic write failures.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.0/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5263738
         },
         {
           "version": "1.3.0",
