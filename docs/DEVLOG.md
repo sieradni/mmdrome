@@ -1,3 +1,11 @@
+## 2026-10-27f — 1.4.1 shipped (the sign-in fix only)
+
+1.4.0 went out before the sign-in-versus-offline fix existed, so the fix sat on `main` with no release carrying it. The patch cuts through the same `release:full` path with nothing folded in: gates (`check`, 1539 unit tests, the bundle smoke spec) → `release:ios` bump to 1.4.1 / build 78 → branch CI on the release commit → solo `ios-v1.4.1` tag → the tag run published the IPA → CI's `finalize-release` stamped the size and deployed the mirror (Phases 6–7 therefore only reconciled and skipped their own deploy).
+
+Notes, as a user reads them: a rejected sign-in no longer reads as being offline — if the Navidrome password changes, the app says the sign-in failed on the status line above the library, on the Sources screen, on the cached-library line and on the WebDAV connection test, instead of implying the device is offline.
+
+**Verified surfaces (2026-10-27):** tag `ios-v1.4.1` = `d54f3c1` on origin; **both** workflows green on that commit on `main` and on the tag, and tag run 40493542953 green in all five jobs (validate, growing-file reader, build unsigned `.ipa`, publish, finalize); GitHub Release `ios-v1.4.1` published with `mmdrome.ipa` = 5 264 093 bytes; `sidestore/apps.json` on main = 1.4.1 / build 78 / size 5 264 093 with the notes in `localizedDescription` and the news caption; the Pages mirror and jsDelivr both serve 1.4.1 at that exact size.
+
 ## 2026-10-27e — a rejected credential stops reporting as offline
 
 The roadmap backlog carried this as deferred: "distinguish authentication failures from offline rather than labeling every cached fallback offline." The user symptom is precise — a password changes, the app falls back to the cached library, and the activity strip says **Offline — browsing cached library**, so the fix looks like a network problem.
