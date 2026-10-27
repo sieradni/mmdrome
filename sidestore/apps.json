@@ -27,7 +27,8 @@
           "date": "2026-10-27T08:29:33.394Z",
           "localizedDescription": "Queue tail rules, an auto-queue switch, a repeat pass that keeps suggestions going, and WebDAV Push reports that separate a written file from a broken edit. Diagnostics now name the failing stage.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.3.0/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5261540
         },
         {
           "version": "1.2.71",
