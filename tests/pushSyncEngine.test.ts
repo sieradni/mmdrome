@@ -449,3 +449,134 @@ test('W10 / W-10: cancellation records unprocessed-cancelled rows and Navidrome 
   assert.match(res.report?.catalogRefreshError ?? '', /502 Bad Gateway/)
   assert.equal(res.report?.counts.unprocessedCancelled, 2)
 })
+
+// --- stage coverage beyond the mixed batch (W-01 stage taxonomy) ------------
+// The register's "Required push regressions" row names representative policy
+// cases rather than every numeric code; these are the ones the mixed batch
+// above does NOT reach, so a stage can never collapse into a generic failure.
+
+test('W-01: a TagLib failure is reported as failed-taglib and no PUT is ever attempted', async () => {
+  const row = makeRow('t-tag', 'Album/Corrupt.mp3')
+  const h = createHarness([row])
+  __setPushSyncDeps({
+    ...h.deps,
+    modifyMetadataBuffer: async () => {
+      throw new Error('TagLib: could not read file format')
+    },
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      return makeRes(200, { ETag: '"e1"' })
+    },
+  })
+
+  const res = await runManualWebDAVSync()
+  const outcome = res.report?.rows[0]
+  assert.equal(outcome?.disposition, 'failed-taglib')
+  assert.equal(outcome?.stage, 'taglib-edit')
+  assert.equal(outcome?.error?.category, 'tag-format')
+  assert.equal(outcome?.remainsPending, true, 'a tag failure never clears the pending edit')
+  assert.equal(h.calls.some((c) => c.method === 'PUT'), false, 'nothing is uploaded from an unreadable body')
+  assert.equal(res.failed, 1)
+})
+
+test('W-01: a GET 404/410 is a no-write skip (file gone), not a failure', async () => {
+  const row = makeRow('t-gone', 'Album/Deleted.mp3')
+  const h = createHarness([row])
+  __setPushSyncDeps({
+    ...h.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'GET') return makeRes(404)
+      return makeRes(201, { ETag: '"e1"' })
+    },
+  })
+
+  const res = await runManualWebDAVSync()
+  const outcome = res.report?.rows[0]
+  assert.equal(outcome?.disposition, 'skipped-file-gone')
+  assert.equal(outcome?.remoteState, 'not-committed')
+  assert.equal(outcome?.remainsPending, true, 'the edit is preserved for a re-link, never dropped')
+  assert.equal(res.skipped, 1)
+  assert.equal(res.failed, 0, 'a missing target is a skip: nothing was attempted against a file')
+  assert.equal(h.calls.some((c) => c.method === 'PUT'), false)
+})
+
+test('W-05: a network-level PUT rejection reports failed-put/network and uploads no temp', async () => {
+  const row = makeRow('t-net', 'Album/Drop.mp3')
+  const h = createHarness([row])
+  __setPushSyncDeps({
+    ...h.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PUT') throw new TypeError('Failed to fetch')
+      return makeRes(200, { ETag: '"e1"' })
+    },
+  })
+
+  const res = await runManualWebDAVSync()
+  const outcome = res.report?.rows[0]
+  assert.equal(outcome?.disposition, 'failed-put')
+  assert.equal(outcome?.stage, 'put-temp')
+  assert.equal(outcome?.error?.category, 'network')
+  assert.equal(outcome?.tempCleanup, 'not-needed', 'the helper never created a temp to clean')
+  assert.equal(h.calls.some((c) => c.method === 'MOVE'), false)
+})
+
+test('W-05: a native transport rejection keeps its domain/code and its phase', async () => {
+  const row = makeRow('t-native', 'Album/Native.mp3')
+  const h = createHarness([row])
+  __setPushSyncDeps({
+    ...h.deps,
+    isNative: () => true,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'GET') {
+        throw new WebdavTransportError('The request timed out.', {
+          method: 'GET',
+          transport: 'native',
+          phase: 'body',
+          timedOut: true,
+          code: -1001,
+          domain: 'NSURLErrorDomain',
+          elapsedMs: 30_000,
+        })
+      }
+      return makeRes(201, { ETag: '"e1"' })
+    },
+  })
+
+  const res = await runManualWebDAVSync()
+  const outcome = res.report?.rows[0]
+  assert.equal(outcome?.disposition, 'failed-get')
+  assert.equal(outcome?.error?.category, 'timeout', 'a body-phase timeout is a timeout, not a decode error')
+  assert.equal(outcome?.error?.code, -1001)
+  assert.equal(outcome?.error?.domain, 'NSURLErrorDomain')
+  assert.equal(res.report?.transport, 'native', 'the report names the transport it ran on')
+})
+
+test('W-08: a MOVE 500 exhausts the conflict path as failed-move with its temp cleaned up', async () => {
+  const row = makeRow('t-move500', 'Album/Locked.mp3')
+  const h = createHarness([row])
+  __setPushSyncDeps({
+    ...h.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'MOVE') return makeRes(500, {}, 'Internal Server Error')
+      return makeRes(200, { ETag: '"e1"' })
+    },
+  })
+
+  const res = await runManualWebDAVSync()
+  const outcome = res.report?.rows[0]
+  assert.equal(outcome?.disposition, 'failed-move')
+  assert.equal(outcome?.stage, 'move')
+  assert.equal(outcome?.error?.status, 500)
+  assert.equal(outcome?.remoteState, 'not-committed', 'a rejected MOVE is not an uncertain one')
+  assert.equal(outcome?.tempCleanup, 'deleted')
+  assert.equal(h.calls.filter((c) => c.method === 'MOVE').length, 1, 'a 5xx is not retried as a conflict')
+})
