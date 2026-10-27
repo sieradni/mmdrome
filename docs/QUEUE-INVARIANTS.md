@@ -418,29 +418,22 @@ server was contacted):
 - **Playback clock / seek intent / stream epochs.** These have their own suites and plans
   (`2026-10-07-seek-intent-and-stream-epochs.md`); they are adjacent to this matrix but not part of it.
 
-## 17. Open product questions (behavior pinned, intent NOT recorded)
+## 17. Open product questions — none remain (Q1 CLOSED)
 
-Rows carry this status instead of `pinned` when the test proves what the code DOES but no product decision
-exists anywhere. They are listed here, separately from §13, because they are not known-wrong — they are
-undecided. Phase 3 should settle them before a playlist surface inherits them.
+Rows carried this status when the test proved what the code DOES but no product decision existed anywhere.
+Q1 has since been decided AND implemented, so this section is now a CLOSED record kept for audit, the same
+way §13 keeps the closed gaps. Add a row here only if a genuinely undecided question appears.
 
-### Q1 — Should manual Next wrap at the combined tail under loop-all?
+### Q1 — CLOSED (2026-10-26): manual Next obeys D8 at the combined tail
 
-- **Decided 2026-10-21b (NOT implemented):** yes under loop-all (wrap to `userQueue[0]`), stop playback
-  at the tail under loop-none, and loop the song under loop-one. Previous at the first row becomes a
-  no-op in every mode (the current restart/wrap is removed as too inconsistent to promise). Auto-off
-  is defined as the direct form of a filter matching nothing, so repeat-all behaves identically in
-  both cases. See [QUEUE-DESIGN.md](QUEUE-DESIGN.md) D8. This row keeps pinning the CURRENT no-op
-  until the implementing commit rewrites L2, L3 and this section together.
-- **Current behavior:** row L2 — `next()` is a no-op at the tail under loop-all, the mode where a natural
-  end DOES wrap (`tests/playbackManagerNav.test.ts` — "Next at the queue tail is a no-op under loop-all").
-  The code path never reads `loopMode`, so the other modes behave the same, but only this case is pinned.
-  Previous at the first row DOES wrap under loop-all (L3), so the asymmetry is user-visible.
-- **Why it is open:** nothing in the repository records this as a decision. An earlier revision asserted
-  the rationale ("wrapping is a natural-end decision") in row L2 AND in the test's name; the sentence was
-  inferred from the code and was removed from both by the 2026-10-21 audit rather than promoted to intent.
-- **Options:** (a) keep it — a manual Next is an explicit "forward" and the tail is the end; (b) wrap under
-  loop-all so the control matches the mode's promise; (c) wrap only where a natural end at the same row
-  would have wrapped.
-- **Constraint:** whichever is chosen, manual Next and the natural-end decision stay separate code paths
-  (L1/L2), and the decision is recorded in `docs/DEVLOG.md` with the test rewritten in the same commit.
+- **Decision (2026-10-21b, implemented 2026-10-26):** loop-all wraps to `userQueue[0]`, loop-one restarts
+  the song, loop-none STOPS playback; Previous at the first row is a no-op in every mode. Auto-off is the
+  direct form of "the filter matches nothing", so repeat-all behaves identically either way. See
+  [QUEUE-DESIGN.md](QUEUE-DESIGN.md) D8.
+- **Pinned:** row L2 — `tests/playbackManagerNav.test.ts` — "Next at the queue tail wraps to the user head
+  under loop-all (D8)", "Next at the queue tail STOPS under loop-none (D8)", "Next at the queue tail
+  restarts the song under loop-one (D8)"; row L3 — "Previous at the first row is a NO-OP in every loop
+  mode (D8)", "Previous >3 s into the first row restarts it instead of no-opping (D8)".
+- **History:** this section previously pinned the old no-op and cited "Next at the queue tail is a no-op
+  under loop-all", a title the D8 commit rewrote out of existence. That stale citation is why §17 exists
+  now only as a closed record — a row may never point at a test that no longer carries its rule.
