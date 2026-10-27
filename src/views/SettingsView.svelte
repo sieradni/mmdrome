@@ -19,7 +19,7 @@
   import { buildPushBreakdown, withLibraryTitles, withPushContext, EMPTY_PUSH_BREAKDOWN, type PushBreakdown, type PushableTrackInfo, type PushTrackContext } from '../lib/pushReconcile'
   import { metadataCache, relinkPendingMetadata } from '../stores/appState'
   import { getPendingSyncMetadata, getFileTagsForBase } from '../lib/db'
-  import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, refreshIndexAndProbeForced, reprobeFiles, scanAll, resetMetadataAndRelink, cancelScan, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, tagProbeState, reverifyStaleLinks, reverifyTrack } from '../lib/metadataScanner'
+  import { setWebdavCredentials, rebuildIndex, refreshIndexAndProbe, refreshIndexAndProbeForced, reprobeFiles, scanAll, resetMetadataAndRelink, cancelScan, listUnresolvedMatches, searchWebdavFiles, bindTrackToFile, unbindTrack, ignoreTrack, unignoreTrack, discardLocalEdit, tagProbeState, reverifyStaleLinks, reverifyTrack, WEBDAV_INDEX_REFRESH_FAILED } from '../lib/metadataScanner'
   import { parseSearchQuery, highlightSegments, type HighlightSegment } from '../lib/searchCore'
   import { foldMapForSearch, normalizeForSearch } from '../lib/matchNormalize'
   import type { UnresolvedTrack } from '../lib/metadataScanner'
@@ -433,14 +433,14 @@
         setWebdavCredentials(s.webdavUrl, s.webdavUser, s.webdavToken)
       }
       const rebuilt = await rebuildIndex()
-      if (!rebuilt) throw new Error('WebDAV index refresh failed — is the WebDAV server reachable?')
+      if (!rebuilt) throw new Error(WEBDAV_INDEX_REFRESH_FAILED)
     } catch (err) {
       metadataScanState.set({
         status: 'error',
         progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0 },
-        error: err instanceof Error && (err.message === 'WebDAV credentials not configured' || err.message === 'WebDAV index refresh failed — is the WebDAV server reachable?')
+        error: err instanceof Error && (err.message === 'WebDAV credentials not configured' || err.message === WEBDAV_INDEX_REFRESH_FAILED)
           ? err.message
-          : 'WebDAV index refresh failed — is the WebDAV server reachable?',
+          : WEBDAV_INDEX_REFRESH_FAILED,
       })
     } finally {
       indexing = false
@@ -575,6 +575,7 @@
         error: result.loadResult.error,
         cached: result.loadResult.cached,
         cancelled: result.loadResult.cancelled,
+        failure: result.loadResult.failure,
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -1068,7 +1069,7 @@
         } else {
           refreshed = await refreshIndexAndProbe()
         }
-        if (!refreshed) throw new Error('Index refresh failed — is the WebDAV server reachable?')
+        if (!refreshed) throw new Error(WEBDAV_INDEX_REFRESH_FAILED)
       }
       const rows = await listUnresolvedMatches()
       unresolvedRows = rows.rows
@@ -1305,7 +1306,7 @@
       bindError = res.reason === 'no-creds'
         ? { trackId: row.trackId, message: 'WebDAV credentials not configured.' }
         : res.reason === 'index-failure'
-          ? { trackId: row.trackId, message: 'Index refresh failed — is the WebDAV server reachable?' }
+          ? { trackId: row.trackId, message: WEBDAV_INDEX_REFRESH_FAILED }
           : res.reason === 'not-in-index'
           ? { trackId: row.trackId, message: 'That file is not in the current index — refresh the index first.' }
           : res.reason === 'no-row'
@@ -1481,7 +1482,13 @@
                 Connected{$navidromeConnection.serverVersion ? ' (' + $navidromeConnection.serverVersion + ')' : ''}
               </p>
             {:else if $navidromeConnection.error}
-              <p class="text-sm text-red-400">{$navidromeConnection.error}</p>
+              <!-- A rejected credential is not an unreachable server: the same
+                   slot names which one it was (D-04 auth case). -->
+              <p class="text-sm text-red-400">
+                {$navidromeConnection.failure === 'auth'
+                  ? `Sign-in failed — ${$navidromeConnection.error}`
+                  : $navidromeConnection.error}
+              </p>
             {/if}
             {#if $navidromeLoadStatus.cancelled}
               <!-- A cancelled load's landing: HONEST COPY ONLY, no button.
@@ -1493,9 +1500,17 @@
               <p class="text-sm text-yellow-300">Load cancelled — your current library is unchanged. Press Connect &amp; Load Songs to try again.</p>
             {:else if $navidromeLoadStatus.loaded > 0 || $navidromeLoadStatus.error}
               <p class="text-sm text-muted">
-                {$navidromeLoadStatus.error
-                  ? `Error: ${$navidromeLoadStatus.error}`
-                  : `Loaded ${$navidromeLoadStatus.loaded} song(s), ${$navidromeLoadStatus.failed} failed${$navidromeLoadStatus.cached ? ' (from cache)' : ''}`}
+                {#if $navidromeLoadStatus.error && $navidromeLoadStatus.cached}
+                  <!-- A fallback load IS the cached library and it says why it is
+                       there: a rejected sign-in, or the server being unreachable. -->
+                  Showing the cached library — {$navidromeLoadStatus.failure === 'auth'
+                    ? 'sign-in failed'
+                    : 'server unreachable'}: {$navidromeLoadStatus.error}
+                {:else if $navidromeLoadStatus.error}
+                  Error: {$navidromeLoadStatus.error}
+                {:else}
+                  Loaded {$navidromeLoadStatus.loaded} song(s), {$navidromeLoadStatus.failed} failed{$navidromeLoadStatus.cached ? ' (from cache)' : ''}
+                {/if}
               </p>
             {/if}
           </div>
@@ -1550,7 +1565,11 @@
               {#if $webdavConnection.connected}
                 <span class="text-sm text-green-400">Connected</span>
               {:else if $webdavConnection.error}
-                <span class="text-sm text-red-400">{$webdavConnection.error}</span>
+                <span class="text-sm text-red-400">
+                  {$webdavConnection.failure === 'auth'
+                    ? `Sign-in failed — check the WebDAV username and token (${$webdavConnection.error})`
+                    : $webdavConnection.error}
+                </span>
               {/if}
             </div>
             <button

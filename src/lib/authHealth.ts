@@ -17,6 +17,11 @@
  *    with their own retry policy (scrobbleFlush backoff, next boot's connect)
  *    already handle them; a network blip must never park the credentials.
  *
+ * Verdict classification: the same code-40 knowledge answers "was this a
+ * rejection or just an outage?" (`classifyConnectFailure`) — the connect
+ * results and the surfaces that report a failed connect read it, so a rejected
+ * password is never described as the device being offline.
+ *
  * Clearing: `markAuthSuccess` (any successful connect) or `resetCredentials`
  * (the user committed new credentials — identity = the same `baseKey`
  * primitive the library cache uses, `baseUrl|username`). A baseKey change
@@ -28,6 +33,31 @@
  */
 
 export type AuthHealth = 'healthy' | 'unhealthy'
+
+/**
+ * The verdict a failed connect carries — were the credentials REJECTED, or is
+ * the server simply unreachable? The two need opposite user copy (fix the
+ * password vs check the connection), so nothing that reports a failed connect
+ * may collapse them into one message.
+ *
+ * - Subsonic code 40 is the server's authoritative rejection — the same signal
+ *   `recordAuthOutcome` parks on. It is checked FIRST so a rejection that also
+ *   arrives with a status cannot be read as connectivity.
+ * - HTTP 401/403 mean the same thing when the code is absent: a Subsonic call
+ *   reports them through the transport branch (code 0), and a WebDAV PROPFIND
+ *   has only the status. A reverse proxy answering 401 in front of a healthy
+ *   server is still a credential rejection from the user's point of view.
+ * - Everything else (network error, timeout, 5xx, malformed body) is
+ *   `unreachable`: a retry may work, and the copy must not send the user to
+ *   re-type a password that is fine.
+ */
+export type ConnectFailure = 'auth' | 'unreachable'
+
+export function classifyConnectFailure(subsonicCode?: number, httpStatus?: number): ConnectFailure {
+  if (subsonicCode === 40) return 'auth'
+  if (httpStatus === 401 || httpStatus === 403) return 'auth'
+  return 'unreachable'
+}
 
 interface LedgerEntry {
   state: 'unhealthy'

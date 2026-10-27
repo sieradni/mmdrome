@@ -13,6 +13,7 @@ import { planPendingRelink } from '$lib/pendingRelink'
 import { dbgAlways, dbgDanger } from '$lib/debugLog'
 import { DEFAULT_LOVE_POLICY } from '$lib/scrobbleLove'
 import { decodeFilterPresets, type FilterPreset } from '$lib/filterPresets'
+import type { ConnectFailure } from '$lib/authHealth'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
 
@@ -172,9 +173,9 @@ export const queue = writable<QueueState>({ userQueue: [], autoQueue: [], recent
 export const settings = writable<SettingsMap>({})
 export const metadataCache = writable<Map<string, LocalMetadataStore>>(new Map())
 export const library = writable<Track[]>([])
-export const webdavConnection = writable<{ connected: boolean; error?: string; checking: boolean }>({ connected: false, checking: false })
-export const navidromeConnection = writable<{ connected: boolean; error?: string; checking: boolean; serverVersion?: string }>({ connected: false, checking: false })
-export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string; cached?: boolean; cancelled?: boolean }>({ loading: false, loaded: 0, failed: 0 })
+export const webdavConnection = writable<{ connected: boolean; error?: string; checking: boolean; failure?: ConnectFailure }>({ connected: false, checking: false })
+export const navidromeConnection = writable<{ connected: boolean; error?: string; checking: boolean; serverVersion?: string; failure?: ConnectFailure }>({ connected: false, checking: false })
+export const navidromeLoadStatus = writable<{ loading: boolean; loaded: number; failed: number; error?: string; cached?: boolean; cancelled?: boolean; failure?: ConnectFailure }>({ loading: false, loaded: 0, failed: 0 })
 // Engine-bound scalar settings: store-layer persistence via `persisted`, and
 // the engine push lives in playbackManager (`_applyPlaybackParams` at restore,
 // `_subscribeShared` reactions for the live edges). Restored once in

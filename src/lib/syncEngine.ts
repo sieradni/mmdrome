@@ -58,7 +58,7 @@ import { cachedLibraryUsable } from "./syncCachePolicy"
 import { planNavidromeLoad } from "./navidromeLoadPlan"
 import { effectiveLowData } from "./networkMode"
 import { dbgAlways, dbgDanger } from "./debugLog"
-import { markAuthSuccess, authBaseKey } from "./authHealth"
+import { markAuthSuccess, authBaseKey, type ConnectFailure } from "./authHealth"
 import { md5 } from "./md5"
 import {
   testNavidromeConnection as navidromeTestConnection,
@@ -299,7 +299,7 @@ export async function testNavidromeConn(): Promise<NavidromeConnectionStatus> {
   return result
 }
 
-export async function testWebdavConn(): Promise<{ connected: boolean; error?: string }> {
+export async function testWebdavConn(): Promise<{ connected: boolean; error?: string; failure?: ConnectFailure }> {
   const webdavUrl = await getSetting<string>("webdavUrl")
   const webdavUser = await getSetting<string>("webdavUser")
   const webdavToken = await getSetting<string>("webdavToken")
@@ -355,7 +355,14 @@ export async function connectNavidrome(
     // browsable (the library + metadata seeding are local-only). The error
     // stays on both the connection and loadResult so the UI reports the
     // stale-but-present source instead of silently passing off cache as live.
-    dbgAlways("sync", `connect FAILED (${connection.error ?? "unknown"}) — trying cached-library fallback`)
+    // The fallback reason names the verdict (D-04 auth case): a rejected
+    // credential is not an outage, and the strip/Settings copy reads the same
+    // classification instead of calling every fallback "offline".
+    const authRejected = connection.failure === "auth"
+    dbgAlways(
+      "sync",
+      `connect FAILED (${authRejected ? "auth rejected" : "unreachable"}: ${connection.error ?? "unknown"}) — trying cached-library fallback`,
+    )
     const cached = await getSongLibraryCache()
     if (cached && cachedLibraryUsable(cached, baseKey)) {
       navidromeSetCachedConfig(config)
@@ -366,7 +373,8 @@ export async function connectNavidrome(
           loaded: cached.tracks.length,
           failed: 0,
           cached: true,
-          cacheReason: "connection-fallback",
+          cacheReason: authRejected ? "auth-fallback" : "connection-fallback",
+          failure: connection.failure,
           error: connection.error,
         },
         lastScan: cached.lastScan,
@@ -434,7 +442,8 @@ export async function connectNavidrome(
           loaded: cached.tracks.length,
           failed: 0,
           cached: true,
-          cacheReason: "load-fallback",
+          cacheReason: result.failure === "auth" ? "auth-fallback" : "load-fallback",
+          failure: result.failure,
           error: result.error,
         },
         lastScan,

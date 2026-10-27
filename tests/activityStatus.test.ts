@@ -98,3 +98,23 @@ test('deriveActivityStatus: cached fallback with connection error reports offlin
     },
   )
 })
+
+test('deriveActivityStatus: a rejected credential is not reported as offline', () => {
+  // The D-04 auth case: one strip slot, the label naming which failure put the
+  // cached library in front of the user — the user whose password changed must
+  // not be told to check their network.
+  assert.deepEqual(
+    deriveActivityStatus(baseInput({ navCached: true, navError: 'Wrong username or password', navFailure: 'auth' })),
+    {
+      kind: 'cached-offline',
+      label: 'Sign-in failed — browsing cached library',
+      progressPct: null,
+      targetTab: 'sources',
+    },
+  )
+  assert.equal(
+    deriveActivityStatus(baseInput({ navCached: true, navError: 'Network request failed', navFailure: 'unreachable' }))?.label,
+    'Offline — browsing cached library',
+    'an unreachable server keeps the offline wording',
+  )
+})

@@ -186,6 +186,7 @@
           failed: result.loadResult.failed,
           error: result.loadResult.error,
           cached: result.loadResult.cached,
+          failure: result.loadResult.failure,
         })
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
@@ -417,12 +418,26 @@
     sliderMax > 0 ? Math.min(100, Math.max(0, (sliderValue / sliderMax) * 100)) : 0
   )
 
+  /** The cached-fallback story the activity strip may tell. A CONNECTED
+   *  connection is authoritative: without that gate a stale load-status error
+   *  kept a rejected credential on screen after Test Connection succeeded
+   *  (D-04 auth case — the strip must go quiet once the server answers). */
+  let navFallback = $derived(
+    $navidromeConnection.connected
+      ? { error: undefined, failure: undefined }
+      : {
+          error: $navidromeConnection.error ?? $navidromeLoadStatus.error,
+          failure: $navidromeConnection.failure ?? $navidromeLoadStatus.failure,
+        }
+  )
+
   let activityStatus = $derived(
     deriveActivityStatus({
       navChecking: $navidromeConnection.checking,
       navLoading: $navidromeLoadStatus.loading,
       navCached: $navidromeLoadStatus.cached,
-      navError: $navidromeConnection.error ?? $navidromeLoadStatus.error,
+      navError: navFallback.error,
+      navFailure: navFallback.failure,
       scanStatus: $metadataScanState.status,
       scanScanned: $metadataScanState.progress.scanned,
       scanTotal: $metadataScanState.progress.total,

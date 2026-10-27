@@ -120,8 +120,13 @@ const CONCURRENCY = 6
 const ORPHAN_DELETE_TIMEOUT = 30000
 
 /** Failure strings lead with the source so a post-connect WebDAV scan error
- *  can never be misread as the Navidrome connection failing. */
-const INDEX_REFRESH_FAILED = "WebDAV index refresh failed — is the WebDAV server reachable?"
+ *  can never be misread as the Navidrome connection failing. The wording names
+ *  BOTH causes on purpose: an index refresh fails on a rejected token exactly
+ *  as it does on an unreachable server, and the refresh path carries no status
+ *  to classify with — asserting reachability sent users with a bad token
+ *  looking at their network (D-04 auth case). */
+export const WEBDAV_INDEX_REFRESH_FAILED =
+  "WebDAV index refresh failed — check the server is reachable and the username/token are correct"
 const CREDENTIALS_MISSING = "WebDAV credentials not configured"
 
 /** Which rows a scan run processes — 'modified' diffs on mtime/fingerprint,
@@ -1530,7 +1535,7 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
         metadataScanState.set({
           status: "error",
           progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
-          error: INDEX_REFRESH_FAILED,
+          error: WEBDAV_INDEX_REFRESH_FAILED,
         })
         return false
       }
@@ -1539,7 +1544,7 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
       metadataScanState.set({
         status: "error",
         progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
-        error: INDEX_REFRESH_FAILED,
+        error: WEBDAV_INDEX_REFRESH_FAILED,
       })
       return false
     }
@@ -1550,7 +1555,7 @@ async function runScan(shape_: ScanShape = "modified"): Promise<boolean> {
       metadataScanState.set({
         status: "error",
         progress: { scanned: 0, total: 0, failed: 0, notFound: 0, missing: 0, duplicateMatches: 0, annotation: activeAnnotation },
-        error: INDEX_REFRESH_FAILED,
+        error: WEBDAV_INDEX_REFRESH_FAILED,
       })
       return false
     }
@@ -2057,7 +2062,7 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
   await waitForCurrentIndexRefresh()
   if (!indexBuilt) {
     const ok = await refreshIndex()
-    if (!ok) throw new Error("Index refresh failed — is the WebDAV server reachable?")
+    if (!ok) throw new Error(WEBDAV_INDEX_REFRESH_FAILED)
   }
   // Re-stamp cached probe results onto the in-memory index so candidate
   // pickers show file identity (and scoring sees tags) even when this view
@@ -2425,7 +2430,7 @@ export async function reverifyStaleLinks(): Promise<ReverifyResult> {
   await waitForCurrentTagProbe()
   if (!indexBuilt) {
     const ok = await refreshIndex()
-    if (!ok) throw new Error("Index refresh failed — is the WebDAV server reachable?")
+    if (!ok) throw new Error(WEBDAV_INDEX_REFRESH_FAILED)
   }
 
   const baseKey = currentIndexKey()

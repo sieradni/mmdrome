@@ -13,9 +13,29 @@ import {
   credentialsHealthy,
   authUnhealthyDetail,
   authBaseKey,
+  classifyConnectFailure,
   __setAuthHealthClockForTests,
   __resetAuthHealthForTests,
 } from '../src/lib/authHealth'
+
+test('classifyConnectFailure: a rejected credential is not an unreachable server', () => {
+  // Subsonic code 40 — the server's authoritative rejection (recordAuthOutcome's input).
+  assert.equal(classifyConnectFailure(40), 'auth')
+  // HTTP 401/403 arrive through the transport branch (code 0), where the STATUS
+  // is the only evidence — a proxy rejecting the login, or a WebDAV PROPFIND
+  // (which passes no Subsonic code at all).
+  assert.equal(classifyConnectFailure(0, 401), 'auth')
+  assert.equal(classifyConnectFailure(0, 403), 'auth')
+  assert.equal(classifyConnectFailure(undefined, 401), 'auth', 'WebDAV has no Subsonic code')
+  // Everything transient stays an outage: a retry may work, and the copy must
+  // not send the user to re-type a password that is fine.
+  assert.equal(classifyConnectFailure(0), 'unreachable', 'network/timeout (code 0, no status)')
+  assert.equal(classifyConnectFailure(undefined, 500), 'unreachable')
+  assert.equal(classifyConnectFailure(0, 404), 'unreachable')
+  assert.equal(classifyConnectFailure(70), 'unreachable', 'unknown Subsonic code')
+  // The rejection wins when both signals are present.
+  assert.equal(classifyConnectFailure(40, 500), 'auth')
+})
 
 test('recordAuthOutcome discriminates the park transition for the danger log', () => {
   __resetAuthHealthForTests()

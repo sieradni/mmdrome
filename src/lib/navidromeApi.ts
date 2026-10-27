@@ -4,7 +4,7 @@ import { writable } from 'svelte/store'
 import { webdavFetch, authHeaders, buildWebdavUrl } from './webdavUtils'
 
 import { md5 } from './md5'
-import { recordAuthOutcome, authBaseKey } from './authHealth'
+import { recordAuthOutcome, authBaseKey, classifyConnectFailure, type ConnectFailure } from './authHealth'
 import { dbgDanger } from './debugLog'
 
 const API_VERSION = '1.16.1'
@@ -25,6 +25,10 @@ export interface SubsonicResponseData {
 export interface SubsonicError extends Error {
   code: number
   subsonicCode: number
+  /** The HTTP status when the failure came from the transport branch (a
+   *  non-ok response, where `subsonicCode` is 0). The connect classifier needs
+   *  it to tell a proxy's 401/403 rejection from an unreachable server. */
+  httpStatus?: number
 }
 
 export interface ReplayGainValues {
@@ -98,6 +102,10 @@ export interface NavidromeConnectionStatus {
   serverVersion?: string
   username?: string
   error?: string
+  /** Why the connect failed, when it did: a credential rejection (`auth`) is
+   *  not an unreachable server, and the surfaces say which one it was. Never
+   *  set on a connected status. */
+  failure?: ConnectFailure
 }
 
 export interface NavidromeLoadResult {
@@ -107,9 +115,14 @@ export interface NavidromeLoadResult {
   cached?: boolean
   /** Exact reason the cached library was served (`cache-reuse` when the live
    *  server's scan timestamp matched; `connection-fallback` when ping failed;
-   *  `load-fallback` when song pagination failed). Replaces ambiguous
-   *  `CACHED fallback` log text (D-04). */
-  cacheReason?: 'cache-reuse' | 'connection-fallback' | 'load-fallback'
+   *  `load-fallback` when song pagination failed; `auth-fallback` when the
+   *  failure that forced the fallback was a credential REJECTION, which the
+   *  surfaces report as a sign-in failure rather than as being offline).
+   *  Replaces ambiguous `CACHED fallback` log text (D-04). */
+  cacheReason?: 'cache-reuse' | 'connection-fallback' | 'load-fallback' | 'auth-fallback'
+  /** The classified verdict of the failure that forced this load's fallback
+   *  (absent on a load that succeeded or only reused cache). */
+  failure?: ConnectFailure
   /** True when the load ended because the user cancelled it. A cancelled load
    *  NEVER applies a partial page-set (the library is untouched), so resuming
    *  is simply re-running the load — the UI's Resume-load affordance does
@@ -269,7 +282,7 @@ async function callSubsonicWithPairs(
 
   if (!res.ok) {
     if (res.status === 0) throw createSubsonicError(0, 'Network request failed or timed out')
-    throw createSubsonicError(0, `HTTP ${res.status}: ${res.statusText}`)
+    throw createSubsonicError(0, `HTTP ${res.status}: ${res.statusText}`, res.status)
   }
 
   const contentType = res.headers.get('content-type') || ''
@@ -312,10 +325,11 @@ async function callSubsonicWithPairs(
   return response
 }
 
-function createSubsonicError(code: number, message: string): SubsonicError {
+function createSubsonicError(code: number, message: string, httpStatus?: number): SubsonicError {
   const err = new Error(message) as SubsonicError
   err.code = code
   err.subsonicCode = code
+  err.httpStatus = httpStatus
   return err
 }
 
@@ -332,6 +346,7 @@ export async function testNavidromeConnection(config: NavidromeConfig): Promise<
     return {
       connected: false,
       error: error.message,
+      failure: classifyConnectFailure(error.subsonicCode, error.httpStatus),
     }
   }
 }
@@ -401,7 +416,15 @@ export async function loadNavidromeSongs(
     return { songs, result: { loaded: songs.length, failed: 0 } }
   } catch (err) {
     const error = err as SubsonicError
-    return { songs: [], result: { loaded: 0, failed: 0, error: error.message } }
+    return {
+      songs: [],
+      result: {
+        loaded: 0,
+        failed: 0,
+        error: error.message,
+        failure: classifyConnectFailure(error.subsonicCode, error.httpStatus),
+      },
+    }
   }
 }
 
@@ -662,7 +685,7 @@ export async function testWebdavConnection(
   baseUrl: string,
   user: string,
   token: string,
-): Promise<{ connected: boolean; error?: string }> {
+): Promise<{ connected: boolean; error?: string; failure?: ConnectFailure }> {
   try {
     const url = buildWebdavUrl(baseUrl, '/')
     // Routes through webdavFetch so the test exercises the exact same code
@@ -677,9 +700,15 @@ export async function testWebdavConnection(
     if (res.ok) {
       return { connected: true }
     }
-    return { connected: false, error: `HTTP ${res.status}: ${res.statusText || res.status}` }
+    // WebDAV has no Subsonic code — the status IS the verdict: a 401/403 here
+    // is a rejected token, not an unreachable server (classifier: D-04 auth case).
+    return {
+      connected: false,
+      error: `HTTP ${res.status}: ${res.statusText || res.status}`,
+      failure: classifyConnectFailure(undefined, res.status),
+    }
   } catch (err) {
     const error = err as Error
-    return { connected: false, error: error.message }
+    return { connected: false, error: error.message, failure: 'unreachable' }
   }
 }

@@ -88,6 +88,66 @@ test('a scan-timestamp-matching reconnect serves the cache without re-paginating
   expect(mock.search3Calls(), 'the cached reconnect must not re-paginate search3').toBe(1)
 })
 
+test('a rejected credential is reported as a sign-in failure, not as being offline', async ({ page }) => {
+  await bootApp(page)
+  await openSources(page)
+  await fillCredentials(page)
+  await mockOnline(page)
+
+  // Seed the library cache with one successful connect: the fallback needs a
+  // usable snapshot for this server, which is exactly the situation the report
+  // came from (a saved library plus a password that changed).
+  await page.getByRole('button', { name: 'Connect & Load Songs' }).click()
+  await expect(page.getByText('Loaded 2 song(s), 0 failed')).toBeVisible()
+
+  // The server now answers the ping with the authoritative rejection (Subsonic
+  // code 40) while the cached library is still on disk.
+  await page.unroute('**/rest/**')
+  await page.route('**/rest/**', (route) => {
+    const endpoint = new URL(route.request().url()).pathname.split('/').pop()
+    const body = endpoint === 'ping.view'
+      ? { 'subsonic-response': { status: 'failed', version: '1.16.1', error: { code: 40, message: 'Wrong username or password' } } }
+      : subsonic({})
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+  })
+
+  await page.reload({ waitUntil: 'networkidle' })
+  await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })
+
+  // The boot connect fails on credentials and the cached library is served: the
+  // Settings surface names the verdict in its existing error line and says the
+  // library on screen is the cached one (D-04 auth case), instead of leaving
+  // the user to guess at a network problem.
+  await openSources(page)
+  await expect(page.getByText('Sign-in failed — Wrong username or password', { exact: true })).toBeVisible()
+  await expect(
+    page.getByText('Showing the cached library — sign-in failed: Wrong username or password', { exact: true }),
+  ).toBeVisible()
+
+  // …and the activity strip (the same single slot that used to read
+  // "Offline — browsing cached library") carries the truthful label.
+  await page.getByRole('button', { name: 'Songs', exact: true }).click()
+  await expect(page.getByTestId('app-activity-status')).toContainText('Sign-in failed — browsing cached library')
+
+  // A successful Test Connection is authoritative about the credentials: the
+  // stale load-status failure must not keep the strip (and its sign-in verdict)
+  // on screen. The library is still the cached one until the next load, but
+  // there is no failure left to report.
+  await page.unroute('**/rest/**')
+  await page.route('**/rest/**', (route) => {
+    const endpoint = new URL(route.request().url()).pathname.split('/').pop()
+    const extra = endpoint === 'ping.view' ? { serverVersion: '0.50.0' } : {}
+    return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(subsonic(extra)) })
+  })
+  await openSources(page)
+  // Two Test Connection buttons share the Sources tab (Navidrome first, then
+  // WebDAV) — this is the Navidrome one.
+  await page.getByRole('button', { name: 'Test Connection' }).first().click()
+  await expect(page.getByText('Connected (0.50.0)')).toBeVisible()
+  await page.getByRole('button', { name: 'Songs', exact: true }).click()
+  await expect(page.getByTestId('app-activity-status')).toHaveCount(0)
+})
+
 test('a cancelled load lands as honest copy (no resume button) and Connect & Load re-runs it', async ({ page }) => {
   await bootApp(page)
   await openSources(page)

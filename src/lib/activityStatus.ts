@@ -10,15 +10,23 @@
  *    2. `loading-library` — Navidrome connection check or song pagination in flight.
  *    3. `scanning` — WebDAV metadata scan in flight (`scanned/total`).
  *    4. `probing` — Background WebDAV tag probe reading identity tags (`done / done+remaining`).
- *    5. `cached-offline` — Library loaded from local cache because the server
- *       could not be reached (`cached: true` + connection error).
+ *    5. `cached-offline` — Library loaded from local cache because the connect
+ *       failed (`cached: true` + connection error). The LABEL distinguishes the
+ *       verdict: a rejected credential says so instead of claiming the device
+ *       is offline (the same strip slot, a different truth).
  */
+
+import type { ConnectFailure } from './authHealth'
 
 export interface ActivityStatusInput {
   navChecking: boolean
   navLoading: boolean
   navCached?: boolean
   navError?: string
+  /** The classified connect failure behind a cached fallback (`auth` says the
+   *  credentials were rejected; absent/`unreachable` means the server could not
+   *  be reached). */
+  navFailure?: ConnectFailure
   scanStatus: 'idle' | 'scanning' | 'complete' | 'error'
   scanScanned: number
   scanTotal: number
@@ -98,7 +106,10 @@ export function deriveActivityStatus(input: ActivityStatusInput): ActivityStatus
   if (input.navCached && input.navError) {
     return {
       kind: 'cached-offline',
-      label: 'Offline — browsing cached library',
+      label:
+        input.navFailure === 'auth'
+          ? 'Sign-in failed — browsing cached library'
+          : 'Offline — browsing cached library',
       progressPct: null,
       targetTab: 'sources',
     }
