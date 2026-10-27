@@ -92,9 +92,9 @@ Status: Active roadmap. Phase 1 is implemented, design-approved, and committed (
 
 **v1 scope (agreed 2026-10-21b): server playlists + queue export only.** No local playlist store; M3U/PLS/XSPF file import is a later increment, because it needs the path-matching table and the unresolved-entry review UI. Full contract, format research and import rules: [docs/QUEUE-DESIGN.md](../QUEUE-DESIGN.md) §7.
 
-#### 3A. Saved Filter/Sort Presets ("Smart Views")
-- Pure persisted store `filterPresets` (`id`, `name`, `filters`, `sortBy`, `sortAsc`).
-- Minimal chip strip in `FilterSortBar` / Queue filter modal to save/apply a preset in one tap—zero changes to `queueMutation` or `autoQueuePlan` internals.
+#### 3A. Saved Filter/Sort Presets ("Smart Views") — **SHIPPED 2026-10-27**
+- Pure persisted store `filterPresets` (`id`, `name`, `filters`, `sortBy`, `sortAsc`). **Done:** `src/lib/filterPresets.ts` (save/replace/cap, apply, active check, the decode trust boundary) + the `filterPresets` store in `appState`, restored in `initStores`.
+- Minimal chip strip in `FilterSortBar` / Queue filter modal to save/apply a preset in one tap—zero changes to `queueMutation` or `autoQueuePlan` internals. **Done:** a one-tap chip strip above the Filter/Sort pills and a manage section (save box, apply rows, × remove) inside the Filters dialog; applying a preset writes `libraryFilters` only and never the auto queue's own rule set. Pinned by `tests/filterPresets.test.ts` (17) and `tests/e2e/filterpresets.spec.ts`.
 
 #### 3B. Navidrome Server Playlists + Queue Export
 - Stateless Subsonic endpoints in `navidromeApi.ts`: `getPlaylists`, `getPlaylist`, `createPlaylist`, `updatePlaylist`, `deletePlaylist`.
@@ -218,4 +218,4 @@ This is a completion ledger, not a promise that all phases are done. Update it a
 - The played pile grows intentionally; no automatic cap (clear-above/below/all remain).
 - Playlist v1 = server playlists + queue export; file import deferred (formats researched in QUEUE-DESIGN §7.5).
 
-- **Next:** 2D is complete through step 6 (2026-10-26). Remaining: 3B (server playlists + queue export — `playAll` now validates and reports, which was its gate), 3A (saved filter presets), 2B (rating editor/display extraction) and 2C (Settings decomposition), independent of each other. The native pause bug (`80d6adc`, `ba94fb8`) is shipped, CI-verified and device-confirmed (closed for development).
+- **Next:** 2D is complete through step 6 (2026-10-26) and 3A landed 2026-10-27. Remaining: 3B (server playlists + queue export — `playAll` now validates and reports, which was its gate), 2B (rating editor/display extraction) and 2C (Settings decomposition), independent of each other. The native pause bug (`80d6adc`, `ba94fb8`) is shipped, CI-verified and device-confirmed (closed for development).

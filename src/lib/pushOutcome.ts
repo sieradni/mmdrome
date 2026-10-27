@@ -367,51 +367,6 @@ export function buildPushFailureGroups(rows: readonly PushRowOutcome[]): PushFai
 }
 
 /**
- * Formats a concise human summary line from a PushRunReport while preserving
- * compatibility with existing result-line patterns (`Pushed N track(s)`,
- * `M failed`, `K skipped`, `Push cancelled`, first failure message) and
- * adding clear distinctions for re-pended edits, unknown outcomes, and
- * catalog refresh status.
- */
-export function formatPushSummaryLine(report: PushRunReport): string {
-  const c = report.counts
-  const parts: string[] = []
-  if (report.cancelled) parts.push('Push cancelled')
-  parts.push(`Pushed ${c.remoteCommitted} track(s)`)
-  if (c.writtenRepended > 0) {
-    parts.push(`${c.writtenRepended} kept pending (newer edit made during push)`)
-  }
-  if (c.writtenLocalFailed > 0) {
-    parts.push(`${c.writtenLocalFailed} written remotely but local save failed`)
-  }
-  if (c.unknownOutcomes > 0) {
-    parts.push(`${c.unknownOutcomes} uncertain (connection lost during MOVE)`)
-  }
-  if (c.failed > 0) {
-    parts.push(`${c.failed} failed`)
-  }
-  if (c.skipped > 0) {
-    parts.push(`${c.skipped} skipped (no pushable WebDAV file)`)
-  }
-  if (c.skippedWrongServer > 0) {
-    parts.push(`${c.skippedWrongServer} on a different server`)
-  }
-  if (c.unprocessedCancelled > 0) {
-    parts.push(`${c.unprocessedCancelled} not processed (cancelled)`)
-  }
-  if (c.blindOverwrite > 0) {
-    parts.push(`${c.blindOverwrite} written without ETag protection (server sent no ETag)`)
-  }
-  if (report.catalogRefresh === 'failed') {
-    parts.push('Navidrome catalog scan could not be triggered (files were still updated)')
-  }
-  if (report.firstFailureReason) {
-    parts.push(report.firstFailureReason)
-  }
-  return parts.filter(Boolean).join(', ')
-}
-
-/**
  * Classifies aninitial non-pushable bucket into its PushRowOutcome.
  */
 export function outcomeForInitialSkip(

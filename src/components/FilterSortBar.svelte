@@ -1,8 +1,16 @@
 <script lang="ts">
   import { libraryFilters, sortLabels, distinctGenres } from '../lib/libraryFilters'
   import type { LibrarySortKey } from '../lib/libraryFilters'
-  import { library } from '../stores/appState'
+  import { library, filterPresets } from '../stores/appState'
   import { autoQueueFilterFields, autoQueueSort, shuffleEnabled } from '../stores/appState'
+  import {
+    PRESET_MAX_COUNT,
+    PRESET_NAME_MAX,
+    applyPreset,
+    planSavePreset,
+    presetIsActive,
+    removePreset,
+  } from '../lib/filterPresets'
   import { autoQueueSettingsDiffer, planApplyLibraryToAutoQueue } from '../lib/autoQueuePlan'
   import { tooltip } from '../lib/tooltip'
   import AppSlider from './AppSlider.svelte'
@@ -10,6 +18,42 @@
   let { onopen }: { onopen?: () => void } = $props()
 
   let genres = $derived(distinctGenres($library))
+
+  // ── Saved views (Phase 3A, 2026-10-26) ───────────────────────────────
+  // A saved view is a NAME plus a snapshot of the shared library filter/sort.
+  // Applying one writes `libraryFilters` ONLY — never the auto queue's own
+  // filter/sort — so a stored view cannot silently re-rank or refill the queue
+  // (that stays the explicit apply-to-auto-queue action above). All naming,
+  // replace-in-place and cap rules live in the pure `filterPresets` core.
+  let saveName = $state('')
+  let saveError = $state('')
+
+  function newPresetId(): string {
+    return `fp-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+  }
+
+  function saveCurrentView() {
+    const result = planSavePreset($filterPresets, saveName, $libraryFilters, newPresetId())
+    if (!result.ok) {
+      saveError = result.reason === 'limit'
+        ? `You can keep ${PRESET_MAX_COUNT} saved views — remove one first.`
+        : 'Give the view a name first.'
+      return
+    }
+    filterPresets.set(result.presets)
+    saveName = ''
+    saveError = ''
+  }
+
+  function applySavedView(id: string) {
+    const preset = $filterPresets.find((p) => p.id === id)
+    if (!preset) return
+    libraryFilters.set(applyPreset($libraryFilters, preset))
+  }
+
+  function removeSavedView(id: string) {
+    filterPresets.set(removePreset($filterPresets, id))
+  }
 
   function toggleFilter() {
     libraryFilters.update((f) => ({ ...f, filterOpen: !f.filterOpen, sortOpen: false }))
@@ -253,6 +297,51 @@
           Clear all filters
         </button>
       {/if}
+
+      <div class="border-t border-white/10 pt-3">
+        <span class="text-sm font-medium text-muted">Saved views</span>
+        <div class="mt-1 flex items-center gap-2">
+          <input
+            type="text"
+            bind:value={saveName}
+            maxlength={PRESET_NAME_MAX}
+            placeholder="Name this view"
+            aria-label="Saved view name"
+            onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); saveCurrentView() } }}
+            class="min-w-0 flex-1 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted"
+          />
+          <button
+            onclick={saveCurrentView}
+            class="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-black transition-opacity hover:opacity-90"
+          >Save</button>
+        </div>
+        {#if saveError}
+          <p class="mt-1 text-xs text-red-400" role="status">{saveError}</p>
+        {/if}
+        {#if $filterPresets.length > 0}
+          <!-- Saving under an existing name updates that view in place, so this
+               list is the manage surface: apply (row) or remove (×). -->
+          <ul class="mt-2 space-y-1" aria-label="Saved views">
+            {#each $filterPresets as preset (preset.id)}
+              {@const active = presetIsActive(preset, $libraryFilters)}
+              <li class="flex items-center gap-2 rounded px-1 py-0.5">
+                <button
+                  onclick={() => applySavedView(preset.id)}
+                  aria-pressed={active}
+                  class="min-w-0 flex-1 truncate rounded px-2 py-1 text-left text-sm transition-colors {active ? 'text-accent' : 'text-muted hover:text-primary'}"
+                >{preset.name}</button>
+                <button
+                  onclick={() => removeSavedView(preset.id)}
+                  aria-label={`Remove saved view ${preset.name}`}
+                  class="shrink-0 rounded-full p-1 text-muted/70 transition-colors hover:text-red-400"
+                >
+                  <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
     </div>
     </div>
   </div>
@@ -306,6 +395,27 @@
       {/if}
     </div>
     </div>
+  </div>
+{/if}
+
+{#if $filterPresets.length > 0}
+  <!-- Saved-view chips: one tap applies a stored view without opening the
+       filter modal. Horizontally scrollable so a long list never widens the
+       bar past the viewport; the active view is highlighted. -->
+  <div
+    class="absolute bottom-[4.5rem] left-4 right-4 z-20 flex gap-2 overflow-x-auto pb-0.5"
+    role="group"
+    aria-label="Saved views"
+  >
+    {#each $filterPresets as preset (preset.id)}
+      {@const active = presetIsActive(preset, $libraryFilters)}
+      <button
+        onclick={() => applySavedView(preset.id)}
+        aria-pressed={active}
+        data-preset-id={preset.id}
+        class="shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors ring-1 {active ? 'bg-accent-soft text-accent ring-accent-ring/40' : 'bg-[#0f0f0f] text-muted ring-white/10 hover:text-primary hover:ring-white/20'}"
+      >{preset.name}</button>
+    {/each}
   </div>
 {/if}
 

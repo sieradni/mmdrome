@@ -12,6 +12,7 @@ import type { LibrarySortKey } from '$lib/libraryFilters'
 import { planPendingRelink } from '$lib/pendingRelink'
 import { dbgAlways, dbgDanger } from '$lib/debugLog'
 import { DEFAULT_LOVE_POLICY } from '$lib/scrobbleLove'
+import { decodeFilterPresets, type FilterPreset } from '$lib/filterPresets'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
 
@@ -395,6 +396,21 @@ const _autoQueueEnabled = persisted<boolean>('autoQueueEnabled', true)
 
 export const autoQueueEnabled = _autoQueueEnabled.store
 
+/**
+ * Saved library filter/sort presets (Phase 3A, 2026-10-26). A preset is a
+ * NAME plus a snapshot of the shared library view; it is persisted like the
+ * other settings and restored in `initStores`. It is deliberately separate
+ * from the two queue rule sets: applying a preset only ever writes
+ * `libraryFilters`, so a saved view can never re-rank or refill the queue
+ * behind the user's back. Every saved row passes `decodeFilterPresets` on the
+ * way in — IndexedDB is the trust boundary, not the writer.
+ */
+const _filterPresets = persisted<FilterPreset[]>('filterPresets', [], {
+  decode: decodeFilterPresets,
+})
+
+export const filterPresets = _filterPresets.store
+
 /** Session-only auto-queue scoping (B5): set on play from album/artist views,
  *  cleared on shuffle toggle / plain TrackRow play. By construction the scopes
  *  live in their own writable, so they can never leak into the persisted row. */
@@ -659,6 +675,7 @@ async function restoreLocalState(): Promise<void> {
     _autoQueueFilterFields.restore(),
     _autoQueueSort.restore(),
     _autoQueueEnabled.restore(),
+    _filterPresets.restore(),
     getSetting<PushRunReport>('lastPushReport')
       .then((saved) => {
         if (saved && typeof saved === 'object' && typeof saved.runId === 'string') {

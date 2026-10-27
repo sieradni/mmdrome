@@ -2143,13 +2143,16 @@
                       {#each $lastPushReport.rows as row (row.trackId + '-' + row.startedAtMs)}
                         <li class="py-1 text-[11px]">
                           <span class="font-medium text-primary">{row.title}</span>
-                          <span class="text-muted"> &mdash; {row.disposition} ({row.stage}{#if row.attempts > 1}, {row.attempts} attempts{/if}{#if row.recoveredConflict}, conflict recovered{/if}{#if row.tempCleanup}, temp cleanup: {row.tempCleanup}{/if})</span>
+                          <span class="text-muted"> &mdash; {row.disposition} ({row.stage}{#if row.attempts > 1}, {row.attempts} attempts{/if}{#if row.recoveredConflict}, conflict recovered{/if}{#if row.tempCleanup}, temp cleanup: {row.tempCleanup}{/if}; remote {row.remoteState}, local {row.localReconciliation})</span>
                           {#if row.error}
                             <div class="text-red-300">{row.error.message}{#if row.error.davError} &middot; {row.error.davError}{/if}</div>
                           {/if}
                         </li>
                       {/each}
                     </ul>
+                    {#if $lastPushReport.rowsTruncated > 0}
+                      <p class="text-[11px] text-muted/70">{$lastPushReport.rowsTruncated} more rows not retained.</p>
+                    {/if}
                   {/if}
                 </div>
               </details>

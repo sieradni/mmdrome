@@ -1,3 +1,15 @@
+## 2026-10-27 — saved library views (3A), and Push stops keeping limbs nobody can see
+
+Saved views close roadmap 3A: a name plus a snapshot of the shared library filter/sort, saved from the Filters dialog and applied by a one-tap chip above the Filter/Sort pills. The design decision that made it small is the boundary: **a preset owns `libraryFilters` and nothing else.** It never writes `autoQueueFilterFields`/`autoQueueSort`, so selecting a saved view cannot re-rank or refill the auto queue — the explicit apply-to-auto-queue button stays the only bridge, and the 2026-09-29 decoupling survives without a new rule.
+
+Three smaller decisions carried the rest. A duplicate name REPLACES in place and keeps the stored display name and id (a lowercase retype must not restyle an existing chip, and a second save must not grow a near-duplicate); the cap is a refusal (`limit`) rather than silently evicting a saved view; and IndexedDB is treated as a trust boundary — `decodeFilterPresets` drops malformed rows, keeps the first of a duplicated name, degrades an unknown sort key to "no sort" and clamps ratings, so a corrupt row can never become a chip that throws on apply. `filterPresets.ts` stays DOM- and Dexie-free (its `libraryFilters` import is type-only) so `appState` can import it without dragging `localStorage` into Node.
+
+What the audit found missing from the first cut was proof, not code: a boot-restore test and a browser pin. `tests/filterPresets.test.ts` now also drives the REAL store through `initStores` with the fake-Dexie harness from `autoQueueFiltersPersistence` (a malformed row and a duplicate never reach the UI), and `tests/e2e/filterpresets.spec.ts` pins the observable flow in the bundle: save → the strip chip is active → a 60 rating floor empties the unrated mock catalog → reload (preset row AND applied filter) → one tap restores three rows → removing the view drops the strip.
+
+Same pass, the push report's unrendered limbs were resolved by the smaller option each time: `formatPushSummaryLine` was dead (nothing imported it — SettingsView had its own copy of the same sentence) and is deleted, `rowsTruncated` is now stated under the retained rows instead of silently swallowing the difference between 200 saved rows and a 500-row run, and each row line names its `remote`/`local` state, which is the distinction a `failed-*` disposition alone does not spell out.
+
+**Verification:** `npm run check` 0 errors / 0 warnings; full `npm test` 1536/1536 (17 in `tests/filterPresets.test.ts`, up from 16 — the new boot-restore case); `npx playwright test` on `filterpresets`, `pushchanges`, `sortadded` and `applyautoqueue` 13/13. No release build in this pass.
+
 ## 2026-10-26 — the queue contract finishes: tail rules, an auto-queue switch, and an honest fill that repeats
 
 Steps 5–6 of [QUEUE-DESIGN](QUEUE-DESIGN.md) plus the last registered gap (G4). Three decisions carried the work, and each one existed because the as-built code lied in a small way:
