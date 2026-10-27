@@ -27,7 +27,8 @@
           "date": "2026-10-27T11:01:14.912Z",
           "localizedDescription": "A rejected sign-in no longer reads as being offline. If your Navidrome password changes, the app now says the sign-in failed — on the status line above your library, on the Sources screen, on the cached-library line and on the WebDAV connection test — instead of implying your device is offline. Nothing else changed in this build.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.1/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5264093
         },
         {
           "version": "1.4.0",
