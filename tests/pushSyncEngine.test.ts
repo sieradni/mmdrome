@@ -346,6 +346,12 @@ test('W6 / W-02: lost MOVE response records unknown-outcome and does not mark ro
   assert.equal(outcome?.disposition, 'unknown-outcome')
   assert.equal(outcome?.remoteState, 'unknown')
   assert.equal(outcome?.tempCleanup, 'deleted')
+  // The throw site owns the stage: this MOVE fails after a successful PUT, and
+  // reporting it as `put-temp` (the caller's last assigned stage) blamed the
+  // wrong step. Pinned here because the browser path raises the SAME shape and
+  // a mixed-outcome e2e run surfaced the mislabel.
+  assert.equal(outcome?.stage, 'move')
+  assert.equal(outcome?.error?.category, 'timeout')
 })
 
 test('W8 / W-08: progressdone is monotonic and never exceeds total even on 412 conflict retry', async () => {

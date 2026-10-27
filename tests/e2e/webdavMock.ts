@@ -128,6 +128,11 @@ export interface WebdavMockStats {
    *  its rename. A destination-tagged `If` then hits a missing node (404 on
    *  sabre/dav), which the client must treat as a stale read, not a failure. */
   armVanish: (destPath: string, times?: number) => void
+  /** Opt-in: drop the connection instead of answering the next `times` MOVEs
+   *  on `destPath` (a response lost after the rename may have happened). The
+   *  client must report an UNCERTAIN remote state, not a failure and not a
+   *  success. */
+  armMoveAbort: (destPath: string, times?: number) => void
 }
 
 export async function installWebdavMock(
@@ -153,6 +158,8 @@ export async function installWebdavMock(
   const moveFailureArms = new Map<string, { remaining: number; status: number }>()
   /** Concurrent-deleter arms, keyed by destination relative path. */
   const vanishArms = new Map<string, number>()
+  /** Lost-MOVE-response arms, keyed by destination relative path. */
+  const moveAbortArms = new Map<string, number>()
   let lastMoveHeaders: Record<string, string> | null = null
 
   const store = new Map<string, StoredFile>()
@@ -265,6 +272,15 @@ export async function installWebdavMock(
         vanishArms.set(destRel, vanishing - 1)
         store.delete(destRel)
       }
+      const aborting = moveAbortArms.get(destRel) ?? 0
+      if (aborting > 0) {
+        // Connection reset instead of a response: the server may or may not
+        // have completed the rename, which is exactly the ambiguity the client
+        // must report as `unknown-outcome`.
+        moveAbortArms.set(destRel, aborting - 1)
+        await route.abort('connectionreset')
+        return
+      }
       const forced = moveFailureArms.get(destRel)
       if (forced && forced.remaining > 0) {
         forced.remaining--
@@ -349,6 +365,9 @@ export async function installWebdavMock(
     },
     armVanish: (destPath: string, times = 1) => {
       vanishArms.set(destPath, times)
+    },
+    armMoveAbort: (destPath: string, times = 1) => {
+      moveAbortArms.set(destPath, times)
     },
   }
 }

@@ -612,12 +612,18 @@ function classifyPushError(err: unknown, defaultStage: PushStage): PushErrorDeta
     }
   }
   if (err instanceof WebdavTransportError) {
+    // The error's OWN stage wins: `webdavPutAtomic` tags the throw site, and a
+    // MOVE failure reaches here while the caller's `currentStage` still says
+    // put-temp (one atomic call spans GET → PUT → MOVE), which reported a lost
+    // MOVE as a PUT failure. Field-found by the mixed-outcome browser spec.
+    const ownStage = (err as { stage?: PushStage }).stage
     const stage: PushStage =
-      defaultStage === "get-headers" || defaultStage === "get-body"
+      ownStage ??
+      (defaultStage === "get-headers" || defaultStage === "get-body"
         ? err.phase === "headers"
           ? "get-headers"
           : "get-body"
-        : defaultStage
+        : defaultStage)
     const category: PushErrorCategory = err.timedOut
       ? "timeout"
       : err.phase === "decode"

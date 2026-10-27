@@ -1,9 +1,10 @@
 import { test, expect, type Page } from '@playwright/test'
 import { bootApp } from './boot'
-import { buildMp3Fixture } from './fixture'
+import { buildMp3Fixture, fixtureFilePath } from './fixture'
 import { installWebdavMock, type WebdavMockStats } from './webdavMock'
 import {
   DAV_BASE,
+  SONGS,
   fixtureFiles,
   openSources,
   fillNavidrome,
@@ -329,6 +330,190 @@ test('a second pushable row does not start after a mid-run cancel', async ({ pag
   expect(dav.bytesOf('Song Two.mp3')!.indexOf(Buffer.from('POPM'))).toBe(-1)
 
   dav.setGetDelay(0)
+})
+
+// ── The Push REPORT is a user surface, not a debug dump ────────────────────
+
+/** A third song + its file, so a batch can commit, fail and land in the
+ *  uncertain bucket in ONE run (the other specs need only two). */
+const SONG_THREE = { id: 's3', title: 'Song Three', artist: 'Artist C', album: 'Album Z', duration: 200, suffix: 'mp3', starred: false, userRating: 0 }
+const THREE_SONGS = [...SONGS, SONG_THREE]
+
+function threeFiles() {
+  return [
+    ...fixtureFiles(),
+    {
+      path: fixtureFilePath('Song Three'),
+      bytes: buildMp3Fixture({ title: 'Song Three', artist: 'Artist C', album: 'Album Z', track: 3, frames: 12 }),
+    },
+  ]
+}
+
+/** Rate one library row through the real ⋮ → Details → stars path (the single
+ *  commit path that marks a row pending_sync). */
+async function rateRow(page: Page, trackId: string, rating: number): Promise<void> {
+  const row = page.locator(`[data-track-id="${trackId}"]`)
+  await row.getByRole('button', { name: 'More options' }).click()
+  await row.getByRole('button', { name: 'Details' }).click()
+  await page.getByRole('button', { name: `Set rating to ${rating}` }).click()
+  await page.getByRole('button', { name: 'Close' }).click()
+}
+
+/** Writes `count` pending edits that have NO WebDAV path straight into the
+ *  app's own IndexedDB. They are ordinary orphaned edits (the shape a track
+ *  removed from the server leaves behind), so the push run classifies and
+ *  reports them as `skipped-no-path` — a real report row with no network I/O.
+ *  Seeded AFTER the library load (a stale NON-pending row would be pruned) and
+ *  read back by the reload, so the run sees them through `getPendingSyncMetadata`
+ *  like any other edit. */
+async function seedOrphanedPendingEdits(page: Page, count: number): Promise<void> {
+  await page.evaluate(async (n) => {
+    const req = indexedDB.open('mmdrome')
+    await new Promise<void>((resolve, reject) => {
+      req.onsuccess = () => resolve()
+      req.onerror = () => reject(req.error)
+    })
+    const db = req.result
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction('localMetadata', 'readwrite')
+      const store = tx.objectStore('localMetadata')
+      for (let i = 0; i < n; i++) {
+        store.put({
+          trackId: `orphan-${String(i).padStart(3, '0')}`,
+          title: `Orphan ${i}`,
+          artist: 'Artist Z',
+          album: 'Album Z',
+          duration: 100,
+          fileType: 'mp3',
+          rating: 80,
+          loved: false,
+          syncStatus: 'pending_sync',
+        })
+      }
+      tx.oncomplete = () => resolve()
+      tx.onerror = () => reject(tx.error)
+    })
+    db.close()
+  }, count)
+}
+
+// The report keeps its first MAX_RETAINED_REPORT_ROWS rows; the seeded orphans
+// are what push a single run past that line, so the notice is real.
+const RETAINED_ROWS = 200
+const ORPHAN_ROWS = 200
+const TRUNCATED = ORPHAN_ROWS + 3 - RETAINED_ROWS
+
+test('a mixed push reports per-row disposition, remote/local state, groups and truncation, and survives in Copy', async ({ page }) => {
+  // The HUD is opt-in; set the flag before the first boot so the Copy payload
+  // can be read from window.__debugHudText (no clipboard permission needed).
+  await page.addInitScript(() => {
+    try { localStorage.setItem('mmdrome:debugHud', '1') } catch {}
+  })
+  // A local-reconcile failure cannot be produced by the mocked SERVER (the
+  // write lands, then the app's own Dexie update would have to fail). Inject it
+  // at the DB boundary instead: the real engine, the real catch branch, one
+  // failed `localMetadata` write, then the hook disarms itself.
+  await page.addInitScript(() => {
+    const w = window as { __failNextLocalMetadataWrite?: boolean }
+    const realPut = IDBObjectStore.prototype.put
+    IDBObjectStore.prototype.put = function (this: IDBObjectStore, ...args: unknown[]) {
+      if (w.__failNextLocalMetadataWrite && this.name === 'localMetadata') {
+        w.__failNextLocalMetadataWrite = false
+        throw new DOMException('injected local write failure', 'QuotaExceededError')
+      }
+      return (realPut as (...a: unknown[]) => IDBRequest).apply(this, args)
+    }
+  })
+  await bootApp(page)
+  await mockSubsonic(page, THREE_SONGS)
+  const dav = await installWebdavMock(page, { baseUrl: DAV_BASE, files: threeFiles() })
+
+  await openSources(page)
+  await fillNavidrome(page)
+  await page.getByRole('button', { name: 'Connect & Load Songs' }).click()
+  await expect(page.getByText('Connected (0.50.0)')).toBeVisible()
+  await expect(page.getByText('Loaded 3 song(s), 0 failed')).toBeVisible()
+
+  await fillWebdav(page)
+  await openSettingsSection(page, 'library')
+  await page.getByRole('button', { name: /Rescan All Metadata \(re-reads all tags\)/ }).click()
+  await expect(page.getByText(/Scan complete/)).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByTestId('fm-audit-summary')).toContainText('3 verified')
+
+  // Three pending edits, one per outcome bucket.
+  await page.getByRole('button', { name: 'Songs', exact: true }).click()
+  await rateRow(page, 'navidrome-s1', 100)
+  await rateRow(page, 'navidrome-s2', 60)
+  await rateRow(page, 'navidrome-s3', 80)
+
+  await seedOrphanedPendingEdits(page, ORPHAN_ROWS)
+  // Reload so the seeded rows enter the in-memory metadata cache the push and
+  // its breakdown read (and so the report DOWNGRADE path is not in play).
+  await page.reload({ waitUntil: 'networkidle' })
+  await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })
+  await openSettingsSection(page, 'library')
+
+  await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Write ratings to WebDAV files?' })).toBeVisible()
+  await expect(page.getByText('3 files will be updated:')).toBeVisible()
+
+  // Row 1 fails remotely (the server refuses the rename), row 2 loses its MOVE
+  // response (remote state genuinely unknown), row 3 writes remotely and then
+  // its LOCAL reconcile fails (injected above).
+  dav.armMoveFailure('Song One.mp3', 403, 1)
+  dav.armMoveAbort('Song Two.mp3', 1)
+  await page.evaluate(() => { (window as { __failNextLocalMetadataWrite?: boolean }).__failNextLocalMetadataWrite = true })
+  await page.getByRole('button', { name: 'Write to files' }).click()
+
+  // One file actually changed remotely: Song Three's (whose local reconcile
+  // then failed). "Pushed" counts remote commits, so it stays 1.
+  const result = page.getByText(/Pushed 1 track\(s\)/)
+  await expect(result).toBeVisible({ timeout: 30_000 })
+  await expect(result).toContainText('1 written remotely (local cache update failed)')
+  await expect(result).toContainText('2 failed')
+  await expect(result).toContainText('1 uncertain')
+  await expect(result).toContainText(`${ORPHAN_ROWS} skipped`)
+
+  // The expanded report: groups, then the per-row parentheticals.
+  const details = page.getByTestId('push-report-details')
+  await details.locator('summary').click()
+  await expect(details).toBeVisible()
+  const groups = page.getByTestId('push-failure-groups')
+  await expect(groups).toContainText('403')
+  await expect(groups).toContainText('Song One')
+  // The committed-but-locally-failed row is its own group with the reconcile
+  // instruction — the one case where re-pushing would be wrong.
+  await expect(groups).toContainText('local-reconcile')
+  await expect(groups).toContainText('run Scan for changes')
+
+  const rows = page.getByTestId('push-report-rows')
+  const rowText = (title: string) => rows.locator('li', { hasText: title }).first().innerText()
+  await expect.poll(() => rows.locator('li').count()).toBe(RETAINED_ROWS)
+  expect(await rowText('Song One')).toMatch(/failed-move \(move.*remote not-committed, local not-needed/)
+  expect(await rowText('Song Two')).toMatch(/unknown-outcome \(move.*remote unknown/)
+  expect(await rowText('Song Three')).toMatch(/written-local-failed \(local-reconcile.*remote committed, local failed/)
+  await expect(details).toContainText(`${TRUNCATED} more rows not retained.`)
+
+  // W-09: the retained report is durable AND lands in the Copy payload.
+  await page.reload({ waitUntil: 'networkidle' })
+  await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })
+  await page.getByRole('button', { name: 'Copy' }).click()
+  const dump = await page.evaluate(() => JSON.parse((window as { __debugHudText?: string }).__debugHudText ?? 'null'))
+  expect(dump?.lastPushReport?.rows?.length, 'Copy carries the retained rows').toBe(RETAINED_ROWS)
+  expect(dump.lastPushReport.rowsTruncated).toBe(TRUNCATED)
+  const dispositions = dump.lastPushReport.rows.map((r: { disposition: string }) => r.disposition)
+  expect(dispositions).toContain('failed-move')
+  expect(dispositions).toContain('unknown-outcome')
+  expect(dispositions).toContain('written-local-failed')
+  expect(dispositions).toContain('skipped-no-path')
+  expect(dump.lastPushReport.rows[0].remoteState).toBeDefined()
+  expect(dump.lastPushReport.counts).toMatchObject({
+    remoteCommitted: 1,
+    writtenLocalFailed: 1,
+    unknownOutcomes: 1,
+    failed: 2,
+    skipped: ORPHAN_ROWS,
+  })
 })
 
 test('the dialog × discards one pending edit after confirmation; only the survivor is pushed', async ({ page }) => {

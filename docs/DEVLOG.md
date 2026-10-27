@@ -1,3 +1,16 @@
+## 2026-10-27b — the Push report finally gets driven, and it was lying about the stage
+
+Everything in the Push report was typechecked and nothing had ever rendered it. One browser spec now drives a single run containing one refused MOVE (403), one LOST MOVE response (connection reset before any reply) and one failed local reconcile, plus 200 orphaned pending edits so the run crosses `MAX_RETAINED_REPORT_ROWS` and the truncation notice is real rather than hypothetical. It asserts the quiet summary line, the grouped causes (including the "run Scan for changes" instruction that only the committed-but-locally-failed case gets), each row's `disposition (stage, … remote X, local Y)` parenthetical, the `<details>` truncation line, and — after a reload — that the same retained report is still in the HUD Copy payload (`window.__debugHudText`).
+
+Two things only a real run could show:
+
+1. **The lost MOVE was reported as a PUT failure.** `webdavPutAtomic` throws a `WebdavTransportError` tagged `stage: 'move'`, but `classifyPushError`'s transport branch ignored that tag and used the caller's `currentStage`, which is still `put-temp` because one atomic call spans GET → PUT → MOVE. The disposition was right (`unknown-outcome`) while the stage — the whole point of W-01 — was wrong. The branch now prefers the throw site's stage; the Node case pegs `stage === 'move'` and the timeout category.
+2. **A local-reconcile failure is not reachable from a mocked server.** The write lands and the app's own Dexie update has to fail. The spec injects exactly one failure at the `IDBObjectStore.put` boundary (`localMetadata`) and then disarms, which exercises the real catch branch, the `written-local-failed` disposition and its group. This is fault injection, not a modelled server condition, and the spec says so.
+
+Seeding note: the 200 orphans are ordinary `pending_sync` rows with no WebDAV path, written straight into `localMetadata` after the library load (a stale non-pending row would be pruned) and read back by a reload, so the run classifies them through `getPendingSyncMetadata` like any other edit — 200 report rows with zero network I/O.
+
+**Verification:** `npm run check` 0 errors / 0 warnings; full `npm test` 1536/1536 (the lost-MOVE case now also pins the stage and category); `tests/e2e/pushchanges.spec.ts` 8/8.
+
 ## 2026-10-27 — saved library views (3A), and Push stops keeping limbs nobody can see
 
 Saved views close roadmap 3A: a name plus a snapshot of the shared library filter/sort, saved from the Filters dialog and applied by a one-tap chip above the Filter/Sort pills. The design decision that made it small is the boundary: **a preset owns `libraryFilters` and nothing else.** It never writes `autoQueueFilterFields`/`autoQueueSort`, so selecting a saved view cannot re-rank or refill the auto queue — the explicit apply-to-auto-queue button stays the only bridge, and the 2026-09-29 decoupling survives without a new rule.
