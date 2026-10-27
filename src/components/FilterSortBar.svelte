@@ -250,31 +250,18 @@
 {/if}
 
 {#if $libraryFilters.sortOpen}
-  <!-- Centered modal: a tap on an option applies and closes; Esc/backdrop too. -->
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-    onclick={closeSort}
-    role="presentation"
-  >
-    <div
-      class="max-h-[80vh] w-full max-w-xs overflow-y-auto rounded-xl border border-white/10 bg-surface shadow-2xl"
-      onclick={(e) => e.stopPropagation()}
-      role="dialog"
-      aria-label="Library sort"
-      tabindex="-1"
-    >
-      <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
-        <span class="text-base font-bold text-primary">Sort by</span>
-        <button
-          onclick={() => libraryFilters.update((f) => ({ ...f, sortOpen: false }))}
-          class="rounded-full p-1.5 text-muted transition-colors hover:text-primary"
-          aria-label="Close sort"
-        >
-          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>
-      </div>
-    <div class="space-y-1 px-3 py-3">
+  <ModalShell ariaLabel="Library sort" onclose={closeSort}>
+    <div class="flex shrink-0 items-center justify-between border-b border-white/10 px-5 py-3">
+      <span class="text-base font-bold text-primary">Sort by</span>
+      <button
+        onclick={closeSort}
+        class="rounded-full p-1.5 text-muted transition-colors hover:text-primary"
+        aria-label="Close sort"
+      >
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <div class="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-3">
       {#each ['rating', 'loved', 'year', 'length', 'added'] as key (key)}
         {@const k = key as LibrarySortKey}
         <button
@@ -285,8 +272,7 @@
           class:text-muted={$libraryFilters.sortBy !== k}
         >
           <span>{sortLabels[k]}</span>
-          {#if $libraryFilters.sortBy === k}              <span class="text-accent">{$libraryFilters.sortAsc ? '↑' : '↓'}</span>
-          {/if}
+          {#if $libraryFilters.sortBy === k}<span class="text-accent">{$libraryFilters.sortAsc ? '↑' : '↓'}</span>{/if}
         </button>
       {/each}
       {#if $libraryFilters.sortBy}
@@ -296,8 +282,7 @@
         >Clear sort</button>
       {/if}
     </div>
-    </div>
-  </div>
+  </ModalShell>
 {/if}
 
 <SavedViewsStrip />
@@ -341,56 +326,41 @@
 </div>
 
 {#if applyOpen}
-  <!-- Apply confirm: centered modal (the app idiom), Esc + backdrop close;
-       Escape routing above defers to THIS dialog while it is open. -->
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-    onclick={() => (applyOpen = false)}
-    role="presentation"
-  >
-    <div
-      class="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-xl border border-white/10 bg-surface shadow-2xl"
-      onclick={(e) => e.stopPropagation()}
-      role="dialog"
-      aria-label="Apply to auto queue"
-      tabindex="-1"
-    >
-      <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
-        <span class="text-base font-bold text-primary">Apply to auto queue</span>
+  <ModalShell ariaLabel="Apply to auto queue" onclose={() => (applyOpen = false)}>
+    <div class="flex shrink-0 items-center justify-between border-b border-white/10 px-5 py-3">
+      <span class="text-base font-bold text-primary">Apply to auto queue</span>
+      <button
+        onclick={() => (applyOpen = false)}
+        class="rounded-full p-1.5 text-muted transition-colors hover:text-primary"
+        aria-label="Close"
+      >
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
+    </div>
+    <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+      <p class="text-sm text-muted">Copy the library filter and sort into the auto queue's settings? The auto queue will refill to match.</p>
+      <div class="flex flex-wrap gap-2">
+        {#if applyPlan.filters}
+          <span class="rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-primary">Filters</span>
+        {/if}
+        {#if applyPlan.sort}
+          <span class="rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-primary">Sort{applyPlan.sort.sortBy ? `: ${sortLabels[applyPlan.sort.sortBy]} ${applyPlan.sort.sortAsc ? '↑' : '↓'}` : ''}</span>
+        {/if}
+      </div>
+      {#if $shuffleEnabled}
+        <p class="text-xs text-muted/70">Shuffle is on — the sort is saved but the order applies when shuffle is off.</p>
+      {/if}
+      <p class="text-xs text-muted/70">Only the auto queue's settings change; your search filter and any album/artist scope stay as they are.</p>
+      <div class="flex justify-end gap-2 pt-1">
         <button
           onclick={() => (applyOpen = false)}
-          class="rounded-full p-1.5 text-muted transition-colors hover:text-primary"
-          aria-label="Close"
-        >
-          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>
-      </div>
-      <div class="space-y-4 px-5 py-4">
-        <p class="text-sm text-muted">Copy the library filter and sort into the auto queue's settings? The auto queue will refill to match.</p>
-        <div class="flex flex-wrap gap-2">
-          {#if applyPlan.filters}
-            <span class="rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-primary">Filters</span>
-          {/if}
-          {#if applyPlan.sort}
-            <span class="rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-primary">Sort{applyPlan.sort.sortBy ? `: ${sortLabels[applyPlan.sort.sortBy]} ${applyPlan.sort.sortAsc ? '↑' : '↓'}` : ''}</span>
-          {/if}
-        </div>
-        {#if $shuffleEnabled}
-          <p class="text-xs text-muted/70">Shuffle is on — the sort is saved but the order applies when shuffle is off.</p>
-        {/if}
-        <p class="text-xs text-muted/70">Only the auto queue's settings change; your search filter and any album/artist scope stay as they are.</p>
-        <div class="flex justify-end gap-2 pt-1">
-          <button
-            onclick={() => (applyOpen = false)}
-            class="rounded-lg px-4 py-2 text-sm font-medium text-muted transition-colors hover:text-primary"
-          >Cancel</button>
-          <button
-            onclick={confirmApply}
-            class="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-black transition-opacity hover:opacity-90"
-          >Apply</button>
-        </div>
+          class="rounded-lg px-4 py-2 text-sm font-medium text-muted transition-colors hover:text-primary"
+        >Cancel</button>
+        <button
+          onclick={confirmApply}
+          class="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-black transition-opacity hover:opacity-90"
+        >Apply</button>
       </div>
     </div>
-  </div>
+  </ModalShell>
 {/if}
