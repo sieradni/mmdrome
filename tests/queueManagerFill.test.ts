@@ -22,6 +22,7 @@ import {
   autoQueueFilterFields,
   autoQueueSort,
   autoQueueScope,
+  autoQueueEnabled,
   autoQueueEmptyNotice,
 } from '../src/stores/appState'
 import type { Track, AutoQueueFilterFields, QueueState } from '../src/stores/appState'
@@ -73,6 +74,7 @@ function reset(): void {
   autoQueueFilterFields.set({ ...FIELDS })
   autoQueueSort.set({ sortBy: null, sortAsc: true })
   autoQueueScope.set({})
+  autoQueueEnabled.set(true)
   libraryFilters.set({
     filterOpen: false, sortOpen: false, minRating: 0, maxRating: 100, lovedOnly: false,
     genre: '', fromYear: '', toYear: '', minLength: '', maxLength: '', sortBy: null, sortAsc: true,
@@ -84,6 +86,17 @@ function reset(): void {
 function lastWrite(): QueueState & { id: string } {
   assert.ok(playQueueWrites.length > 0, 'expected at least one queue write')
   return playQueueWrites[playQueueWrites.length - 1] as QueueState & { id: string }
+}
+
+/**
+ * D6 repeat pass: unique candidates are admitted first, then the tail cycles
+ * the rows it holds until it reaches the target length. Asserting the section
+ * through this helper keeps each pin readable: the unique sequence is the
+ * intent, the second argument is just the fill target.
+ */
+function repeatTo(unique: string[], total = 50): string[] {
+  if (unique.length === 0) return []
+  return Array.from({ length: total }, (_, i) => unique[i % unique.length])
 }
 
 /** Minimal engine surface the `_subscribeShared` reactions can touch under Node. */
@@ -105,12 +118,12 @@ test('replenish fills the auto queue from fresh tracks, excluding the playing us
 
   queueManager.replenishAutoQueue()
 
-  assert.deepEqual(get(queue).autoQueue, ['t2', 't3', 't4', 't5', 't6'])
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['t2', 't3', 't4', 't5', 't6']))
   assert.equal(get(queueWrapNotice), false)
-  assert.deepEqual(lastWrite().autoQueue, ['t2', 't3', 't4', 't5', 't6'], 'the write persisted kept+fill')
+  assert.deepEqual(lastWrite().autoQueue, repeatTo(['t2', 't3', 't4', 't5', 't6']), 'the write persisted kept+fill')
 })
 
-test('a tightened filter prunes non-matching auto tracks and stops filling (kept-only write)', () => {
+test('a tightened filter prunes non-matching auto tracks and repeats the surviving one (D6)', () => {
   reset()
   const ts = ['t1', 't2', 't3', 't4', 't5', 't6'].map((id) => track(id))
   library.set(ts)
@@ -118,13 +131,16 @@ test('a tightened filter prunes non-matching auto tracks and stops filling (kept
   // First fill at default filters: everything except the playing t1.
   setQueue({ userQueue: ['t1'], activeIndex: 0 })
   queueManager.replenishAutoQueue()
-  assert.deepEqual(get(queue).autoQueue, ['t2', 't3', 't4', 't5', 't6'])
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['t2', 't3', 't4', 't5', 't6']))
 
-  // Tighten to minRating 50 — only t2 still matches.
+  // Tighten to minRating 50 — only t2 still matches. The non-matching rows are
+  // dropped, and because no NEW id can be added the repeat pass cycles t2
+  // instead of leaving a one-row tail (D6: an exhausted pool means "nothing
+  // matches", never "the queue is short").
   autoQueueFilterFields.set({ ...FIELDS, minRating: 50 })
   queueManager.replenishAutoQueue()
 
-  assert.deepEqual(get(queue).autoQueue, ['t2'], 'non-matching auto tracks are dropped')
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['t2']), 'non-matching auto tracks are dropped')
 })
 
 test('the no-op guards skip the Dexie write when nothing can change', () => {
@@ -133,7 +149,7 @@ test('the no-op guards skip the Dexie write when nothing can change', () => {
   metadataCache.set(metaOf([['t2', 80]]))
   setQueue({ userQueue: ['t1'], activeIndex: 0 })
   queueManager.replenishAutoQueue()
-  assert.deepEqual(get(queue).autoQueue, ['t2'])
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['t2']))
   const writes = playQueueWrites.length
 
   // Tighten so nothing matches and nothing is dropped: kept stays [t2] (still
@@ -148,7 +164,53 @@ test('the no-op guards skip the Dexie write when nothing can change', () => {
   autoQueueFilterFields.set({ ...FIELDS })
   queueManager.replenishAutoQueue()
   assert.equal(playQueueWrites.length, writes2, 'an unchanged queue must not re-write')
-  assert.equal(get(queue).autoQueue.length, 1)
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['t2']))
+})
+
+// --- auto queue on/off (D9, queue step 5) ---------------------------------
+
+test('auto-off clears the tail in one write and never fills (D9)', () => {
+  reset()
+  library.set(['u', 'a', 'b', 'c'].map((id) => track(id)))
+  setQueue({ userQueue: ['u'], autoQueue: ['a', 'b'], activeIndex: 0 })
+  const writesBefore = playQueueWrites.length
+
+  queueManager.setAutoQueueEnabled(false)
+
+  let q = get(queue)
+  assert.deepEqual(q.autoQueue, [], 'the suggestion section leaves with the toggle')
+  assert.deepEqual(q.userQueue, ['u'], 'the user section is untouched')
+  assert.equal(q.activeIndex, 0, 'and so is the anchor')
+  assert.equal(playQueueWrites.length, writesBefore + 1, 'OFF is ONE write')
+
+  // Every fill entry point is gated: replenish, the shuffle rebuild and the
+  // fresh-context rebuild. None may resurrect a tail.
+  queueManager.replenishAutoQueue()
+  queueManager.rebuildAutoQueue()
+  queueManager.rebuildForFreshContext()
+  q = get(queue)
+  assert.deepEqual(q.autoQueue, [], 'no entry point refills while OFF')
+  assert.equal(get(autoQueueEmptyNotice), false, 'OFF is never the "filters match nothing" warning')
+
+  // Turning back ON is a fresh context: the pool is rebuilt from the live rule.
+  queueManager.setAutoQueueEnabled(true)
+  q = get(queue)
+  assert.deepEqual(q.autoQueue, repeatTo(['a', 'b', 'c']), 'the tail comes back')
+  assert.deepEqual(q.recentTrackIds, [], 'on = a fresh context (D7 reset rules)')
+})
+
+test('auto-off promotes the audible AUTO row first, so clearing cannot delete the playing song (D9)', () => {
+  reset()
+  library.set(['u', 'a', 'b', 'c'].map((id) => track(id)))
+  setQueue({ userQueue: ['u'], autoQueue: ['a', 'b', 'c'], activeIndex: 1 }) // 'a' plays from auto
+
+  queueManager.setAutoQueueEnabled(false)
+
+  const q = get(queue)
+  assert.deepEqual(q.userQueue, ['u', 'a'], 'the audible row survives as a user occurrence')
+  assert.deepEqual(q.autoQueue, [])
+  assert.equal(q.activeIndex, 1)
+  assert.equal([...q.userQueue, ...q.autoQueue][q.activeIndex], 'a', 'the anchor still names the playing song')
 })
 
 test('a queue already full of matching tracks takes the first no-op guard (needed === 0)', () => {
@@ -176,7 +238,7 @@ test('a sort change rebuilds the whole auto queue in the auto-sort order (B7)', 
   // f is the PLAYING track (activeId) — the rotation tier excludes it, so the
   // rebuilt queue is the rating-sorted a..e. Nothing ranks after the anchor f,
   // so the rotation wrapped from the top (wrapNotice).
-  assert.deepEqual(get(queue).autoQueue, ['a', 'b', 'c', 'd', 'e'], 'rating-sorted fill (active f excluded)')
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['a', 'b', 'c', 'd', 'e']), 'rating-sorted fill (active f excluded)')
   assert.equal(get(queueWrapNotice), true, 'nothing ranks after the anchor f → wrapped')
 })
 
@@ -194,19 +256,19 @@ test('the auto queue follows its OWN sort, never the library sort (2026-09-29 de
   // library sort must NOT re-rank it — then rotates after the anchor f
   // (library position 3): b,d wrap ahead, c,e,a follow (the anchor rule).
   // Pre-decoupling, the active library sort would have re-ranked this a..f.
-  assert.deepEqual(get(queue).autoQueue, ['b', 'd', 'c', 'e', 'a'], 'library-order fill (anchor-rotated) despite an active library sort')
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['b', 'd', 'c', 'e', 'a']), 'library-order fill (anchor-rotated) despite an active library sort')
 
   // The AUTO sort is what re-ranks.
   autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
   queueManager.rebuildAutoQueue()
-  assert.deepEqual(get(queue).autoQueue, ['a', 'b', 'c', 'd', 'e'], 'the auto sort re-ranks the fill')
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['a', 'b', 'c', 'd', 'e']), 'the auto sort re-ranks the fill')
 
   // An explicit sort FLIP still visibly re-ranks the head (the 2026-09-29
   // "flip does nothing" report stays fixed) — the head is the anchor's OTHER
   // neighbor, so the direction is visible without restarting from the top.
   autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
   queueManager.rebuildAutoQueue()
-  assert.deepEqual(get(queue).autoQueue, ['e', 'd', 'c', 'b', 'a'], 'rating-sorted DESC, continuing after the anchor f (excluded)')
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['e', 'd', 'c', 'b', 'a']), 'rating-sorted DESC, continuing after the anchor f (excluded)')
   assert.equal(get(queueWrapNotice), false, 'the anchor sits at the DESC top — no wrap')
 })
 
@@ -223,12 +285,13 @@ test('shuffle mode permutes the pool (set-preserving) and clears the wrap notice
   queueManager.rebuildAutoQueue()
 
   const auto = get(queue).autoQueue
-  assert.deepEqual([...auto].sort(), [...ids].sort(), 'shuffle keeps the same members')
+  assert.deepEqual([...new Set(auto)].sort(), [...ids].sort(), 'shuffle keeps the same members')
+  assert.equal(auto.length, 50, 'and the repeat pass fills it to the target (D6)')
   assert.equal(get(queueWrapNotice), false, 'shuffle clears the wrap hint')
   assert.deepEqual(get(queue).recentTrackIds, ['t9'], 'the window survives a shuffle toggle')
 })
 
-test('the empty-fill notice fires when nothing can be added and clears on a successful fill', () => {
+test('the empty-fill notice means NOTHING MATCHES — an exhausted pool repeats instead (D6)', () => {
   reset()
   library.set(['t1', 't2', 't3', 't4'].map((id) => track(id)))
   metadataCache.set(metaOf([['t2', 80]]))
@@ -236,14 +299,17 @@ test('the empty-fill notice fires when nothing can be added and clears on a succ
   queueManager.replenishAutoQueue()
   assert.equal(get(autoQueueEmptyNotice), false, 'a successful fill keeps the notice off')
 
-  // Tighten to minRating 80: t2 still matches (and is already queued), nothing
-  // new can be added, nothing is dropped → the no-op guard fires the notice.
+  // Tighten to minRating 80: t2 is the only match and it is already queued.
+  // The old fill starved and raised "nothing addable"; D6 now repeats t2, so
+  // the notice must stay OFF — it means "the filters match nothing", not
+  // "the pool is short".
   autoQueueFilterFields.set({ ...FIELDS, minRating: 80 })
   queueManager.replenishAutoQueue()
-  assert.equal(get(autoQueueEmptyNotice), true, 'nothing addable → notice')
+  assert.equal(get(autoQueueEmptyNotice), false, 'an exhausted pool is not an empty result')
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['t2']))
 
-  // Tighten further to 90: t2 no longer matches → kept drops, the queue is
-  // pruned to empty, and the notice stays (the fill added nothing).
+  // Tighten further to 90: nothing matches → the queue empties and the notice
+  // is the honest explanation.
   autoQueueFilterFields.set({ ...FIELDS, minRating: 90 })
   queueManager.replenishAutoQueue()
   assert.equal(get(autoQueueEmptyNotice), true)
@@ -253,7 +319,7 @@ test('the empty-fill notice fires when nothing can be added and clears on a succ
   autoQueueFilterFields.set({ ...FIELDS })
   queueManager.replenishAutoQueue()
   assert.equal(get(autoQueueEmptyNotice), false, 'a successful fill clears the notice')
-  assert.deepEqual(get(queue).autoQueue, ['t2', 't3', 't4'])
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['t2', 't3', 't4']))
 })
 
 test('a fully-tied library still shows the flip at the queue head (rotation preserves the arrow)', () => {
@@ -268,11 +334,11 @@ test('a fully-tied library still shows the flip at the queue head (rotation pres
 
   autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
   queueManager.rebuildAutoQueue()
-  assert.deepEqual(get(queue).autoQueue, ['d', 'e', 'a', 'b'], 'ascending head is the anchor\'s up-neighbor')
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['d', 'e', 'a', 'b']), 'ascending head is the anchor\'s up-neighbor')
 
   autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
   queueManager.rebuildAutoQueue()
-  assert.deepEqual(get(queue).autoQueue, ['b', 'a', 'e', 'd'], 'descending head is the anchor\'s down-neighbor — the flip is visible')
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['b', 'a', 'e', 'd']), 'descending head is the anchor\'s down-neighbor — the flip is visible')
 })
 
 test('the autoQueueSort subscription continues the fill from the playing track (not the top)', async () => {
@@ -302,7 +368,7 @@ test('the autoQueueSort subscription continues the fill from the playing track (
     // The Songs view order is a,b,c,d,e and playback is at c — the regenerated
     // tail must continue d,e then wrap a,b, matching the view order after the
     // current track. Restarting at the top ("a,b,d,e") is the reported bug.
-    assert.deepEqual(get(queue).autoQueue, ['d', 'e', 'a', 'b'])
+    assert.deepEqual(get(queue).autoQueue, repeatTo(['d', 'e', 'a', 'b']))
   } finally {
     for (const u of unsubs) u()
   }
@@ -345,7 +411,7 @@ test('a filter edit PROMOTES the audible auto row first, so the anchor still nam
   assert.deepEqual(q.userQueue, ['u', 'a'], 'the audible row is promoted to the user boundary')
   assert.equal(q.activeIndex, 1)
   assert.equal(combined().anchor, 'a', 'the anchor STILL names the audible song')
-  assert.deepEqual(q.autoQueue, ['b', 'c'], 'the tail is rebuilt from the matching pool')
+  assert.deepEqual(q.autoQueue, repeatTo(['b', 'c']), 'the tail is rebuilt from the matching pool')
   assert.deepEqual(q.recentTrackIds, [], 'a fresh context clears the anti-repeat window (D7.2)')
 
   // D7 is ONE write: the promotion, the recents reset and the rebuild land
@@ -370,7 +436,7 @@ test('a sort edit re-derives the order after the PROMOTED anchor (D7 / G2 closed
   // re-admits the USER-queued 'u' (B4: a short pool recycles rather than
   // starving) as an independent auto occurrence — the active row 'a' is the
   // one id tier 3 excludes.
-  assert.deepEqual(q.autoQueue, ['c', 'b', 'u'])
+  assert.deepEqual(q.autoQueue, repeatTo(['c', 'b', 'u']))
   assert.equal(get(queueWrapNotice), true, 'nothing ranks after the anchor → wrapped')
   assert.deepEqual(q.recentTrackIds, [])
 })
@@ -386,7 +452,7 @@ test('a rule edit cannot leave the anchor past the end when the audible row was 
 
   const q = get(queue)
   assert.deepEqual(q.userQueue, ['u', 'b'], 'the audible (non-matching) row survives as history')
-  assert.deepEqual(q.autoQueue, ['a'])
+  assert.deepEqual(q.autoQueue, repeatTo(['a']))
   assert.equal(q.activeIndex, 1)
   assert.ok(q.activeIndex < combined().ids.length, 'the anchor is in range — never past the end')
   assert.equal(combined().anchor, 'b')
@@ -452,7 +518,7 @@ test('a filter edit and a sort pick in ONE task collapse into a single fresh-con
     const q = get(queue)
     assert.deepEqual(q.recentTrackIds, [], 'the apply is a fresh context, not a fill patch')
     // Descending rating, continued after the anchor 'a' (lowest rank → wrap).
-    assert.deepEqual(q.autoQueue, ['e', 'd', 'c', 'b'], 'the one write carried BOTH new rules')
+    assert.deepEqual(q.autoQueue, repeatTo(['e', 'd', 'c', 'b']), 'the one write carried BOTH new rules')
     assert.equal(get(queueWrapNotice), true)
     assert.deepEqual(q.userQueue, userBefore, 'the user section is untouched')
   } finally {
@@ -487,7 +553,7 @@ test('a sort flip is a rule change even while shuffling (never skipped)', async 
     assert.deepEqual(q.recentTrackIds, [], 'a RULE CHANGE resets the window even under shuffle')
     // Shuffle permutes within tiers, so the membership is the assertion; the
     // cooled 'b' returns because the window was cleared.
-    assert.deepEqual([...q.autoQueue].sort(), ['b', 'c', 'd', 'e', 'f'], 'the cleared window re-admits b')
+    assert.deepEqual([...new Set(q.autoQueue)].sort(), ['b', 'c', 'd', 'e', 'f'], 'the cleared window re-admits b')
   } finally {
     for (const u of unsubs) u()
     m.destroy()
@@ -504,7 +570,7 @@ test('searchQuery persists as a filter through the real manager', () => {
 
   queueManager.replenishAutoQueue()
 
-  assert.deepEqual(get(queue).autoQueue, ['b1'])
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['b1']))
 })
 
 // --- ordered continuation through the real manager (2026-10-24) -------------
@@ -537,7 +603,7 @@ test('a library press re-derives the auto tail from the pressed row (ordered fil
   // Added ↓ = aq3, aq5, aq6, aq1, aq4, aq2 → from aq5: aq6, aq4, aq2, wrap aq3,
   // then the short pool recycles the user-queued aq1 (B4). The old kept-prefix
   // fill left the head at aq4 — the previous anchor's order.
-  assert.deepEqual(q.autoQueue, ['aq6', 'aq4', 'aq2', 'aq3', 'aq1'])
+  assert.deepEqual(q.autoQueue, repeatTo(['aq6', 'aq4', 'aq2', 'aq3', 'aq1']))
 })
 
 test('a filter and sort applied mid-play keep holding as playback advances', () => {
@@ -549,7 +615,7 @@ test('a filter and sort applied mid-play keep holding as playback advances', () 
   autoQueueFilterFields.set({ ...FIELDS, maxLength: 300 })
   autoQueueSort.set({ sortBy: 'added', sortAsc: false })
   queueManager.rebuildForFreshContext()
-  assert.deepEqual(get(queue).autoQueue, ['aq4', 'aq3', 'aq5', 'aq6'], 'Added ↓ after aq1, aq2 filtered out')
+  assert.deepEqual(get(queue).autoQueue, repeatTo(['aq4', 'aq3', 'aq5', 'aq6']), 'Added ↓ after aq1, aq2 filtered out')
 
   // Play the first auto row the way a load does: advance, promote, replenish.
   queueManager.advanceTo(1, 'aq1')
@@ -560,7 +626,7 @@ test('a filter and sort applied mid-play keep holding as playback advances', () 
   assert.deepEqual(q.userQueue, ['aq1', 'aq4'])
   // Both rules still hold after the advance: aq2 (excluded) never appears, and
   // the tail continues in Added ↓ after aq4 — aq3, aq5, aq6, then the wrap.
-  assert.deepEqual(q.autoQueue, ['aq3', 'aq5', 'aq6', 'aq1'])
+  assert.deepEqual(q.autoQueue, repeatTo(['aq3', 'aq5', 'aq6', 'aq1']))
   assert.ok(!q.autoQueue.includes('aq2'), 'the filter holds across the advance')
 })
 
@@ -610,6 +676,6 @@ test('a press ends the hand-ordered tail and re-derives it from the pressed row'
   assert.deepEqual(q.userQueue, ['aq1', 'aq3'], 'the press anchors its own row')
   // Added ↓ = aq3, aq5, aq6, aq1, aq4, aq2 → from aq3: aq5, aq6, aq4, aq2,
   // then the short pool recycles the user-queued aq1 (B4).
-  assert.deepEqual(q.autoQueue, ['aq5', 'aq6', 'aq4', 'aq2', 'aq1'], 'the sorted continuation wins')
+  assert.deepEqual(q.autoQueue, repeatTo(['aq5', 'aq6', 'aq4', 'aq2', 'aq1']), 'the sorted continuation wins')
   assert.notDeepEqual(q.autoQueue.slice(0, 4), ['aq4', 'aq6', 'aq2', 'aq5'], 'the dragged order must not survive a press')
 })

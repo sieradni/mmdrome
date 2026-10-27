@@ -3,8 +3,10 @@ import { persistQueue } from './queuePersistence'
 import {
   handOrderRule,
   planAutoQueueFill,
+  planRepeatPass,
   resolveHandOrder,
   selectAutoQueueFill,
+  type AutoQueueFillPlan,
   type AutoQueuePlanState,
   type HandOrder,
 } from './autoQueuePlan'
@@ -17,15 +19,31 @@ import {
   shuffleEnabled,
   autoQueueFilters,
   autoQueueSort,
+  autoQueueEnabled,
   metadataCache,
   queueWrapNotice,
   autoQueueEmptyNotice,
+  navidromeLoadStatus,
   currentTrack,
   pendingAdvanceTrackId,
 } from '../stores/appState'
 import type { Track, QueueState } from '../stores/appState'
 
 const MAX_AUTO_QUEUE = 50
+
+/**
+ * The honest result of a bulk import (D12 / G4). `accepted` is exactly the
+ * user section the queue now holds; `dropped` names the ids the library could
+ * not resolve (shown to the user, never silently discarded); `deferred` means
+ * NOTHING was applied because the library was still loading and an unresolved
+ * id may only be unloaded. Callers must not start playback on an empty
+ * `accepted` list or on a deferral.
+ */
+export interface BulkImportReport {
+  accepted: string[]
+  dropped: string[]
+  deferred: boolean
+}
 
 /** Same order, same rows — the auto-section identity check a drag needs. */
 function sameIds(a: string[], b: string[]): boolean {
@@ -61,6 +79,29 @@ class QueueManager {
   getCombinedQueue(): string[] {
     const q = get(queue)
     return [...q.userQueue, ...q.autoQueue]
+  }
+
+  /**
+   * Materializes a fill plan into the auto section the queue should hold
+   * (D6): the kept prefix, the unique candidates this fill selected, and — only
+   * when the pool ran out early — the repeat pass cycling the section it just
+   * built. ONE place computes this, so replenish, the shuffle rebuild and the
+   * fresh-context rebuild cannot disagree about what an exhausted pool means.
+   */
+  private _materializeAuto(plan: AutoQueueFillPlan): string[] {
+    const needed = Math.max(0, MAX_AUTO_QUEUE - plan.kept.length)
+    const fill = needed > 0 ? selectAutoQueueFill(plan, needed) : []
+    const nextAuto = [...plan.kept, ...fill.map((t) => t.trackId)]
+    const repeats = planRepeatPass(nextAuto, MAX_AUTO_QUEUE - nextAuto.length)
+    return [...nextAuto, ...repeats]
+  }
+
+  /** Publishes the two fill notices for a materialized section. An empty
+   *  section is the ONLY way "nothing matches" shows now that an exhausted
+   *  pool repeats instead of starving (D6), so the notice cannot lie. */
+  private _publishFillNotices(plan: AutoQueueFillPlan, autoIds: string[]): void {
+    queueWrapNotice.set(plan.wrapNotice)
+    autoQueueEmptyNotice.set(autoIds.length === 0)
   }
 
   /** Snapshot of every store the fill plan reads — the thin-glue seam. The
@@ -338,21 +379,44 @@ class QueueManager {
   }
 
   /**
-   * Full replacement for Play All flows: the user queue becomes the given
-   * tracks, the auto queue is cleared, and the active index points at the
-   * first track (the caller starts playback right after via `playTrackAt(0)`).
-   * Deliberately NOT routed through `_mutateQueue`'s id re-anchor — the
+   * Full replacement for the Play All flows (album, artist, and — once it
+   * lands — a server playlist import): the user queue becomes the RESOLVED
+   * ids, the auto queue is cleared, and the active index points at the first
+   * row. Deliberately NOT routed through `_mutateQueue`'s id re-anchor — the
    * previous active track is replaced wholesale, so the intended active id is
-   * the new first track, not a survivor. Also resets the recency window:
+   * the new first row, not a survivor. Also resets the recency window:
    * explicit bulk replay supersedes anti-repeat memory.
+   *
+   * D12 / G4 — the import boundary is VALIDATED, never trusted:
+   *  - order and duplicates are preserved verbatim (the queue is a log of
+   *    occurrences, so a playlist that repeats a song is representable);
+   *  - ids the library does not know are DROPPED from the queue and returned
+   *    in the report, never silently queued (an unknown row used to strand the
+   *    anchor on an unresolvable id);
+   *  - nothing resolves → NO write at all. The queue and playback are left
+   *    exactly as they were, and the caller gets an empty `accepted` list plus
+   *    the dropped ids to show (never `activeIndex: 0` on an empty queue);
+   *  - while the library is still loading, an unresolved id may simply not be
+   *    loaded yet, so the whole import is DEFERRED (no write) instead of
+   *    dropping rows the user can see in the source.
    */
-  playAll(trackIds: string[]): void {
+  playAll(trackIds: string[]): BulkImportReport {
+    const known = (id: string) => this.findTrack(id) !== undefined
+    const accepted = trackIds.filter(known)
+    const dropped = trackIds.filter((id) => !known(id))
+    if (dropped.length > 0 && get(navidromeLoadStatus).loading) {
+      return { accepted: [], dropped: [...trackIds], deferred: true }
+    }
+    if (accepted.length === 0) {
+      return { accepted: [], dropped, deferred: false }
+    }
     // No explicit intent reset: the replacement empties the auto tail, so the
     // next fill retires the intent (`resolveHandOrder`).
-    const updated: QueueState = { ...get(queue), userQueue: trackIds, autoQueue: [], activeIndex: 0 }
+    const updated: QueueState = { ...get(queue), userQueue: accepted, autoQueue: [], activeIndex: 0 }
     queue.set(updated)
     persistQueue('playAll', updated)
     this.resetRecentWindow()
+    return { accepted, dropped, deferred: false }
   }
 
   advanceQueue(): Track | null {
@@ -395,6 +459,14 @@ class QueueManager {
    * so the old explicit resets in those guards are subsumed by plan.wrapNotice.
    */
   replenishAutoQueue(): void {
+    // D9 gate: with the auto queue OFF the suggestion source is empty by
+    // definition — no fill, no rebuild, and never the "nothing matches"
+    // warning (that warning means the FILTERS are empty, which is a different
+    // fact). The section is already empty, so there is nothing to write.
+    if (get(autoQueueEnabled) === false) {
+      autoQueueEmptyNotice.set(false)
+      return
+    }
     const state = this._planState()
     // Retirement happens HERE, at the one place the intent is read: an intent
     // the live state cannot honour (rule changed, tail replaced or emptied, a
@@ -402,21 +474,15 @@ class QueueManager {
     // remember to clear it.
     if (this._handOrder && !resolveHandOrder(this._handOrder, state)) this._handOrder = null
     const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: true, handOrder: this._handOrder })
-    queueWrapNotice.set(plan.wrapNotice)
-    const needed = Math.max(0, MAX_AUTO_QUEUE - plan.kept.length)
-    if (needed === 0) {
-      autoQueueEmptyNotice.set(false)
-      return
-    }
-    const fill = selectAutoQueueFill(plan, needed)
-    if (fill.length === 0 && plan.kept.length === state.autoQueue.length) {
-      autoQueueEmptyNotice.set(true)
-      return
-    }
-    autoQueueEmptyNotice.set(fill.length === 0)
-    const fillIds = fill.map((t) => t.trackId)
+    const autoIds = this._materializeAuto(plan)
+    this._publishFillNotices(plan, autoIds)
+    // A fill that changes nothing (full section, no drop, no repeat) skips the
+    // Dexie write. Compared by CONTENT: the repeat pass makes a same-length
+    // section non-identical, and the old length-only guard would have skipped
+    // exactly those writes.
+    if (sameIds(autoIds, state.autoQueue)) return
     queue.update((q) => {
-      const updated = { ...q, autoQueue: [...plan.kept, ...fillIds] }
+      const updated = { ...q, autoQueue: autoIds }
       // Fill provenance (2026-09-27): mirror the plan's tier membership for
       // the HUD Copy dump. Inside the store update so the map always matches
       // the WRITTEN queue, never a racy pre-update snapshot. The plan's tier
@@ -446,6 +512,13 @@ class QueueManager {
    * names a USER row, and the fill below only ever writes `autoQueue`.
    */
   rebuildForFreshContext(): void {
+    // D9 gate: with the auto queue off there is no suggestion context to
+    // rebuild. Turning it back on runs this very method (the off→on edge IS a
+    // fresh context), so the reset cannot be skipped by the gate.
+    if (get(autoQueueEnabled) === false) {
+      autoQueueEmptyNotice.set(false)
+      return
+    }
     // A rule change supersedes a hand-ordered tail: the new order wins, and the
     // intent is void by construction (its rule no longer matches) — the next
     // replenish retires it, and this rebuild passes no intent at all.
@@ -466,10 +539,9 @@ class QueueManager {
         meta: get(metadataCache),
       }
       const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
-      const fillIds = selectAutoQueueFill(plan, MAX_AUTO_QUEUE).map((t) => t.trackId)
-      queueWrapNotice.set(plan.wrapNotice)
-      autoQueueEmptyNotice.set(plan.pool.length === 0)
-      const updated: QueueState = { ...base, autoQueue: fillIds }
+      const autoIds = this._materializeAuto(plan)
+      this._publishFillNotices(plan, autoIds)
+      const updated: QueueState = { ...base, autoQueue: autoIds }
       syncFillProvenance(updated.autoQueue, plan.tiers)
       persistQueue('rebuildForFreshContext', updated)
       return updated
@@ -486,20 +558,59 @@ class QueueManager {
    *  not reset the anti-repeat window. Rule changes go through
    *  `rebuildForFreshContext`. */
   rebuildAutoQueue(): void {
+    // D9 gate: an off auto queue has no tail to reorder, and turning shuffle
+    // on/off must not resurrect one.
+    if (get(autoQueueEnabled) === false) {
+      autoQueueEmptyNotice.set(false)
+      return
+    }
     // A shuffle toggle replaces the tail wholesale (and changes the rule's
     // shuffle bit), so no hand order can survive; the next replenish retires it.
     const state = this._planState()
     const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
-    queueWrapNotice.set(plan.wrapNotice)
-    autoQueueEmptyNotice.set(plan.pool.length === 0)
-    const fillIds = selectAutoQueueFill(plan, MAX_AUTO_QUEUE).map((t) => t.trackId)
+    const autoIds = this._materializeAuto(plan)
+    this._publishFillNotices(plan, autoIds)
 
     queue.update((q) => {
-      const updated = { ...q, autoQueue: fillIds }
+      const updated = { ...q, autoQueue: autoIds }
       syncFillProvenance(updated.autoQueue, plan.tiers)
       persistQueue('rebuildAutoQueue', updated)
       return updated
     })
+  }
+
+  /**
+   * D9 — the auto queue's on/off switch. OFF is defined as the direct form of
+   * "the filter matches nothing" (D8), so it must behave identically: the auto
+   * section disappears in ONE write and nothing refills it.
+   *
+   * Turning OFF promotes the audible auto occurrence first, exactly like the
+   * fresh-context rewrite: the song that is playing must stay queued as a USER
+   * row, otherwise clearing the section would delete the audible row from the
+   * queue and leave the anchor pointing past the user section. Turning ON is a
+   * fresh context (D7): rebuild from the live rule and reset the anti-repeat
+   * window, so the source starts clean instead of resuming a stale tail.
+   */
+  setAutoQueueEnabled(enabled: boolean): void {
+    if (get(autoQueueEnabled) === enabled) return
+    autoQueueEnabled.set(enabled)
+    this.endHandOrder()
+    if (!enabled) {
+      queue.update((q) => {
+        const promoted = queueMutation.promoteActiveTrack(q)
+        const base = promoted
+          ? queueMutation.applyQueueMutation(q, () => promoted) ?? q
+          : q
+        if (base.autoQueue.length === 0) return q
+        const updated: QueueState = { ...base, autoQueue: [] }
+        persistQueue('setAutoQueueEnabled', updated)
+        return updated
+      })
+      queueWrapNotice.set(false)
+      autoQueueEmptyNotice.set(false)
+      return
+    }
+    this.rebuildForFreshContext()
   }
 
 }

@@ -10,7 +10,7 @@
   import { onMount } from 'svelte'
   import { get } from 'svelte/store'
   import { Capacitor } from '@capacitor/core'
-  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, pushState, library } from '../stores/appState'
+  import { settings, updateSetting, webdavConnection, navidromeConnection, navidromeLoadStatus, metadataScanState, pushState, library, lastPushReport } from '../stores/appState'
   import { saveViewStateSession, restoreViewStateSession } from '../lib/viewState'
   import { appVersion, commitHash, buildTime } from '../lib/version'
   import { runManualWebDAVSync, testWebdavConn, testNavidromeConn, loadLibraryFromNavidrome, cancelLongOperation } from '../lib/syncEngine'
@@ -744,9 +744,13 @@
         `Pushed ${result.synced} track(s)`,
         result.failed ? `${result.failed} failed` : '',
       ]
+      if (result.repended) parts.push(`${result.repended} kept pending (newer edit during push)`)
+      if (result.localFailed) parts.push(`${result.localFailed} written remotely (local cache update failed)`)
+      if (result.unknownOutcomes) parts.push(`${result.unknownOutcomes} uncertain (MOVE response lost)`)
       if (result.skipped) parts.push(`${result.skipped} skipped (no pushable WebDAV file)`)
       if (result.wrongServer) parts.push(`${result.wrongServer} on a different server`)
       if (result.blindOverwrite) parts.push(`${result.blindOverwrite} written without ETag protection (server sent no ETag)`)
+      if (result.catalogRefresh === 'failed') parts.push('Navidrome catalog refresh failed')
       if (result.failureReason) parts.push(result.failureReason)
       syncResult = parts.filter(Boolean).join(', ')
     } catch (err) {
@@ -2111,6 +2115,44 @@
             {/if}
             {#if syncResult}
               <p class="text-sm text-muted">{syncResult}</p>
+            {/if}
+            {#if $lastPushReport}
+              <details class="rounded-lg bg-surface-hover/50 p-3 text-xs text-muted" data-testid="push-report-details">
+                <summary class="cursor-pointer select-none font-medium text-primary">
+                  Last push report ({$lastPushReport.counts.remoteCommitted} written{#if $lastPushReport.counts.failed > 0}, <span class="text-red-300">{$lastPushReport.counts.failed} failed</span>{/if}{#if $lastPushReport.counts.unknownOutcomes > 0}, <span class="text-amber-300">{$lastPushReport.counts.unknownOutcomes} uncertain</span>{/if}{#if $lastPushReport.counts.skipped > 0}, {$lastPushReport.counts.skipped} skipped{/if})
+                </summary>
+                <div class="mt-2 space-y-2">
+                  <p class="text-[11px] text-muted/80">
+                    Run {$lastPushReport.runId} &middot; {$lastPushReport.status} &middot; {$lastPushReport.durationMs}ms &middot; catalog refresh: {$lastPushReport.catalogRefresh}{#if $lastPushReport.catalogRefreshError} ({$lastPushReport.catalogRefreshError}){/if}
+                  </p>
+                  {#if $lastPushReport.failureGroups.length > 0}
+                    <div class="space-y-1.5" data-testid="push-failure-groups">
+                      {#each $lastPushReport.failureGroups as fg (fg.key)}
+                        <div class="rounded bg-red-500/10 px-2.5 py-1.5 text-red-200 ring-1 ring-red-500/20">
+                          <div class="font-medium">{fg.count}&times; [{fg.stage} / {fg.category}{#if fg.status} {fg.status}{/if}] {fg.headline}</div>
+                          <div class="mt-0.5 text-[11px] text-amber-200/90">{fg.nextAction}</div>
+                          {#if fg.tracks.length > 0}
+                            <div class="mt-0.5 text-[11px] text-red-200/80">Tracks: {fg.tracks.map((t) => t.title).join(', ')}</div>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  {/if}
+                  {#if $lastPushReport.rows.length > 0}
+                    <ul class="max-h-48 divide-y divide-white/5 overflow-y-auto pr-1" data-testid="push-report-rows">
+                      {#each $lastPushReport.rows as row (row.trackId + '-' + row.startedAtMs)}
+                        <li class="py-1 text-[11px]">
+                          <span class="font-medium text-primary">{row.title}</span>
+                          <span class="text-muted"> &mdash; {row.disposition} ({row.stage}{#if row.attempts > 1}, {row.attempts} attempts{/if}{#if row.recoveredConflict}, conflict recovered{/if}{#if row.tempCleanup}, temp cleanup: {row.tempCleanup}{/if})</span>
+                          {#if row.error}
+                            <div class="text-red-300">{row.error.message}{#if row.error.davError} &middot; {row.error.davError}{/if}</div>
+                          {/if}
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
+              </details>
             {/if}
           </div>
         </section>

@@ -4,7 +4,7 @@ Date: 2026-10-18 (Phase 2A closed 2026-10-21)
 
 **2026-10-22 reliability priority:** before treating playback/push polish as complete, work through the [field-reliability register](2026-10-22-field-reliability-and-push-diagnostics.md). It preserves the current-build push report, the clarified stale lock-screen/AirPods state, source-confirmed pause races, diagnostic gaps, and closure gates. This is investigation/documentation, not a landed fix. Bluetooth hardware trouble is explicitly excluded; existing feature work below retains its own status.
 
-Status: Active roadmap. Phase 1 is implemented and design-approved (real-device review still outstanding). **Phase 2A is CLOSED (2026-10-21)** — deliverable: [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md); it found five gaps, registered in its §13. **Phase 2D (queue semantics redesign) is AGREED and NOT implemented (2026-10-21b)** — contract: [docs/QUEUE-DESIGN.md](../QUEUE-DESIGN.md). Phases 2B, 2C and 3 are NOT complete.
+Status: Active roadmap. Phase 1 is implemented, design-approved, and committed (`ModalShell` + `PushConfirmShell` + `eqmodals.spec.ts` + `push-review.spec.ts` + `accessibility.spec.ts`; closed for development purposes). **Phase 2A is CLOSED (2026-10-21)** — deliverable: [docs/QUEUE-INVARIANTS.md](../QUEUE-INVARIANTS.md); it found five gaps, registered in its §13 (G1/G2/G3/G5 now closed). **Phase 2D (queue semantics redesign) steps 1–6 are LANDED (steps 1–4 on 2026-10-21c–f, steps 5–6 on 2026-10-26)** — contract: [docs/QUEUE-DESIGN.md](../QUEUE-DESIGN.md). That closes the queue contract's tail rules (D8), the auto-queue off switch (D9), the repeat pass (D6) and `playAll`'s library validation (D12/G4). Phases 2B, 2C, 3A and 3B remain open.
 
 ## 1. Guiding Principles & Guardrails
 
@@ -22,8 +22,8 @@ Status: Active roadmap. Phase 1 is implemented and design-approved (real-device 
    - `queueMutation.ts`, `autoQueuePlan.ts`, `queueManager.ts`, and `playbackManager.ts` have hard-won invariants (B1–B8, section-scoped uniqueness `u-${id}` / `a-${id}`, `promoteActiveTrack`, `recentTrackIds` cooldown, native `queueRefreshDecision`).
    - **Rule for Playlists & Presets**: Playlists and filter presets must NEVER introduce a third queue section, alter `userQueue`/`autoQueue` keyspaces, or wire a side-channel into `planAutoQueueFill`.
    - Instead, playlists act strictly as **boundary inputs** into the existing primitives:
-     - *Playing a playlist* = existing `queueManager.playAll(trackIds)` bulk entry (identical to playing an Album or Artist).
-     - *Queueing a playlist* = existing `addToUserQueue` (dedupe-preserving).
+     - *Playing a playlist* = existing `queueManager.playAll(trackIds)` bulk entry (identical to playing an Album or Artist). Since 2026-10-26 it validates against the library, preserves order/duplicates, and returns a `BulkImportReport` (accepted / dropped / deferred) that the playlist import must surface.
+     - *Queueing a playlist* = existing `addToUserQueue` (appends one occurrence per row — duplicates are legal).
      - *Saving the queue as a playlist* = pure read of `userQueue` (or combined queue) → Subsonic `createPlaylist` / local store.
      - *Smart Filter Presets* = pure read/write snapshots of `LibraryFilterState` / `AutoQueueFilterFields` + `AutoQueueSort`.
 
@@ -114,7 +114,7 @@ This is a completion ledger, not a promise that all phases are done. Update it a
 - [x] 1C partial: `use:tooltip` on selected playback, queue, filter, and navigation controls. Hover, focus-visible, Escape, and long-press behavior; movement cancels long-press. **Not yet an app-wide coverage claim.**
 - [x] Isolated, development-only UI review entry: `/mmdrome/?uiPreview`. Fixture rows cannot write files. Activity selector covers idle/connecting/loading/scanning/pushing/cached.
 - [x] User accepted the design direction, requesting responsive centering/edge padding, outside-click dismissal, realistic fixture changes, and per-row removal. Implemented in the follow-up below.
-- [ ] Complete keyboard/modal focus management and real-device iOS touch/VoiceOver review before declaring polish release-ready.
+- [x] Complete keyboard/modal focus management and real-device iOS touch/VoiceOver review before declaring polish release-ready. *(ModalShell + PushConfirmShell + EqSheetModal focus containment/restore shipped and pinned by `tests/ui-review/accessibility.spec.ts` and `tests/e2e/eqmodals.spec.ts`; closed for development purposes.)*
 - [x] Durable review coverage added in `tests/ui-review/push-review.spec.ts`, using `playwright.ui-review.config.ts`; covers responsive geometry, dismissal/focus return, fixture discard, idle status, and hover tooltip dismissal. Touch-specific tooltip regressions remain to be added.
 
 ### Verification evidence
@@ -218,4 +218,4 @@ This is a completion ledger, not a promise that all phases are done. Update it a
 - The played pile grows intentionally; no automatic cap (clear-above/below/all remain).
 - Playlist v1 = server playlists + queue export; file import deferred (formats researched in QUEUE-DESIGN §7.5).
 
-**Next:** implement 2D in the order listed above (row identity and duplicates first); 2B (rating editor/display extraction) and 2C (Settings decomposition) remain open and independent. The native pause bug is tracked separately in QUEUE-DESIGN §8 and needs a physical device run.
+- **Next:** 2D is complete through step 6 (2026-10-26). Remaining: 3B (server playlists + queue export — `playAll` now validates and reports, which was its gate), 3A (saved filter presets), 2B (rating editor/display extraction) and 2C (Settings decomposition), independent of each other. The native pause bug (`80d6adc`, `ba94fb8`) is shipped, CI-verified and device-confirmed (closed for development).

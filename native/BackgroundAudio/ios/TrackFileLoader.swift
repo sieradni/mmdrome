@@ -1993,10 +1993,18 @@ final class TrackFileLoader {
                     // non-streaming tracks between staged loads). The claim
                     // timestamp is recorded at prefetch start (the same map
                     // the writer uses) and cleared just below.
+                    let probeFormat = try? AVAudioFile(forReading: moved)
+                    let probeFrames = probeFormat?.length ?? 0
+                    let probeSr = probeFormat?.fileFormat.sampleRate ?? 0
+                    let probeSec = probeSr > 0 ? Double(probeFrames) / probeSr : 0
+                    var elapsedMs = 0
                     if let startedAt = self.claimAt.removeValue(forKey: cacheKey), storedSize > 0 {
                         let elapsed = max(0.05, Date().timeIntervalSince(startedAt))
+                        elapsedMs = Int(elapsed * 1000)
                         self.recentTransferRate = Double(storedSize) / elapsed
                     }
+                    let fpLine = responseFingerprint.map { " [" + DownloadResume.responseFingerprintLine($0) + "]" } ?? ""
+                    self.event(.info, "download attempt accepted for \(track.trackId) (\(requested)) req=\(requestID.uuidString.prefix(8)) mode=\(continuation) pool=\(freshTransferRequested && resumeData == nil ? "rotated" : "shared") disk=\(storedSize)B announced=\(response?.expectedContentLength ?? 0)B dec=\(String(format: "%.1f", probeSec))s/meta=\(String(format: "%.1f", track.duration))s elapsed=\(elapsedMs)ms\(fpLine)")
                     deliver(moved, nil)
                     pendings.forEach { $0(moved, nil) }
                     self.onDownloadFinished?(track.trackId, true)
@@ -2036,7 +2044,7 @@ final class TrackFileLoader {
                     // `moveError ?? error`, both optional, hence the unwrap.
                     let fpLine = responseFingerprint.map { " [" + DownloadResume.responseFingerprintLine($0) + "]" } ?? ""
                     if let err {
-                        self.event(.info, "download attempt failed for \(track.trackId) (\(requested)): \(err.localizedDescription)\(fpLine) \(self.transferEvidence(err))")
+                        self.event(.info, "download attempt failed for \(track.trackId) (\(requested)) req=\(requestID.uuidString.prefix(8)) mode=\(continuation) pool=\(freshTransferRequested && resumeData == nil ? "rotated" : "shared"): \(err.localizedDescription)\(fpLine) \(self.transferEvidence(err))")
                     }
                     deliver(nil, err)
                     pendings.forEach { $0(nil, err) }

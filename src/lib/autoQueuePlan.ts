@@ -465,6 +465,31 @@ export function planAutoQueueFill(
   return { kept: keepsSampledPrefix ? kept : fallbackKept, pool, shuffle: false, wrapNotice: false, tiers: { 1: tier1, 2: tier2, 3: tier3 } }
 }
 
+/**
+ * D6 repeat pass (QUEUE-DESIGN §2): unique candidates are always admitted
+ * first; only when a fill can add NO new id does the tail cycle the rows it
+ * already holds. `section` is the auto section AFTER the unique fill (kept
+ * prefix + everything this fill added) and `vacancies` what is still missing
+ * to reach the target length.
+ *
+ * The cycle runs over that section in order, from its head, so the repeats are
+ * balanced (a 3-row section filling 50 vacancies yields ~17 copies of each
+ * rather than 50 copies of the first). This is what makes "the pool is
+ * exhausted" mean exactly one thing — the filter matches nothing — and it is
+ * what gives repeat-all a single definition (D8): with any match the tail
+ * never ends.
+ *
+ * Each repeat is a real row; callers append these ids verbatim. Empty when
+ * there is nothing to cycle (nothing matches) or no vacancy — NEVER invent a
+ * row.
+ */
+export function planRepeatPass(section: readonly string[], vacancies: number): string[] {
+  if (section.length === 0 || vacancies <= 0) return []
+  const out: string[] = []
+  for (let i = 0; i < vacancies; i++) out.push(section[i % section.length])
+  return out
+}
+
 /** Longest leading run where the queued rows still equal `ordered`, one by one
  *  — the kept prefix of an ordered-continuation fill (0 = nothing is in place). */
 function leadingRun(queued: string[], ordered: string[]): number {

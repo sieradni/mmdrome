@@ -1,6 +1,7 @@
 import { writable, get, derived } from 'svelte/store'
 import type { LocalMetadataStore } from '$lib/db'
 import type { NoMatchReason } from '$lib/metadataCore'
+import type { PushRunReport } from '$lib/pushOutcome'
 import { getSetting, setSetting, getQueue, getAllMetadata, upsertMetadata, bulkUpsertMetadata, bulkDeleteMetadata, reopenDatabase } from '$lib/db'
 import { clampStoredActiveIndex } from '$lib/queueOccurrence'
 import { describeStorageError, planStorageInitAttempt, STORAGE_INIT_MAX_ATTEMPTS } from '$lib/storageHealth'
@@ -215,6 +216,10 @@ export interface PushProgress {
   cancelRequested?: boolean
 }
 export const pushState = writable<PushProgress>({ active: false, done: 0, total: 0, current: '' })
+/** Durable last completed (or interrupted) WebDAV Push report (W-09). Lives
+ *  outside view lifetime and the 1000-entry event ring so navigation and
+ *  restarts preserve the batch outcome, stage breakdown, and recovery groups. */
+export const lastPushReport = writable<PushRunReport | null>(null)
 
 /** Fields the user edits in the Queue filter panel — persisted via `persisted`. */
 export interface AutoQueueFilterFields {
@@ -375,6 +380,20 @@ const _autoQueueSort = persisted<AutoQueueSort>('autoQueueSort', AUTO_QUEUE_SORT
 })
 
 export const autoQueueSort = _autoQueueSort.store
+
+/**
+ * Auto-queue on/off (D9, QUEUE-DESIGN §2). Persisted like the other queue
+ * settings and restored in `initStores`. OFF means the suggestion source is
+ * empty: the manager clears the auto section in one write, suppresses every
+ * fill, and never shows the "nothing matches the filters" warning. Auto-off is
+ * deliberately the direct form of "the filter matches nothing" so repeat-all
+ * has ONE definition (D8). Toggling back on rebuilds through D7's fresh-context
+ * write. Read by the manager (the gate) and the queue view (the toggle and the
+ * quiet off-state copy); never mirrored into a second store.
+ */
+const _autoQueueEnabled = persisted<boolean>('autoQueueEnabled', true)
+
+export const autoQueueEnabled = _autoQueueEnabled.store
 
 /** Session-only auto-queue scoping (B5): set on play from album/artist views,
  *  cleared on shuffle toggle / plain TrackRow play. By construction the scopes
@@ -639,6 +658,16 @@ async function restoreLocalState(): Promise<void> {
     _loopMode.restore(),
     _autoQueueFilterFields.restore(),
     _autoQueueSort.restore(),
+    _autoQueueEnabled.restore(),
+    getSetting<PushRunReport>('lastPushReport')
+      .then((saved) => {
+        if (saved && typeof saved === 'object' && typeof saved.runId === 'string') {
+          const normalized: PushRunReport =
+            saved.status === 'running' ? { ...saved, status: 'interrupted' } : saved
+          lastPushReport.set(normalized)
+        }
+      })
+      .catch(() => {}),
   ])
 }
 

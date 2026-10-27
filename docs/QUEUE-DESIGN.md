@@ -1,11 +1,16 @@
 # Queue & Playlist Design — Agreed Target (2026-10-21b)
 
-Status: **PARTLY IMPLEMENTED (steps 1–4 of §6, 2026-10-21c/d/e/f).** This is the target contract. The
-as-built behavior — and the tests that currently pin it — live in [QUEUE-INVARIANTS.md](QUEUE-INVARIANTS.md).
+Status: **IMPLEMENTED through step 6 of §6 (steps 1–4 landed 2026-10-21c–f, steps 5–6 on 2026-10-26).**
+This is the target contract; the as-built behavior — and the tests that pin it — live in
+[QUEUE-INVARIANTS.md](QUEUE-INVARIANTS.md).
 Landed: D3/D4/D5, D11, D13, D1's press semantics (+ the crossfade occurrence identity that D1 needs),
-D10 (step 3) and D7 (step 4 — the fresh-context rebuild, which closes G1/G2).
-Not landed: D2's optional auto-copy drop on `+`, D6 (repeat pass), D8, D9, D12's library validation,
-D14's tail rules. Until a rule's row in the matrix says otherwise, do not cite it as shipped.
+D10 (step 3), D7 (step 4 — the fresh-context rebuild, which closes G1/G2), **D8 + D9 (step 5: the tail
+rules and the auto on/off switch)** and **D6 (step 6: the unique-first repeat pass)**. D12's library
+validation landed with step 5 (`playAll` resolves against the library, reports drops, defers while the
+library is loading) — G4 is CLOSED.
+Still not landed: D2's optional auto-copy drop on `+` (a SHOULD the code deliberately does not guess),
+the native `queueEntryId` refresh re-send note (step 1 leftover), and the playlists of §7. Until a rule's
+row in the matrix says otherwise, do not cite it as shipped.
 
 Date: 2026-10-21 (decisions taken across the 2026-10-21 review, follow-up to Phase 2A).
 Supersedes: the duplicate/order half of QUEUE-INVARIANTS §15, and rows A1–A9, B11–B12, E2/E4, J2–J4,
@@ -294,11 +299,27 @@ No Swift change is expected for D1–D14. The native engine consumes snapshots a
    path, the window surviving a shuffle toggle), `playbackManagerRestore` (subscribe-time guard), browser
    `queuefresh` (a widened filter re-derives the tail while the audible row stays the anchor).
    Rewritten matrix rows: B1, B11, E4, E9, D6a/D6b, V7; §13's G1/G2 are CLOSED sections.
-5. **Tail rules + auto-off (D8/D9)** — persisted toggle, UI, wrap/stop/restart, Previous no-op;
-   rewrite L2/L3 and Q1.
-6. **Repeat pass (D6)** — planner/manager tests, provenance, wrapper/notice behavior.
+5. **Tail rules + auto-off (D8/D9) — LANDED 2026-10-26.** `appState.autoQueueEnabled` (persisted,
+   restored in `initStores`); `queueManager.setAutoQueueEnabled` clears the tail in ONE write (promoting
+   the audible auto row first, so clearing can never delete the playing song), gates every fill entry
+   point (`replenishAutoQueue`, `rebuildAutoQueue`, `rebuildForFreshContext`) and rebuilds on the
+   off→on edge. `playbackManager.next()` at the tail wraps (all) / restarts (one) / stops (none);
+   `prev()` at the first row is a no-op in every mode (>3 s still restarts). The QueueView carries the
+   switch and the quiet off-state, and never the filter warning while off. `playAll` validates against
+   the library and returns a `BulkImportReport` (D12/G4 CLOSED). Pins: `queueManagerFill` (off clears in
+   one write, no entry point refills, on rebuilds fresh, the audible auto row is promoted first),
+   `playbackManagerNav` (the three Next-at-tail cases + Previous no-op), `queueBulkImport` (drop +
+   report, defer while loading, empty import is a no-op), browser `autoqueueoff`.
+6. **Repeat pass (D6) — LANDED 2026-10-26.** Pure `autoQueuePlan.planRepeatPass` cycles the section a
+   fill just built until the vacancies are filled (balanced from the head, never inventing a row);
+   `QueueManager._materializeAuto` is the ONE place kept + unique fill + repeats is composed, so
+   replenish, the shuffle rebuild and the fresh-context rebuild cannot disagree. `wrapNotice` is
+   unchanged; `autoQueueEmptyNotice` now means exactly "the filters match nothing". Pins:
+   `autoQueuePlan` (the pure cycle), `queueManagerFill` (kept+fill cycles, notice semantics, content-
+   compared no-op guard), `queueContinuation` (a hands-off session still hears every eligible id before
+   any repeat), browser `queuefresh` / `autoqueueadded` (unique head order).
 7. **Playlists (§7)** — server API layer, sheet, Play/Add, save-as, report + review.
-8. **Native pause bug (§8)** — instrument, fix, verify on device.
+8. **Native pause bug (§8) — LANDED & CLOSED FOR DEVELOPMENT (2026-10-22/23, `80d6adc`, `ba94fb8`).** Authoritative intent, shared command/publication path, and unconditional user-Pause output-graph pause shipped in 1.2.65–1.2.67, passed iOS CI (`swift test` + `xcodebuild` through 1.2.71), and confirmed on hardware.
 
 Steps 1–2 are the risky foundation: every later rule assumes occurrence identity. Do not start
 playlists before step 6 lands.
@@ -388,30 +409,21 @@ has documented issues for all of them.
 Import path when it lands: read the local file → resolve → play or create a server playlist through
 the API. The server stays the store of record; the file is transport.
 
-## 8. Native iOS pause bug (reopened 2026-10-22; device verification outstanding)
+## 8. Native iOS pause bug (CLOSED FOR DEVELOPMENT — shipped 1.2.65–1.2.67, CI & device confirmed)
 
 The current report is more precise: app or AirPods Pause stops audio, but the system still displays
 Pause; accessory resume does nothing; one lock-screen press repairs the displayed state and the
 next starts audio. The earlier attempted fix did not resolve this. Bluetooth hardware trouble is
 separate and excluded.
 
-**Authoritative investigation, proposed changes and acceptance matrix:**
+**Authoritative investigation, shipped implementation and device confirmation:**
 [field-reliability register §3](plans/2026-10-22-field-reliability-and-push-diagnostics.md#3-native-control-investigation).
 
-The earlier explanation here was incomplete. `pause()` now clears staged intent before its
-`isPlaying` guard, and app bridge Play/Pause/Toggle already force a Now Playing refresh. Normal
-state changes also publish rate and elapsed together. Remote callbacks lack that unconditional
-refresh, but this alone cannot explain the clarified in-app reproduction. Ordinary Pause leaves
-the audio engine running while its player nodes are paused: this is a leading device experiment,
-not a proven OS-icon cause. Separately, engine-recovery resume intent and full-download callbacks
-could outlive explicit Pause. The 2026-10-22b working-tree implementation adds authoritative intent,
-source/timer ownership and shared bridge/remote publication; Apple build/test gates, adapter execution
-and the graph-lifecycle experiment remain open in the register. Do not mark this fixed from metadata
-assignments or compilation alone.
-
-**Physical iPhone lock-screen/Control Center/accessory verification remains required (E5).** The
-October 22 dump supplies playback evidence but no command/publication transcript of the stale
-icon, so root-cause discrimination is still open; it is no longer accurate to say no dump exists.
+The 2026-10-22/23 implementation (`80d6adc`, `ba94fb8`) landed authoritative intent (`PlaybackControl.swift`),
+source/timer ownership, shared bridge/remote publication (`NowPlayingPublication.swift`), and unconditional
+output-graph pause on accepted user Pause (`AudioEngine.pause()`). It shipped in 1.2.65–1.2.67, passed all
+iOS CI gates (`swift test` + `xcodebuild` green through 1.2.71), and was confirmed on hardware (both the
+1.2.66 switch A/B and the 1.2.67 unconditional build). Closed for development purposes.
 
 ## 9. Non-goals
 
@@ -428,4 +440,4 @@ icon, so root-cause discrimination is still open; it is no longer accurate to sa
    panel first; mirror only if it feels hidden.
 3. Playlist "Replace" confirmation copy (destructive) — needed when the action lands.
 4. M3U import scope (which formats in the first file-import cut) — after v1 playlists.
-5. Native pause fix — reopened; command/publication evidence, graph-lifecycle investigation and physical-device acceptance remain open in the [October 22 register](plans/2026-10-22-field-reliability-and-push-diagnostics.md).
+5. Native pause fix — **closed for development** (`80d6adc`, `ba94fb8`, shipped 1.2.65–1.2.67, iOS CI + on-device A/B & unconditional confirmation in the [October 22 register](plans/2026-10-22-field-reliability-and-push-diagnostics.md)).

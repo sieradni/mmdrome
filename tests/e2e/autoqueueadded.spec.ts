@@ -53,10 +53,27 @@ const FROM_TOP_DESC = ['navidrome-aq3', 'navidrome-aq5', 'navidrome-aq6', 'navid
 // What the index tie-break would produce if buildOrderRank lost its `added` case.
 const TIE_FALLBACK_DESC = ['navidrome-aq6', 'navidrome-aq5', 'navidrome-aq4', 'navidrome-aq3', 'navidrome-aq2']
 
-function autoOrder(page: Page): Promise<(string | null)[]> {
-  return page.evaluate(() =>
-    [...document.querySelectorAll('[aria-label="Auto queue"] .queue-track-item')].map((el) =>
-      el.getAttribute('data-track-id'),
+/**
+ * First-occurrence order = the order this spec pins. Since D6 the tail CYCLES
+ * once the pool is exhausted, so a six-song library produces a 50-row section
+ * whose meaningful content is its unique head; asserting raw equality would
+ * pin the fill target instead of the order under test.
+ */
+function uniqueOrder(ids: (string | null)[]): (string | null)[] {
+  const seen = new Set<string | null>()
+  return ids.filter((id) => {
+    if (id === null || seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
+}
+
+async function autoOrder(page: Page): Promise<(string | null)[]> {
+  return uniqueOrder(
+    await page.evaluate(() =>
+      [...document.querySelectorAll('[aria-label="Auto queue"] .queue-track-item')].map((el) =>
+        el.getAttribute('data-track-id'),
+      ),
     ),
   )
 }
@@ -107,11 +124,14 @@ async function bootLibraryAndPlayFirst(page: Page): Promise<void> {
 }
 
 /** Section contents by track id, read from the open queue overlay. */
-function queueSections(page: Page): Promise<{ user: (string | null)[]; auto: (string | null)[] }> {
-  return page.evaluate(() => ({
+async function queueSections(page: Page): Promise<{ user: (string | null)[]; auto: (string | null)[] }> {
+  const sections = await page.evaluate(() => ({
     user: [...document.querySelectorAll('[aria-label="User queue"] .queue-track-item')].map((el) => el.getAttribute('data-track-id')),
     auto: [...document.querySelectorAll('[aria-label="Auto queue"] .queue-track-item')].map((el) => el.getAttribute('data-track-id')),
   }))
+  // D6: the auto tail repeats an exhausted pool, so only its unique head order
+  // is a stable assertion (the user section never repeats by fill).
+  return { user: sections.user, auto: uniqueOrder(sections.auto) }
 }
 
 /** Leave the queue overlay (closing it lands on Now Playing when a track is

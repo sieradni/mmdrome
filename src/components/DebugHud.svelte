@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { Capacitor } from '@capacitor/core'
   import { get } from 'svelte/store'
-  import { currentTrack, playbackState, queue, currentTime, effectiveDuration, settings, library, loopMode, shuffleEnabled, autoQueueFilters, autoQueueSort, metadataCache, updateSetting } from '../stores/appState'
+  import { currentTrack, playbackState, queue, currentTime, effectiveDuration, settings, library, loopMode, shuffleEnabled, autoQueueFilters, autoQueueSort, metadataCache, updateSetting, lastPushReport } from '../stores/appState'
   import { effectiveLowData, networkStatusStore, networkStabilitySnapshot } from '../lib/networkMode'
   import { transcodeParams } from '../lib/transcodePolicy'
   import { getCachedConfig } from '../lib/navidromeApi'
@@ -18,7 +18,10 @@
     knownDomains,
     enabledDomainsList,
     setEnabledDomains,
+    jsDebugSessionId,
+    jsDebugDroppedCount,
   } from '../lib/debugLog'
+  import { buildDiagnosticEnvelope, buildDiagnosticErrorSummary } from '../lib/diagnosticEnvelope'
   import { runStreamSelfTest, getLastStreamVerifyBundle } from '../lib/streamVerifyRunner'
   import { captureTransportSelfTest } from '../lib/transportSelfTestRunner'
   import { thumbLoaderDebugSnapshot } from '../lib/thumbLoader'
@@ -39,6 +42,7 @@
 
   let nativeState: any = $state(null)
   let nativeDebug: any = $state(null)
+  let nativePolledAtMs: number | null = $state(null)
   let jsTick = $state(0)
   let lastError = $state('')
   let lastTrackChanged = $state('')
@@ -208,6 +212,7 @@
       try {
         const d = await (BackgroundAudio as any).getDebugState()
         nativeDebug = d
+        nativePolledAtMs = Date.now()
       } catch {}
     }      // Incremental native-event pull (danger/info always recorded natively;
       // `debug`-level only for the domains toggled below). The native ring is
@@ -286,9 +291,40 @@
       st8.transcodeFormat,
       st8.transcodeBitrate,
     )
+    const nowMs = Date.now()
+    const perfNow = typeof performance !== 'undefined' ? performance.now() : 0
+    const jsEvs = jsDebugEventsSnapshot()
+    const pushRep = get(lastPushReport)
+    const verifyBundle = getLastStreamVerifyBundle()
+    const envelope = buildDiagnosticEnvelope({
+      capturedAtMs: nowMs,
+      jsPerfNowMs: perfNow,
+      jsSessionId: jsDebugSessionId(),
+      appVersion,
+      commitHash,
+      buildTime,
+      osMajor,
+      nativeDebug,
+      nativePolledAtMs,
+      jsEventsCount: jsEvs.length,
+      jsEventsDropped: jsDebugDroppedCount(),
+      nativeEventsCount: nativeEvents.length,
+      nativeEventsDropped,
+      enabledDomains: domains,
+      lastPushReport: pushRep,
+      hasStreamVerifyReport: verifyBundle !== null,
+    })
+    const errorSummary = buildDiagnosticErrorSummary({
+      jsEvents: jsEvs,
+      nativeEvents,
+      lastPushReport: pushRep,
+      hudConsoleMirror: errorLog.slice(0, 20),
+    })
     const payload = {
-      time: new Date().toISOString(),
+      time: envelope.capturedAtIso,
       build: { appVersion, buildTime, commitHash },
+      envelope,
+      errorSummary,
       js: {
         currentTrackId: ct?.trackId ?? null,
         currentTrackTitle: ct?.title ?? null,
@@ -307,9 +343,11 @@
         // Fill tier provenance (2026-09-27): which auto-queue tier (1 fresh /
         // 2 cool-down / 3 rotation) admitted each current auto row at its most
         // recent fill, in queue order; `unknown` = entered the auto section
-        // without a fill (Dexie restore, drag-convert). A tier-3-heavy dump is
-        // the exhausted-pool signature. Read-only diagnostic mirror.
+        // without a fill (Dexie restore, drag-convert — normal restored state,
+        // never a fill defect). A tier-3-heavy dump is the exhausted-pool
+        // signature. Read-only diagnostic mirror.
         queueProvenance: fillProvenanceGroups(q.autoQueue),
+        queueProvenanceNote: 'unknown entries are restored or drag-converted auto rows, not a fill defect',
         queueContext: {
           filters: queueFilters,
           sort: get(autoQueueSort),
@@ -333,6 +371,7 @@
       nativeDebug,
       lastError,
       lastTrackChanged,
+      errorLogNote: 'HUD-only console.error + bridge transition mirror (includes routine trackChanged/playbackState lines); see errorSummary for structured danger vs recoverable verdicts',
       errorLog: errorLog.slice(0, 20),
       nativeBridgeTrail: nativeBridgeTrailSnapshot(),
       // The structured event logs: native danger/info history + JS-side
@@ -357,6 +396,10 @@
       // failures, ladder step-downs, mean latency, newest records. Counters
       // and timings only; no credential surface.
       covers: coverStats ? { ...coverStats, recent: coverStats.recent.slice(0, 20) } : null,
+      // Durable WebDAV Push report (W-09): per-row stage/disposition/error
+      // evidence so a field dump after a failed/partial push carries the
+      // exact failure categories and HTTP/native error codes.
+      lastPushReport: get(lastPushReport),
       settings: scrubSettings(st8 as unknown as Record<string, unknown>),
     }
     const text = JSON.stringify(payload, null, 2)

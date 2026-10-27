@@ -13,6 +13,7 @@ import {
   handOrderRule,
   resolveHandOrder,
   planAutoQueueFill,
+  planRepeatPass,
   filterRangesValid,
   autoQueueSettingsDiffer,
   planApplyLibraryToAutoQueue,
@@ -193,6 +194,29 @@ test('buildOrderRank: a fully-tied library mirrors the arrow (the "flip does not
 })
 
 // ── rotateAfterAnchor ──────────────────────────────────────────────────
+
+// --- D6 repeat pass (queue step 6) ----------------------------------------
+
+test('planRepeatPass cycles the section in order, balanced from its head', () => {
+  // Unique candidates are admitted by the planner; the repeat pass is what
+  // makes an exhausted pool still fill. Cycling from the HEAD (not repeating
+  // the last row) is what keeps the copies balanced.
+  assert.deepEqual(planRepeatPass(['a', 'b', 'c'], 5), ['a', 'b', 'c', 'a', 'b'])
+  assert.deepEqual(planRepeatPass(['a'], 3), ['a', 'a', 'a'], 'a one-row section repeats that row')
+})
+
+test('planRepeatPass never invents a row: nothing to cycle or no vacancy yields []', () => {
+  assert.deepEqual(planRepeatPass([], 10), [], 'an empty filter match means an empty tail, not a phantom row')
+  assert.deepEqual(planRepeatPass(['a', 'b'], 0), [])
+  assert.deepEqual(planRepeatPass(['a', 'b'], -1), [])
+})
+
+test('planRepeatPass is deterministic and does not mutate its input', () => {
+  const section = ['x', 'y']
+  const frozen = JSON.stringify(section)
+  assert.deepEqual(planRepeatPass(section, 4), planRepeatPass(section, 4))
+  assert.equal(JSON.stringify(section), frozen)
+})
 
 test('rotateAfterAnchor truth table', () => {
   const pos = new Map([['a', 0], ['b', 1], ['c', 2]])

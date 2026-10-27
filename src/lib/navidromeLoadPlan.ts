@@ -22,6 +22,10 @@ export interface NavidromeLoadPlan {
   configureWebdav: boolean
   /** Fire the automatic incremental WebDAV scan (gated on device online). */
   scanWebdav: boolean
+  /** Exact reason the automatic WebDAV scan was suppressed when `scanWebdav`
+   *  is false (`not-configured`, `offline`, `low-data`, `not-applying`), or
+   *  `none` when the scan will run (D-04). */
+  scanSuppressedReason: 'none' | 'not-applying' | 'not-configured' | 'offline' | 'low-data'
 }
 
 export interface NavidromeLoadContext {
@@ -44,6 +48,16 @@ export function planNavidromeLoad(result: NavidromeConnectResult, ctx: Navidrome
   // applies even when the connection failed.
   const applyLibrary = result.songs.length > 0 || (result.connection.connected && !result.loadResult.error)
   const configureWebdav = applyLibrary && ctx.webdavConfigured
+  const scanWebdav = configureWebdav && ctx.online && !ctx.lowData
+  const scanSuppressedReason: NavidromeLoadPlan['scanSuppressedReason'] = !applyLibrary
+    ? 'not-applying'
+    : !ctx.webdavConfigured
+      ? 'not-configured'
+      : !ctx.online
+        ? 'offline'
+        : ctx.lowData
+          ? 'low-data'
+          : 'none'
   return {
     applyLibrary,
     tracks: applyLibrary ? result.songs.map(ctx.mapSong) : [],
@@ -55,6 +69,7 @@ export function planNavidromeLoad(result: NavidromeConnectResult, ctx: Navidrome
     configureWebdav,
     // Suppressed identically to offline: low data mode treats automatic
     // network work the same way (the user can always scan manually).
-    scanWebdav: configureWebdav && ctx.online && !ctx.lowData,
+    scanWebdav,
+    scanSuppressedReason,
   }
 }

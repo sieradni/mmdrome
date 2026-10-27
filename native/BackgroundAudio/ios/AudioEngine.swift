@@ -2108,6 +2108,7 @@ public final class NativeAudioEngine: NSObject {
         // the silence the user cannot see.
         let maxAttempts = isApplicationBackground ? Self.activeLoadMaxConsecutiveRetries : 2
         guard count <= maxAttempts else {
+            retryBranchStats.recordGivenUp()
             eventAdd(.danger, "loader", "active-load retry exhausted (\(count - 1) native attempts, cap \(maxAttempts)) for \(track.trackId): \(failure.detail) — yielding to the JS retry")
             // THE YIELD REPORTS: the JS retry machine's bounded ladder owns
             // the row from here — without this report the cap would end in
@@ -2160,10 +2161,14 @@ public final class NativeAudioEngine: NSObject {
     /// otherwise the download task Range-resumes the retained prefix.
     private func retryActiveLoad(track: NativeTrack, attempt: Int, failure: ActiveLoadFailure) {
         guard control.mayRender, tracks.indices.contains(activeIndex),
-              tracks[activeIndex].trackId == track.trackId else { return }
+              tracks[activeIndex].trackId == track.trackId else {
+            retryBranchStats.recordSuperseded()
+            return
+        }
         if loader.hasActiveWriter {
             // A continuation writer is already recovering this key — never
             // race it with a second attempt.
+            retryBranchStats.recordCoalesced()
             eventAdd(.info, "loader", "active-load retry \(attempt) skipped — the writer is already live for \(track.trackId)")
             return
         }
@@ -2189,6 +2194,7 @@ public final class NativeAudioEngine: NSObject {
                 guard self.tracks.indices.contains(self.activeIndex),
                       self.tracks[self.activeIndex].trackId == track.trackId else { return }
                 if let url {
+                    self.retryBranchStats.recordSucceeded()
                     self.eventAdd(.info, "loader", "active-load retry \(attempt) succeeded for \(track.trackId) — scheduling")
                     let start = self.pendingSeekTrackId == track.trackId ? self.pendingSeekSeconds : nil
                     self.pendingSeekSeconds = nil
@@ -2947,9 +2953,13 @@ public final class NativeAudioEngine: NSObject {
             let wantsFreshConnection = TransferCutRetryPolicy.requiresFreshConnection(for: parkedCut)
             Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(retryDelaySeconds * 1_000_000_000))
-                guard let self, gen == self.prefetchGeneration else { return }
+                guard let self, gen == self.prefetchGeneration else {
+                    self?.retryBranchStats.recordSuperseded()
+                    return
+                }
                 guard self.tracks.indices.contains(row) else {
                     // The queue shrank under the parked row: drop it and continue.
+                    self.retryBranchStats.recordSuperseded()
                     let skipped = PrefetchChain.applyRetry(
                         state: snapshot, index: row, attempt: attempt,
                         success: true, maxAttempts: Self.prefetchMaxAttempts)
@@ -2962,19 +2972,24 @@ public final class NativeAudioEngine: NSObject {
                     self.eventAdd(.info, "preload", "prefetch retry row \(row) (\(track.trackId)) attempt \(attempt)/\(Self.prefetchMaxAttempts) on a fresh connection (\(TransferCutRetryPolicy.strategy(for: parkedCut).rawValue))")
                 }
                 self.loader.prefetch(track) { [weak self] _, error in
-                    guard let self, gen == self.prefetchGeneration else { return }
+                    guard let self, gen == self.prefetchGeneration else {
+                        self?.retryBranchStats.recordSuperseded()
+                        return
+                    }
                     let cut: CutAttribution?
                     if let error {
                         self.emitPreload(track.trackId, "gone", nil)
                         cut = self.transferFailure(error).cut
                         self.retryBranchStats.record(strategy: TransferCutRetryPolicy.strategy(for: cut))
                         if attempt >= Self.prefetchMaxAttempts {
+                            self.retryBranchStats.recordGivenUp()
                             self.eventAdd(.danger, "preload", "prefetch FAILED row \(row) (\(track.trackId)) after \(attempt) attempts: \(error.localizedDescription) — giving up \(self.transferEvidence(error))")
                         } else {
                             self.eventAdd(.info, "preload", "prefetch RETRY FAILED row \(row) (\(track.trackId)) attempt \(attempt)/\(Self.prefetchMaxAttempts): \(error.localizedDescription) — reparked \(self.transferEvidence(error))")
                         }
                     } else {
                         cut = nil
+                        self.retryBranchStats.recordSucceeded()
                         self.crossfadeMonitorTick()
                     }
                     let next = PrefetchChain.applyRetry(

@@ -103,19 +103,28 @@ test('WebDAV scan fires only when configured AND online', () => {
   const plan = planNavidromeLoad(result(), configured)
   assert.equal(plan.configureWebdav, true)
   assert.equal(plan.scanWebdav, true)
+  assert.equal(plan.scanSuppressedReason, 'none')
 })
 
-test('WebDAV credentials re-point but the scan is skipped when offline', () => {
+test('WebDAV credentials re-point but the scan is skipped when offline (scanSuppressedReason = offline)', () => {
   const plan = planNavidromeLoad(result(), ctx({ webdavConfigured: true, online: false }))
   assert.equal(plan.configureWebdav, true)
   assert.equal(plan.scanWebdav, false)
+  assert.equal(plan.scanSuppressedReason, 'offline')
 })
 
-test('LDM suppresses the automatic scan exactly like offline — never the load (A13)', () => {
+test('LDM suppresses the automatic scan exactly like offline — never the load (A13, scanSuppressedReason = low-data)', () => {
   const plan = planNavidromeLoad(result(), ctx({ webdavConfigured: true, online: true, lowData: true }))
   assert.equal(plan.applyLibrary, true, 'the library load itself is essential and never gated')
   assert.equal(plan.configureWebdav, true)
   assert.equal(plan.scanWebdav, false, 'the automatic scan is suppressed like offline')
+  assert.equal(plan.scanSuppressedReason, 'low-data')
+})
+
+test('unconfigured WebDAV sets scanSuppressedReason = not-configured', () => {
+  const plan = planNavidromeLoad(result(), ctx({ webdavConfigured: false, online: true }))
+  assert.equal(plan.scanWebdav, false)
+  assert.equal(plan.scanSuppressedReason, 'not-configured')
 })
 
 test('WebDAV is untouched on a bail (disconnected/empty)', () => {

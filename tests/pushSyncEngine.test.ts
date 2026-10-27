@@ -1,0 +1,451 @@
+// Unit tests for the production WebDAV Push orchestration (`runManualWebDAVSync`)
+// and the pure outcome aggregation (`pushOutcome.ts`), covering W1–W12 and
+// W-01…W-10 from `docs/plans/2026-10-22-field-reliability-and-push-diagnostics.md`.
+
+import { test, beforeEach, afterEach } from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  runManualWebDAVSync,
+  __setPushSyncDeps,
+  __resetPushSyncDeps,
+  type PushSyncDeps,
+} from '../src/lib/syncEngine'
+import { webdavBaseKey, WebdavTransportError, type WebdavResponse } from '../src/lib/webdavUtils'
+import type { LocalMetadataStore } from '../src/lib/db'
+import type { PushRunReport } from '../src/lib/pushOutcome'
+
+const BASE_URL = 'https://dav.example/remote.php/dav/files/alice/'
+const USER = 'alice'
+const TOKEN = 'secret'
+const BASE_KEY = webdavBaseKey(BASE_URL, USER)
+
+function makeRow(trackId: string, path: string, over: Partial<LocalMetadataStore> = {}): LocalMetadataStore {
+  return {
+    trackId,
+    title: `Title ${trackId}`,
+    artist: 'Artist',
+    rating: 80,
+    loved: true,
+    fileType: 'mp3',
+    webdavPath: path,
+    webdavBase: BASE_KEY,
+    syncStatus: 'pending_sync',
+    lastModifiedLocally: 1000,
+    ...over,
+  }
+}
+
+function makeHeaders(map: Record<string, string> = {}) {
+  const lower = new Map(Object.entries(map).map(([k, v]) => [k.toLowerCase(), v]))
+  return {
+    get: (name: string) => lower.get(name.toLowerCase()) ?? null,
+  }
+}
+
+function makeRes(status: number, headers: Record<string, string> = {}, bodyText = ''): WebdavResponse {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: String(status),
+    headers: makeHeaders(headers),
+    text: async () => bodyText,
+    arrayBuffer: async () => new ArrayBuffer(16),
+  }
+}
+
+interface Harness {
+  pending: LocalMetadataStore[]
+  liveMap: Map<string, LocalMetadataStore>
+  upserted: LocalMetadataStore[]
+  reports: PushRunReport[]
+  calls: Array<{ method: string; url: string; headers: Record<string, string> }>
+  scanTriggered: number
+  deps: Partial<PushSyncDeps>
+}
+
+function createHarness(rows: LocalMetadataStore[]): Harness {
+  const liveMap = new Map(rows.map((r) => [r.trackId, { ...r }]))
+  const upserted: LocalMetadataStore[] = []
+  const reports: PushRunReport[] = []
+  const calls: Array<{ method: string; url: string; headers: Record<string, string> }> = []
+  let scanTriggered = 0
+  let clock = 1_700_000_000_000
+
+  const h: Harness = {
+    pending: rows.map((r) => ({ ...r })),
+    liveMap,
+    upserted,
+    reports,
+    calls,
+    get scanTriggered() {
+      return scanTriggered
+    },
+    set scanTriggered(v: number) {
+      scanTriggered = v
+    },
+    deps: {
+      getSetting: async <T = string>(key: string): Promise<T | undefined> => {
+        if (key === 'webdavUrl') return BASE_URL as unknown as T
+        if (key === 'webdavUser') return USER as unknown as T
+        if (key === 'webdavToken') return TOKEN as unknown as T
+        return undefined
+      },
+      getPendingSyncMetadata: async () => h.pending.map((r) => ({ ...r })),
+      getLiveMetadata: (id) => h.liveMap.get(id),
+      setInMemoryMetadata: (row) => {
+        h.liveMap.set(row.trackId, { ...row })
+      },
+      upsertMetadata: async (row) => {
+        upserted.push({ ...row })
+      },
+      getLibraryTracks: () =>
+        rows.map((r) => ({
+          trackId: r.trackId,
+          title: r.title ?? r.trackId,
+          artist: r.artist ?? 'Artist',
+          album: 'Album',
+          duration: 180,
+          fileType: r.fileType,
+        })),
+      modifyMetadataBuffer: async (buf) => buf,
+      triggerNavidromeScan: async () => {
+        scanTriggered++
+      },
+      persistPushReport: async (report) => {
+        reports.push(structuredClone(report))
+      },
+      now: () => {
+        clock += 25
+        return clock
+      },
+      isNative: () => false,
+    },
+  }
+  return h
+}
+
+beforeEach(() => {
+  __resetPushSyncDeps()
+})
+
+afterEach(() => {
+  __resetPushSyncDeps()
+})
+
+test('W1 / W-01: mixed HTTP and stage failures preserve per-row stages, HTTP status, Retry-After, and grouped failure summaries', async () => {
+  const rows = [
+    makeRow('t-auth', 'Album/Auth.mp3'),
+    makeRow('t-lock', 'Album/Locked.mp3'),
+    makeRow('t-rate', 'Album/RateLimit.mp3'),
+    makeRow('t-space', 'Album/DiskFull.mp3'),
+    makeRow('t-ok', 'Album/Good.mp3'),
+  ]
+  const h = createHarness(rows)
+  __setPushSyncDeps({
+    ...h.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (url.includes('Auth.mp3')) {
+        return makeRes(401, { 'X-Request-Id': 'req-auth-1' }, 'Unauthorized')
+      }
+      if (url.includes('Locked.mp3') && method === 'MOVE') {
+        return makeRes(423, {}, '<d:error>Resource is locked</d:error>')
+      }
+      if (url.includes('RateLimit.mp3') && method === 'GET') {
+        return makeRes(429, { 'Retry-After': '30', 'X-Request-Id': 'req-429' }, 'Too many requests')
+      }
+      if (url.includes('DiskFull.mp3') && method === 'PUT') {
+        return makeRes(507, {}, 'Insufficient Storage')
+      }
+      return makeRes(method === 'GET' ? 200 : 201, { ETag: '"e1"' })
+    },
+  })
+
+  const res = await runManualWebDAVSync()
+  assert.equal(res.synced, 1)
+  assert.equal(res.failed, 4)
+  assert.ok(res.report)
+  const byId = new Map(res.report.rows.map((r) => [r.trackId, r]))
+
+  assert.equal(byId.get('t-auth')?.disposition, 'failed-get')
+  assert.equal(byId.get('t-auth')?.error?.category, 'auth')
+  assert.equal(byId.get('t-auth')?.error?.status, 401)
+  assert.equal(byId.get('t-auth')?.error?.requestId, 'req-auth-1')
+
+  assert.equal(byId.get('t-lock')?.disposition, 'failed-move')
+  assert.equal(byId.get('t-lock')?.stage, 'move')
+  assert.equal(byId.get('t-lock')?.error?.status, 423)
+  assert.equal(byId.get('t-lock')?.tempCleanup, 'deleted')
+
+  assert.equal(byId.get('t-rate')?.disposition, 'failed-get')
+  assert.equal(byId.get('t-rate')?.error?.status, 429)
+  assert.equal(byId.get('t-rate')?.error?.retryAfter, '30')
+
+  assert.equal(byId.get('t-space')?.disposition, 'failed-put')
+  assert.equal(byId.get('t-space')?.stage, 'put-temp')
+  assert.equal(byId.get('t-space')?.error?.status, 507)
+
+  assert.equal(byId.get('t-ok')?.disposition, 'written-synced')
+  assert.equal(res.report.failureGroups.length, 4)
+})
+
+test('W2 / W-02: post-MOVE local DB failure reports written-local-failed instead of masking the committed remote write', async () => {
+  const row = makeRow('t-db-fail', 'Album/Song.mp3')
+  const h = createHarness([row])
+  __setPushSyncDeps({
+    ...h.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      return makeRes(method === 'GET' ? 200 : 201, { ETag: '"e1"' })
+    },
+    upsertMetadata: async () => {
+      throw new Error('QuotaExceededError: IndexedDB full')
+    },
+  })
+
+  const res = await runManualWebDAVSync()
+  assert.equal(res.synced, 1, 'remote write committed and is counted in synced')
+  assert.equal(res.localFailed, 1, 'local DB reconciliation failure is reported separately')
+  assert.equal(res.failed, 0, 'remote write did not fail')
+  assert.equal(h.scanTriggered, 1, 'Navidrome scan still triggers because remote file changed')
+
+  const outcome = res.report?.rows[0]
+  assert.equal(outcome?.disposition, 'written-local-failed')
+  assert.equal(outcome?.remoteState, 'committed')
+  assert.equal(outcome?.localReconciliation, 'failed')
+  assert.equal(outcome?.error?.category, 'local-db')
+})
+
+test('W3 / W-04: mid-flight live discard or path change after GET/TagLib aborts before PUT/MOVE', async () => {
+  const row1 = makeRow('t-discarded-mid-get', 'Album/One.mp3')
+  const row2 = makeRow('t-rebound-before-move', 'Album/Two.mp3')
+  const h = createHarness([row1, row2])
+
+  __setPushSyncDeps({
+    ...h.deps,
+    modifyMetadataBuffer: async (buf, _r, _l) => {
+      // User discards row1 while TagLib is editing the buffer!
+      const live1 = h.liveMap.get('t-discarded-mid-get')!
+      h.liveMap.set('t-discarded-mid-get', { ...live1, syncStatus: 'synced' })
+      return buf
+    },
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (url.includes('Two.mp3.mmdrome-tmp') && method === 'PUT') {
+        // User re-binds row2 to a different file while temp PUT is finishing, right before MOVE!
+        const live2 = h.liveMap.get('t-rebound-before-move')!
+        h.liveMap.set('t-rebound-before-move', { ...live2, webdavPath: 'Album/Other.mp3' })
+      }
+      return makeRes(method === 'GET' ? 200 : 201, { ETag: '"e1"' })
+    },
+  })
+
+  const res = await runManualWebDAVSync()
+  assert.equal(res.synced, 0)
+  assert.equal(res.skipped, 2)
+
+  // Row 1 never even issued PUT!
+  assert.equal(
+    h.calls.some((c) => c.url.includes('One.mp3') && c.method === 'PUT'),
+    false,
+    'discarded row must not PUT temp file after TagLib edit',
+  )
+  // Row 2 issued PUT, then aborted before MOVE and cleaned up its temp file!
+  assert.equal(
+    h.calls.some((c) => c.url.includes('Two.mp3') && c.method === 'MOVE'),
+    false,
+    'rebound row must abort before MOVE',
+  )
+  assert.equal(
+    h.calls.some((c) => c.url.includes('Two.mp3.mmdrome-tmp') && c.method === 'DELETE'),
+    true,
+    'aborted pre-MOVE must clean up temp file',
+  )
+  const r2Outcome = res.report?.rows.find((r) => r.trackId === 't-rebound-before-move')
+  assert.equal(r2Outcome?.disposition, 'skipped-live-invalidated')
+  assert.equal(r2Outcome?.stage, 'pre-move-validation')
+  assert.equal(r2Outcome?.tempCleanup, 'deleted')
+})
+
+test('W4 / W-05: failed first writer releases target path so second row can push; committed first writer skips duplicate target', async () => {
+  // Case A: first row fails on GET; second row targeting the same path succeeds
+  const rowsFailFirst = [
+    makeRow('t-dup-1', 'Album/Shared.mp3'),
+    makeRow('t-dup-2', 'Album/Shared.mp3', { rating: 100 }),
+  ]
+  const h1 = createHarness(rowsFailFirst)
+  let getCalls = 0
+  __setPushSyncDeps({
+    ...h1.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h1.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'GET') {
+        getCalls++
+        if (getCalls === 1) return makeRes(503, {}, 'Temporary outage')
+      }
+      return makeRes(method === 'GET' ? 200 : 201, { ETag: '"e1"' })
+    },
+  })
+
+  const res1 = await runManualWebDAVSync()
+  assert.equal(res1.failed, 1)
+  assert.equal(res1.synced, 1, 'second row targeting same path succeeded because first failed before commit')
+
+  // Case B: first row commits; second row targeting the same path is skipped as skipped-duplicate-target
+  const rowsCommitFirst = [
+    makeRow('t-dup-a', 'Album/Shared.mp3'),
+    makeRow('t-dup-b', 'Album/Shared.mp3', { rating: 40 }),
+  ]
+  const h2 = createHarness(rowsCommitFirst)
+  __setPushSyncDeps({
+    ...h2.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h2.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      return makeRes(method === 'GET' ? 200 : 201, { ETag: '"e1"' })
+    },
+  })
+
+  const res2 = await runManualWebDAVSync()
+  assert.equal(res2.synced, 1)
+  assert.equal(res2.skipped, 1)
+  assert.equal(res2.report?.rows[1]?.disposition, 'skipped-duplicate-target')
+})
+
+test('W6 / W-02: lost MOVE response records unknown-outcome and does not mark row synced', async () => {
+  const row = makeRow('t-move-lost', 'Album/Uncertain.mp3')
+  const h = createHarness([row])
+  __setPushSyncDeps({
+    ...h.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'MOVE') {
+        throw new WebdavTransportError('Request timed out during MOVE', {
+          method: 'MOVE',
+          transport: 'web',
+          phase: 'headers',
+          elapsedMs: 30_000,
+          timedOut: true,
+        })
+      }
+      return makeRes(200, { ETag: '"e1"' })
+    },
+  })
+
+  const res = await runManualWebDAVSync()
+  assert.equal(res.synced, 0)
+  assert.equal(res.unknownOutcomes, 1)
+  assert.equal(res.failed, 1)
+  assert.equal(h.upserted.length, 0, 'uncertain MOVE must never mark local row synced')
+  const outcome = res.report?.rows[0]
+  assert.equal(outcome?.disposition, 'unknown-outcome')
+  assert.equal(outcome?.remoteState, 'unknown')
+  assert.equal(outcome?.tempCleanup, 'deleted')
+})
+
+test('W8 / W-08: progressdone is monotonic and never exceeds total even on 412 conflict retry', async () => {
+  const row1 = makeRow('t-retry', 'Album/Retry.mp3')
+  const row2 = makeRow('t-second', 'Album/Second.mp3')
+  const h = createHarness([row1, row2])
+  let moveCount = 0
+  const progressEvents: Array<{ done: number; total: number; title: string }> = []
+
+  __setPushSyncDeps({
+    ...h.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'MOVE' && url.includes('Retry.mp3')) {
+        moveCount++
+        if (moveCount === 1) return makeRes(412)
+      }
+      return makeRes(method === 'GET' ? 200 : 201, { ETag: `"e-${moveCount}"` })
+    },
+  })
+
+  const res = await runManualWebDAVSync({
+    onProgress: (done, total, title) => {
+      progressEvents.push({ done, total, title })
+    },
+  })
+  assert.equal(res.synced, 2)
+  assert.equal(res.report?.rows[0]?.attempts, 2)
+  assert.equal(res.report?.rows[0]?.recoveredConflict, true)
+  for (let i = 0; i < progressEvents.length; i++) {
+    assert.ok(progressEvents[i].done <= progressEvents[i].total, `done (${progressEvents[i].done}) <= total (${progressEvents[i].total})`)
+    if (i > 0) {
+      assert.ok(progressEvents[i].done >= progressEvents[i - 1].done, 'progress done is monotonically non-decreasing')
+    }
+  }
+})
+
+test('W9 / W-02: newer local edit during push keeps row pending_sync and reports written-repended', async () => {
+  const row = makeRow('t-repend', 'Album/Repend.mp3', { rating: 60, lastModifiedLocally: 1000 })
+  const h = createHarness([row])
+
+  __setPushSyncDeps({
+    ...h.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'MOVE') {
+        // User changes rating to 100 while MOVE is in flight!
+        h.liveMap.set('t-repend', {
+          ...row,
+          rating: 100,
+          lastModifiedLocally: 2000,
+          syncStatus: 'pending_sync',
+        })
+      }
+      return makeRes(method === 'GET' ? 200 : 201, { ETag: '"e1"' })
+    },
+  })
+
+  const res = await runManualWebDAVSync()
+  assert.equal(res.synced, 1)
+  assert.equal(res.repended, 1)
+  assert.equal(res.report?.rows[0]?.disposition, 'written-repended')
+  assert.equal(res.report?.rows[0]?.remainsPending, true)
+  assert.equal(h.liveMap.get('t-repend')?.syncStatus, 'pending_sync')
+  assert.equal(h.liveMap.get('t-repend')?.rating, 100)
+})
+
+test('W10 / W-10: cancellation records unprocessed-cancelled rows and Navidrome scan failure does not fail pushed files', async () => {
+  const rows = [
+    makeRow('t-1', 'Album/1.mp3'),
+    makeRow('t-2', 'Album/2.mp3'),
+    makeRow('t-3', 'Album/3.mp3'),
+  ]
+  const h = createHarness(rows)
+  let cancelNow = false
+
+  __setPushSyncDeps({
+    ...h.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'MOVE' && url.includes('1.mp3')) {
+        cancelNow = true
+      }
+      return makeRes(method === 'GET' ? 200 : 201, { ETag: '"e1"' })
+    },
+    triggerNavidromeScan: async () => {
+      throw new Error('Navidrome 502 Bad Gateway')
+    },
+  })
+
+  const res = await runManualWebDAVSync({ isCancelled: () => cancelNow })
+  assert.equal(res.cancelled, true)
+  assert.equal(res.synced, 1)
+  assert.equal(res.unprocessedCancelled, 2)
+  assert.equal(res.failed, 0, 'Navidrome scan failure must not mark pushed files failed')
+  assert.equal(res.catalogRefresh, 'failed')
+  assert.equal(res.report?.catalogRefresh, 'failed')
+  assert.match(res.report?.catalogRefreshError ?? '', /502 Bad Gateway/)
+  assert.equal(res.report?.counts.unprocessedCancelled, 2)
+})

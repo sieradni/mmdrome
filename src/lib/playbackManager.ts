@@ -1736,6 +1736,18 @@ export class PlaybackManager {
     await this._onTrackEnded(false, { skipPark: true, loopMode: 'none' })
   }
 
+  /**
+   * Manual Next. It advances one row when one exists; at the TAIL it obeys the
+   * D8 table instead of doing nothing (the as-built behavior — a dead button):
+   *   loop-one  → restart the song,
+   *   loop-all  → wrap to `userQueue[0]` (the declared repeat-all meaning),
+   *   loop-none → stop playback.
+   * With the auto queue ON and anything matching, D6 keeps the tail full, so
+   * the tail cases are reached only when auto is off or nothing matches —
+   * which is exactly why auto-off must behave like "the filter matches nothing".
+   * Manual Next stays a separate path from the natural-end chain (no park, no
+   * error cycle): the user pressed a button.
+   */
   async next(): Promise<void> {
     this._stm.clearPendingStop()
     const combined = this._qm.getCombinedQueue()
@@ -1752,7 +1764,26 @@ export class PlaybackManager {
       if (track) {
         await this._loadTrack(track)
       }
+      return
     }
+
+    const mode = get(loopMode)
+    if (mode === 'one') {
+      this.seek(0)
+      return
+    }
+    if (mode === 'all') {
+      const first = q.userQueue[0]
+      const track = first ? this._qm.findTrack(first) : undefined
+      if (track) {
+        setActiveQueueIndex(0)
+        await this._loadTrack(track)
+      } else {
+        this._stopPlayback()
+      }
+      return
+    }
+    this._stopPlayback()
   }
 
   async prev(): Promise<void> {
@@ -1777,20 +1808,11 @@ export class PlaybackManager {
       return
     }
 
-    if (get(loopMode) === 'all') {
-      const lastIndex = combined.length - 1
-      if (lastIndex >= 0) {
-        this._qm.advanceTo(lastIndex, currentId ?? undefined)
-        const track = this._qm.findTrack(combined[lastIndex])
-        if (track) {
-          await this._loadTrack(track)
-        }
-      }
-      return
-    }
-
-    // First track, loop-mode off — restart from the beginning.
-    this.seek(0)
+    // D8: Previous at the FIRST row is a NO-OP in every loop mode. The
+    // as-built split (restart under none, wrap to the last row under all) was
+    // judged too inconsistent to promise: the same press meant "start this
+    // over" or "jump to the end" depending on a setting the user is not
+    // looking at. The >3 s restart above is the only restart Previous offers.
   }
 
   seek(time: number, opts: { live?: boolean } = {}): void {

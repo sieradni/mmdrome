@@ -15,10 +15,10 @@ Use this index to find the right guide without needing to know the repository la
 
 ## Engineering and maintenance
 
-- **[Current field-reliability register](plans/2026-10-22-field-reliability-and-push-diagnostics.md)** - reopened lock-screen/AirPods controls, pause-intent races, WebDAV push outcomes/write safety, transfer diagnostics, and the tests/device evidence required to close them. Bluetooth hardware issues are excluded.
+- **[Current field-reliability register](plans/2026-10-22-field-reliability-and-push-diagnostics.md)** - native control/pause fixes (`80d6adc`, `ba94fb8`) shipped and CI/device-confirmed (closed for development); WebDAV push outcomes/write safety, transfer diagnostics, and shared diagnostic envelope. Bluetooth hardware issues are excluded.
 - [Developer knowledge base](../AGENTS.md) — architecture map, design rules, and test-enforced invariants.
-- [Queue & playback invariant matrix](QUEUE-INVARIANTS.md) — every intended queue/playback behavior with the test that pins it, the known gaps, and the Phase 3 playlist boundary decisions.
-- [Queue & playlist target design](QUEUE-DESIGN.md) — the agreed (not yet implemented) queue rules, the decision ledger, the implementation order, and the playlist/format contract.
+- [Queue & playback invariant matrix](QUEUE-INVARIANTS.md) — every intended queue/playback behavior with the test that pins it, the remaining gaps, and the Phase 3 playlist boundary decisions.
+- [Queue & playlist target design](QUEUE-DESIGN.md) — the agreed queue rules (steps 1–6 shipped: occurrence identity, press semantics, skip exactness, fresh-context rebuild, tail rules + auto-off, repeat pass), the decision ledger, the implementation order, and the playlist/format contract (playlists still to build).
 - [Developer log](DEVLOG.md) — dated implementation rationale and field findings.
 - [Plans](plans/) — active and historical engineering plans.
 

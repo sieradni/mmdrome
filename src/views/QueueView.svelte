@@ -10,6 +10,7 @@
     playbackState,
     autoQueueFilterFields,
     autoQueueSort,
+    autoQueueEnabled,
     ratingBound,
     queueWrapNotice,
     autoQueueEmptyNotice,
@@ -874,11 +875,32 @@
          row is the boundary), and the drag-over-seam conversion banner lives
          there too so the seam affordance survives without a dedicated row. -->
 
+    <!-- D9: the auto queue's own switch. It is mirrored here (next to the
+         section it controls) and is the ONLY place it is offered, so the
+         section and its control can never drift onto different screens. Off
+         renders the quiet state, NOT the filter warning: "nothing matches" and
+         "you turned suggestions off" are different facts. -->
+    {#if $queue.userQueue.length > 0}
+      <div class="mx-4 mb-1 flex items-center gap-2 px-1" role="group" aria-label="Auto queue settings">
+        <span class="text-[11px] font-semibold uppercase tracking-widest {$autoQueueEnabled ? 'text-muted/70' : 'text-muted'}">
+          {$autoQueueEnabled ? 'Suggestions on' : 'Auto queue off'}
+        </span>
+        <div class="h-0.5 flex-1 rounded-full bg-white/15"></div>
+        <button
+          type="button"
+          class="rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors {$autoQueueEnabled ? 'bg-white/10 text-muted hover:text-primary' : 'bg-accent-soft text-accent hover:bg-accent-ring/30'}"
+          aria-pressed={$autoQueueEnabled}
+          onclick={() => queueManager.setAutoQueueEnabled(!$autoQueueEnabled)}
+          data-testid="toggle-auto-queue"
+        >{$autoQueueEnabled ? 'Turn off' : 'Turn on'}</button>
+      </div>
+    {/if}
+
     {#if $queueWrapNotice && previewAutoItems.length > 0}
       <p class="mx-4 mb-1 text-center text-[11px] text-muted/60">Continuing from the top of the sort order</p>
     {/if}
 
-    {#if $autoQueueEmptyNotice}
+    {#if $autoQueueEmptyNotice && $autoQueueEnabled}
       <!-- B5: with an album/artist scope an exhausted pool is the scope's natural
            end, not a filter problem — yellow would read as a warning. The label
            names the scope so the source stays visible without auto rows. -->
@@ -992,7 +1014,10 @@
         {/each}
         <div style="height:{autoBottomPad}px" aria-hidden="true"></div>
       </div>
-    {:else if previewUserItems.length > 0}
+    {:else if previewUserItems.length > 0 && $autoQueueEnabled}
+      <!-- D9: an OFF auto queue is not an empty one — the switch row above
+           already says "Auto queue off", and stacking an empty-section line on
+           top of it reads as a fault. -->
       <p class="px-6 py-4 text-center text-sm text-muted/50">Auto queue is empty</p>
     {/if}
 

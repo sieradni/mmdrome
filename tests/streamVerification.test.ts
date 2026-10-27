@@ -971,3 +971,26 @@ test('probe deferral includes a writer before its first readable schedule and ac
   assert.equal(stagedStreamInFlight({ streamActive: false, streamEpochActive: true }), true)
   assert.equal(stagedStreamInFlight({ streamActive: true, streamComplete: true, userTransferActive: false }), false)
 })
+
+test('N-01: foldStreamEvent folds attempt# correlation and duration-vs-meta evidence on promoted lines', () => {
+  const gatedFacts = parseNativeStreamTranscript([
+    {
+      domain: 'loader',
+      msg: 'stream: attempt#4 promoted t1@opus@128 (2803498B, announced 2813296, dur=180.0s/meta=180.0s, 3120ms — decodability+duration-gated)',
+    },
+  ])
+  assert.equal(gatedFacts.promoted, true)
+  assert.equal(gatedFacts.promotedDurationGated, true)
+  assert.equal(gatedFacts.promotedAnnouncedBytes, 2813296)
+
+  const errRecovFacts = parseNativeStreamTranscript([
+    {
+      domain: 'loader',
+      msg: 'stream: attempt#5 promoted t2@opus@128 (2500000B, announced 2510000, dur=165.0s/meta=165.0s) despite writer error (NSURLErrorDomain(-1017)) — body complete',
+    },
+  ])
+  assert.equal(errRecovFacts.promoted, true)
+  assert.equal(errRecovFacts.promotedDurationGated, true)
+  assert.equal(errRecovFacts.promotedAfterWriterError, true)
+})
+

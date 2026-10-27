@@ -45,8 +45,9 @@ export function buildWebdavUrl(baseUrl: string, filePath: string): string {
   return `${safeBase}/${encodedPath}`
 }
 
-export function webdavTempPath(filePath: string): string {
-  return `${filePath}${MMDROME_TMP_SUFFIX}`
+export function webdavTempPath(filePath: string, runToken?: string): string {
+  const cleanToken = runToken?.replace(/[^A-Za-z0-9_-]/g, '') ?? ''
+  return cleanToken ? `${filePath}.${cleanToken}${MMDROME_TMP_SUFFIX}` : `${filePath}${MMDROME_TMP_SUFFIX}`
 }
 
 export function isTempFile(filename: string): boolean {

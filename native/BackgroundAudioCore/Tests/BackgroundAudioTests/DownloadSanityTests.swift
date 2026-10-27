@@ -327,4 +327,27 @@ final class DownloadSanityTests: XCTestCase {
         XCTAssertEqual(s.storedBytes(forFileAt: b), 200)
         XCTAssertNil(s.storedBytes(forFileAt: URL(fileURLWithPath: "/tmp/missing")))
     }
+
+    // MARK: - N-03 / N-04 transfer failure & length-variance fixtures
+
+    func testOverstatedAndUnderstatedTranscodeLengthMatrix() {
+        // N-03/N-04: transcode Content-Length is a server-side estimate (can be
+        // overstated, understated, or 0/absent), while source-file size is much
+        // larger. Neither byte gate may run on transcodes; only decoder
+        // duration corroboration decides cache admission.
+        let fullFrames: Int64 = 180 * 48_000
+        let cutFrames: Int64 = 65 * 48_000
+
+        // Complete decodable body passes even if Content-Length was overstated
+        // (e.g. 2,813,296 announced vs 2,803,498 delivered on a -1017 close):
+        XCTAssertFalse(DownloadSanity.transcodeDurationCorroborated(
+            probeFrames: fullFrames, sampleRate: 48_000,
+            metadataDuration: 180.0, transcode: true))
+
+        // Mid-body disconnect / truncated body fails duration corroboration
+        // even if Content-Length was absent (0) or understated:
+        XCTAssertTrue(DownloadSanity.transcodeDurationCorroborated(
+            probeFrames: cutFrames, sampleRate: 48_000,
+            metadataDuration: 180.0, transcode: true))
+    }
 }

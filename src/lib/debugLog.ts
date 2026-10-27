@@ -38,6 +38,16 @@ const RING_LIMIT = 1000
 // post-mortem needs. The Copy dump caps what it embeds; the ring holds more.
 
 const entries: JsDebugEvent[] = []
+let droppedCount = 0
+const sessionId = `js-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+
+export function jsDebugSessionId(): string {
+  return sessionId
+}
+
+export function jsDebugDroppedCount(): number {
+  return droppedCount
+}
 
 const DOMAINS_KEY = 'mmdrome:debugDomains'
 
@@ -106,7 +116,10 @@ export function setEnabledDomains(domains: string[]): string[] {
 
 function push(domain: string, level: JsDebugEvent['level'], msg: string): void {
   entries.push({ t: Date.now(), domain, level, msg })
-  if (entries.length > RING_LIMIT) entries.shift()
+  if (entries.length > RING_LIMIT) {
+    entries.shift()
+    droppedCount++
+  }
 }
 
 /** Debug-level: recorded only when `domain` is enabled. The hot-path cost
@@ -137,6 +150,7 @@ export function jsDebugEventsSnapshot(): JsDebugEvent[] {
 
 export function clearJsDebugEvents(): void {
   entries.length = 0
+  droppedCount = 0
 }
 
 let globalCatchesInstalled = false

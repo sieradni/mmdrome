@@ -206,3 +206,37 @@ test('the write core and the transport layer build the SAME URLs', async () => {
     assert.equal(t.calls[1].url, buildWebdavUrl(base, webdavTempPath(FILE)))
   }
 })
+
+test('beforeMove returning false aborts before MOVE and cleans up temp file once (W-04/AbortedBeforeMoveError)', async () => {
+  const { AbortedBeforeMoveError } = await import('../src/lib/webdavAtomicWrite')
+  const t = fakeTransport([{ status: 201 }, { status: 204 }])
+  const err = await webdavPutAtomic(
+    BASE,
+    FILE,
+    new ArrayBuffer(8),
+    'user',
+    'token',
+    '"etag-1"',
+    t.impl,
+    1000,
+    { beforeMove: () => false },
+  ).then(() => null, (e: unknown) => e)
+  assert.ok(err instanceof AbortedBeforeMoveError)
+  assert.equal(err.cleanup, 'deleted')
+  assert.deepEqual(
+    t.calls.map((c) => [c.method, c.url]),
+    [
+      ['PUT', TEMP_URL],
+      ['DELETE', TEMP_URL],
+    ],
+  )
+})
+
+test('unique runToken suffixes temp path and is recognized by isTempFile (W-06)', async () => {
+  const { isTempFile, webdavTempPath } = await import('../src/lib/webdavPaths')
+  const t = fakeTransport([{ status: 201 }, { status: 201 }])
+  await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', '"etag-1"', t.impl, 1000, { runToken: 'run-42' })
+  assert.equal(t.calls[0].url, `${BASE}Song%20One.mp3.run-42.mmdrome-tmp`)
+  assert.equal(isTempFile(webdavTempPath(FILE, 'run-42')), true)
+})
+

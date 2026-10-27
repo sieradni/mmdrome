@@ -47,7 +47,15 @@ public struct NativeEventLog: Sendable {
     /// How many entries the ring evicted head-first — the HUD shows a
     /// "dropped N" marker so a full buffer is never mistaken for the truth.
     public private(set) var droppedCount: Int = 0
+    /// How many debug-level entries were evicted to preserve danger/info
+    /// postmortem evidence when the ring reached capacity (D-03).
+    public private(set) var debugEvictedForHeadroomCount: Int = 0
+    /// How many consecutive duplicate debug entries were coalesced into a
+    /// single row with a repeat count (D-03).
+    public private(set) var coalescedDebugCount: Int = 0
     public private(set) var activeDomains: Set<String> = []
+    private var lastDebugRepeatCount: Int = 1
+    private var lastDebugBaseMessage: String? = nil
 
     /// 1000 (2026-09-19, raised from 400): the ring must outlive a LONG
     /// session with the HUD closed — the post-mortem contract is "bug fires
@@ -65,8 +73,38 @@ public struct NativeEventLog: Sendable {
 
     public mutating func add(now: Double, domain: String, level: NativeEvent.Level, _ message: String) {
         if level == .debug && !activeDomains.contains(domain) { return }
+        if level == .debug, let last = events.last,
+           last.level == .debug, last.domain == domain,
+           lastDebugBaseMessage == message {
+            lastDebugRepeatCount += 1
+            coalescedDebugCount += 1
+            events[events.count - 1] = NativeEvent(
+                seq: nextSeq,
+                t: now,
+                domain: domain,
+                level: level,
+                message: "\(message) (×\(lastDebugRepeatCount))"
+            )
+            nextSeq += 1
+            return
+        }
+        if level == .debug {
+            lastDebugBaseMessage = message
+            lastDebugRepeatCount = 1
+        } else {
+            lastDebugBaseMessage = nil
+            lastDebugRepeatCount = 1
+        }
         if events.count >= capacity {
-            events.removeFirst(1)
+            // D-03 ring hygiene: verbose debug entries (e.g. preload walks)
+            // must never evict rare danger/info postmortem evidence when any
+            // debug entry can be dropped instead.
+            if let debugIdx = events.firstIndex(where: { $0.level == .debug }) {
+                events.remove(at: debugIdx)
+                debugEvictedForHeadroomCount += 1
+            } else {
+                events.removeFirst(1)
+            }
             droppedCount += 1
         }
         events.append(NativeEvent(seq: nextSeq, t: now, domain: domain, level: level, message: message))

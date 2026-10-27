@@ -6,6 +6,7 @@ import { db } from '../src/lib/db'
 import { PlaybackManager } from '../src/lib/playbackManager'
 import { queueManager } from '../src/lib/queueManager'
 import { applyQueueMutation, addToUserQueue, resolveQueueOccurrence, promoteActiveTrack } from '../src/lib/queueMutation'
+import { entryIdAt } from '../src/lib/queueOccurrence'
 import { planAutoQueueFill, selectAutoQueueFill, type AutoQueuePlanState } from '../src/lib/autoQueuePlan'
 import { reconcileCrossfadeTarget } from '../src/lib/playbackCore/crossfadeReconcile'
 import { NativeTransport, type NativeEngineClient, type NativeRefreshPayload, type NativeSnapshotTrack } from '../src/lib/playbackCore/nativeTransport'
@@ -178,7 +179,11 @@ test('real native manager: hands-off shuffle hears the whole eligible library be
       if (heard.size < size) assert.ok(!heard.has(id), `premature repeat ${id} at ${step}`)
       heard.add(id)
       const next = before.autoQueue[1]
-      manager._onNativeTrackChanged(id)
+      // D6 makes a repeat row reachable, and a repeat row shares its id with
+      // the copy already promoted — the engine disambiguates with the row's
+      // entry id, so the driver must too (an id alone names the anchor).
+      const headEntryId = entryIdAt([], before.autoQueue.slice(before.userQueue.length), 0) ?? undefined
+      manager._onNativeTrackChanged(id, headEntryId)
       const after = get(queue)
       assert.equal(after.activeIndex, after.userQueue.length - 1)
       assert.equal(after.userQueue[after.activeIndex], id)
@@ -186,9 +191,11 @@ test('real native manager: hands-off shuffle hears the whole eligible library be
       // D5: the user section is a listening LOG — repeats are the point, so its
       // only invariant is that it grew by exactly one row per played track.
       assert.equal(after.userQueue.length, before.userQueue.length + 1)
-      assert.equal(new Set(after.autoQueue).size, after.autoQueue.length)
-      assert.ok(after.autoQueue.length <= 50)
-      if (next) assert.equal(after.autoQueue[0], next)
+      // D6: the auto section may hold REPEATS (an exhausted pool cycles), so
+      // uniqueness is not an invariant of the section — the PLAYED sequence is.
+      assert.ok(new Set(after.autoQueue).size <= size, 'only eligible ids are cycled')
+      assert.ok(after.autoQueue.length <= 50, 'the tail stays bounded')
+      if (next) assert.equal(after.autoQueue[0], next, 'the queued order is preserved')
     }
     assert.equal(heard.size, size)
   }

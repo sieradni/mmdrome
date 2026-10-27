@@ -429,7 +429,7 @@ export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): 
   if (/continuation answered .*not appendable/.test(msg)) next.continuationNotAppendableCount += 1
   if (/continuation unavailable/.test(msg)) next.continuationCapYieldCount += 1
 
-  const gated = /promoted \S+ \(\d+B, announced (\d+) — decodability\+duration-gated\)/.exec(msg)
+  const gated = /promoted \S+ \(\d+B, announced (\d+)(?:,? [^\)]*)? — decodability\+duration-gated\)/.exec(msg)
   if (gated) {
     next.promoted = true
     next.promotedDurationGated = true
@@ -440,7 +440,7 @@ export function foldStreamEvent(facts: NativeStreamFacts, ev: NativeEventLike): 
   // delivered body already carried the track and promoted. Without this fold
   // the recovery would still read `writerFailed: false` + `promoted: false`,
   // i.e. completion-verdict UNKNOWN, on a stream that plainly completed.
-  if (/promoted \S+ \(\d+B\) despite writer error/.test(msg)) {
+  if (/promoted \S+ \(\d+B(?:, [^\)]*)?\) despite writer error/.test(msg)) {
     next.promoted = true
     next.promotedDurationGated = true
     next.promotedAfterWriterError = true

@@ -63,4 +63,20 @@ final class EventLogTests: XCTestCase {
         // seqs 0,1 were evicted; the watermark holder still asks sinceSeq: 0.
         XCTAssertEqual(log.events(sinceSeq: 0).map(\.seq), [2, 3])
     }
+
+    func testDebugFloodEvictsDebugBeforeDangerAndCoalescesRepeats() {
+        var log = NativeEventLog(capacity: 4, activeDomains: ["preload"])
+        log.add(now: 1, domain: "loader", level: .danger, "rare danger verdict")
+        log.add(now: 2, domain: "preload", level: .debug, "chain: prefetch row 1")
+        log.add(now: 3, domain: "preload", level: .debug, "chain: prefetch row 1")
+        XCTAssertEqual(log.coalescedDebugCount, 1)
+        XCTAssertEqual(log.events.last?.message, "chain: prefetch row 1 (×2)")
+
+        // Flood with distinct debug entries beyond capacity: the danger entry must survive.
+        for i in 2..<10 {
+            log.add(now: Double(i + 2), domain: "preload", level: .debug, "chain: prefetch row \(i)")
+        }
+        XCTAssertTrue(log.events.contains(where: { $0.level == .danger && $0.message == "rare danger verdict" }))
+        XCTAssertGreaterThan(log.debugEvictedForHeadroomCount, 0)
+    }
 }

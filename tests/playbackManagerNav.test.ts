@@ -226,7 +226,9 @@ test('a stale pending advance never masks an active-row removal (positional rule
   assert.equal(get(currentTrack)?.trackId, 't2')
 })
 
-test('Next at the queue tail is a no-op under loop-all', async () => {
+// D8 tail rules (step 5). With the auto queue ON and anything matching, D6
+// keeps the tail non-empty, so these are the auto-off / nothing-matches end.
+test('Next at the queue tail wraps to the user head under loop-all (D8)', async () => {
   reset()
   queue.set({ userQueue: ['t0'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
   loopMode.set('all')
@@ -234,34 +236,64 @@ test('Next at the queue tail is a no-op under loop-all', async () => {
 
   await m.next()
 
-  assert.equal(get(currentTrack)?.trackId, 't0')
+  assert.equal(get(currentTrack)?.trackId, 't0', 'repeat-all replays the user queue')
   assert.equal(get(queue).activeIndex, 0)
-  assert.equal(get(playbackState), 'playing', 'a manual Next never stops playback')
+  assert.equal(get(playbackState), 'playing', 'a manual Next never stops playback under loop-all')
 })
 
-test('Previous at the first row restarts that row under loop-none (no queue change, no wrap)', async () => {
+test('Next at the queue tail STOPS under loop-none (D8)', async () => {
   reset()
+  queue.set({ userQueue: ['t0'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  loopMode.set('none')
+  const m = makeManager()
+
+  await m.next()
+
+  assert.equal(get(playbackState), 'stopped', 'the declared end of the queue')
+  assert.equal(get(currentTrack), null)
+})
+
+test('Next at the queue tail restarts the song under loop-one (D8)', async () => {
+  reset()
+  queue.set({ userQueue: ['t0'], autoQueue: [], recentTrackIds: [], activeIndex: 0 })
+  loopMode.set('one')
+  const m = makeManager()
+
+  await m.next()
+
+  assert.equal(get(currentTrack)?.trackId, 't0', 'loop-one keeps the same song')
+  assert.equal(get(queue).activeIndex, 0)
+  assert.deepEqual(get(queue).recentTrackIds, [], 'a restart is not a transition')
+})
+
+test('Previous at the first row is a NO-OP in every loop mode (D8)', async () => {
+  // The as-built split (restart under none, wrap to the last row under all)
+  // made one press mean opposite things depending on a setting the user is not
+  // looking at. The design chose inert; the >3 s restart is the only restart.
+  for (const mode of ['none', 'all', 'one'] as const) {
+    reset()
+    loopMode.set(mode)
+    const m = makeManager()
+
+    await m.prev()
+
+    const q = get(queue)
+    assert.equal(q.activeIndex, 0, `no queue move under loop-${mode}`)
+    assert.equal(get(currentTrack)?.trackId, 't0')
+    assert.deepEqual(q.userQueue, ['t0', 't1', 't2'])
+    assert.deepEqual(q.recentTrackIds, [], 'nothing was left behind')
+  }
+})
+
+test('Previous >3 s into the first row restarts it instead of no-opping (D8)', async () => {
+  reset()
+  currentTime.set(10)
   const m = makeManager()
 
   await m.prev()
 
-  const q = get(queue)
-  assert.equal(q.activeIndex, 0)
-  assert.equal(get(currentTrack)?.trackId, 't0')
-  assert.deepEqual(q.userQueue, ['t0', 't1', 't2'])
-  assert.deepEqual(q.recentTrackIds, [], 'a restart is not a transition — nothing cools down')
-})
-
-test('Previous at the first row under loop-all wraps to the LAST combined row', async () => {
-  reset()
-  loopMode.set('all')
-  const m = makeManager()
-
-  await m.prev()
-
-  assert.equal(get(currentTrack)?.trackId, 't2')
-  assert.equal(get(queue).activeIndex, 2, 'the anchor follows the wrapped row')
-  assert.ok(get(queue).recentTrackIds.includes('t0'), 'the row left behind cools down')
+  assert.equal(get(currentTrack)?.trackId, 't0', 'the playing row is unchanged')
+  assert.equal(get(queue).activeIndex, 0)
 })
 
 test('Next then Previous in the same tick returns to the starting row', async () => {

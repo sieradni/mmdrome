@@ -34,6 +34,15 @@ public struct TransferRetryBranchStats: Equatable, Sendable {
     private(set) var freshConnectionSoon: Int = 0
     private(set) var resumeAfterBackoff: Int = 0
     private(set) var standard: Int = 0
+    /// Terminal retry outcomes (N-02): separates scheduled intent from what
+    /// actually happened when the timer fired (superseded by a newer
+    /// generation, coalesced into an in-flight download/writer, satisfied by
+    /// cache, succeeded, or exhausted/given up).
+    public private(set) var supersededBeforeAttempt: Int = 0
+    public private(set) var coalescedInFlight: Int = 0
+    public private(set) var cacheSatisfied: Int = 0
+    public private(set) var succeeded: Int = 0
+    public private(set) var givenUp: Int = 0
     /// The rolling window of strategy raw values, newest LAST.
     public private(set) var recent: [String] = []
 
@@ -53,6 +62,12 @@ public struct TransferRetryBranchStats: Equatable, Sendable {
         }
     }
 
+    public mutating func recordSuperseded() { supersededBeforeAttempt += 1 }
+    public mutating func recordCoalesced() { coalescedInFlight += 1 }
+    public mutating func recordCacheSatisfied() { cacheSatisfied += 1 }
+    public mutating func recordSucceeded() { succeeded += 1 }
+    public mutating func recordGivenUp() { givenUp += 1 }
+
     /// Start a FRESH observation window (2026-10-02h). The HUD's Clear all
     /// button calls this so a field session can begin counting again without a
     /// relaunch — the previous totals are discarded wholesale, not decayed.
@@ -65,6 +80,11 @@ public struct TransferRetryBranchStats: Equatable, Sendable {
         freshConnectionSoon = 0
         resumeAfterBackoff = 0
         standard = 0
+        supersededBeforeAttempt = 0
+        coalescedInFlight = 0
+        cacheSatisfied = 0
+        succeeded = 0
+        givenUp = 0
         recent.removeAll()
     }
 
@@ -86,6 +106,11 @@ public struct TransferRetryBranchStats: Equatable, Sendable {
             "resumeAfterBackoff": resumeAfterBackoff,
             "standard": standard,
             "freshConnectionEnacted": enactedFreshConnection,
+            "supersededBeforeAttempt": supersededBeforeAttempt,
+            "coalescedInFlight": coalescedInFlight,
+            "cacheSatisfied": cacheSatisfied,
+            "succeeded": succeeded,
+            "givenUp": givenUp,
             "recent": recent,
             "summary": summaryLine(enactedFreshConnection: enactedFreshConnection),
         ]

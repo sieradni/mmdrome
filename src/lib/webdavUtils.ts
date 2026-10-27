@@ -9,6 +9,42 @@ import { authHeaders, buildWebdavUrl, isTempFile, normalizeUrl, webdavTempPath }
 export { authHeaders, buildWebdavUrl, isTempFile, normalizeUrl, webdavTempPath }
 export { MMDROME_TMP_SUFFIX } from './webdavPaths'
 
+export type WebdavTransportPhase = 'headers' | 'body' | 'decode'
+
+export class WebdavTransportError extends Error {
+  readonly method: string
+  readonly transport: 'web' | 'native'
+  readonly phase: WebdavTransportPhase
+  readonly timedOut: boolean
+  readonly code?: string | number
+  readonly domain?: string
+  readonly elapsedMs: number
+
+  constructor(
+    message: string,
+    opts: {
+      method: string
+      transport: 'web' | 'native'
+      phase: WebdavTransportPhase
+      timedOut?: boolean
+      code?: string | number
+      domain?: string
+      elapsedMs: number
+      cause?: unknown
+    },
+  ) {
+    super(message, opts.cause !== undefined ? { cause: opts.cause } : undefined)
+    this.name = 'WebdavTransportError'
+    this.method = opts.method
+    this.transport = opts.transport
+    this.phase = opts.phase
+    this.timedOut = opts.timedOut === true
+    this.code = opts.code
+    this.domain = opts.domain
+    this.elapsedMs = opts.elapsedMs
+  }
+}
+
 /**
  * Minimal fetch-compatible surface used across WebDAV call sites.
  * The native path cannot hand out a real `Response` (the HTTP plugin
@@ -26,14 +62,126 @@ export interface WebdavResponse {
   text(): Promise<string>
 }
 
-export function webdavFetch(url: string, options: RequestInit, timeoutMs: number): Promise<WebdavResponse> {
+const ALLOWLISTED_REQUEST_ID_HEADERS = [
+  'x-request-id',
+  'x-correlation-id',
+  'cf-ray',
+  'x-amz-request-id',
+] as const
+
+export function extractAllowlistedRequestId(headers: { get(name: string): string | null }): string | undefined {
+  for (const name of ALLOWLISTED_REQUEST_ID_HEADERS) {
+    const val = headers.get(name)?.trim()
+    if (val) return val.slice(0, 128)
+  }
+  return undefined
+}
+
+export async function webdavFetch(url: string, options: RequestInit, timeoutMs: number): Promise<WebdavResponse> {
   if (Capacitor.isNativePlatform()) {
     return nativeWebdavFetch(url, options, timeoutMs)
   }
+  const method = (options.method ?? 'GET').toUpperCase()
+  const startedAt = Date.now()
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  return fetch(url, { ...options, signal: controller.signal })
-    .finally(() => clearTimeout(timer))
+  let timedOut = false
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+
+  let rawRes: Response
+  try {
+    rawRes = await fetch(url, { ...options, signal: controller.signal })
+  } catch (err) {
+    clearTimeout(timer)
+    const elapsedMs = Date.now() - startedAt
+    const msg = timedOut
+      ? `WebDAV ${method} timed out after ${timeoutMs}ms (headers)`
+      : err instanceof Error
+        ? err.message
+        : String(err)
+    throw new WebdavTransportError(msg, {
+      method,
+      transport: 'web',
+      phase: 'headers',
+      timedOut,
+      elapsedMs,
+      cause: err,
+    })
+  }
+
+  let bodyConsumed = false
+  const finishBodyTimer = () => {
+    if (!bodyConsumed) {
+      bodyConsumed = true
+      clearTimeout(timer)
+    }
+  }
+
+  // If the caller never reads the body (e.g., PUT/MOVE/DELETE status check),
+  // clear the timer after `timeoutMs` automatically via the existing timeout,
+  // or immediately when `arrayBuffer()` / `text()` settles. For bodiless
+  // methods where callers only inspect `.ok` / `.status`, clear the timer on
+  // the next microtask unless a body reader is invoked.
+  if (method !== 'GET' && method !== 'PROPFIND') {
+    queueMicrotask(finishBodyTimer)
+  }
+
+  return {
+    ok: rawRes.ok,
+    status: rawRes.status,
+    statusText: rawRes.statusText,
+    headers: {
+      get(name: string): string | null {
+        return rawRes.headers.get(name)
+      },
+    },
+    async arrayBuffer(): Promise<ArrayBuffer> {
+      try {
+        return await rawRes.arrayBuffer()
+      } catch (err) {
+        const elapsedMs = Date.now() - startedAt
+        const msg = timedOut
+          ? `WebDAV ${method} timed out after ${timeoutMs}ms (body)`
+          : err instanceof Error
+            ? err.message
+            : String(err)
+        throw new WebdavTransportError(msg, {
+          method,
+          transport: 'web',
+          phase: 'body',
+          timedOut,
+          elapsedMs,
+          cause: err,
+        })
+      } finally {
+        finishBodyTimer()
+      }
+    },
+    async text(): Promise<string> {
+      try {
+        return await rawRes.text()
+      } catch (err) {
+        const elapsedMs = Date.now() - startedAt
+        const msg = timedOut
+          ? `WebDAV ${method} timed out after ${timeoutMs}ms (body)`
+          : err instanceof Error
+            ? err.message
+            : String(err)
+        throw new WebdavTransportError(msg, {
+          method,
+          transport: 'web',
+          phase: 'body',
+          timedOut,
+          elapsedMs,
+          cause: err,
+        })
+      } finally {
+        finishBodyTimer()
+      }
+    },
+  }
 }
 
 /**
@@ -42,16 +190,23 @@ export function webdavFetch(url: string, options: RequestInit, timeoutMs: number
  * is blocked by servers that whitelist web origins (e.g. Cloudflare Workers
  * hardcoding `Access-Control-Allow-Origin`), regardless of URL validity.
  */
-async function nativeWebdavFetch(url: string, options: RequestInit, timeoutMs: number): Promise<WebdavResponse> {
+export async function nativeWebdavFetch(
+  url: string,
+  options: RequestInit,
+  timeoutMs: number,
+  httpRequest: typeof CapacitorHttp.request = CapacitorHttp.request.bind(CapacitorHttp),
+): Promise<WebdavResponse> {
+  const method = (options.method ?? 'GET').toUpperCase()
+  const startedAt = Date.now()
   const body = options.body
   const data = body instanceof ArrayBuffer ? arrayBufferToBase64(body) : typeof body === 'string' ? body : undefined
   const dataType = body instanceof ArrayBuffer ? 'file' : undefined
 
   let response: HttpResponse
   try {
-    response = await CapacitorHttp.request({
+    response = await httpRequest({
       url,
-      method: (options.method ?? 'GET').toUpperCase(),
+      method,
       headers: (options.headers ?? {}) as Record<string, string>,
       data,
       dataType,
@@ -60,15 +215,55 @@ async function nativeWebdavFetch(url: string, options: RequestInit, timeoutMs: n
       readTimeout: timeoutMs,
     })
   } catch (err) {
-    throw err instanceof Error ? err : new Error(String(err))
+    const elapsedMs = Date.now() - startedAt
+    const rawObj = typeof err === 'object' && err !== null ? (err as Record<string, unknown>) : null
+    const code =
+      typeof rawObj?.code === 'string' || typeof rawObj?.code === 'number'
+        ? rawObj.code
+        : typeof rawObj?.errorCode === 'string' || typeof rawObj?.errorCode === 'number'
+          ? rawObj.errorCode
+          : undefined
+    const domain = typeof rawObj?.domain === 'string' ? rawObj.domain : undefined
+    const baseMsg =
+      err instanceof Error
+        ? err.message
+        : typeof rawObj?.message === 'string'
+          ? rawObj.message
+          : String(err)
+    const timedOut = code === 'NSURLErrorTimedOut' || code === -1001 || /timed?\s*out/i.test(baseMsg)
+    throw new WebdavTransportError(baseMsg, {
+      method,
+      transport: 'native',
+      phase: 'headers',
+      timedOut,
+      code,
+      domain,
+      elapsedMs,
+      cause: err,
+    })
   }
 
   const headerMap: Record<string, string> = {}
-  for (const [key, value] of Object.entries(response.headers)) {
+  for (const [key, value] of Object.entries(response.headers ?? {})) {
     headerMap[key.toLowerCase()] = value
   }
 
-  const buffer = typeof response.data === 'string' ? base64ToArrayBuffer(response.data) : new ArrayBuffer(0)
+  let buffer: ArrayBuffer
+  try {
+    buffer = typeof response.data === 'string' ? base64ToArrayBuffer(response.data) : new ArrayBuffer(0)
+  } catch (err) {
+    const elapsedMs = Date.now() - startedAt
+    throw new WebdavTransportError(
+      `WebDAV ${method} native base64 decode failed: ${err instanceof Error ? err.message : String(err)}`,
+      {
+        method,
+        transport: 'native',
+        phase: 'decode',
+        elapsedMs,
+        cause: err,
+      },
+    )
+  }
 
   return {
     ok: response.status >= 200 && response.status < 300,
@@ -144,4 +339,3 @@ export function stripBasePath(baseUrl: string, href: string): string {
 export function webdavBaseKey(url: string, user: string): string {
   return `${url.trim()}|${user.trim()}`
 }
-

@@ -1,13 +1,13 @@
 // Bulk play/enqueue characterization (Phase 2A gate item 2, 2026-10-21).
 //
 // `playAll` is the wholesale bulk entry point (Songs/Album/Artist "Play All",
-// and the future playlist boundary). Unlike every mutation builder it writes
-// the caller's array VERBATIM — no section dedupe, no library check. These
-// tests characterize that boundary precisely so a future change (or a playlist
-// feature feeding it duplicate/stale ids) is a deliberate decision, not an
-// accident. Several pin CURRENT behavior that the invariant matrix records as
-// a known gap — see docs/QUEUE-INVARIANTS.md and the 2026-10-21 ledger in
-// docs/plans/2026-10-18-holistic-polish-and-roadmap.md.
+// and the server-playlist import boundary). Unlike every mutation builder it
+// replaces the user section wholesale, so its contract is stated once, here:
+// order and duplicates are preserved verbatim (an occurrence log), and D12/G4
+// validates the ids against the library — unknown ids are dropped AND
+// reported, nothing resolving means no write at all, and an unresolved id
+// while the library is still loading DEFERS the import instead of dropping
+// rows that merely are not loaded yet.
 
 import './stub-audio-worklet-node'
 import { test } from 'node:test'
@@ -19,6 +19,7 @@ import {
   queue,
   library,
   currentTrack,
+  navidromeLoadStatus,
   setCurrentTrack,
   setLibrary,
   type Track,
@@ -60,27 +61,17 @@ function assertOccurrenceOrder(q: QueueState, expected: string[]): void {
   assert.deepEqual([...q.userQueue, ...q.autoQueue], expected)
 }
 
-test('playAll([]) clears the queue; the next advance refills the auto tail and skips its head (known gap)', () => {
+test('playAll([]) writes NOTHING — an empty import never empties a live queue (G4 closed)', () => {
   reset(['a', 'b'])
-  setQueue({ userQueue: ['a', 'b'], activeIndex: 1 })
+  setQueue({ userQueue: ['a', 'b'], autoQueue: [], recentTrackIds: ['r'], activeIndex: 1 })
 
-  queueManager.playAll([])
+  const report = queueManager.playAll([])
 
-  let q = get(queue)
-  assert.deepEqual(q.userQueue, [], 'an empty import empties the user section')
-  assert.deepEqual(q.autoQueue, [], 'the auto tail is always dropped by a bulk import')
-  assert.equal(q.activeIndex, 0, 'KNOWN GAP: an empty import leaves activeIndex 0 on an empty queue')
-  assert.equal(combined().length, 0)
-
-  // The next advance reads `activeIndex + 1` (1) BEFORE the refill, then the
-  // refill puts the library back in the auto queue — so the anchor lands on
-  // the refilled SECOND row and the head is skipped with no recency mark.
-  assert.equal(queueManager.advanceQueue()?.trackId, 'b')
-  q = get(queue)
-  assert.deepEqual(q.autoQueue, ['a', 'b'], 'the library refilled the auto tail')
-  assert.equal(q.activeIndex, 1)
-  assert.equal(combined()[q.activeIndex], 'b', 'KNOWN GAP: the refilled head was never made active')
-  assert.ok(!q.recentTrackIds.includes('a'), 'the skipped head is not even marked as heard')
+  const q = get(queue)
+  assert.deepEqual(report, { accepted: [], dropped: [], deferred: false })
+  assert.deepEqual(q.userQueue, ['a', 'b'], 'zero resolved ids → no write at all')
+  assert.equal(q.activeIndex, 1, 'the live anchor is never reset to 0 on an empty import')
+  assert.deepEqual(q.recentTrackIds, ['r'], 'the window is untouched by a no-op import')
 })
 
 test('playAll preserves duplicate ids verbatim — duplicates are legal occurrences (D3/D12)', () => {
@@ -106,31 +97,41 @@ test('playAll preserves duplicate ids verbatim — duplicates are legal occurren
   assertOccurrenceOrder(get(queue), ['a', 'a', 'b', 'a'])
 })
 
-test('playAll keeps ids missing from the library queued; the first advance stops, a later advance skips the row (D10)', () => {
+test('playAll validates against the library: unknown ids are dropped and REPORTED, never queued (G4/D12)', () => {
   reset(['a', 'b'])
   setCurrentTrack(track('a'))
-  queueManager.playAll(['a', 'gone', 'b'])
 
-  assert.equal(queueManager.findTrack('gone'), undefined, 'a missing library id resolves to no track')
-  assert.deepEqual(combined(), ['a', 'gone', 'b'], 'the import is not validated against the library')
+  const report = queueManager.playAll(['a', 'gone', 'b'])
 
-  // Advance #1: the anchor moves to the missing row and the chain resolves
-  // null — the caller stops playback, but `currentTrack` is still the old row
-  // until it does.
-  assert.equal(queueManager.advanceQueue(), null)
-  let q = get(queue)
-  assert.equal(q.activeIndex, 1)
-  assert.equal(combined()[q.activeIndex], 'gone', 'KNOWN GAP: the anchor can rest on an unresolvable id')
-  assert.ok(q.recentTrackIds.includes('a'), 'the leaving track still cools down (one write)')
+  assert.deepEqual(report.accepted, ['a', 'b'], 'only ids the library knows are queued')
+  assert.deepEqual(report.dropped, ['gone'], 'the unresolved id is reported, never silently discarded')
+  assert.equal(report.deferred, false)
+  assert.deepEqual(combined(), ['a', 'b'], 'no anchor can rest on an unresolvable row')
+  assert.equal(get(queue).activeIndex, 0)
 
-  // D10 (2026-10-21e): the anchor is AHEAD of the audio, so the next advance is
-  // a normal +1 — it moves PAST the unresolvable row instead of re-targeting it
-  // (the old stale-currentTrack stall). What remains of G4 is the missing
-  // validation: the first advance resolved null and only the caller's stop
-  // prevented playback from hanging on it.
-  assert.equal(queueManager.advanceQueue()?.trackId, 'b', 'a second advance skips the missing row')
-  assert.equal(get(queue).activeIndex, 2)
-  assert.equal(get(currentTrack)?.trackId, 'a', 'currentTrack stayed stale through both advances (G4: no validation)')
+  // The consequence the gap used to have: the first advance now resolves a
+  // REAL track instead of null, so playback cannot hang on a missing row.
+  assert.equal(queueManager.advanceQueue()?.trackId, 'b')
+})
+
+test('playAll DEFERS while the library is loading — an unresolved id may only be unloaded (D12)', () => {
+  reset(['a', 'b'])
+  setQueue({ userQueue: ['a'], activeIndex: 0 })
+  navidromeLoadStatus.set({ loading: true, loaded: 2, failed: 0 })
+  try {
+    const report = queueManager.playAll(['a', 'b', 'not-loaded-yet'])
+
+    assert.equal(report.deferred, true)
+    assert.deepEqual(report.accepted, [], 'a deferral applies nothing')
+    assert.deepEqual(get(queue).userQueue, ['a'], 'the live queue is untouched')
+  } finally {
+    navidromeLoadStatus.set({ loading: false, loaded: 0, failed: 0 })
+  }
+
+  // Once the load finishes the same import resolves.
+  const retry = queueManager.playAll(['a', 'b'])
+  assert.equal(retry.deferred, false)
+  assert.deepEqual(get(queue).userQueue, ['a', 'b'])
 })
 
 test('playAll with the actively playing track inside the import anchors on row 0 (the import is authoritative)', () => {

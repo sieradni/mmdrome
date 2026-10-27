@@ -10,12 +10,13 @@ appends instead of moving (C3), "Play next" inserts a copy instead of reordering
 reconcile resolves the ARMED occurrence (C4). Step 3 (2026-10-21e) made a skip exact: the anchor-ahead-of-
 audio fact (D10) means two presses are two rows, duplicate copies included (B12) — G3 CLOSED. Step 4
 (2026-10-21f) made a filter/sort edit a FRESH CONTEXT (D7): one write promotes the audible auto row, clears
-the anti-repeat window and rebuilds the tail with `keepAuto: false` — **G1 and G2 CLOSED**. Everything else
-still describes the code as it was, and every remaining known gap is real.
+the anti-repeat window and rebuilds the tail with `keepAuto: false` — **G1 and G2 CLOSED**. Step 5
+(2026-10-26) shipped the tail rules and the auto on/off switch (D8/D9) plus `playAll`'s library validation
+(D12) — **G4 CLOSED**. Step 6 (2026-10-26) shipped the unique-first repeat pass (D6).
 
-> **Still not implemented (steps 5–6):** manual Next at the tail is still a no-op under loop-all (D8), the
-> auto queue cannot be switched off (D9), the auto fill has no repeat pass (D6), and `playAll` does not
-> validate ids against the library (G4). Those rows say so; do not pre-fix them.
+> **Nothing in steps 1–6 is still pending.** The only open queue item left in the target contract is D2's
+> optional auto-copy drop on `+` (a SHOULD the code deliberately does not guess) and the playlists of §7.
+> G6 remains a documented, pinned `known limitation` — not a to-do.
 
 ## 0. What this file is
 
@@ -37,8 +38,8 @@ load-bearing, which are deliberate tradeoffs, and which are accidental.
    native/on-device half is not; see E5 in `AGENTS.md` (no local Swift toolchain) and the physical-iOS
    ledger item in the 2026-10-17 streaming plan.
 
-Verification for this document (2026-10-21g — the audit repair; steps 1–4 landed in 21c–21f): `npm test`
-(1422 passing), `npm run check` (0 errors / 0 warnings), the full e2e suite (68 passing) and the ui-review
+Verification for this document (updated 2026-10-26; steps 1–4 landed in 21c–21f): `npm test`
+(1514 passing), `npm run check` (0 errors / 0 warnings), the full e2e suite (69+ passing) and the ui-review
 suite (8 passing), including the rows' browser specs — `queueRows` (11), `queuedragdup` (2),
 `queueContinuation` (1), `queuefresh` (1), `queueflood` (2), `persistence` (3).
 
@@ -86,14 +87,14 @@ B1 and E9 state the rule instead of naming a gap.
 | # | Invariant | Pinned by | Status |
 | --- | --- | --- | --- |
 | A1 | The user section may hold the same id any number of times; `addToUserQueue` ALWAYS appends a new occurrence (D2/D3). | `tests/queueMutation.test.ts` — "addToUserQueue appends a NEW occurrence even when the id is already queued (D2)"; `tests/queueBulkImport.test.ts` — "playAll preserves duplicate ids verbatim…" (+ appends a third copy); `tests/e2e/queueRows.spec.ts` — "duplicate songs render as independent occurrence rows" | pinned |
-| A2 | No mutation builder dedupes either section. Auto duplicates can arise from a drag/convert, a restore or a bulk import; the fill's unique-first selection is a planner rule (D6, repeat pass not implemented yet), never an identity constraint. | `tests/queueMutation.test.ts` — duplicates exercised by the planner/removal tests; `tests/queueRestore.test.ts` — restored auto duplicates survive | pinned |
+| A2 | No mutation builder dedupes either section. Auto duplicates arise from a drag/convert, a restore, a bulk import AND the D6 repeat pass (an exhausted pool cycles); the fill's unique-FIRST selection is a planner rule, never an identity constraint. | `tests/queueMutation.test.ts` — duplicates exercised by the planner/removal tests; `tests/queueRestore.test.ts` — restored auto duplicates survive; `tests/queueManagerFill.test.ts` — "a tightened filter prunes non-matching auto tracks and repeats the surviving one (D6)" | pinned |
 | A3 | The same id in both sections is TWO independent rows. Promoting the auto occurrence appends a new user occurrence and drops that auto row; an older user copy stays where it is as history. | `tests/queueBulkImport.test.ts` — "a cross-section duplicate is two rows; promoting the auto occurrence appends a user occurrence"; `tests/queueMutation.test.ts` — "promoteToUser appends a new user occurrence…", "promoteToUserNext appends…" | pinned |
 | A4 | Row identity is the OCCURRENCE. QueueView keys rows `u-<id>#<n>` / `a-<id>#<n>` (position-free): a duplicate is legal and addressable, and a row's key changes only when a same-id copy above it is added/removed — never on an advance. | `tests/queueOccurrence.test.ts` — "row keys are occurrence-scoped and never contain the row position"; `tests/e2e/queuedragdup.spec.ts` — "three copies of one song are independent rows"; `tests/e2e/queueRows.spec.ts` — duplicate-rows spec | pinned (browser for the key/render half) |
 | A5 | Restore is a RAW PASS-THROUGH: persisted rows are kept verbatim (duplicates included) and the stored anchor is kept, bounds-checked, because nothing shifted. | `tests/queueRestore.test.ts` — "restore keeps persisted rows VERBATIM (duplicates included), the exact stored anchor…" | pinned |
 | A6 | A drag moves the OCCURRENCE the user grabbed (entry id), never a same-id neighbour. No drag path dedupes or normalizes a section; a same-id auto row converted into user is its own row. | `tests/queueMutation.test.ts` — "planDragDrop: an auto copy of an id already in user is a SEPARATE row (no dedupe)", "…conversion keeps a duplicated auto row in the converted prefix", "applyDragDrop: a cross-section duplicate resolves to the dragged AUTO occurrence (G5 closed)", "…with two user copies the dragged one moves and the other stays" | pinned |
 | A7 | Drop reconciliation budgets by PER-ID OCCURRENCE COUNTS against the live queue: a planned row is kept while a live occurrence of its origin id remains; live rows the plan never consumed (joined mid-drag) are appended in live order to their own section; a removed dragged occurrence voids the drop. | `tests/queueMutation.test.ts` — "applyDragDrop: reconciliation budgets by per-id COUNT, so a duplicate is not a newcomer", "…reorder still lands when rows joined mid-drag", "…a row that joined the USER section mid-drag stays…", "…a mid-drag removal of the SAME id above voids the drop" | pinned |
 | A8 | Removal is occurrence-scoped AND section-scoped: a row ⨯ removes exactly the indexed copy (one occurrence), never `indexOf(id)`, and never purges the other section's copy. | `tests/queueMutation.test.ts` — "removeFromAutoQueue removes exactly the indexed occurrence…", "removeFromUserQueue: one duplicate can be removed without touching the other", "removing the PLAYING user row leaves its auto occurrence queued"; `tests/e2e/queueRows.spec.ts` — duplicate-rows spec (removes the second copy) | pinned |
-| A9 | A bulk import (`playAll`) preserves the source order and duplicates verbatim. The remaining bulk gap is LIBRARY VALIDATION (unknown ids can stall playback), not dedupe. | `tests/queueBulkImport.test.ts` — "playAll preserves duplicate ids verbatim…", "playAll keeps ids missing from the library queued…" | known gap **G4** (validation half) |
+| A9 | A bulk import (`playAll`) preserves the source order and duplicates verbatim and validates ids against the library (G4 CLOSED): unknown ids are dropped and reported, and a deferral happens while the library is loading. | `tests/queueBulkImport.test.ts` — "playAll preserves duplicate ids verbatim…", "playAll validates against the library: unknown ids are dropped and REPORTED…" | pinned |
 
 ## 3. Active anchor & advancement
 
@@ -137,7 +138,9 @@ B1 and E9 state the rule instead of naming a gap.
 | D3 | Every row that leaves the active slot cools: natural end, skip, removal (either section). | `tests/queueMutation.test.ts` — "removeFromAutoQueue removes exactly the indexed occurrence and cools the id", "removeFromUserQueue: the removed id cools…"; `tests/playbackManagerNav.test.ts` — "Next then Previous in the same tick returns to the starting row" (recents assertion) | pinned |
 | D4 | An explicit queue edit does NOT cool what it hides; `clearQueue`/`clearUserAbove/Below` preserve the window, `playAll` resets it. | `tests/queueMutation.test.ts` — "clearQueue keeps the active track at user[0] and preserves the recency window"; `tests/queueBulkImport.test.ts` — "playAll resets the anti-repeat window and drops the auto tail in the same flow" | pinned |
 | D5 | Fresh fill excludes the window; the cooled rows are re-admitted only when the fresh pool is short (tier 2). | `tests/autoQueuePlan.test.ts` — "tier 2 admits cooling-down tracks when the fresh pool is short"; `tests/queueContinuation.test.ts` — "one vacancy plus one fresh candidate never admits cooldown/recycled candidates" | pinned |
-| D6 | A row dropped by a tightened filter cannot re-enter any tier (every tier requires a filter match). | `tests/autoQueuePlan.test.ts` — "kept is pruned when filters tighten, and a full queue keeps every row in place"; `tests/queueManagerFill.test.ts` — "a tightened filter prunes non-matching auto tracks and stops filling" | pinned |
+| D6 | A row dropped by a tightened filter cannot re-enter any tier (every tier requires a filter match). | `tests/autoQueuePlan.test.ts` — "kept is pruned when filters tighten, and a full queue keeps every row in place"; `tests/queueManagerFill.test.ts` — "a tightened filter prunes non-matching auto tracks and repeats the surviving one (D6)" | pinned |
+| D6d | REPEAT PASS (D6): unique candidates are always admitted first; only when a fill can add NO new id does the tail cycle what it now holds until the target is reached (balanced from the head, one real row per copy). "Pool exhausted" therefore means exactly one thing — the filters match nothing — and the empty notice fires only then. | `tests/autoQueuePlan.test.ts` — "planRepeatPass cycles the section in order, balanced from its head", "planRepeatPass never invents a row…", "planRepeatPass is deterministic and does not mutate its input"; `tests/queueManagerFill.test.ts` — "a tightened filter prunes non-matching auto tracks and repeats the surviving one (D6)", "the empty-fill notice means NOTHING MATCHES — an exhausted pool repeats instead (D6)"; `tests/queueContinuation.test.ts` — "real native manager: hands-off shuffle…" (every eligible id is heard before any repeat) | pinned |
+| D6e | AUTO-ON/OFF (D9): `autoQueueEnabled` is persisted and restored. OFF clears the auto section in ONE write (promoting the audible auto row first, so clearing can never delete the playing song), gates every fill entry point, and shows a quiet off-state — never the filter warning. ON is a fresh context (D7 reset rules). | `tests/queueManagerFill.test.ts` — "auto-off clears the tail in one write and never fills (D9)", "auto-off promotes the audible AUTO row first, so clearing cannot delete the playing song (D9)"; `tests/e2e/autoqueueoff.spec.ts` — "auto-off clears the suggestions, says so quietly, and persists across a reload (D9)" | pinned (unit + browser) |
 | D6a | A RULE CHANGE resets the window (D7.2): something heard minutes ago can be suggested again immediately — the deliberate, user-visible consequence of "fresh context". A SHUFFLE toggle does not reset it (shuffle reorders the same rule set). | `tests/queueManagerFill.test.ts` — "a filter edit PROMOTES the audible auto row first…" (recents `[]`), "a sort edit re-derives the order after the PROMOTED anchor" (recents `[]`), "the filter subscription drives the FRESH CONTEXT…" (recents `[]`), "shuffle mode permutes the pool (set-preserving)…" (the window survives the toggle) | new |
 | D6b | The rule-change reaction compares filter VALUES (and the sort key) before scheduling, so a subscription's subscribe-time fire is never a rule change — a restored tail and anti-repeat window survive app start. | `tests/playbackManagerRestore.test.ts` — "the subscribe-time filter fire never resets the anti-repeat window (D7 is destructive)" | new |
 
@@ -158,8 +161,8 @@ B1 and E9 state the rule instead of naming a gap.
 | E7 | The fill follows its OWN sort; the shared library sort never re-ranks it (2026-09-29 decoupling). | `tests/queueManagerFill.test.ts` — "the auto queue follows its OWN sort, never the library sort" | pinned |
 | E8 | The library sort/filter is copied into the auto settings only through the explicit apply plan, and only the differing store is written. | `tests/autoQueuePlan.test.ts` — "differ: identical settings → false…", "apply plan: copies only the store that differs; searchQuery preserved", "apply plan: identical settings plan nothing" | pinned |
 | E9 | Every fill path writes ONLY `autoQueue` (plus provenance/wrap notices) and never `activeIndex`. The one fill-family write that also touches the user section is the RULE-CHANGE promotion (B11/D7) — and that is what makes the guarantee safe rather than broken: it moves the audible row out of the section about to be rebuilt, so the anchor never names a row inside it. | `tests/queueManagerFill.test.ts` — "replenish fills the auto queue from fresh tracks, excluding the playing user track", "the filter subscription drives the FRESH CONTEXT through the real reaction layer" (the user section grows by exactly the promoted row, the auto section is replaced wholesale, and the whole rewrite is ONE persisted write) | pinned |
-| E10 | The two no-op guards skip the Dexie write (a full queue, and nothing addable + nothing dropped). | `tests/queueManagerFill.test.ts` — "the no-op guards skip the Dexie write when nothing can change", "a queue already full of matching tracks takes the first no-op guard" | pinned |
-| E11 | `wrapNotice` is false for an empty pool (a no-op guard can never leave a stale hint); `autoQueueEmptyNotice` tracks "nothing addable". | `tests/queueManagerFill.test.ts` — "the empty-fill notice fires when nothing can be added and clears on a successful fill"; `tests/autoQueuePlan.test.ts` — "kept is pruned when filters tighten, and a full queue keeps every row in place" | pinned |
+| E10 | The no-op guard compares the materialized section by CONTENT, so a full queue (and an unchanged tail) skips the Dexie write — and the repeat pass cannot be skipped by a length-only comparison. | `tests/queueManagerFill.test.ts` — "the no-op guards skip the Dexie write when nothing can change", "a queue already full of matching tracks takes the first no-op guard" | pinned |
+| E11 | `wrapNotice` is false for an empty pool (a no-op guard can never leave a stale hint); `autoQueueEmptyNotice` means "the filters match nothing" — with D6 an exhausted pool repeats instead of raising it. | `tests/queueManagerFill.test.ts` — "the empty-fill notice means NOTHING MATCHES — an exhausted pool repeats instead (D6)"; `tests/autoQueuePlan.test.ts` — "kept is pruned when filters tighten, and a full queue keeps every row in place" | pinned |
 | E12 | Inverted filter ranges are rejected at the panel (they would silently empty the queue). | `tests/autoQueuePlan.test.ts` — "filterRangesValid: inverted ranges are invalid; one-sided bounds are fine" | pinned |
 | E13 | Rating / loved / year / length / scope / genre / search filter semantics (unrated = 0; missing year fails either bound; empty bounds pass). | `tests/autoQueuePlan.test.ts` — "rating: within range passes; out of range fails; unrated passes the default 0..100", "lovedOnly requires the cached loved flag", "year bounds: out-of-range fails; a track without a year is excluded by EITHER bound", "length bounds: out-of-range fails; empty bounds pass", "album/artist scopes match exactly; absent scope passes", "genre uses the shared token matcher", "searchQuery matches title/artist/album/composer substrings, case- and trim-insensitive" (plus its two token/fold variants) | pinned |
 
@@ -176,8 +179,8 @@ B1 and E9 state the rule instead of naming a gap.
 | # | Invariant | Pinned by | Status |
 | --- | --- | --- | --- |
 | L1 | Natural end: advance normally; wrap to `userQueue[0]` under loop-all; restart in place under loop-one; stop at the tail under loop-none. | `tests/playbackManagerNav.test.ts` — "a natural end under loop-all wraps to user[0]; under loop-none at the tail it stops"; `tests/playbackManagerNative.test.ts` — "_onNativeTrackEnded wraps…", "…stops at the tail with no wrap", "…restarts the current track under loop-one" | pinned † |
-| L2 | Manual Next does not wrap at the combined tail, even under loop-all. | `tests/playbackManagerNav.test.ts` — "Next at the queue tail is a no-op under loop-all" | current behavior (open question Q1) |
-| L3 | Previous at the first row restarts that row under loop-none and wraps to the last combined row under loop-all. | `tests/playbackManagerNav.test.ts` — "Previous at the first row restarts that row under loop-none", "…under loop-all wraps to the LAST combined row" | new |
+| L2 | Manual Next at the combined tail obeys D8: loop-all wraps to `userQueue[0]`, loop-one restarts the song, loop-none STOPS playback. With the auto queue on and anything matching, D6 keeps the tail non-empty, so these cases are the auto-off / nothing-matches end. | `tests/playbackManagerNav.test.ts` — "Next at the queue tail wraps to the user head under loop-all (D8)", "Next at the queue tail STOPS under loop-none (D8)", "Next at the queue tail restarts the song under loop-one (D8)" | pinned |
+| L3 | Previous at the FIRST row is a no-op in EVERY loop mode; more than 3 s into a track it restarts instead. The as-built restart/wrap split was removed (D8). | `tests/playbackManagerNav.test.ts` — "Previous at the first row is a NO-OP in every loop mode (D8)", "Previous >3 s into the first row restarts it instead of no-opping (D8)" | pinned |
 | L4 | A removed row is unloopable: loop-one stops or advances instead of restarting it. | `tests/playbackManagerAdvance.test.ts` — "loop-one stops instead of restarting a removed track at its natural end", "removal skip ignores loop-one"; `tests/playbackManagerNative.test.ts` — "_onNativeTrackEnded loop-one stops when the current track left the queue" | pinned |
 | L5 | The loop-one error-restart bound is 3 give-ups for the SAME track; only a natural end (or a different track) resets it. | `tests/playbackManagerAdvance.test.ts` — "loop-one bounds the restart cycle of a track that starts then errors", "loop-one healthy loop is never affected by the bound", "an error advance outside loop-one is not blocked by a stale cycle count" | pinned |
 | L6 | No crossfade is armed under loop-one, and selecting loop-one cancels an armed fade. | `tests/playbackManagerAdvance.test.ts` — "the re-arm is skipped under loop-one"; `tests/playbackManagerRestore.test.ts` — "_subscribeShared cancels the armed web fade exactly when loop-one is selected" | pinned † |
@@ -208,8 +211,8 @@ B1 and E9 state the rule instead of naming a gap.
 | # | Invariant | Pinned by | Status |
 | --- | --- | --- | --- |
 | J1 | `playAll` replaces the user section, clears the auto tail, anchors row 0 and resets the recency window. | `tests/queueBulkImport.test.ts` — "playAll with the actively playing track inside the import anchors on row 0", "playAll resets the anti-repeat window and drops the auto tail in the same flow" | new |
-| J2 | `playAll([])` leaves an empty queue with `activeIndex 0`; the next advance refills the auto tail and skips its head. | `tests/queueBulkImport.test.ts` — "playAll([]) clears the queue; the next advance refills the auto tail and skips its head (known gap)" | known gap **G4** |
-| J3 | `playAll` does not validate against the library. An unknown id stays queued; the FIRST advance onto it resolves null (the caller stops), and a later advance now skips PAST it (D10) instead of re-targeting it. | `tests/queueBulkImport.test.ts` — "playAll preserves duplicate ids verbatim…", "playAll keeps ids missing from the library queued; the first advance stops, a later advance skips the row (D10)" | known gap **G4** (validation only) |
+| J2 | `playAll` with zero resolvable ids writes NOTHING: the live queue, its anchor and the recency window survive, and there is never an `activeIndex: 0` on an empty queue (G4 closed). | `tests/queueBulkImport.test.ts` — "playAll([]) writes NOTHING — an empty import never empties a live queue (G4 closed)" | pinned |
+| J3 | `playAll` validates ids against the library: order and duplicates are preserved, unknown ids are dropped AND returned in the report, and a deferral happens while the library is loading (an unresolved id may only be unloaded). | `tests/queueBulkImport.test.ts` — "playAll preserves duplicate ids verbatim…", "playAll validates against the library: unknown ids are dropped and REPORTED, never queued (G4/D12)", "playAll DEFERS while the library is loading — an unresolved id may only be unloaded (D12)" | pinned |
 | J4 | `playNext` on an empty queue appends without inventing an anchor (`-1` until playback selects one). | `tests/queueBulkImport.test.ts` — "playNext on an empty queue appends the row and keeps the anchor unset…" | new |
 
 ## 12. Browser-level pins (the surfaces the pure tests cannot see)
@@ -232,15 +235,16 @@ shuffle round-trip) and **H7** (§9, queue restore after a reload).
 Each open gap is pinned by a passing test that asserts the CURRENT behavior. Do not "fix" a gap by deleting
 its row; rewrite the row and the test with the new rule, and record the decision in `docs/DEVLOG.md` — that
 is what happened to G1, G2, G3 and G5, whose CLOSED sections are kept here with their replacement pins so
-the history stays auditable. **G4's library-validation half is the only open gap left.** G6 is a
-`known limitation` in the same table (§13): it is pinned as current behavior and is not scheduled.
+the history stays auditable. **NO OPEN GAP remains.** G6 is a `known limitation` in the same table (§13):
+it is pinned as current behavior and is not scheduled.
 
 **Progress:** G5 CLOSED 2026-10-21c (drags carry the source occurrence), G3 CLOSED 2026-10-21e (a skip is
-exactly one row), G1 and G2 CLOSED 2026-10-21f (a rule change is a fresh context). The "each-key collision"
-limb of G4 is also gone: row keys are occurrence-scoped (A4), so a bulk import with duplicates renders.
-G4's library-validation half is the only open gap. G6 (2026-10-21) is the matrix's first `known
-limitation`: a same-id insert above an armed row makes the crossfade reconcile repoint to the inserted copy,
-which the ordinal identity model cannot distinguish from the armed row itself.
+exactly one row), G1 and G2 CLOSED 2026-10-21f (a rule change is a fresh context), **G4 CLOSED 2026-10-26**
+(`playAll` validates against the library, reports what it dropped, defers while the library is loading, and
+writes nothing when nothing resolves). The "each-key collision" limb of G4 was already gone: row keys are
+occurrence-scoped (A4), so a bulk import with duplicates renders. G6 (2026-10-21) is the matrix's first
+`known limitation`: a same-id insert above an armed row makes the crossfade reconcile repoint to the inserted
+copy, which the ordinal identity model cannot distinguish from the armed row itself.
 
 ### G1 — CLOSED (2026-10-21f): a filter change mid-play keeps the anchor on the playing AUTO row
 - **Shape (was):** `replenishAutoQueue` wrote `autoQueue = kept + fill` and never touched `activeIndex`. When
@@ -295,18 +299,24 @@ which the ordinal identity model cannot distinguish from the armed row itself.
   pending fact is a transition, not a removal) — the first advance still resolves null and the caller
   stops. G4's remaining shape is the missing library validation, not a stall loop.
 
-### G4 — `playAll` is an unguarded bulk boundary (PARTLY NARROWED: duplicates render since step 1, unknown ids skip since step 3)
-- **Shape:** no library validation, `activeIndex: 0` even for an empty array; an unknown id stays queued and
-  its first advance resolves null (playback stops — the caller's stop path is the only thing that prevents a
-  hang); an empty import plus a later advance refills the auto tail and skips its head. The duplicate half
-  is GONE: occurrence keys render (step 1) and D10 no longer lets an unresolvable row re-target itself.
-- **Impact:** today every caller passes unique library ids, so this is a latent boundary. Phase 3 playlists are
-  exactly the kind of caller that can violate it (server playlists may repeat tracks or contain ids the local
-  library no longer knows).
-- **Evidence:** `tests/queueBulkImport.test.ts` (four tests, J2/J3).
-- **Decision needed:** duplicate/order semantics for an imported playlist (the roadmap already flags this), and
-  whether `playAll` should dedupe (first occurrence), filter unknown ids, or reject the import. Whatever is
-  chosen becomes the playlist contract.
+### G4 — CLOSED (2026-10-26): the bulk boundary validates against the library
+- **Shape (was):** no library validation, `activeIndex: 0` even for an empty array; an unknown id stayed
+  queued and its first advance resolved null (playback stopped — the caller's stop path was the only thing
+  preventing a hang); an empty import plus a later advance refilled the auto tail and skipped its head. The
+  duplicate half was already gone (occurrence keys render since step 1, D10 since step 3).
+- **Impact (was):** every in-app caller passed library ids, so this was a latent boundary — but Phase 3
+  playlists are exactly the kind of caller that can violate it (server playlists may repeat tracks or
+  contain ids the local library no longer knows).
+- **Fix (D12):** `queueManager.playAll` resolves every id against the library and returns a
+  `BulkImportReport { accepted, dropped, deferred }`. Order and duplicates survive verbatim; unknown ids are
+  dropped from the queue AND reported (never silently discarded); zero resolved ids writes NOTHING (the live
+  queue, anchor and recency window survive — no `activeIndex: 0` on an empty queue); and while the library is
+  still loading an unresolved id may merely be unloaded, so the import DEFERS without writing. Callers
+  (`AlbumsView`, `ArtistsView`, and the future playlist import) refuse to start playback on a deferral or an
+  empty result.
+- **Evidence:** `tests/queueBulkImport.test.ts` — "playAll([]) writes NOTHING…", "playAll validates against
+  the library: unknown ids are dropped and REPORTED…", "playAll DEFERS while the library is loading…",
+  "playAll preserves duplicate ids verbatim…" (rows J2/J3).
 
 ### G5 — CLOSED (2026-10-21c): drag identity is the occurrence
 - **Shape (was):** `applyDragDrop` received a track id, not an occurrence; `indexOf` found the user copy first,

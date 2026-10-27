@@ -183,6 +183,16 @@ test('the queue survives a reload with its sections and anchor intact', async ({
   const after = await readQueueSections(page)
 
   expect(after.user).toEqual(before.user)
-  expect(after.auto).toEqual(before.auto)
+  // The auto section is a VIRTUAL WINDOW since 2026-09-28 and, since D6, it
+  // CYCLES an exhausted pool to the fill target — so the mounted row count is a
+  // viewport fact, not a queue fact. Compare the rendered head (what both
+  // snapshots can see) and the SET of distinct rows, which is the queue fact
+  // this pin is about: the restored tail is the same section, in the same
+  // order, with the anchor intact.
+  const visible = Math.min(before.auto.length, after.auto.length)
+  expect(visible).toBeGreaterThan(0)
+  expect(after.auto.slice(0, visible)).toEqual(before.auto.slice(0, visible))
+  const titles = (rows: { title: string }[]) => [...new Set(rows.map((r) => r.title))].sort()
+  if (before.auto.length === after.auto.length) expect(titles(after.auto)).toEqual(titles(before.auto))
   expect(after.user.filter((r) => r.current).map((r) => r.title)).toEqual(['Midnight Drive'])
 })

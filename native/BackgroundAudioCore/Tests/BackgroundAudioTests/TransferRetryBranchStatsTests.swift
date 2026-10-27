@@ -128,4 +128,26 @@ final class TransferRetryBranchStatsTests: XCTestCase {
         XCTAssertNotEqual(s, before)
         XCTAssertEqual(before.scheduled, 0, "the previous value is untouched")
     }
+
+    func testTerminalOutcomeCountersTrackAndReset() {
+        var s = TransferRetryBranchStats()
+        s.record(strategy: .freshConnectionSoon)
+        s.recordSuperseded()
+        s.recordCoalesced()
+        s.recordCacheSatisfied()
+        s.recordSucceeded()
+        s.recordGivenUp()
+        let snap = s.snapshot(enactedFreshConnection: 1)
+        XCTAssertEqual(snap["supersededBeforeAttempt"] as? Int, 1)
+        XCTAssertEqual(snap["coalescedInFlight"] as? Int, 1)
+        XCTAssertEqual(snap["cacheSatisfied"] as? Int, 1)
+        XCTAssertEqual(snap["succeeded"] as? Int, 1)
+        XCTAssertEqual(snap["givenUp"] as? Int, 1)
+        s.reset()
+        XCTAssertEqual(s.supersededBeforeAttempt, 0)
+        XCTAssertEqual(s.coalescedInFlight, 0)
+        XCTAssertEqual(s.cacheSatisfied, 0)
+        XCTAssertEqual(s.succeeded, 0)
+        XCTAssertEqual(s.givenUp, 0)
+    }
 }

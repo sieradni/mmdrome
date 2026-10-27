@@ -285,7 +285,10 @@
     if (tracks.length === 0) return
     const trackIds = tracks.map((t) => t.trackId)
     autoQueueScope.set({ albumScope: selectedAlbum ?? undefined, artistScope: undefined })
-    queueManager.playAll(trackIds)
+    // D12/G4: the import reports what it could resolve. Never start playback on
+    // a deferral or an empty result — the previous queue keeps playing.
+    const report = queueManager.playAll(trackIds)
+    if (report.deferred || report.accepted.length === 0) return
     playbackManager.playTrackAt(0)
   }
 

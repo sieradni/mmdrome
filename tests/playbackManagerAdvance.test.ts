@@ -669,7 +669,10 @@ test("a library press drops the id's auto occurrence (explicit play supersedes a
   // the press makes t1 the queue tail, so the continuation is t2 and then the
   // recycled t0 (tier 3 admits the user-queued track). Suggestions are not
   // LOST — they are re-ordered to follow the pressed row, which is the point.
-  assert.deepEqual(q.autoQueue, ['navidrome-t2', 't0'], 'the tail continues from the pressed row')
+  // D6: the unique continuation is t2 then the recycled t0; with the pool
+  // exhausted the tail then cycles those two to the fill target.
+  assert.deepEqual([...new Set(q.autoQueue)], ['navidrome-t2', 't0'], 'the tail continues from the pressed row')
+  assert.deepEqual(q.autoQueue.slice(0, 2), ['navidrome-t2', 't0'])
   assert.equal(q.activeIndex, 1)
 })
 
@@ -714,7 +717,9 @@ test('crossfade reconcile uses the ARMED occurrence, not the first copy of the s
   assert.equal(q.activeIndex, 0, 'repointed to the occurrence that actually played')
   assert.equal([...q.userQueue, ...q.autoQueue][q.activeIndex], 'navidrome-t1')
   assert.equal(get(currentTrack)?.trackId, 'navidrome-t1')
-  assert.equal(q.autoQueue.filter((id) => id === 'navidrome-t1').length, 1, 'the untouched auto copy stays queued')
+  // D6 may repeat the auto copy into several rows; the point is that the
+  // occurrence the fade actually played was NOT consumed from auto.
+  assert.ok(q.autoQueue.includes('navidrome-t1'), 'the untouched auto copy stays queued')
 })
 
 test('auto-row promotion cools the consumed skipped prefix so the refill cannot replay it', () => {
@@ -873,7 +878,8 @@ test('picking a queue row ends a hand-ordered auto tail', async () => {
     // a2: a3, a4, a5, a6, then the tier-3 recycle of the user row a1 (B4).
     // Keeping the drag would have continued the hand order instead (a6 first) —
     // asserted as the negative result below.
-    assert.deepEqual(q.autoQueue, ['a3', 'a4', 'a5', 'a6', 'a1'], 'the sorted continuation wins')
+    assert.deepEqual(q.autoQueue.slice(0, 5), ['a3', 'a4', 'a5', 'a6', 'a1'], 'the sorted continuation wins')
+    assert.deepEqual([...new Set(q.autoQueue)], ['a3', 'a4', 'a5', 'a6', 'a1'], 'the tail is exactly the continuation, cycled (D6)')
     assert.notEqual(q.autoQueue[0], 'a6', 'the hand-ordered tail must not survive a tap')
   } finally {
     autoQueueSort.set({ sortBy: null, sortAsc: true })

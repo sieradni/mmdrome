@@ -82,6 +82,7 @@ export function shouldKeepPushPending(stale: PushRowSnapshot, live: PushRowSnaps
  */
 export function shouldSkipBeforePut(stale: PushRowSnapshot, live: PushRowSnapshot | undefined, currentBaseKey: string): boolean {
   if (!live) return false
+  if (live.syncStatus !== 'pending_sync') return true
   if (!live.webdavPath) return true
   if (live.ignored) return true
   if (live.webdavPath !== stale.webdavPath) return true

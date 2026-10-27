@@ -105,6 +105,11 @@ export interface NavidromeLoadResult {
   failed: number
   error?: string
   cached?: boolean
+  /** Exact reason the cached library was served (`cache-reuse` when the live
+   *  server's scan timestamp matched; `connection-fallback` when ping failed;
+   *  `load-fallback` when song pagination failed). Replaces ambiguous
+   *  `CACHED fallback` log text (D-04). */
+  cacheReason?: 'cache-reuse' | 'connection-fallback' | 'load-fallback'
   /** True when the load ended because the user cancelled it. A cancelled load
    *  NEVER applies a partial page-set (the library is untouched), so resuming
    *  is simply re-running the load — the UI's Resume-load affordance does

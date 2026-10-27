@@ -39,7 +39,7 @@ function yearLib(): Record<string, unknown>[] {
   }))
 }
 
-// The sync prefixes every server id — read the fixture's index back out.
+// The sync prefixes every server id ï¿½ read the fixture's index back out.
 const yearOf = (id: string): number => 2010 + Number(id.replace(/^navidrome-fresh-/, ''))
 
 async function boot(page: Page): Promise<void> {
@@ -56,11 +56,15 @@ async function openQueue(page: Page): Promise<void> {
 
 /** Track ids of the mounted AUTO rows, in rendered order. */
 async function autoIds(page: Page): Promise<string[]> {
-  return page.evaluate(() =>
+  const ids = await page.evaluate(() =>
     [...document.querySelectorAll('[aria-label="Auto queue"] .queue-track-item')].map(
       (el) => (el as HTMLElement).dataset.trackId ?? '',
     ),
   )
+  // D6: once the pool is exhausted the tail CYCLES, so the assertion target is
+  // the unique head order (what the rule produced), not the 50-row section.
+  const seen = new Set<string>()
+  return ids.filter((id) => (seen.has(id) ? false : (seen.add(id), true)))
 }
 
 async function userIds(page: Page): Promise<string[]> {
