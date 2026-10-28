@@ -41,7 +41,7 @@
           {#each report.rows as row (row.trackId + '-' + row.startedAtMs)}
             <li class="py-1 text-[11px]">
               <span class="font-medium text-primary">{row.title}</span>
-              <span class="text-muted"> &mdash; {row.disposition} ({row.stage}{#if row.attempts > 1}, {row.attempts} attempts{/if}{#if row.recoveredConflict}, conflict recovered{/if}{#if row.tempCleanup}, temp cleanup: {row.tempCleanup}{/if}; remote {row.remoteState}, local {row.localReconciliation})</span>
+              <span class="text-muted"> &mdash; {row.disposition} ({row.stage}{#if row.attempts > 1}, {row.attempts} attempts{/if}{#if row.moveAttempts && row.moveAttempts > 1}, {row.moveAttempts} MOVEs{/if}{#if row.recoveredConflict}, conflict recovered{/if}{#if row.tempCleanup}, temp cleanup: {row.tempCleanup}{/if}{#if row.precondition}, pre {row.precondition}{/if}; remote {row.remoteState}, local {row.localReconciliation})</span>
               {#if row.error}
                 <div class="text-red-300">{row.error.message}{#if row.error.davError} &middot; {row.error.davError}{/if}</div>
               {/if}

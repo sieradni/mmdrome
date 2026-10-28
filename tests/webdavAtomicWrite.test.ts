@@ -1,18 +1,37 @@
-// Pins the atomic-write CONTRACT extracted from syncEngine (webdavAtomicWrite
-// is the pure core; syncEngine's webdavPutAtomicViaAppFetch is a thin adapter
-// binding the real webdavFetch). The critical invariant — the failed attempt
-// deletes its temp file EXACTLY ONCE — is what the previous structure
-// violated: the `!moveRes.ok` branch cleaned up, threw ConflictError, and the
-// catch-all cleaned up AGAIN (two DELETEs per failed MOVE, observed in the
-// browser e2e before this extraction).
+// Pins the atomic-write CONTRACT (`src/lib/webdavAtomicWrite.ts`, the pure core;
+// syncEngine's webdavPutAtomicViaAppFetch is a thin adapter binding the real
+// webdavFetch). Assertions are on the OBSERVED wire sequence through a scripted
+// transport, the same shape the browser e2e asserts against the mock server.
 //
-// The fake transport records every request (method + URL) and answers from a
-// scripted queue, so the assertions are on the OBSERVED wire sequence — the
-// same shape the browser e2e asserts against the route-mocked server.
+// Two invariants carry the 2026-10-27 field fix:
+//
+// 1. THE LADDER. The destination's validators are read from PROPFIND (where the
+//    server publishes the very value it compares), and the MOVE starts at the
+//    RFC 4918 tagged `If` list. A 412 whose re-check shows the destination
+//    UNCHANGED is the server refusing that dialect, not a concurrent write — so
+//    the write advances to the next rung and re-MOVEs the temp ALREADY on the
+//    server. That is what stops a server-wide 412 storm from being paid with a
+//    second full upload per row.
+// 2. THE RE-CHECK IS THE REAL GUARD. The destination is re-read immediately
+//    before the MOVE, so a destination that changed while the temp was being
+//    written is refused even on a server that honours no precondition at all —
+//    and `ConflictError` now means exactly that, which is why only the caller's
+//    recovery path ever uploads a file twice.
+//
+// The exactly-once temp cleanup invariant (the reason this core was extracted)
+// is asserted on EVERY failure path below.
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { webdavPutAtomic, ConflictError, type ResponseLike } from '../src/lib/webdavAtomicWrite'
+import {
+  webdavPutAtomic,
+  ConflictError,
+  AbortedBeforeMoveError,
+  AtomicWriteError,
+  type AtomicWriteOutcome,
+  type ResponseLike,
+} from '../src/lib/webdavAtomicWrite'
+import type { DestinationValidators } from '../src/lib/webdavPreconditions'
 
 const BASE = 'https://dav.test/files/user/'
 const FILE = 'Song One.mp3'
@@ -26,217 +45,256 @@ interface Call {
   body?: unknown
 }
 
-function okRes(status = 201): ResponseLike {
-  return { ok: status >= 200 && status < 300, status }
+/** A `Depth: 0` multistatus for the destination, as sabre/Nextcloud answer. */
+function validatorsXml(v: DestinationValidators): string {
+  return '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response>'
+    + `<d:href>${DEST_URL}</d:href><d:propstat><d:prop>`
+    + (v.etag ? `<d:getetag>${v.etag.replace(/&/g, '&amp;')}</d:getetag>` : '')
+    + (v.lastModified ? `<d:getlastmodified>${v.lastModified}</d:getlastmodified>` : '')
+    + '</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>'
 }
 
+type Step = { status: number; xml?: string } | { reject: Error }
+
 /** Scripted transport: one response per call (last repeats), full call log. */
-function fakeTransport(script: Array<{ status: number } | { reject: Error }>) {
+function fakeTransport(script: Step[]) {
   const calls: Call[] = []
   let i = 0
   const impl = async (url: string, options: RequestInit): Promise<ResponseLike> => {
-    const call: Call = { method: String(options.method), url, headers: (options.headers ?? {}) as Record<string, string>, body: options.body }
-    calls.push(call)
+    calls.push({
+      method: String(options.method),
+      url,
+      headers: (options.headers ?? {}) as Record<string, string>,
+      body: options.body,
+    })
     const step = script[Math.min(i, script.length - 1)]
     i++
     if ('reject' in step) throw step.reject
-    return okRes(step.status)
+    const status = step.status
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      text: async () => step.xml ?? '',
+    }
   }
   return { impl, calls }
 }
 
-function runFailureCase(
-  name: string,
-  script: Array<{ status: number } | { reject: Error }>,
-  expectError: 'conflict' | 'plain',
-  expectedCalls: Array<[string, string]>,
-) {
-  test(name, async () => {
-    const t = fakeTransport(script)
-    const err = await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', '"etag-1"', t.impl, 1000).then(
-      () => null,
-      (e: unknown) => e,
-    )
-    assert.ok(err instanceof Error, 'the write must fail')
-    if (expectError === 'conflict') {
-      assert.ok(err instanceof ConflictError, `expected ConflictError, got ${String(err)}`)
-    } else {
-      assert.ok(!(err instanceof ConflictError), 'non-412 failures must NOT be ConflictError')
-    }
-    assert.deepEqual(
-      t.calls.map((c) => [c.method, c.url] as [string, string]),
-      expectedCalls,
-    )
-    const deletes = t.calls.filter((c) => c.method === 'DELETE')
-    assert.equal(deletes.length, 1, `exactly one temp cleanup, got ${deletes.length}`)
-    assert.equal(deletes[0].url, TEMP_URL, 'the DELETE targets the temp path')
-  })
+const ETAG = '"etag-1"'
+const LM = 'Mon, 01 Jan 2024 00:00:00 GMT'
+const PUT_OK: Step = { status: 201 }
+/** One pre-MOVE re-check answering with these validators. */
+const READ = (v: DestinationValidators = { etag: ETAG, lastModified: LM }): Step => ({ status: 207, xml: validatorsXml(v) })
+
+function methods(calls: Call[]): string[] {
+  return calls.map((c) => c.method)
 }
 
-test('success: PUT temp → MOVE dest, no DELETE, the destination etag rides as a TAGGED If header', async () => {
-  const t = fakeTransport([{ status: 201 }, { status: 201 }])
-  const outcome = await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', '"etag-1"', t.impl, 1000)
-  assert.deepEqual(
-    t.calls.map((c) => [c.method, c.url] as [string, string]),
-    [
-      ['PUT', TEMP_URL],
-      ['MOVE', TEMP_URL],
-    ],
+function tempDeletes(calls: Call[]): Call[] {
+  return calls.filter((c) => c.method === 'DELETE' && c.url === TEMP_URL)
+}
+
+const VALIDATORS: DestinationValidators = { etag: ETAG, lastModified: LM }
+
+/**
+ * Run one write with the caller's baseline already in hand — the ORDER the
+ * production caller uses (read the destination's validators, THEN its bytes,
+ * then hand both to the write). `undefined` models a server that publishes no
+ * validators at all.
+ */
+async function run(
+  script: Step[],
+  opts?: Parameters<typeof webdavPutAtomic>[8],
+  /** `null` = the caller could not read any validators at all. */
+  validators: DestinationValidators | null = VALIDATORS,
+) {
+  const t = fakeTransport(script)
+  return webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', validators ?? undefined, t.impl, 1000, opts).then(
+    (value) => ({ ...t, value, error: undefined as unknown }),
+    (error: unknown) => ({ ...t, value: undefined as AtomicWriteOutcome | undefined, error }),
   )
-  const move = t.calls[1]
-  // The precondition must be scoped to the DESTINATION resource. `If-Match`
-  // is evaluated against the request URI (the temp SOURCE) on real servers
-  // — RFC 7232 §3.1, sabre/dav Server::checkPreconditions — so it 412s every
-  // guarded push. The WebDAV If tagged list names the destination instead.
-  assert.equal(move.headers['If-Match'], undefined, 'If-Match targets the temp source on a real server — never send it')
-  assert.equal(
-    move.headers['If'],
-    `<${DEST_URL}> (["etag-1"])`,
-    'the destination etag must ride as a bracketed, destination-tagged If condition',
-  )
+}
+
+test('the first rung holds: PUT temp → re-check → MOVE with the tagged If', async () => {
+  const r = await run([PUT_OK, READ(), { status: 201 }])
+  assert.ok(r.value, String(r.error))
+  assert.deepEqual(methods(r.calls), ['PUT', 'PROPFIND', 'MOVE'])
+  assert.deepEqual(r.value, { precondition: 'tagged-if', moveAttempts: 1, tempPath: 'Song One.mp3.mmdrome-tmp' })
+
+  // The re-check reads the destination itself, Depth 0, asking for exactly the
+  // two validators (a body read is what the core parses).
+  const read = r.calls[1]
+  assert.equal(read.url, DEST_URL)
+  assert.equal(read.headers.Depth, '0')
+  assert.equal(read.headers['Cache-Control'], 'no-cache', 'a cached multistatus would be a validator for a past state')
+  assert.match(String(read.body), /getetag/)
+  assert.match(String(read.body), /getlastmodified/)
+
+  const move = r.calls[2]
+  assert.equal(move.url, TEMP_URL, 'the MOVE source is the temp file')
+  assert.equal(move.headers.If, `<${DEST_URL}> ([${ETAG}])`)
+  assert.equal(move.headers['If-Match'], undefined, 'the tagged list is the first rung')
   assert.equal(move.headers.Destination, DEST_URL)
   assert.equal(move.headers.Overwrite, 'T')
   assert.equal(move.headers.Authorization, `Basic ${btoa('user:token')}`)
-  assert.equal(t.calls.filter((c) => c.method === 'DELETE').length, 0, 'a successful MOVE deletes nothing')
-  assert.deepEqual(outcome, { guarded: true })
+  assert.equal(tempDeletes(r.calls).length, 0, 'a successful MOVE deletes nothing')
 })
 
-test('without an etag the MOVE is a blind overwrite (no If header), reported as unguarded', async () => {
-  const t = fakeTransport([{ status: 201 }, { status: 201 }])
-  const outcome = await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', undefined, t.impl, 1000)
-  assert.equal(t.calls[1].headers['If'], undefined)
-  assert.equal(t.calls[1].headers['If-Match'], undefined)
-  assert.deepEqual(outcome, { guarded: false })
+test('a server that refuses the tagged If falls to If-Match with the SAME temp (no second upload)', async () => {
+  const r = await run([PUT_OK, READ(), { status: 412 }, READ(), { status: 201 }])
+  assert.ok(r.value, String(r.error))
+  assert.deepEqual(methods(r.calls), ['PUT', 'PROPFIND', 'MOVE', 'PROPFIND', 'MOVE'])
+  assert.deepEqual(r.value, { precondition: 'if-match', moveAttempts: 2, tempPath: 'Song One.mp3.mmdrome-tmp' })
+  assert.equal(r.calls.filter((c) => c.method === 'PUT').length, 1, 'the payload is uploaded exactly once')
+  assert.equal(r.calls[2].headers.If, `<${DEST_URL}> ([${ETAG}])`)
+  assert.equal(r.calls[4].headers['If-Match'], ETAG, 'the rejected rung is replaced, not repeated')
+  assert.equal(r.calls[4].headers.If, undefined)
+  assert.equal(tempDeletes(r.calls).length, 0, 'the temp is carried from rung to rung')
 })
 
-test('an etag that cannot be expressed in the If header degrades to a blind overwrite', async () => {
-  // Server-controlled input interpolated into a header: an unquoted or
-  // bracket-breaking tag must not produce a malformed precondition (some
-  // servers 400 the whole MOVE). It becomes an unguarded write, and the
-  // caller's blind-overwrite count tells the user.
-  for (const bogus of ['etag-1', '"a]b"', '"a\rb"']) {
-    const t = fakeTransport([{ status: 201 }, { status: 201 }])
-    const outcome = await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', bogus, t.impl, 1000)
-    assert.equal(t.calls[1].headers['If'], undefined, `etag ${JSON.stringify(bogus)} must not be sent`)
-    assert.deepEqual(outcome, { guarded: false }, `etag ${JSON.stringify(bogus)} is an unguarded write`)
-  }
+test('a server that refuses both etag rungs falls to the date rung, then to the re-check alone', async () => {
+  const dateRung = await run([
+    PUT_OK, READ(),
+    { status: 412 }, READ(),
+    { status: 412 }, READ(),
+    { status: 201 },
+  ])
+  assert.ok(dateRung.value, String(dateRung.error))
+  assert.deepEqual(dateRung.value, { precondition: 'if-unmodified-since', moveAttempts: 3, tempPath: 'Song One.mp3.mmdrome-tmp' })
+  assert.equal(dateRung.calls[6].headers['If-Unmodified-Since'], LM)
+
+  const bottomRung = await run([
+    PUT_OK, READ(),
+    { status: 412 }, READ(),
+    { status: 412 }, READ(),
+    { status: 412 }, READ(),
+    { status: 201 },
+  ])
+  assert.ok(bottomRung.value, String(bottomRung.error))
+  assert.deepEqual(bottomRung.value, { precondition: 'revalidated', moveAttempts: 4, tempPath: 'Song One.mp3.mmdrome-tmp' })
+  const last = bottomRung.calls[bottomRung.calls.length - 1]
+  assert.equal(last.headers.If, undefined)
+  assert.equal(last.headers['If-Match'], undefined)
+  assert.equal(last.headers['If-Unmodified-Since'], undefined, 'the bottom rung sends no precondition')
+  assert.equal(bottomRung.calls.filter((c) => c.method === 'PUT').length, 1)
 })
 
-test('a weak etag is still expressible (sabre compares the raw tag)', async () => {
-  const t = fakeTransport([{ status: 201 }, { status: 201 }])
-  const outcome = await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', 'W/"etag-2"', t.impl, 1000)
-  assert.equal(t.calls[1].headers['If'], `<${DEST_URL}> ([W/"etag-2"])`)
-  assert.deepEqual(outcome, { guarded: true })
+test('a destination with no etag starts at the date rung', async () => {
+  const over = { lastModified: LM }
+  const r = await run([PUT_OK, READ(over), { status: 201 }], undefined, over)
+  assert.ok(r.value, String(r.error))
+  assert.equal(r.value.precondition, 'if-unmodified-since')
+  assert.equal(r.calls[2].headers['If-Unmodified-Since'], LM)
 })
 
-runFailureCase(
-  '412 (ConflictError): PUT → MOVE(412) → exactly one temp DELETE',
-  [{ status: 201 }, { status: 412 }],
-  'conflict',
-  [
-    ['PUT', TEMP_URL],
-    ['MOVE', TEMP_URL],
-    ['DELETE', TEMP_URL],
-  ],
-)
+test('a weak etag is expressible in the tagged list (sabre compares the raw tag)', async () => {
+  const over = { etag: 'W/"etag-2"' }
+  const r = await run([PUT_OK, READ(over), { status: 201 }], undefined, over)
+  assert.ok(r.value, String(r.error))
+  assert.equal(r.calls[2].headers.If, `<${DEST_URL}> ([W/"etag-2"])`)
+})
 
-runFailureCase(
-  // sabre/dav resolves the If tagged node with tree->getNodeForPath, which
-  // throws NotFound when the destination vanished between GET and MOVE — so a
-  // destination-guard failure reaches us as 404, not 412. It is the same
-  // "re-read the destination" case and must take the retry path.
-  'MOVE 404 (destination vanished): ConflictError, exactly one temp DELETE',
-  [{ status: 201 }, { status: 404 }],
-  'conflict',
-  [
-    ['PUT', TEMP_URL],
-    ['MOVE', TEMP_URL],
-    ['DELETE', TEMP_URL],
-  ],
-)
+test('a concurrent write lands while the temp is uploading: refused before any MOVE', async () => {
+  // The re-check is the whole point: the destination's validators moved between
+  // the baseline that produced our tag edit and the MOVE — so the row is
+  // refused with the temp cleaned up and NOT ONE byte re-uploaded here (the
+  // caller's recovery re-reads the NEW bytes and re-tags those).
+  const r = await run([PUT_OK, READ({ etag: '"etag-2"' })])
+  assert.ok(r.error instanceof ConflictError, String(r.error))
+  assert.match(r.error.message, /changed since it was read/)
+  assert.deepEqual(methods(r.calls), ['PUT', 'PROPFIND', 'DELETE'], 'no MOVE is sent at all')
+  assert.equal(tempDeletes(r.calls).length, 1, 'the refused write cleans its temp exactly once')
+})
 
-runFailureCase(
-  'other MOVE failure (500): PUT → MOVE(500) → exactly one temp DELETE, plain Error',
-  [{ status: 201 }, { status: 500 }],
-  'plain',
-  [
-    ['PUT', TEMP_URL],
-    ['MOVE', TEMP_URL],
-    ['DELETE', TEMP_URL],
-  ],
-)
+test('a 412 with an UNCHANGED destination is a dialect rejection; a CHANGED one is a lost race', async () => {
+  const dialect = await run([PUT_OK, READ(), { status: 412 }, READ(), { status: 201 }])
+  assert.ok(dialect.value, String(dialect.error))
+  assert.equal(dialect.value?.precondition, 'if-match')
 
-runFailureCase(
-  'MOVE network rejection: PUT → reject → exactly one temp DELETE',
-  [{ status: 201 }, { reject: new Error('network down') }],
-  'plain',
-  [
-    ['PUT', TEMP_URL],
-    ['MOVE', TEMP_URL],
-    ['DELETE', TEMP_URL],
-  ],
-)
+  const race = await run([PUT_OK, READ(), { status: 412 }, READ({ etag: '"etag-9"' })])
+  assert.ok(race.error instanceof ConflictError, String(race.error))
+  assert.match(race.error.message, /HTTP 412/)
+  assert.equal(methods(race.calls).filter((m) => m === 'MOVE').length, 1, 'the race is not re-tried blindly')
+  assert.equal(tempDeletes(race.calls).length, 1)
+})
+
+test('a 412 we cannot adjudicate is refused rather than weakened', async () => {
+  // The re-check could not read validators (server error): advancing the rung
+  // would mean replacing a destination we cannot prove is unchanged.
+  const r = await run([PUT_OK, READ(), { status: 412 }, { status: 500 }])
+  assert.ok(r.error instanceof ConflictError, String(r.error))
+  assert.equal(tempDeletes(r.calls).length, 1)
+})
+
+test('a destination whose validators could not be read still writes, and says it was blind', async () => {
+  const r = await run([PUT_OK, { status: 201 }], undefined, null)
+  assert.ok(r.value, String(r.error))
+  assert.deepEqual(r.value, { precondition: 'blind', moveAttempts: 1, tempPath: 'Song One.mp3.mmdrome-tmp' })
+  assert.deepEqual(methods(r.calls), ['PUT', 'MOVE'], 'no re-check is spent when there is nothing to compare')
+  assert.equal(r.calls[1].headers.If, undefined)
+  assert.equal(r.calls[1].headers['If-Match'], undefined)
+})
+
+test('the re-check sees the destination gone: ConflictError, one DELETE', async () => {
+  const r = await run([PUT_OK, { status: 404 }])
+  assert.ok(r.error instanceof ConflictError, String(r.error))
+  assert.match(r.error.message, /removed since it was read/)
+  assert.equal(tempDeletes(r.calls).length, 1)
+})
+
+test('MOVE 404 (destination vanished between the read and the rename): ConflictError, one DELETE', async () => {
+  const r = await run([PUT_OK, READ(), { status: 404 }])
+  assert.ok(r.error instanceof ConflictError, String(r.error))
+  assert.equal(r.error.status, 404)
+  assert.equal(tempDeletes(r.calls).length, 1)
+})
+
+test('other MOVE failures are hard errors, not conflicts, and clean the temp once', async () => {
+  const r = await run([PUT_OK, READ(), { status: 500 }])
+  assert.ok(r.error instanceof AtomicWriteError, String(r.error))
+  assert.ok(!(r.error instanceof ConflictError))
+  assert.equal(r.error.stage, 'move')
+  assert.equal(tempDeletes(r.calls).length, 1)
+})
+
+test('a MOVE network rejection leaves remote state UNKNOWN and cleans the temp once', async () => {
+  const r = await run([PUT_OK, READ(), { reject: new Error('network down') }])
+  assert.ok(r.error instanceof Error && !(r.error instanceof ConflictError), String(r.error))
+  assert.equal((r.error as { remoteState?: string }).remoteState, 'unknown')
+  assert.equal(tempDeletes(r.calls).length, 1)
+})
 
 test('PUT failure throws before any temp exists — no DELETE at all', async () => {
-  const t = fakeTransport([{ status: 507 }])
-  const err = await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', '"etag-1"', t.impl, 1000).then(
-    () => null,
-    (e: unknown) => e,
-  )
-  assert.ok(err instanceof Error)
-  assert.ok(!(err instanceof ConflictError))
-  assert.deepEqual(
-    t.calls.map((c) => c.method),
-    ['PUT'],
-    'the failed PUT is the only wire call',
-  )
+  const r = await run([{ status: 507 }])
+  assert.ok(r.error instanceof AtomicWriteError, String(r.error))
+  assert.equal(r.error.stage, 'put-temp')
+  assert.deepEqual(methods(r.calls), ['PUT'])
+})
+
+test('beforeMove returning false aborts before MOVE and cleans the temp once', async () => {
+  const r = await run([PUT_OK, { status: 204 }], { beforeMove: () => false })
+  assert.ok(r.error instanceof AbortedBeforeMoveError, String(r.error))
+  assert.equal(r.error.cleanup, 'deleted')
+  assert.deepEqual(methods(r.calls), ['PUT', 'DELETE'])
+})
+
+test('unique runToken suffixes the temp path and the MOVE source', async () => {
+  const r = await run([PUT_OK, READ(), { status: 201 }], { runToken: 'run-42' })
+  assert.ok(r.value, String(r.error))
+  assert.equal(r.calls[0].url, `${BASE}Song%20One.mp3.run-42.mmdrome-tmp`)
+  assert.equal(r.calls[2].url, `${BASE}Song%20One.mp3.run-42.mmdrome-tmp`)
 })
 
 test('the write core and the transport layer build the SAME URLs', async () => {
-  // Both sides import webdavPaths — this is the pin that they cannot drift
-  // into a GET at one URL and a PUT at another. The whitespace base is the
-  // field case that used to break exactly that way (the core's old local
-  // mirror skipped normalizeUrl's trim).
+  // Both sides import webdavPaths — this is the pin that they cannot drift into
+  // a read at one URL and a write at another. The whitespace base is the field
+  // case that used to break exactly that way.
   const { buildWebdavUrl, webdavTempPath } = await import('../src/lib/webdavPaths')
   for (const base of [BASE, `${BASE} `, BASE.replace(/\/+$/, ''), `  ${BASE.replace(/\/+$/, '')}  `]) {
-    const t = fakeTransport([{ status: 201 }, { status: 201 }])
-    await webdavPutAtomic(base, FILE, new ArrayBuffer(8), 'user', 'token', undefined, t.impl, 1000)
-    assert.equal(t.calls[0].url, TEMP_URL, `PUT url for base ${JSON.stringify(base)}`)
-    assert.equal(t.calls[1].headers.Destination, DEST_URL, `Destination for base ${JSON.stringify(base)}`)
-    assert.equal(t.calls[1].url, buildWebdavUrl(base, webdavTempPath(FILE)))
+    const t = fakeTransport([PUT_OK, READ(), { status: 201 }])
+    await webdavPutAtomic(base, FILE, new ArrayBuffer(8), 'user', 'token', VALIDATORS, t.impl, 1000, { runToken: 'r' })
+    assert.equal(t.calls[0].url, buildWebdavUrl(base, webdavTempPath(FILE, 'r')))
+    assert.equal(t.calls[1].url, DEST_URL, `re-check url for base ${JSON.stringify(base)}`)
+    assert.equal(t.calls[2].headers.Destination, DEST_URL)
   }
 })
-
-test('beforeMove returning false aborts before MOVE and cleans up temp file once (W-04/AbortedBeforeMoveError)', async () => {
-  const { AbortedBeforeMoveError } = await import('../src/lib/webdavAtomicWrite')
-  const t = fakeTransport([{ status: 201 }, { status: 204 }])
-  const err = await webdavPutAtomic(
-    BASE,
-    FILE,
-    new ArrayBuffer(8),
-    'user',
-    'token',
-    '"etag-1"',
-    t.impl,
-    1000,
-    { beforeMove: () => false },
-  ).then(() => null, (e: unknown) => e)
-  assert.ok(err instanceof AbortedBeforeMoveError)
-  assert.equal(err.cleanup, 'deleted')
-  assert.deepEqual(
-    t.calls.map((c) => [c.method, c.url]),
-    [
-      ['PUT', TEMP_URL],
-      ['DELETE', TEMP_URL],
-    ],
-  )
-})
-
-test('unique runToken suffixes temp path and is recognized by isTempFile (W-06)', async () => {
-  const { isTempFile, webdavTempPath } = await import('../src/lib/webdavPaths')
-  const t = fakeTransport([{ status: 201 }, { status: 201 }])
-  await webdavPutAtomic(BASE, FILE, new ArrayBuffer(8), 'user', 'token', '"etag-1"', t.impl, 1000, { runToken: 'run-42' })
-  assert.equal(t.calls[0].url, `${BASE}Song%20One.mp3.run-42.mmdrome-tmp`)
-  assert.equal(isTempFile(webdavTempPath(FILE, 'run-42')), true)
-})
-

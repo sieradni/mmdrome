@@ -11,13 +11,15 @@ import {
 } from "./webdavUtils"
 import {
   webdavPutAtomic,
+  readDestinationValidators,
   ConflictError,
   AbortedBeforeMoveError,
   AtomicWriteError,
   type AtomicWriteOptions,
-  type PreconditionKind,
+  type AtomicWriteOutcome,
   type TempCleanupStatus,
 } from "./webdavAtomicWrite"
+import type { DestinationValidators, PreconditionKind } from "./webdavPreconditions"
 import {
   getPendingSyncMetadata,
   upsertMetadata,
@@ -210,19 +212,33 @@ function sanitizeDavErrorBody(text: string): string | undefined {
   return redacted.slice(0, 180)
 }
 
+/**
+ * The destination's BYTES — the content our tag edit is based on.
+ *
+ * The destination's VALIDATORS (the collision baseline and the MOVE guard) are
+ * read FIRST, through `readDestinationValidators` (`webdavAtomicWrite.ts`),
+ * and the order is the point: a baseline taken after these bytes would describe
+ * a state the payload predates, so a writer landing in between would be
+ * silently overwritten. Read from PROPFIND, so the guard is the same field the
+ * server compares and no web client needs the GET to expose `ETag` (it is not
+ * CORS-safelisted).
+ */
 async function webdavGet(
   baseUrl: string,
   filePath: string,
   user: string,
   token: string,
   fetchImpl: PushSyncDeps["webdavFetch"] = _pushDeps.webdavFetch,
-): Promise<{ data: ArrayBuffer; etag?: string }> {
+): Promise<ArrayBuffer> {
   const url = buildWebdavUrl(baseUrl, filePath)
   const res = await fetchImpl(
     url,
     {
       method: "GET",
-      headers: authHeaders(user, token),
+      // Revalidate rather than reuse: this body is the payload the write's
+      // guard is anchored to, so a cached copy is a body for a state the
+      // destination has left (see webdavAtomicWrite.ts).
+      headers: { ...authHeaders(user, token), "Cache-Control": "no-cache" },
     },
     WEBDAV_TIMEOUT,
   )
@@ -243,19 +259,16 @@ async function webdavGet(
       davError,
     })
   }
-  return {
-    data: await res.arrayBuffer(),
-    etag: res.headers.get("ETag") ?? undefined,
-  }
+  return res.arrayBuffer()
 }
 
 /**
  * Thin adapter: binds the pure `webdavPutAtomic` (`webdavAtomicWrite.ts`) to
  * the configured `webdavFetch` transport (native → CapacitorHttp, web →
- * fetch, §3.3). All policy — the exactly-once temp cleanup, the
- * destination-scoped `If` precondition forwarding, ConflictError-on-412/404,
- * and pre-MOVE live validation — lives in the pure module and is pinned by
- * tests/webdavAtomicWrite.test.ts.
+ * fetch, §3.3). All policy — the exactly-once temp cleanup, the precondition
+ * ladder and its per-server learning, the pre-MOVE destination re-check,
+ * ConflictError-on-412/404, and pre-MOVE live validation — lives in the pure
+ * modules and is pinned by tests/webdavAtomicWrite.test.ts.
  */
 function webdavPutAtomicViaAppFetch(
   baseUrl: string,
@@ -263,11 +276,34 @@ function webdavPutAtomicViaAppFetch(
   data: ArrayBuffer,
   user: string,
   token: string,
-  etag?: string,
+  validators: DestinationValidators | undefined,
   opts?: AtomicWriteOptions,
   fetchImpl: PushSyncDeps["webdavFetch"] = _pushDeps.webdavFetch,
 ) {
-  return webdavPutAtomic(baseUrl, filePath, data, user, token, etag, fetchImpl, WEBDAV_TIMEOUT, opts)
+  return webdavPutAtomic(baseUrl, filePath, data, user, token, validators, fetchImpl, WEBDAV_TIMEOUT, opts)
+}
+
+/**
+ * The destination's validators, or `undefined` when the server publishes none
+ * (a read that failed or found no validators). A VANISHED destination is
+ * deliberately also `undefined` here: the GET that follows reports a missing
+ * file through the ordinary skip path, so there is one place that decides what
+ * "the file is gone" means.
+ */
+async function readPushBaseline(
+  baseUrl: string,
+  davPath: string,
+  user: string,
+  token: string,
+  fetchImpl: PushSyncDeps["webdavFetch"] = _pushDeps.webdavFetch,
+): Promise<DestinationValidators | undefined> {
+  const read = await readDestinationValidators(
+    fetchImpl,
+    buildWebdavUrl(baseUrl, davPath),
+    authHeaders(user, token),
+    WEBDAV_TIMEOUT,
+  )
+  return read.kind === "ok" ? read.validators : undefined
 }
 
 async function getNavidromeConfig(): Promise<NavidromeConfig | null> {
@@ -564,7 +600,12 @@ export interface WebdavSyncResult {
   failed: number
   skipped: number
   wrongServer: number
+  /** Rows committed with NO collision check at all — the server published no
+   *  ETag/last-modified to guard with and to re-check against. */
   blindOverwrite: number
+  /** Rows committed with only the pre-MOVE destination re-check: this server
+   *  accepted no precondition, so the guard was the client's own read. */
+  revalidated?: number
   /** Rows written remotely AND kept `pending_sync` because a newer live edit landed during the push (W-02/W9). */
   repended?: number
   /** Rows written remotely whose local DB/cache update failed (W-02/W2). */
@@ -757,6 +798,9 @@ export async function runManualWebDAVSync(
   // each other silently.
   const committedPaths = new Set<string>()
   const rowOutcomes: PushRowOutcome[] = []
+  // The precondition rung this server accepted, learned from the first row that
+  // committed and reused for the rest of the run (see webdavPreconditions.ts).
+  let learnedPrecondition: PreconditionKind | undefined
 
   // Save a running checkpoint so an interrupted app restart knows a push was in flight (W-09).
   await deps.persistPushReport({
@@ -841,6 +885,7 @@ export async function runManualWebDAVSync(
     let attempts = 0
     let recoveredConflict = false
     let precondition: PreconditionKind | undefined
+    let moveAttempts = 0
     let tempCleanup: TempCleanupStatus | undefined
     let remoteState: "not-attempted" | "not-committed" | "committed" | "unknown" = "not-attempted"
 
@@ -867,8 +912,12 @@ export async function runManualWebDAVSync(
       }
 
       attempts = 1
+      // The collision baseline, read BEFORE the bytes it will describe: a
+      // baseline taken afterwards would let a writer that landed in between be
+      // silently overwritten (see webdavAtomicWrite.ts).
       currentStage = "get-headers"
-      const { data: raw, etag } = await webdavGet(
+      const validators = await readPushBaseline(webdavUrl, davPath, webdavUser, webdavToken, deps.webdavFetch)
+      const raw = await webdavGet(
         webdavUrl,
         davPath,
         webdavUser,
@@ -917,7 +966,7 @@ export async function runManualWebDAVSync(
 
       currentStage = "put-temp"
       remoteState = "not-committed"
-      let writeOutcome: { guarded: boolean; precondition?: PreconditionKind }
+      let writeOutcome: AtomicWriteOutcome
       try {
         writeOutcome = await webdavPutAtomicViaAppFetch(
           webdavUrl,
@@ -925,9 +974,10 @@ export async function runManualWebDAVSync(
           modified,
           webdavUser,
           webdavToken,
-          etag,
+          validators,
           {
             ...(deps.useUniqueTempToken ? { runToken: `${runId}-a1` } : {}),
+            ...(learnedPrecondition ? { startAt: learnedPrecondition } : {}),
             beforeMove: checkBeforeMove,
           },
           deps.webdavFetch,
@@ -978,7 +1028,14 @@ export async function runManualWebDAVSync(
 
           attempts = 2
           currentStage = "get-headers"
-          const { data: refreshed, etag: newEtag } = await webdavGet(
+          const retryValidators = await readPushBaseline(
+            webdavUrl,
+            davPath,
+            webdavUser,
+            webdavToken,
+            deps.webdavFetch,
+          )
+          const refreshed = await webdavGet(
             webdavUrl,
             davPath,
             webdavUser,
@@ -1024,9 +1081,10 @@ export async function runManualWebDAVSync(
               reModified,
               webdavUser,
               webdavToken,
-              newEtag,
+              retryValidators,
               {
                 ...(deps.useUniqueTempToken ? { runToken: `${runId}-a2` } : {}),
+                ...(learnedPrecondition ? { startAt: learnedPrecondition } : {}),
                 beforeMove: checkBeforeMove,
               },
               deps.webdavFetch,
@@ -1064,8 +1122,11 @@ export async function runManualWebDAVSync(
       // Remote MOVE succeeded!
       remoteState = "committed"
       committedPaths.add(davPath)
-      precondition =
-        writeOutcome.precondition ?? (writeOutcome.guarded ? "guarded" : etag ? "unsafe-etag" : "absent-etag")
+      // The rung this server accepted — the next row starts there instead of
+      // re-walking the ladder (and re-paying its 412s).
+      precondition = writeOutcome.precondition
+      learnedPrecondition = writeOutcome.precondition
+      moveAttempts += writeOutcome.moveAttempts
 
       // W-02 / W2 / W9: Reconcile local DB and in-memory metadataCache independently
       // of remote commit so a DB failure never masks the committed remote write.
@@ -1087,6 +1148,7 @@ export async function runManualWebDAVSync(
           disposition: keepPending ? "written-repended" : "written-synced",
           stage: "local-reconcile",
           attempts,
+          moveAttempts,
           recoveredConflict,
           precondition,
           remoteState: "committed",
@@ -1105,6 +1167,7 @@ export async function runManualWebDAVSync(
           disposition: "written-local-failed",
           stage: "local-reconcile",
           attempts,
+          moveAttempts,
           recoveredConflict,
           precondition,
           remoteState: "committed",
@@ -1237,6 +1300,7 @@ export async function runManualWebDAVSync(
     skipped: counts.skipped,
     wrongServer: counts.skippedWrongServer,
     blindOverwrite: counts.blindOverwrite,
+    revalidated: counts.revalidatedCount,
     repended: counts.writtenRepended,
     localFailed: counts.writtenLocalFailed,
     unknownOutcomes: counts.unknownOutcomes,

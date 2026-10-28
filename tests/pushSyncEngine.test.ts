@@ -14,6 +14,24 @@ import { webdavBaseKey, WebdavTransportError, type WebdavResponse } from '../src
 import type { LocalMetadataStore } from '../src/lib/db'
 import type { PushRunReport } from '../src/lib/pushOutcome'
 
+/**
+ * The write core reads the destination's validators from PROPFIND before it
+ * touches anything (`webdavPreconditions.ts`) — that read is also the baseline
+ * the pre-MOVE re-check compares against. These harnesses answer it with a
+ * fixed, unchanged destination unless a case deliberately overrides it, so the
+ * rows below exercise the real guarded path (rung 1, `tagged-if`).
+ */
+function validatorXml(etag: string): string {
+  return '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response>'
+    + `<d:getetag>${etag}</d:getetag>`
+    + '<d:getlastmodified>Mon, 01 Jan 2024 00:00:00 GMT</d:getlastmodified>'
+    + '</d:response></d:multistatus>'
+}
+
+const VALIDATOR_XML = validatorXml('"e1"')
+/** The same destination after another writer replaced it. */
+const VALIDATOR_XML_CHANGED = validatorXml('"e2"')
+
 const BASE_URL = 'https://dav.example/remote.php/dav/files/alice/'
 const USER = 'alice'
 const TOKEN = 'secret'
@@ -146,6 +164,7 @@ test('W1 / W-01: mixed HTTP and stage failures preserve per-row stages, HTTP sta
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (url.includes('Auth.mp3')) {
         return makeRes(401, { 'X-Request-Id': 'req-auth-1' }, 'Unauthorized')
       }
@@ -173,6 +192,12 @@ test('W1 / W-01: mixed HTTP and stage failures preserve per-row stages, HTTP sta
   assert.equal(byId.get('t-auth')?.error?.status, 401)
   assert.equal(byId.get('t-auth')?.error?.requestId, 'req-auth-1')
 
+  // The destination read and the body read both send `no-cache`: the body IS
+  // the payload the write's guard is anchored to, and a cached pair (stale body
+  // + fresh baseline) would let an older payload overwrite a newer file.
+  assert.equal(h.calls.find((c) => c.method === 'GET')?.headers['Cache-Control'], 'no-cache')
+  assert.equal(h.calls.find((c) => c.method === 'PROPFIND')?.headers['Cache-Control'], 'no-cache')
+
   assert.equal(byId.get('t-lock')?.disposition, 'failed-move')
   assert.equal(byId.get('t-lock')?.stage, 'move')
   assert.equal(byId.get('t-lock')?.error?.status, 423)
@@ -198,6 +223,7 @@ test('W2 / W-02: post-MOVE local DB failure reports written-local-failed instead
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       return makeRes(method === 'GET' ? 200 : 201, { ETag: '"e1"' })
     },
     upsertMetadata: async () => {
@@ -234,6 +260,7 @@ test('W3 / W-04: mid-flight live discard or path change after GET/TagLib aborts 
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (url.includes('Two.mp3.mmdrome-tmp') && method === 'PUT') {
         // User re-binds row2 to a different file while temp PUT is finishing, right before MOVE!
         const live2 = h.liveMap.get('t-rebound-before-move')!
@@ -324,6 +351,7 @@ test('W6 / W-02: lost MOVE response records unknown-outcome and does not mark ro
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (method === 'MOVE') {
         throw new WebdavTransportError('Request timed out during MOVE', {
           method: 'MOVE',
@@ -354,23 +382,35 @@ test('W6 / W-02: lost MOVE response records unknown-outcome and does not mark ro
   assert.equal(outcome?.error?.category, 'timeout')
 })
 
-test('W8 / W-08: progressdone is monotonic and never exceeds total even on 412 conflict retry', async () => {
-  const row1 = makeRow('t-retry', 'Album/Retry.mp3')
-  const row2 = makeRow('t-second', 'Album/Second.mp3')
+test('W8 / W-08: a refused precondition escalates without a second upload; a real concurrent write still recovers', async () => {
+  // The two 412 shapes side by side, which is the whole 2026-10-27 fix:
+  //  - Retry.mp3's server refuses the destination-tagged `If` on EVERY MOVE
+  //    while the destination is UNCHANGED — a dialect rejection, so the row
+  //    escalates to the next rung and re-MOVEs the temp already uploaded.
+  //  - Second.mp3 is genuinely replaced while its temp is uploading, so the
+  //    pre-MOVE re-check refuses it and the caller's recovery re-reads and
+  //    re-tags the OTHER writer's bytes (the only path that uploads twice).
+  const row1 = makeRow('t-escalate', 'Album/Retry.mp3')
+  const row2 = makeRow('t-conflict', 'Album/Second.mp3')
   const h = createHarness([row1, row2])
-  let moveCount = 0
+  let conflictReads = 0
   const progressEvents: Array<{ done: number; total: number; title: string }> = []
 
   __setPushSyncDeps({
     ...h.deps,
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
-      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
-      if (method === 'MOVE' && url.includes('Retry.mp3')) {
-        moveCount++
-        if (moveCount === 1) return makeRes(412)
+      const headers = (options.headers ?? {}) as Record<string, string>
+      h.calls.push({ method, url, headers })
+      if (method === 'PROPFIND') {
+        if (url.includes('Second.mp3')) {
+          conflictReads++
+          return makeRes(207, {}, conflictReads >= 2 ? VALIDATOR_XML_CHANGED : VALIDATOR_XML)
+        }
+        return makeRes(207, {}, VALIDATOR_XML)
       }
-      return makeRes(method === 'GET' ? 200 : 201, { ETag: `"e-${moveCount}"` })
+      if (method === 'MOVE' && url.includes('Retry.mp3') && headers.If !== undefined) return makeRes(412)
+      return makeRes(method === 'GET' ? 200 : 201, { ETag: '"e1"' })
     },
   })
 
@@ -380,8 +420,24 @@ test('W8 / W-08: progressdone is monotonic and never exceeds total even on 412 c
     },
   })
   assert.equal(res.synced, 2)
-  assert.equal(res.report?.rows[0]?.attempts, 2)
-  assert.equal(res.report?.rows[0]?.recoveredConflict, true)
+  assert.equal(res.failed, 0)
+  assert.equal(res.blindOverwrite, 0)
+
+  const [escalated, conflicted] = res.report!.rows
+  assert.equal(escalated.disposition, 'written-synced')
+  assert.equal(escalated.precondition, 'if-match', 'the refused rung is replaced, not repeated')
+  assert.equal(escalated.moveAttempts, 2)
+  assert.equal(escalated.attempts, 1, 'no caller-level retry was needed')
+  assert.equal(escalated.recoveredConflict, false)
+
+  assert.equal(conflicted.disposition, 'written-synced')
+  assert.equal(conflicted.attempts, 2)
+  assert.equal(conflicted.recoveredConflict, true)
+
+  const puts = (file: string) => h.calls.filter((c) => c.method === 'PUT' && c.url.includes(file)).length
+  assert.equal(puts('Retry.mp3'), 1, 'a refused precondition costs NO second upload')
+  assert.equal(puts('Second.mp3'), 2, 'a genuine concurrent write must re-upload the merged bytes')
+
   for (let i = 0; i < progressEvents.length; i++) {
     assert.ok(progressEvents[i].done <= progressEvents[i].total, `done (${progressEvents[i].done}) <= total (${progressEvents[i].total})`)
     if (i > 0) {
@@ -399,6 +455,7 @@ test('W9 / W-02: newer local edit during push keeps row pending_sync and reports
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (method === 'MOVE') {
         // User changes rating to 100 while MOVE is in flight!
         h.liveMap.set('t-repend', {
@@ -435,6 +492,7 @@ test('W10 / W-10: cancellation records unprocessed-cancelled rows and Navidrome 
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (method === 'MOVE' && url.includes('1.mp3')) {
         cancelNow = true
       }
@@ -472,6 +530,7 @@ test('W-01: a TagLib failure is reported as failed-taglib and no PUT is ever att
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       return makeRes(200, { ETag: '"e1"' })
     },
   })
@@ -494,6 +553,7 @@ test('W-01: a GET 404/410 is a no-write skip (file gone), not a failure', async 
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (method === 'GET') return makeRes(404)
       return makeRes(201, { ETag: '"e1"' })
     },
@@ -517,6 +577,7 @@ test('W-05: a network-level PUT rejection reports failed-put/network and uploads
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (method === 'PUT') throw new TypeError('Failed to fetch')
       return makeRes(200, { ETag: '"e1"' })
     },
@@ -540,6 +601,7 @@ test('W-05: a native transport rejection keeps its domain/code and its phase', a
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (method === 'GET') {
         throw new WebdavTransportError('The request timed out.', {
           method: 'GET',
@@ -572,6 +634,7 @@ test('W-08: a MOVE 500 exhausts the conflict path as failed-move with its temp c
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (method === 'MOVE') return makeRes(500, {}, 'Internal Server Error')
       return makeRes(200, { ETag: '"e1"' })
     },

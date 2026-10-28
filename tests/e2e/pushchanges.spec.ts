@@ -198,6 +198,46 @@ test('a 412 on MOVE (concurrent writer) is retried once: re-GET, re-modify, succ
   expect(finalBytes.indexOf(Buffer.from('POPM'))).toBeGreaterThan(-1)
 })
 
+test('a concurrent write during the upload is merged, not clobbered, on a server that honours no precondition', async ({ page }) => {
+  await bootApp(page)
+  await mockSubsonic(page)
+  const dav = await installWebdavMock(page, { baseUrl: DAV_BASE, files: fixtureFiles() })
+  const readsAfterScan = await preparePendingRating(page, dav)
+
+  // No precondition is enforced by this server: the only thing standing between
+  // the concurrent writer and a clobber is the client's own re-check, taken as
+  // late as possible before the rename.
+  dav.setPreconditionDialect('ignored')
+  const concurrentBytes = buildMp3Fixture({ title: 'Song One', artist: 'Concurrent Writer', album: 'Album X', track: 1, frames: 14 })
+  dav.armConflict('Song One.mp3', 1, concurrentBytes, 'put')
+
+  await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Write ratings to WebDAV files?' })).toBeVisible()
+  await page.getByRole('button', { name: 'Write to files' }).click()
+  const result = page.getByText(/Pushed 1 track/)
+  await expect(result).toBeVisible({ timeout: 30_000 })
+  await expect(result).not.toContainText('failed')
+
+  // The refused attempt is visible as work, not as a clobber: the destination
+  // was RE-READ (one extra GET), the merged bytes were re-uploaded (2 PUTs) and
+  // the refused temp was cleaned up exactly once.
+  expect(dav.getConflictCount(), 'the concurrent write fired once').toBe(1)
+  expect(dav.getReadCount(), 'initial GET + the recovery re-read').toBe(readsAfterScan + 2)
+  expect(dav.getPutCount(), 'the refused attempt and the merged retry').toBe(2)
+  expect(dav.getDeleteCount(), 'the refused attempt cleaned its temp').toBe(1)
+  expect(dav.getMoveCount(), 'one MOVE, after the merge').toBe(1)
+
+  // The other writer's bytes are the ones our tags were written INTO: the file
+  // is no longer the fixture the push started from, the concurrent writer's own
+  // artist frame survives (it is UTF-8 in the fixture, so the text is in
+  // there), and our POPM landed on top of it.
+  const finalBytes = dav.bytesOf('Song One.mp3')!
+  const original = fixtureFiles().find((f) => f.path === 'Song One.mp3')!.bytes
+  expect(finalBytes.equals(original), 'the bytes we started from were not what got committed').toBe(false)
+  expect(finalBytes.includes(Buffer.from('Concurrent Writer')), 'the other writer\'s bytes survived').toBe(true)
+  expect(finalBytes.indexOf(Buffer.from('POPM'))).toBeGreaterThan(-1)
+})
+
 test('a refused MOVE surfaces its cause in the result line and leaves no temp behind', async ({ page }) => {
   await bootApp(page)
   await mockSubsonic(page)

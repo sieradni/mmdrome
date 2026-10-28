@@ -1,6 +1,11 @@
 import type { Page } from '@playwright/test'
 
 /**
+ * Which MOVE precondition forms this fake server honours. See the module doc.
+ */
+export type WebdavPreconditionDialect = 'tagged-if' | 'ignored'
+
+/**
  * Route-mocked WebDAV server for the e2e specs (File Matching / rescan heal +
  * Push Changes). The app runs the REAL bundle against this fake server at the
  * network layer (Playwright fulfills, so the cross-origin fake host never
@@ -8,12 +13,23 @@ import type { Page } from '@playwright/test'
  * route-mocked Subsonic in sync.spec.ts).
  *
  * State is MUTABLE, like a real server:
- * - `PROPFIND` (any Depth) → a flat `DAV:` multistatus listing the collection
- *   plus every non-temp file with an exact `getcontentlength` and a stable
- *   `getlastmodified` (the two values the scan's cache-freshness predicate
- *   keys on). mtime advances on MOVE so a post-push scan re-probes.
- * - `GET` (Range ignored) → the full current bytes + an `ETag`, so Push's
- *   concurrency check (GET etag → PUT temp → conditional MOVE) is real.
+ * - `PROPFIND Depth: 0` → ONE response for the requested resource with its
+ *   `getetag` + `getlastmodified` (404 when it is gone). This is what the write
+ *   core reads: the destination's validators, from where the server itself
+ *   publishes them, immediately before it replaces the file.
+ * - `PROPFIND` (other Depth) → a flat `DAV:` multistatus listing the collection
+ *   plus every non-temp file with an exact `getcontentlength`, a
+ *   `getlastmodified` and a `getetag` (the scan's cache-freshness predicate
+ *   keys on the first two). mtime advances on MOVE so a post-push scan
+ *   re-probes.
+ * - `GET` (Range ignored) → the full current bytes + an `ETag`.
+ * - `setPreconditionDialect(mode)` selects which MOVE precondition forms the
+ *   server honours: `tagged-if` (the default, RFC 4918 — the tagged list
+ *   guards the destination while `If-Match` is scoped to the SOURCE, as
+ *   sabre/dav does) or `ignored` (no precondition is evaluated at all, so only
+ *   the client's own pre-MOVE re-check can refuse a concurrent write; the
+ *   ladder's behaviour against a server that REFUSES the tagged dialect is
+ *   covered on a real socket in `realservers.spec.ts`).
  * - `PUT` → stores the body under the request path (temp file), assigns a new
  *   etag, returns 201 + ETag.
  * - `MOVE` → evaluates preconditions the way RFC 7232 / RFC 4918 and the real
@@ -79,15 +95,22 @@ function escapeXml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }
 
-export function multistatusXml(baseUrl: string, files: Array<{ path: string; size: number; mtime: string }>): string {
+export function multistatusXml(
+  baseUrl: string,
+  files: Array<{ path: string; size: number; mtime: string; etag?: string }>,
+  opts: { withCollection?: boolean } = {},
+): string {
   const responses = [
     // The collection itself (so Depth:1 crawls never trigger).
-    `<d:response><d:href>${escapeXml(baseUrl)}</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`,
+    ...(opts.withCollection === false
+      ? []
+      : [`<d:response><d:href>${escapeXml(baseUrl)}</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`]),
     ...files.map((f) => (
       `<d:response><d:href>${escapeXml(`${baseUrl}${f.path}`)}</d:href>`
       + `<d:propstat><d:prop>`
       + `<d:getcontentlength>${f.size}</d:getcontentlength>`
       + `<d:getlastmodified>${f.mtime}</d:getlastmodified>`
+      + (f.etag ? `<d:getetag>${escapeXml(f.etag)}</d:getetag>` : '')
       + `<d:resourcetype/>`
       + `</d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`
     )),
@@ -105,13 +128,21 @@ export interface WebdavMockStats {
   bytesOf: (path: string) => Buffer | undefined
   /** All stored relative paths — lets specs assert no temp orphan remains. */
   storedPaths: () => string[]
-  /** Opt-in: the first `times` MOVEs on `destPath` mutate the stored file
-   *  (concurrent-writer replay: new bytes + etag + mtime) and return 412.
+  /** Opt-in: the first `times` writers on `destPath` mutate the stored file
+   *  (concurrent-writer replay: new bytes + etag + mtime). `when: 'move'` (the
+   *  default) replays it inside the MOVE — the writer lands between the client's
+   *  read and the rename — and answers 412. `when: 'put'` replays it when the
+   *  client's TEMP upload lands, i.e. while the client is still working: the
+   *  case only the pre-MOVE re-check can catch, which is what makes the
+   *  collision check portable to a server that honours no precondition at all.
    *  `bytes` should be VALID parseable audio (a realistic concurrent writer —
-   *  e.g. MusicBee — leaves a playable file, and Push's retry re-modifies
+   *  e.g. MusicBee — leaves a playable file, and Push's recovery re-modifies
    *  whatever it re-GETs). Returns the etag the concurrent writer leaves
    *  behind — the etag a correct client must re-GET to eventually succeed. */
-  armConflict: (destPath: string, times?: number, bytes?: Buffer) => string
+  armConflict: (destPath: string, times?: number, bytes?: Buffer, when?: 'move' | 'put') => string
+  /** Selects which precondition forms the server honours (see the module doc).
+   *  Default: `tagged-if`. */
+  setPreconditionDialect: (mode: WebdavPreconditionDialect) => void
   /** Delay every GET by `ms` (slow-server simulation); pass 0 to restore. */
   setGetDelay: (ms: number) => void
   /** How many 412s the mock actually served (spec asserts the arm fired). */
@@ -153,7 +184,14 @@ export async function installWebdavMock(
   // Conflict arms, keyed by the DESTINATION relative path. Two entries: how
   // many 412s remain, and the etag the concurrent writer leaves behind — the
   // etag a correct client MUST capture via re-GET to eventually succeed.
-  const conflictArms = new Map<string, { remaining: number; newEtag: string; newBytes: Buffer }>()
+  const conflictArms = new Map<string, { remaining: number; newEtag: string; newBytes: Buffer; when: 'move' | 'put' }>()
+  let dialect: WebdavPreconditionDialect = 'tagged-if'
+  /** The destination a temp path belongs to (run token and suffix stripped). */
+  const destKeyOfTemp = (rel: string): string => {
+    const base = rel.endsWith(MMDROME_TMP_SUFFIX) ? rel.slice(0, -MMDROME_TMP_SUFFIX.length) : rel
+    const withoutToken = base.replace(/\.[A-Za-z0-9_-]+$/, '')
+    return conflictArms.has(withoutToken) && !conflictArms.has(base) ? withoutToken : base
+  }
   /** Forced MOVE failures, keyed by destination relative path. */
   const moveFailureArms = new Map<string, { remaining: number; status: number }>()
   /** Concurrent-deleter arms, keyed by destination relative path. */
@@ -193,9 +231,24 @@ export async function installWebdavMock(
     }
     if (method === 'PROPFIND') {
       propfinds++
+      const depth = (req.headers()['depth'] ?? '').trim().toLowerCase()
+      if (depth === '0') {
+        // The write core's validator read: the resource itself, nothing else.
+        const file = rel ? store.get(rel) : undefined
+        if (!file) {
+          await route.fulfill({ status: 404, headers: CORS, body: 'not found' })
+          return
+        }
+        await route.fulfill({
+          status: 207,
+          headers: { ...CORS, 'Content-Type': 'application/xml; charset=utf-8' },
+          body: multistatusXml(baseUrl, [{ path: rel!, size: file.bytes.length, mtime: file.mtime, etag: file.etag }], { withCollection: false }),
+        })
+        return
+      }
       const listing = [...store.entries()]
         .filter(([path]) => !path.endsWith(MMDROME_TMP_SUFFIX))
-        .map(([path, f]) => ({ path, size: f.bytes.length, mtime: f.mtime }))
+        .map(([path, f]) => ({ path, size: f.bytes.length, mtime: f.mtime, etag: f.etag }))
       await route.fulfill({
         status: 207,
         headers: { ...CORS, 'Content-Type': 'application/xml; charset=utf-8' },
@@ -217,7 +270,12 @@ export async function installWebdavMock(
       if (getDelayMs > 0) await new Promise((r) => setTimeout(r, getDelayMs))
       await route.fulfill({
         status: 200,
-        headers: { ...CORS, 'Content-Type': 'audio/mpeg', 'Accept-Ranges': 'bytes', ETag: file.etag },
+        headers: {
+          ...CORS,
+          'Content-Type': 'audio/mpeg',
+          'Accept-Ranges': 'bytes',
+          ETag: file.etag,
+        },
         body: file.bytes,
       })
       return
@@ -235,6 +293,15 @@ export async function installWebdavMock(
       puts++
       const etag = `"etag-${++etagCounter}"`
       store.set(rel, { bytes: body, etag, mtime: MTIME })
+      // A writer landing WHILE the client uploads its temp: the destination is
+      // replaced behind the client's back, before it ever sends a MOVE. The
+      // arm keys on the destination, so derive it from the temp path.
+      const armedPut = conflictArms.get(destKeyOfTemp(rel))
+      if (armedPut && armedPut.when === 'put' && armedPut.remaining > 0) {
+        armedPut.remaining--
+        conflictsServed++
+        store.set(destKeyOfTemp(rel), { bytes: armedPut.newBytes, etag: armedPut.newEtag, mtime: MTIME_AFTER_WRITE })
+      }
       await route.fulfill({ status: 201, headers: { ...CORS, ETag: etag }, body: '' })
       return
     }
@@ -262,7 +329,7 @@ export async function installWebdavMock(
       // below is evaluated against the POST-mutation state (capturing the
       // snapshot before the mutation would wrongly let the stale etag match).
       const arm = conflictArms.get(destRel)
-      if (arm && arm.remaining > 0) {
+      if (arm && arm.when === 'move' && arm.remaining > 0) {
         arm.remaining--
         conflictsServed++
         store.set(destRel, { bytes: arm.newBytes, etag: arm.newEtag, mtime: MTIME_AFTER_WRITE })
@@ -287,22 +354,37 @@ export async function installWebdavMock(
         await route.fulfill({ status: forced.status, headers: CORS, body: 'move refused' })
         return
       }
-      // RFC 7232 §3.1: If-Match is evaluated against the TARGET RESOURCE = the
-      // request URI. For a temp-file MOVE that is the SOURCE, never the
-      // Destination (sabre/dav: Server::checkPreconditions → getNodeForPath
-      // ($request->getPath())). Comparing the destination etag here — which this
-      // mock used to do — is what made a broken client pass.
-      const ifMatch = requestHeaders['if-match']
-      if (ifMatch) {
-        const sourceNow = store.get(rel)
-        if (!sourceNow || sourceNow.etag !== ifMatch.trim()) {
-          await route.fulfill({ status: 412, headers: CORS, body: 'If-Match failed on the source' })
-          return
+      // `ignored`: a server that evaluates no precondition at all — every MOVE
+      // succeeds whatever guard the client sent, so the only thing protecting
+      // the destination is the client's own pre-MOVE re-check.
+      const ifHeader = requestHeaders['if']
+      if (dialect !== 'ignored') {
+        const ifMatch = requestHeaders['if-match']
+        if (ifMatch) {
+          // RFC 7232 §3.1: If-Match is evaluated against the TARGET RESOURCE =
+          // the request URI — for a temp-file MOVE that is the SOURCE, never the
+          // destination (sabre/dav: Server::checkPreconditions →
+          // getNodeForPath($request->getPath())). Comparing the destination
+          // etag here — which this mock used to do — let a broken client pass.
+          const node = store.get(rel)
+          if (!node || node.etag !== ifMatch.trim()) {
+            await route.fulfill({ status: 412, headers: CORS, body: 'If-Match failed' })
+            return
+          }
+        }
+        const ifUnmodified = requestHeaders['if-unmodified-since']
+        if (ifUnmodified) {
+          const node = store.get(destRel)
+          const modifiedAt = node ? Date.parse(node.mtime) : Number.NaN
+          if (!node || !(modifiedAt <= Date.parse(ifUnmodified))) {
+            await route.fulfill({ status: 412, headers: CORS, body: 'If-Unmodified-Since failed' })
+            return
+          }
         }
       }
       // RFC 4918 §10.4.1: a TAGGED If list names the resource it applies to.
       // This is the destination guard; an untagged list would be the source.
-      for (const condition of parseIfHeader(requestHeaders['if'] ?? '', rel, toRel)) {
+      for (const condition of parseIfHeader(ifHeader ?? '', rel, toRel)) {
         // A condition must be a state-token or a BRACKETED etag (RFC 4918
         // List/Condition). A bare parenthesized string is not a condition:
         // servers either reject the header or parse no condition and run the
@@ -350,10 +432,13 @@ export async function installWebdavMock(
     getConflictCount: () => conflictsServed,
     bytesOf: (path: string) => store.get(path)?.bytes,
     storedPaths: () => [...store.keys()],
-    armConflict: (destPath: string, times = 1, bytes = Buffer.from('conflict-write')) => {
+    armConflict: (destPath: string, times = 1, bytes = Buffer.from('conflict-write'), when: 'move' | 'put' = 'move') => {
       const newEtag = `"etag-${++etagCounter}"`
-      conflictArms.set(destPath, { remaining: times, newEtag, newBytes: bytes })
+      conflictArms.set(destPath, { remaining: times, newEtag, newBytes: bytes, when })
       return newEtag
+    },
+    setPreconditionDialect: (mode: WebdavPreconditionDialect) => {
+      dialect = mode
     },
     /** Delay every GET by `ms` (slow-server simulation); pass 0 to restore. */
     setGetDelay: (ms: number) => {

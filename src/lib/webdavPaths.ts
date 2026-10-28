@@ -55,19 +55,52 @@ export function isTempFile(filename: string): boolean {
 }
 
 /**
+ * WebDAV `If` condition grammar (RFC 4918 §10.4.1): `[ entity-tag ]`.
+ *
+ * The bracketed form is the one sabre/dav parses (`[^\]]*` capture), so an
+ * etag containing `]` — or one that is not a quoted tag at all — CANNOT be
+ * expressed here. Callers must fall back to another guard rather than emit a
+ * header some servers answer with 400.
+ */
+const IF_TAG_ETAG = /^(?:W\/)?"[^"\]]*"$/
+
+/**
+ * HTTP `entity-tag` grammar (RFC 9110 §8.8.3): `[ weak ] DQUOTE *etagc DQUOTE`,
+ * where `etagc` is `%x21 / %x23-7E / obs-text`. Broader than the WebDAV `If`
+ * form — `]` and `[` are legal here — which is why an etag the tagged list
+ * cannot carry can still guard a request through `If-Match`.
+ */
+const HTTP_ENTITY_TAG = /^(?:W\/)?"[\x21\x23-\x7E\x80-\uFFFF]*"$/
+
+/** Control characters are not transportable in a header value, in any grammar. */
+const HEADER_UNSAFE = /[\u0000-\u001f\u007f]/
+
+/** True when `etag` can be carried by a WebDAV `If` tagged list. */
+export function expressibleIfEtag(etag: string | null | undefined): boolean {
+  return !!etag && IF_TAG_ETAG.test(etag) && !HEADER_UNSAFE.test(etag)
+}
+
+/** True when `etag` can be carried by an HTTP `If-Match` / `If-None-Match`. */
+export function isHttpEntityTag(etag: string | null | undefined): boolean {
+  return !!etag && HTTP_ENTITY_TAG.test(etag) && !HEADER_UNSAFE.test(etag)
+}
+
+/**
  * Conditional-MOVE precondition (RFC 4918 §10.4.1 tagged list):
  * `If: <destination-url> (["etag"])`.
  *
  * `If-Match` is evaluated against the request URI — for a temp-file MOVE that
  * is the `.mmdrome-tmp` source (`Server::checkPreconditions` in sabre/dav), so
- * sending the destination's ETag in `If-Match` 412s every guarded row. A
- * tagged `If` list scopes the ETag check to the destination URI instead.
+ * a destination etag there 412s a guarded row on that class of server. The
+ * tagged `If` list scopes the check to the destination URI instead, which is
+ * why it is the FIRST rung of the write's precondition ladder
+ * (`webdavPreconditions.ts`); `If-Match` remains available further down it for
+ * servers that evaluate untagged preconditions against the destination.
  * Returns `null` when the ETag or URL cannot be safely expressed in the
- * grammar (unquoted, contains `]` or control chars), degrading to an honest
- * blind overwrite (`guarded: false`).
+ * grammar (unquoted, contains `]` or control chars).
  */
 export function webdavIfHeader(destinationUrl: string, etag: string | null | undefined): string | null {
   if (!etag || /[<>\s]/.test(destinationUrl)) return null
-  if (!/^(?:W\/)?"[^"\]]*"$/.test(etag) || /[\u0000-\u001f\u007f]/.test(etag)) return null
+  if (!expressibleIfEtag(etag)) return null
   return `<${destinationUrl}> ([${etag}])`
 }

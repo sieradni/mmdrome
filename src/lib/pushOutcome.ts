@@ -14,7 +14,8 @@ import {
   shouldSkipBeforePut,
   type PushRowBucket,
 } from './pushReconcile'
-import type { PreconditionKind, TempCleanupStatus } from './webdavAtomicWrite'
+import type { TempCleanupStatus } from './webdavAtomicWrite'
+import type { PreconditionKind } from './webdavPreconditions'
 
 export type PushStage =
   | 'classify'
@@ -83,6 +84,8 @@ export interface PushRowOutcome {
   disposition: PushRowDisposition
   stage: PushStage
   attempts: number
+  /** MOVEs the guard ladder needed (1 = the first rung was accepted). */
+  moveAttempts?: number
   recoveredConflict: boolean
   precondition?: PreconditionKind
   remoteState: PushRemoteState
@@ -125,10 +128,12 @@ export interface PushRunCounts {
   failed: number
   /** Rows not processed because the user cancelled between rows. */
   unprocessedCancelled: number
-  /** Rows that wrote without an `If` precondition (`absent-etag` or `unsafe-etag`). */
+  /** Rows committed with no collision check at all (`precondition: 'blind'`). */
   blindOverwrite: number
-  absentEtagCount: number
-  unsafeEtagCount: number
+  /** Rows committed with only the pre-MOVE destination re-check
+   *  (`precondition: 'revalidated'`) — no server-enforced guard. */
+  revalidatedCount: number
+  /** Rows the SERVER guarded against a concurrent write (any ladder rung). */
   guardedWriteCount: number
   /** Total rows from this batch that remain `pending_sync` after the run. */
   remainingPending: number
@@ -192,8 +197,7 @@ export function summarizePushOutcomes(rows: readonly PushRowOutcome[]): PushRunC
     failed: 0,
     unprocessedCancelled: 0,
     blindOverwrite: 0,
-    absentEtagCount: 0,
-    unsafeEtagCount: 0,
+    revalidatedCount: 0,
     guardedWriteCount: 0,
     remainingPending: 0,
   }
@@ -201,14 +205,9 @@ export function summarizePushOutcomes(rows: readonly PushRowOutcome[]): PushRunC
   for (const r of rows) {
     if (r.remoteState === 'committed') {
       counts.remoteCommitted++
-      if (r.precondition === 'guarded') counts.guardedWriteCount++
-      else if (r.precondition === 'absent-etag') {
-        counts.absentEtagCount++
-        counts.blindOverwrite++
-      } else if (r.precondition === 'unsafe-etag') {
-        counts.unsafeEtagCount++
-        counts.blindOverwrite++
-      }
+      if (r.precondition === 'blind') counts.blindOverwrite++
+      else if (r.precondition === 'revalidated') counts.revalidatedCount++
+      else if (r.precondition) counts.guardedWriteCount++
     }
     if (r.recoveredConflict) counts.conflictsRecovered++
     if (r.remainsPending) counts.remainingPending++
