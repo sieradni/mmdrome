@@ -27,7 +27,8 @@
           "date": "2026-10-28T00:09:09.982Z",
           "localizedDescription": "Pushing tag changes now works with the WebDAV servers that rejected the previous conflict check, so edits no longer fail as changed when nothing else touched the file. A scan can also link a song that has un-pushed edits to its file again, instead of only a manual pick.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.2/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5265358
         },
         {
           "version": "1.4.1",
