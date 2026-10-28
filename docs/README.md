@@ -5,6 +5,7 @@ Use this index to find the right guide without needing to know the repository la
 ## Using mmdrome
 
 - [Install and update the iOS app with SideStore](../README.md#ios-app-sidestore)
+- **[Run a build on a real host and read its logs](ON-DEVICE.md)** — one command for the web/phone path and the iOS simulator or device, the real-server exercise, and where the push report comes from.
 - [Project overview and setup](../README.md)
 
 ## Shipping and operating releases

@@ -28,8 +28,17 @@ npm run dev      # development server with HMR
 npm run build    # production build
 npm run preview  # preview production build
 npm run check    # type checking (svelte-check + tsc)
+npm run device   # build + run on a real host (docs/ON-DEVICE.md)
 npm run deploy   # deploy to GitHub Pages
 ```
+
+`npm run device` is the one way to get a build onto a real host and see what it did:
+`--web` builds the real bundle and serves it on your Wi-Fi (add `--fixtures` for a local
+Navidrome + WebDAV to point a phone at, or `--drive` to run the real-server exercise and print
+the app's own log and push report); `--ios` builds, installs and launches on a simulator or a
+connected iPhone and streams its console. Per-platform differences are handled inside the
+command — nothing is dropped for not being available on your machine. The short version, with
+the manual steps per host, is [docs/ON-DEVICE.md](docs/ON-DEVICE.md).
 
 ## iOS app (SideStore)
 

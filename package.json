@@ -10,6 +10,8 @@
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json && tsc -p tsconfig.test.json",
     "test": "node --test --import ./scripts/test-loader.mjs",
     "test:e2e": "playwright test",
+    "device": "node scripts/device.mjs",
+    "fixtures": "node --import ./scripts/test-loader.mjs scripts/serve-fixtures.mjs",
     "build:ios": "node scripts/build-ios.mjs",
     "release:ios": "node scripts/release-ios.mjs",
     "release:full": "node scripts/release-full.mjs",
