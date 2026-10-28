@@ -1001,10 +1001,20 @@ export function findChangedTracks(
 /** Reason an automatic bind (scan auto-match or probe-time reverse-match) was
  *  refused. The eligibility rules are the shared subset of `processItem`'s
  *  guards: never rebind a row that already owns a file, never override a
- *  manual verdict, and never touch a row awaiting push or dismissed. */
+ *  manual verdict, and never touch a dismissed row.
+ *
+ *  A row AWAITING PUSH is refused by `already-bound`, never by its sync status:
+ *  the binding IS the pending edit's push target, so re-matching a bound
+ *  pending row would move the edit onto another file. A pending row with NO
+ *  binding is the opposite case and MUST stay bindable — an un-pushed edit with
+ *  no file can never be pushed at all, so refusing it stranded the user behind
+ *  a manual pick (2026-10-27 field report: `pending_sync` rows riding every
+ *  Push run as `skipped-no-path`). The old `pending-sync` refusal could only
+ *  ever fire on that unlinked case (every path-bearing row is caught by
+ *  `already-bound` first) — do NOT restore it. */
 export type AutoBindDecision =
   | { bindable: true }
-  | { bindable: false; reason: 'track-missing' | 'already-bound' | 'manual' | 'pending-sync' | 'ignored' }
+  | { bindable: false; reason: 'track-missing' | 'already-bound' | 'manual' | 'ignored' }
 
 export function canAutoBind(
   track: Track | undefined,
@@ -1013,7 +1023,6 @@ export function canAutoBind(
   if (!track) return { bindable: false, reason: 'track-missing' }
   if (existing?.webdavPath != null) return { bindable: false, reason: 'already-bound' }
   if (existing?.matchSource === 'manual') return { bindable: false, reason: 'manual' }
-  if (existing?.syncStatus === 'pending_sync') return { bindable: false, reason: 'pending-sync' }
   if (existing?.ignored) return { bindable: false, reason: 'ignored' }
   return { bindable: true }
 }

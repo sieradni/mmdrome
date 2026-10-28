@@ -542,6 +542,29 @@ async function pruneTagCacheForIndex(
   return new Map(pruned.kept.map((entry) => [entry.path, entry]))
 }
 
+/** Attach a file binding to a row and change NOTHING else — the one write a
+ *  scan may apply to a row that carries an un-pushed local edit. The edit's own
+ *  values ARE the row (rating/loved/comments/syncStatus/ignored survive
+ *  verbatim): a scan must LINK such a row — an edit with no file can never be
+ *  pushed, so refusing it left the user with a manual pick as their only
+ *  recovery (2026-10-27 field report) — while never rewriting what the row is
+ *  holding. `matchSource` is cleared because the binding written here is the
+ *  scan's own automatic one (a manual row never reaches these call sites). */
+function writePendingBind(
+  current: LocalMetadataStore,
+  path: string,
+  lastModified: string | undefined,
+  baseKey: string,
+): void {
+  updateMetadata({
+    ...current,
+    webdavPath: path,
+    webdavLastModified: lastModified,
+    webdavBase: baseKey,
+    matchSource: undefined,
+  })
+}
+
 /** Apply a confident reverse match from the probe without doing another file
  * read. The live eligibility check is deliberately repeated here rather than
  * trusting the probe's initial snapshot: a user edit, bind, dismissal, or
@@ -587,6 +610,14 @@ function maybeAutoBindFromProbe(
   // claim the same track or file between their verdict and store write.
   excludedTrackIds.add(track.trackId)
   claimedPaths.add(entry.path)
+  // The edit outranks the file's tags: this row arrived pending and unlinked
+  // (a bound pending row is refused by `already-bound`), so the match may give
+  // it a push target but must not touch a single value it holds.
+  if (current?.syncStatus === 'pending_sync') {
+    writePendingBind(current, entry.path, entry.lastModified, session.baseKey)
+    return track.trackId
+  }
+
   const navidromeAuthoritative = current != null && get(settings).ratingSource === 'navidrome'
   updateMetadata({
     trackId: track.trackId,
@@ -1722,7 +1753,16 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
   }
 
   const existing = get(metadataCache).get(track.trackId)
-  if (existing && (existing.syncStatus === 'pending_sync' || existing.ignored)) {
+  // D4 skip, NARROWED (2026-10-27): a pending row is skipped only while it
+  // OWNS a file. The rule exists because re-reading/re-matching a bound row
+  // would overwrite the un-pushed edit AND move its push target; a pending row
+  // with NO binding has neither to lose, and it is the one row a scan MUST
+  // reach — the match below attaches the file and touches nothing else
+  // (`writePendingBind`), which is the only way such an edit ever becomes
+  // pushable again (before this, Scan could not link it and the user had to
+  // pick the file by hand). `ignored` stays absolute: a dismissal is the
+  // user's verdict and no scan may bind around it.
+  if (existing && (existing.ignored || (existing.syncStatus === 'pending_sync' && existing.webdavPath != null))) {
     scannedCount++
     updateScanProgress()
     return
@@ -1898,13 +1938,22 @@ async function processItem(item: QueueItem, runGen: number): Promise<void> {
       : await _deps.readFile(webdavUrl, match.entry.path, webdavUser, webdavToken, track.fileType, match.entry.size)
     if (scanGen !== startedGen) return
 
-    // The user may have edited rating/loved while the fetch was in flight —
-    // don't clobber the pending edit with stale file tags.
+    // The user may have dismissed the row while the fetch was in flight — the
+    // dismissal outranks the bind, and the claim is released so a sibling (or
+    // the next run) can still take the file.
     const current = get(metadataCache).get(track.trackId)
-    if (current && (current.syncStatus === 'pending_sync' || current.ignored)) {
-      // Not binding after all — release the claim so a sibling (or the next
-      // run) can still take the file.
+    if (current?.ignored) {
       claimedInScan.delete(match.entry.path)
+      scannedCount++
+      updateScanProgress()
+      return
+    }
+    // An un-pushed edit landed while the fetch was in flight (or the row
+    // reached this branch already pending): give it the file, keep every value
+    // it holds. Only an UNLINKED pending row can be here — a bound pending row
+    // is skipped at the top of processItem.
+    if (current?.syncStatus === 'pending_sync') {
+      writePendingBind(current, match.entry.path, match.entry.lastModified, currentIndexKey())
       scannedCount++
       updateScanProgress()
       return
@@ -2310,8 +2359,11 @@ export async function bindTrackToFile(
     }
 
     // Force only promises to un-bind the OTHER row if that's safe: a pending
-    // edit on it would sit orphaned (no path, Push skips it, scans skip it)
-    // — refuse instead of lying in the modal.
+    // edit on it would lose its push target (Push skips a path-less row) and
+    // stay parked until the next scan re-links it — refuse instead of claiming
+    // the pick is free while it strands an edit. (Since 2026-10-27 that wait is
+    // recoverable — scans link a path-less pending row — but the refusal still
+    // keeps the user's edit from being parked mid-session.)
     const pendingH = hostile.find(([, row]) => row.syncStatus === 'pending_sync')
     if (pendingH) {
       const [pid] = pendingH

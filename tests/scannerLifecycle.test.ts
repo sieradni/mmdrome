@@ -783,6 +783,215 @@ test('force scan skips pending_sync rows — binding and local edits untouched (
   teardown()
 })
 
+// ── Pending-but-unlinked rows (2026-10-27 field report) ────────────────────
+// A row that carries an un-pushed edit and owns NO file must be LINKABLE: its
+// binding is the only thing that makes the edit pushable. The D4 skip below
+// used to cover every pending row, so Scan could not link one and the user had
+// to pick the file by hand.
+
+test('a scan binds a pending row that owns no file and keeps every value of the edit (D4 narrowed)', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t = track()
+  library.set([t])
+  // Rated (or hand-unlinked) while nothing was bound: the row is pending with
+  // no path — exactly the shape Push reports as `skipped-no-path`.
+  updateMetadata({
+    trackId: 't1',
+    rating: 80,
+    loved: true,
+    comments: 'kept',
+    fileType: 'flac',
+    syncStatus: 'pending_sync',
+    lastModifiedLocally: 1,
+    title: 'Song',
+    artist: 'Artist',
+  })
+  mockEntries = [entry()]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/Song.flac': fileMeta({ rating: 90, loved: false, comments: 'file' }),
+  }
+
+  await scanAll('force')
+
+  const row = get(metadataCache).get('t1')
+  assert.equal(row?.webdavPath, '/dav/files/user/Song.flac', 'the unlinked edit acquires its file')
+  assert.equal(row?.webdavBase, 'http://test.com|user', 'stamped for the current server (Push requires it)')
+  assert.equal(row?.syncStatus, 'pending_sync', 'the edit is still awaiting Push')
+  assert.equal(row?.rating, 80, 'the local rating is NOT overwritten by the file tag')
+  assert.equal(row?.loved, true, 'the local loved flag survives')
+  assert.equal(row?.comments, 'kept', 'the local comments survive')
+  assert.equal(row?.title, 'Song', 'the identity snapshot survives')
+  assert.equal(get(metadataScanState).status, 'complete')
+
+  teardown()
+})
+
+test('a filename-only match links a pending, tag-less row (the drain path, not only the probe)', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t = track()
+  library.set([t])
+  updateMetadata({
+    trackId: 't1',
+    rating: 70,
+    loved: false,
+    fileType: 'flac',
+    syncStatus: 'pending_sync',
+    lastModifiedLocally: 1,
+  })
+  mockEntries = [entry()]
+  mockComplete = true
+  // No identity tags at all (a filename-named download): the probe's reverse
+  // binder has nothing to match on, so ONLY the drain's filename match can
+  // link this row — the two bind sites must both honour a pending edit.
+  mockMeta = {
+    '/dav/files/user/Song.flac': fileMeta({
+      title: undefined, artist: undefined, album: undefined, trackNumber: undefined,
+      rating: 90, loved: true,
+    }),
+  }
+
+  await scanAll('force')
+
+  const row = get(metadataCache).get('t1')
+  assert.equal(row?.webdavPath, '/dav/files/user/Song.flac', 'the drain links the unlinked edit')
+  assert.equal(row?.syncStatus, 'pending_sync', 'still awaiting Push')
+  assert.equal(row?.rating, 70, 'the file tag did not overwrite the edit')
+  assert.equal(row?.loved, false, 'nor the loved flag')
+
+  teardown()
+})
+
+test('an edit landing mid auto-match read still binds, and the edit survives (async race)', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t = track()
+  library.set([t])
+  mockEntries = [entry()]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/Song.flac': fileMeta({ rating: 90, loved: true }),
+  }
+
+  // Hold the file read in flight, then commit a rating while it runs: the row
+  // is pending and unlinked at the exact moment the bind verdict lands.
+  readGate = new Promise((resolve) => { releaseRead = resolve })
+  const scanPromise = scanAll('force')
+  for (let i = 0; i < 500 && readCallCount === 0; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 1))
+  }
+  assert.equal(readCallCount, 1, 'the file read is in flight')
+  updateMetadata({
+    trackId: 't1',
+    rating: 30,
+    loved: false,
+    fileType: 'flac',
+    syncStatus: 'pending_sync',
+    lastModifiedLocally: Date.now(),
+  })
+  releaseRead!()
+  await scanPromise
+
+  const row = get(metadataCache).get('t1')
+  assert.equal(row?.webdavPath, '/dav/files/user/Song.flac', 'the in-flight bind still lands')
+  assert.equal(row?.syncStatus, 'pending_sync', 'the mid-read edit is preserved, not flattened')
+  assert.equal(row?.rating, 30, 'the file tag did not clobber the newer edit')
+  assert.equal(row?.loved, false, 'nor the loved flag')
+  assert.equal(get(metadataScanState).status, 'complete')
+
+  teardown()
+})
+
+test('rescans leave a linked pending row alone — no re-read, no re-link, edit intact', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t = track()
+  library.set([t])
+  updateMetadata({
+    trackId: 't1',
+    rating: 80,
+    loved: false,
+    fileType: 'flac',
+    syncStatus: 'pending_sync',
+    lastModifiedLocally: 1,
+  })
+  mockEntries = [entry()]
+  mockComplete = true
+  mockMeta = {
+    '/dav/files/user/Song.flac': fileMeta({ rating: 90, loved: true }),
+  }
+
+  await scanAll('force')
+  const firstPath = get(metadataCache).get('t1')?.webdavPath
+  assert.equal(firstPath, '/dav/files/user/Song.flac', 'first scan links it')
+  const readsAfterFirst = readCallCount
+
+  // Re-scan (force, so the heal pass and the full queue both run): the now
+  // BOUND pending row is out of scope for both — nothing may move or re-read it.
+  await scanAll('force')
+
+  const row = get(metadataCache).get('t1')
+  assert.equal(row?.webdavPath, firstPath, 'binding is stable')
+  assert.equal(row?.syncStatus, 'pending_sync', 'still awaiting Push after re-scans')
+  assert.equal(row?.rating, 80, 'the edit is untouched')
+  assert.equal(readCallCount, readsAfterFirst, 'a bound pending row is never re-read')
+
+  teardown()
+})
+
+test('a scan never overwrites a manual link on a pending row, and never links a dismissed one', async () => {
+  setupMocks()
+  initWebdav()
+
+  const t1 = track({ trackId: 't1', title: 'Song A', artist: 'Artist', size: 111 })
+  const t2 = track({ trackId: 't2', title: 'Song B', artist: 'Artist', size: 222 })
+  library.set([t1, t2])
+
+  const pathA = '/dav/files/user/Song A.flac'
+  const pathB = '/dav/files/user/Song B.flac'
+  // t1: pending AND manually linked — the user's own pick is the push target.
+  updateMetadata({
+    trackId: 't1', rating: 40, loved: false, fileType: 'flac', syncStatus: 'pending_sync',
+    lastModifiedLocally: 1, webdavPath: pathA, webdavLastModified: 'Mon, 01 Jan 2024 00:00:00 GMT',
+    webdavBase: 'http://test.com|user', matchSource: 'manual',
+  })
+  // t2: pending AND dismissed, with no binding — a dismissal outranks a bind.
+  updateMetadata({
+    trackId: 't2', rating: 60, loved: false, fileType: 'flac', syncStatus: 'pending_sync',
+    lastModifiedLocally: 1, ignored: true,
+  })
+  mockEntries = [
+    { path: pathA, filename: 'Song A.flac', size: 111, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+    { path: pathB, filename: 'Song B.flac', size: 222, lastModified: 'Mon, 01 Jan 2024 00:00:00 GMT' },
+  ]
+  mockComplete = true
+  mockMeta = {
+    [pathA]: fileMeta({ title: 'Song A', artist: 'Artist', rating: 90, loved: true }),
+    [pathB]: fileMeta({ title: 'Song B', artist: 'Artist', rating: 90, loved: true }),
+  }
+
+  await scanAll('force')
+
+  const rowA = get(metadataCache).get('t1')
+  const rowB = get(metadataCache).get('t2')
+  assert.equal(rowA?.webdavPath, pathA, 'the manual pick stays the push target')
+  assert.equal(rowA?.matchSource, 'manual', 'still a manual link')
+  assert.equal(rowA?.syncStatus, 'pending_sync', 'the edit still waits for Push')
+  assert.equal(rowA?.rating, 40, 'the manual row is not re-read into the file tag')
+  assert.equal(rowB?.webdavPath, undefined, 'a dismissed row is never bound')
+  assert.equal(rowB?.ignored, true, 'still dismissed')
+  assert.equal(rowB?.rating, 60, 'its pending edit is untouched')
+  assert.equal(readCallCount, 0, 'neither pending row was read')
+
+  teardown()
+})
+
 test('manual binding is re-read but never re-matched (D8 issue-1 guard)', async () => {
   setupMocks()
   initWebdav()

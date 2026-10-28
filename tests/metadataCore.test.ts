@@ -727,7 +727,7 @@ test('matchFileToTracks: empty and Unknown Title tracks never become candidates'
 
 // ── Phase 6.3 — auto-bind eligibility (the shared guards) ────────────────
 
-test('canAutoBind: only unbound, clean rows are bindable', () => {
+test('canAutoBind: an unbound row is bindable, a bound or dismissed one is not', () => {
   assert.deepEqual(canAutoBind(undefined, undefined), { bindable: false, reason: 'track-missing' })
   assert.deepEqual(canAutoBind(track(), undefined), { bindable: true })
   assert.deepEqual(
@@ -735,11 +735,20 @@ test('canAutoBind: only unbound, clean rows are bindable', () => {
     { bindable: false, reason: 'already-bound' },
   )
   assert.deepEqual(canAutoBind(track(), metaRow({ matchSource: 'manual' })), { bindable: false, reason: 'manual' })
-  assert.deepEqual(
-    canAutoBind(track(), metaRow({ syncStatus: 'pending_sync' })),
-    { bindable: false, reason: 'pending-sync' },
-  )
   assert.deepEqual(canAutoBind(track(), metaRow({ ignored: true })), { bindable: false, reason: 'ignored' })
+  // A PENDING edit is not a reason to refuse a bind: the binding is exactly
+  // what Push needs, and refusing it stranded an unlinked edit forever
+  // (2026-10-27). A row awaiting push is protected by `already-bound` — the
+  // binding IS the edit's push target — so the two cases must not be confused.
+  assert.deepEqual(canAutoBind(track(), metaRow({ syncStatus: 'pending_sync' })), { bindable: true })
+  assert.deepEqual(
+    canAutoBind(track(), metaRow({ syncStatus: 'pending_sync', webdavPath: '/dav/Song.flac' })),
+    { bindable: false, reason: 'already-bound' },
+  )
+  assert.deepEqual(
+    canAutoBind(track(), metaRow({ syncStatus: 'pending_sync', ignored: true })),
+    { bindable: false, reason: 'ignored' },
+  )
 })
 
 // ── Heal pass: selectHealEvictions (2026-09-05) ────────────────────────────
