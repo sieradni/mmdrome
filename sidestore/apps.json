@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.4.1",
-      "versionDate": "2026-10-27T11:01:14.912Z",
-      "versionDescription": "A rejected sign-in no longer reads as being offline. If your Navidrome password changes, the app now says the sign-in failed — on the status line above your library, on the Sources screen, on the cached-library line and on the WebDAV connection test — instead of implying your device is offline. Nothing else changed in this build.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.1/mmdrome.ipa",
+      "version": "1.4.2",
+      "versionDate": "2026-10-28T00:09:09.982Z",
+      "versionDescription": "Pushing tag changes now works with the WebDAV servers that rejected the previous conflict check, so edits no longer fail as changed when nothing else touched the file. A scan can also link a song that has un-pushed edits to its file again, instead of only a manual pick.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.2/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.4.2",
+          "buildVersion": "79",
+          "date": "2026-10-28T00:09:09.982Z",
+          "localizedDescription": "Pushing tag changes now works with the WebDAV servers that rejected the previous conflict check, so edits no longer fail as changed when nothing else touched the file. A scan can also link a song that has un-pushed edits to its file again, instead of only a manual pick.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.2/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5265358
+        },
         {
           "version": "1.4.1",
           "buildVersion": "78",
@@ -719,6 +728,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.4.2",
+      "identifier": "ios-v1.4.2",
+      "appID": "com.mmdrome.player",
+      "caption": "Pushing tag changes now works with the WebDAV servers that rejected the previous conflict check, so edits no longer fail as changed when not",
+      "date": "2026-10-28T00:09:09.982Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.4.1",
       "identifier": "ios-v1.4.1",
       "appID": "com.mmdrome.player",
@@ -751,15 +769,6 @@
       "appID": "com.mmdrome.player",
       "caption": "The Equalizer now keeps the engine and the sliders in agreement across relaunches, opens from Settings without a track, and applies every im",
       "date": "2026-10-25T12:21:24.404Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.70",
-      "identifier": "ios-v1.2.70",
-      "appID": "com.mmdrome.player",
-      "caption": "Pressing a song now ends a hand-dragged auto-queue order and puts the upcoming songs back in your filter+sort order",
-      "date": "2026-10-24T13:27:51.356Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
