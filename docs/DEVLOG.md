@@ -1,3 +1,15 @@
+## 2026-10-27l — 1.4.2 shipped (the guard ladder, and a pending edit a scan can link again)
+
+1.4.1 carried only the sign-in fix, so everything three passes had built was sitting on `main` with no release carrying it: the write path's guard ladder (2026-10-27h), the scan's pending-row binding rule (i) and the real-host path (j/k). 1.4.2 cuts them together through the resumable driver — `npm run release:phases` five times, one phase per invocation (gates → bump → branch-ci → tag → verify). That driver is the form that survives a terminal which cannot stay attached for the CI waits; `release:full` holds its polls inside one process and loses the run if it is interrupted. Gates re-ran on the bumped commit by design (the driver keys them to the exact sha that will be tagged), which is what makes the tagged tree the tested tree.
+
+Notes, as a user reads them: pushing tag changes now works with the WebDAV servers that rejected the previous conflict check, so edits no longer fail as changed when nothing else touched the file; a scan can also link a song that has un-pushed edits to its file again, instead of only a manual pick.
+
+**Verified surfaces (2026-10-27):** tag `ios-v1.4.2` = `867cb0e` on origin; both workflows green on that commit on `main` (Tests 40606914045, iOS Build 40606914093 with its gating steps verified by name) and on the tag (40607488788 / 40607488752); GitHub Release `ios-v1.4.2` published, not a draft, `mmdrome.ipa` = 5 265 358 bytes; `sidestore/apps.json` on main = 1.4.2 / build 79 / size 5 265 358 with the notes in `localizedDescription` and the news card; the Pages mirror read directly (HTTP 200) and jsDelivr both serve 1.4.2 at that exact size.
+
+**Pre-release gates on the shipped tree, beyond what the driver requires:** `npm run check` 0 errors / 0 warnings; **1562/1562** unit tests; and the **full** browser suite **102/102** against the freshly built bundle — not just the smoke spec `release:phases` runs — including both real-server specs (`realservers.spec.ts`: the pending-unlinked song links and pushes on its first rung, and the dialect server escalates the ladder and still commits).
+
+**Still unexercised, named as such:** no iOS host took part. The IPA is CI-built and nothing was installed or launched on a simulator or a phone from this machine, so background audio, lock-screen controls and Keychain credentials sit outside what this release's verification covers; `npm run device -- --ios` on a Mac is what closes that gap.
+
 ## 2026-10-27k — deletion pass over the write-path/device-path diff
 
 No behaviour changed; this is the removal pass the four preceding ones had not had. What went, and why each earned nothing:
