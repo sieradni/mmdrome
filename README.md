@@ -72,7 +72,7 @@ This mechanism is iOS-specific. On desktop/Android the standard Web Audio pipeli
 
 WebDAV is optional and lets mmdrome read and write audio metadata (rating, loved status, BPM, comments) directly to your music files on the server.
 
-**CORS required.** Your WebDAV server must allow requests from the mmdrome origin. The app uses PROPFIND to build a file index, GET for audio/tag reads, and PUT + MOVE to write via a temporary file. Browser pushes use fresh destination checks with only essential request headers. See [minimum CORS permissions and concurrency limits](docs/WEBDAV-CORS.md).
+**CORS required.** Your WebDAV server must allow requests from the mmdrome origin. The app uses PROPFIND to build a file index, GET for audio/tag reads, and PUT + MOVE to write via a temporary file. Browser pushes use fresh destination checks with only essential request headers. See [minimum CORS permissions and concurrency limits](docs/WEBDAV-CORS.md) and the [tested server compatibility matrix](docs/WEBDAV-COMPATIBILITY.md).
 
 **Directory structure.** The WebDAV URL should point to the root of your music library (e.g., `https://example.com/remote.php/dav/files/user/`). The scanner does a recursive `PROPFIND /` to discover all files, then matches them to Navidrome tracks by comparing normalized artist + title from the filename. Files must have a path under the WebDAV root — the directory structure itself is not prescriptive beyond that.
 

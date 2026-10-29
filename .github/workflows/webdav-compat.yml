@@ -1,0 +1,43 @@
+name: WebDAV compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    paths:
+      - 'src/lib/webdav*'
+      - 'src/lib/tagWriter.ts'
+      - 'src/lib/syncEngine.ts'
+      - 'scripts/webdav-server-compat.mjs'
+      - 'tests/webdav-servers/**'
+      - '.github/workflows/webdav-compat.yml'
+
+jobs:
+  real-servers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox]
+    env:
+      WEBDAV_BROWSER: ${{ matrix.browser }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.0'
+          cache-dependency-path: tests/webdav-servers/go/go.sum
+      - run: npm ci
+      - run: npx playwright install --with-deps ${{ matrix.browser }}
+      - name: Exercise real DAV implementations
+        run: npm run test:webdav-servers
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: webdav-server-evidence-${{ matrix.browser }}
+          path: webdav-compat-results/run-*/report.json

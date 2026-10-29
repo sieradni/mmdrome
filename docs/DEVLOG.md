@@ -2627,3 +2627,38 @@ default and an explicit-T-required server. The fixture also enforces F, and
 protocol tests prove rejected moves leave source and destination intact.
 The CORS baseline now includes Overwrite. No same-host verification is claimed.
 Analysis: `docs/plans/2026-10-29-webdav-move-412-analysis.md`.
+
+## 2026-10-29d — Real implementation coverage, not just fixture dialects
+
+The user requested general server coverage before 1.4.5. Added an opt-in
+`test:webdav-servers` command and a relevant-push GitHub workflow, running the
+production write core and tag editor against pinned real Go DAV, Apache,
+sabre/dav, rclone, Dufs, WsgiDAV and nginx+dav-ext servers. Real Chromium
+preflights use the minimal CORS proxy; direct HTTP also exercises the native
+core ladder. Cases cover real MP3/Opus, escaped/Unicode paths, discovery,
+Range, replacement, concurrent writes, cancel cleanup and response loss.
+
+This found an application uncertainty bug: Chromium can transparently repeat
+MOVE after a dropped response. Go/rclone can answer the replay with 403 after
+the source is consumed. HTTP failure plus cleanup-missing previously claimed
+not-committed; now it is unknown, stays pending and reserves the path. The same
+rule covers the 404/412 conflict path without replaying an uncertain write.
+Pre-MOVE failures keep their known-not-committed status. Unit and orchestration
+tests pin this distinction.
+
+The audit also found genuine server/configuration limits: Apache's Alpine
+image needs its DBM plugin; Dufs/nginx DAV properties have second-resolution
+last-modified without ETag; Go/rclone can remove the committed destination on
+a browser-transparent replay. Those are explicit limitations, not silently
+passed tests or justification for a destructive client fallback. The matrix
+in `docs/WEBDAV-COMPATIBILITY.md` names tested versions, scope, requirements,
+source-only product reviews, and how to reproduce/strictly gate the evidence.
+
+Final local evidence: Chromium 151 and Firefox 153 each ran 98 live-server
+scenarios, with 96 passing cases and two explicit upstream replay limitations;
+normal operations passed on all seven implementations. Date-only validator
+limits remain separately recorded for Dufs/nginx. Type checks, 1,575 unit tests
+and 15 built-bundle push/browser tests passed. The integration command stays out
+of Node's default unit discovery and stores evidence outside Playwright's
+auto-cleaned test-results directory, so the independent suites cannot remove
+live backend files. CI runs both browser engines on relevant branch pushes.

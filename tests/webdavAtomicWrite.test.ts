@@ -285,10 +285,28 @@ test('the re-check sees the destination gone: ConflictError, one DELETE', async 
 })
 
 test('MOVE 404 (destination vanished between the read and the rename): ConflictError, one DELETE', async () => {
-  const r = await run([PUT_OK, READ(), { status: 404 }])
+  const r = await run([PUT_OK, READ(), { status: 404 }, { status: 204 }])
   assert.ok(r.error instanceof ConflictError, String(r.error))
   assert.equal(r.error.status, 404)
   assert.equal(tempDeletes(r.calls).length, 1)
+})
+
+test('HTTP MOVE errors with a consumed temp remain unknown, including browser-transparent replays', async () => {
+  for (const status of [403, 404, 412, 500]) {
+    const r = await run([PUT_OK, READ(), { status }, { status: 404 }], { revalidateOnly: true })
+    assert.ok(r.error instanceof AtomicWriteError, String(r.error))
+    assert.equal(r.error.remoteState, 'unknown')
+    assert.equal(r.error.cleanup, 'missing')
+    assert.equal(r.error.status, status)
+    assert.deepEqual(methods(r.calls), ['PUT', 'PROPFIND', 'MOVE', 'DELETE'])
+  }
+})
+
+test('a refused pre-MOVE check with a missing temp never claims a MOVE was attempted', async () => {
+  const r = await run([PUT_OK, READ({ etag: '"new"' }), { status: 404 }], { revalidateOnly: true })
+  assert.ok(r.error instanceof ConflictError)
+  assert.equal((r.error as { remoteState?: string }).remoteState, 'not-committed')
+  assert.deepEqual(methods(r.calls), ['PUT', 'PROPFIND', 'DELETE'])
 })
 
 test('other MOVE failures are hard errors, not conflicts, and clean the temp once', async () => {

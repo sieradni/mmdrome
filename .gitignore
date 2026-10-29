@@ -33,3 +33,6 @@ dist-ssr
 # release-phases driver state (records "gates ran for this sha"; the file
 # must never dirty the tree — the driver's own preflight requires clean)
 .release-phase-state.json
+
+# Disposable real-server data and compatibility evidence (not Playwright-owned)
+/webdav-compat-results/

@@ -204,6 +204,7 @@ export async function webdavPutAtomic(
   const tempUrl = buildWebdavUrl(baseUrl, tempRelPath)
   const destUrl = buildWebdavUrl(baseUrl, filePath)
   const headers = authHeaders(user, token)
+  let moveAttempts = 0
 
   const discardTemp = async (): Promise<TempCleanupStatus> => {
     try {
@@ -223,6 +224,16 @@ export async function webdavPutAtomic(
     opts2?: { status?: number; precondition?: PreconditionKind },
   ): Promise<ConflictError> => {
     const cleanup = await discardTemp()
+    // Browser HTTP stacks may replay an idempotent MOVE after losing its
+    // response. The replay can fail (403/404/412) because the first MOVE
+    // already consumed the temp. Missing source after an attempted MOVE is
+    // uncertain, not proof that the destination was never replaced.
+    if (moveAttempts > 0 && cleanup === 'missing') {
+      throw new AtomicWriteError(message, {
+        stage, status: opts2?.status, precondition: opts2?.precondition,
+        remoteState: 'unknown', cleanup,
+      })
+    }
     const err = new ConflictError(message, opts2?.status)
     Object.assign(err, {
       stage,
@@ -300,7 +311,6 @@ export async function webdavPutAtomic(
     })
   }
   const ladder = planPreconditionLadder(validators, opts?.revalidateOnly ? 'revalidated' : opts?.startAt)
-  let moveAttempts = 0
   for (const rung of ladder) {
     moveAttempts++
     const moveHeaders: Record<string, string> = {
@@ -373,7 +383,7 @@ export async function webdavPutAtomic(
     throw new AtomicWriteError(`WebDAV MOVE failed (${moveRes.status}) for ${filePath}`, {
       stage: 'move',
       status: moveRes.status,
-      remoteState: 'not-committed',
+      remoteState: cleanup === 'missing' ? 'unknown' : 'not-committed',
       cleanup,
       precondition: rung,
     })

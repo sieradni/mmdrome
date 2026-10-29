@@ -385,6 +385,31 @@ test('W6 / W-02: lost MOVE response records unknown-outcome and does not mark ro
   assert.equal(outcome?.error?.category, 'timeout')
 })
 
+test('a failed HTTP MOVE whose temp is already consumed stays unknown and reserves its target', async () => {
+  const h = createHarness([makeRow('first', 'Album/Shared.mp3'), makeRow('second', 'Album/Shared.mp3')])
+  __setPushSyncDeps({
+    ...h.deps,
+    webdavFetch: async (url, options) => {
+      const method = String(options.method ?? 'GET')
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
+      if (method === 'MOVE') return makeRes(403)
+      if (method === 'DELETE') return makeRes(404)
+      return makeRes(200)
+    },
+  })
+  const res = await runManualWebDAVSync()
+  assert.equal(res.unknownOutcomes, 1)
+  assert.equal(res.synced, 0)
+  assert.equal(h.upserted.length, 0)
+  assert.equal(h.calls.filter(c => c.method === 'PUT').length, 1)
+  assert.equal(h.calls.filter(c => c.method === 'MOVE').length, 1)
+  assert.equal(res.report?.rows[0].disposition, 'unknown-outcome')
+  assert.equal(res.report?.rows[0].tempCleanup, 'missing')
+  assert.equal(res.report?.rows[0].remainsPending, true)
+  assert.equal(res.report?.rows[1].disposition, 'skipped-duplicate-target')
+})
+
 test('W8 / W-08: a refused precondition escalates without a second upload; a real concurrent write still recovers', async () => {
   // The two 412 shapes side by side, which is the whole 2026-10-27 fix:
   //  - Retry.mp3's server refuses the destination-tagged `If` on EVERY MOVE

@@ -1,5 +1,8 @@
 # Browser WebDAV permissions
 
+See the [implementation compatibility matrix](WEBDAV-COMPATIBILITY.md) for live
+server coverage and observed server-side failure limits.
+
 The server or reverse proxy must allow the app's origin (for the hosted app,
 `https://sieradni.github.io`). OPTIONS preflight must succeed for requests to
 both music files and temporary files in the same directory.
