@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.4.4",
-      "versionDate": "2026-10-29T22:11:13.356Z",
-      "versionDescription": "Support browser WebDAV pushes with minimal CORS permissions and verified fresh destination checks.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.4/mmdrome.ipa",
+      "version": "1.4.5",
+      "versionDate": "2026-10-29T23:13:56.507Z",
+      "versionDescription": "Improve WebDAV server compatibility and preserve uncertain MOVE outcomes safely.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.5/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.4.5",
+          "buildVersion": "82",
+          "date": "2026-10-29T23:13:56.507Z",
+          "localizedDescription": "Improve WebDAV server compatibility and preserve uncertain MOVE outcomes safely.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.5/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5265556
+        },
         {
           "version": "1.4.4",
           "buildVersion": "81",
@@ -746,6 +755,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.4.5",
+      "identifier": "ios-v1.4.5",
+      "appID": "com.mmdrome.player",
+      "caption": "Improve WebDAV server compatibility and preserve uncertain MOVE outcomes safely.",
+      "date": "2026-10-29T23:13:56.507Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.4.4",
       "identifier": "ios-v1.4.4",
       "appID": "com.mmdrome.player",
@@ -778,15 +796,6 @@
       "appID": "com.mmdrome.player",
       "caption": "A rejected sign-in no longer reads as being offline. If your Navidrome password changes, the app now says the sign-in failed — on the status",
       "date": "2026-10-27T11:01:14.912Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.4.0",
-      "identifier": "ios-v1.4.0",
-      "appID": "com.mmdrome.player",
-      "caption": "Saved library views: pin a filter and sort as a chip and return to it in one tap. The WebDAV Push report now tells you what happened to each",
-      "date": "2026-10-27T09:43:05.850Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
