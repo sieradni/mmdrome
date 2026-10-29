@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.4.2",
-      "versionDate": "2026-10-28T00:09:09.982Z",
-      "versionDescription": "Pushing tag changes now works with the WebDAV servers that rejected the previous conflict check, so edits no longer fail as changed when nothing else touched the file. A scan can also link a song that has un-pushed edits to its file again, instead of only a manual pick.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.2/mmdrome.ipa",
+      "version": "1.4.3",
+      "versionDate": "2026-10-29T21:39:05.201Z",
+      "versionDescription": "Fix browser WebDAV pushes on servers with restrictive CORS settings while preserving fresh reads and collision checks.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.3/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.4.3",
+          "buildVersion": "80",
+          "date": "2026-10-29T21:39:05.201Z",
+          "localizedDescription": "Fix browser WebDAV pushes on servers with restrictive CORS settings while preserving fresh reads and collision checks.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.3/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.4.2",
           "buildVersion": "79",
@@ -728,6 +736,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.4.3",
+      "identifier": "ios-v1.4.3",
+      "appID": "com.mmdrome.player",
+      "caption": "Fix browser WebDAV pushes on servers with restrictive CORS settings while preserving fresh reads and collision checks.",
+      "date": "2026-10-29T21:39:05.201Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.4.2",
       "identifier": "ios-v1.4.2",
       "appID": "com.mmdrome.player",
@@ -760,15 +777,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Queue tail rules, an auto-queue switch, a repeat pass that keeps suggestions going, and WebDAV Push reports that separate a written file fro",
       "date": "2026-10-27T08:29:33.394Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.2.71",
-      "identifier": "ios-v1.2.71",
-      "appID": "com.mmdrome.player",
-      "caption": "The Equalizer now keeps the engine and the sliders in agreement across relaunches, opens from Settings without a track, and applies every im",
-      "date": "2026-10-25T12:21:24.404Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
