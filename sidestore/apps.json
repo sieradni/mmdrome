@@ -27,7 +27,8 @@
           "date": "2026-10-29T22:11:13.356Z",
           "localizedDescription": "Support browser WebDAV pushes with minimal CORS permissions and verified fresh destination checks.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.4/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5265527
         },
         {
           "version": "1.4.3",
