@@ -3,6 +3,14 @@
 Date: 2026-10-29. Reviewed revision: `13efe8a` (package version 1.4.2).
 Scope: analysis and reproduction; no application changes made.
 
+Second field report / 1.4.4 follow-up: the server also denies `If`. Browser
+pushes now use mandatory fresh revalidation with no optional MOVE headers;
+native keeps the conditional ladder. Missing or incomparable validators stop
+browser writes instead of producing blind overwrites. The current permanent
+browser test is “push stays fresh with only essential CORS permissions and an
+older GET cached”; the 1.4.3 test title below is historical. See
+`docs/WEBDAV-CORS.md` for the baseline permissions and the check→MOVE race.
+
 Implementation follow-up (2026-10-29): the correction below is now implemented
 for release 1.4.3. GET and PROPFIND use `cache: 'no-store'`; the native adapter
 preserves its revalidation header. The permanent regression is

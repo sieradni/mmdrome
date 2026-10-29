@@ -311,6 +311,7 @@ test('W4 / W-05: failed first writer releases target path so second row can push
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h1.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (method === 'GET') {
         getCalls++
         if (getCalls === 1) return makeRes(503, {}, 'Temporary outage')
@@ -334,6 +335,7 @@ test('W4 / W-05: failed first writer releases target path so second row can push
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       h2.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       return makeRes(method === 'GET' ? 200 : 201, { ETag: '"e1"' })
     },
   })
@@ -399,6 +401,7 @@ test('W8 / W-08: a refused precondition escalates without a second upload; a rea
 
   __setPushSyncDeps({
     ...h.deps,
+    isNative: () => true, // Native retains the conditional-header ladder.
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
       const headers = (options.headers ?? {}) as Record<string, string>

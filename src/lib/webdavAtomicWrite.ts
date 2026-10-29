@@ -30,6 +30,9 @@
  *   `If` node with an uncaught `NotFound`, so a destination that vanished
  *   between the read and the rename reports 404, and the caller's retry turns
  *   that into the ordinary missing-file skip.
+ * - Browser callers select `revalidateOnly`: no optional MOVE headers, a
+ *   mandatory unchanged re-check, and no blind fallback. This client-side
+ *   check cannot close the final check→MOVE race; native keeps the ladder.
  */
 
 import { authHeaders, buildWebdavUrl, webdavTempPath } from './webdavPaths'
@@ -117,6 +120,10 @@ export interface AtomicWriteOptions {
   /** Rung to resume the ladder at — the one this server accepted earlier in
    *  the same run. Omitted on the first row, which discovers it. */
   startAt?: PreconditionKind
+  /** Browser compatibility: send only essential MOVE headers. Requires a
+   * comparable baseline and a successful fresh pre-MOVE check; never blind.
+   * A concurrent write in the check→MOVE gap cannot be prevented in this mode. */
+  revalidateOnly?: boolean
 }
 
 export interface AtomicWriteOutcome {
@@ -232,6 +239,12 @@ export async function webdavPutAtomic(
     return revalidationResult(before, read.kind === 'ok' ? read.validators : null)
   }
 
+  if (opts?.revalidateOnly && !validators) {
+    throw new AtomicWriteError(`Cannot verify the destination before writing ${filePath}`, {
+      stage: 'pre-move-validation', remoteState: 'not-committed', cleanup: 'not-needed',
+    })
+  }
+
   let putRes: ResponseLike
   try {
     putRes = await fetchImpl(tempUrl, {
@@ -281,14 +294,21 @@ export async function webdavPutAtomic(
   }
 
   // ── 2. The MOVE, guarded by the first rung this server accepts.
-  const ladder = planPreconditionLadder(validators, opts?.startAt)
+  if (opts?.revalidateOnly && checked !== 'unchanged') {
+    throw new AtomicWriteError(`Cannot verify the destination before replacing ${filePath}`, {
+      stage: 'pre-move-validation', remoteState: 'not-committed', cleanup: await discardTemp(),
+    })
+  }
+  const ladder = planPreconditionLadder(validators, opts?.revalidateOnly ? 'revalidated' : opts?.startAt)
   let moveAttempts = 0
   for (const rung of ladder) {
     moveAttempts++
     const moveHeaders: Record<string, string> = {
       ...headers,
       Destination: destUrl,
-      Overwrite: 'T',
+      // RFC 4918 §10.6 defaults Overwrite to T. Browsers need not request
+      // another CORS header permission for an explicit copy of that default.
+      ...(opts?.revalidateOnly ? {} : { Overwrite: 'T' }),
       ...movePreconditionHeaders(rung, destUrl, validators),
     }
 

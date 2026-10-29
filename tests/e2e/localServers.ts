@@ -112,6 +112,10 @@ export async function startLocalServers(options: {
   dialect?: WebdavDialect
   /** Model servers whose CORS policy predates the push cache-header change. */
   allowCacheControl?: boolean
+  /** Essential CORS permissions only; no optional MOVE or exposed headers. */
+  minimalCors?: boolean
+  /** Exercise refusal when collision checks have no usable baseline. */
+  publishValidators?: boolean
   /** Make a stale browser GET reusable unless the caller requests freshness. */
   cacheableGets?: boolean
   /** Bind address. Loopback for tests; `0.0.0.0` when a real device on the
@@ -219,9 +223,10 @@ export async function startLocalServers(options: {
       'Access-Control-Allow-Origin': req.headers.origin ?? '*',
       'Access-Control-Allow-Methods': 'OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, MOVE',
       'Access-Control-Allow-Headers':
-        'authorization, content-type, depth, destination, overwrite, if, if-match, if-unmodified-since, range' +
-        (options.allowCacheControl === false ? '' : ', cache-control'),
-      'Access-Control-Expose-Headers': 'etag, last-modified, content-length, content-range, accept-ranges, dav',
+        options.minimalCors ? 'authorization, content-type, depth, destination' :
+          'authorization, content-type, depth, destination, overwrite, if, if-match, if-unmodified-since, range' +
+          (options.allowCacheControl === false ? '' : ', cache-control'),
+      ...(options.minimalCors ? {} : { 'Access-Control-Expose-Headers': 'etag, last-modified, content-length, content-range, accept-ranges, dav' }),
       Vary: 'Origin',
     }
   }
@@ -304,7 +309,7 @@ export async function startLocalServers(options: {
                 `</prop><status>HTTP/1.1 200 OK</status></propstat></response>`
               : `<response><href>${hrefFor(file!.path)}</href><propstat><prop>` +
                 `<resourcetype/><getcontentlength>${file!.bytes.length}</getcontentlength>` +
-                `<getlastmodified>${file!.lastModified}</getlastmodified><getetag>${xmlEscape(file!.etag)}</getetag>` +
+                (options.publishValidators === false ? '' : `<getlastmodified>${file!.lastModified}</getlastmodified><getetag>${xmlEscape(file!.etag)}</getetag>`) +
                 `</prop><status>HTTP/1.1 200 OK</status></propstat></response>`,
           )
         }
@@ -313,7 +318,7 @@ export async function startLocalServers(options: {
         responses.push(
           `<response><href>${hrefFor(file.path)}</href><propstat><prop>` +
             `<resourcetype/><getcontentlength>${file.bytes.length}</getcontentlength>` +
-            `<getlastmodified>${file.lastModified}</getlastmodified><getetag>${xmlEscape(file.etag)}</getetag>` +
+            (options.publishValidators === false ? '' : `<getlastmodified>${file.lastModified}</getlastmodified><getetag>${xmlEscape(file.etag)}</getetag>`) +
             `</prop><status>HTTP/1.1 200 OK</status></propstat></response>`,
         )
       }

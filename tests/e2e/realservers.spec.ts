@@ -108,8 +108,8 @@ async function hudDump(page: Page): Promise<unknown> {
   }
 }
 
-test('push stays fresh when CORS forbids cache-control and an older GET is cached', async ({ page }) => {
-  const servers = await startLocalServers({ allowCacheControl: false, cacheableGets: true })
+test('push stays fresh with only essential CORS permissions and an older GET cached', async ({ page }) => {
+  const servers = await startLocalServers({ minimalCors: true, cacheableGets: true })
   try {
     await bootApp(page)
     await page.goto('/mmdrome/?debug=tags,sync')
@@ -149,7 +149,35 @@ test('push stays fresh when CORS forbids cache-control and an older GET is cache
     expect(servers.counts().move).toBe(1)
     expect(servers.storedPaths().some((p) => p.endsWith('.mmdrome-tmp'))).toBe(false)
     const dump = await hudDump(page) as { lastPushReport: { rows: PushReportRow[] } }
-    expect(dump.lastPushReport.rows[0].precondition, 'validator reads still support a server-enforced guard').toBe('tagged-if')
+    expect(dump.lastPushReport.rows[0].precondition, 'the report identifies the client-side check honestly').toBe('revalidated')
+  } finally {
+    await servers.close()
+  }
+})
+
+test('minimal-permission browser push refuses a destination without validators', async ({ page }) => {
+  const servers = await startLocalServers({ minimalCors: true, publishValidators: false })
+  try {
+    await bootApp(page)
+    await page.goto('/mmdrome/?debug=tags,sync')
+    await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })
+    await connectTo(page, servers)
+    await openSettingsSection(page, 'library')
+    await page.getByRole('button', { name: /Rescan All Metadata \(re-reads all tags\)/ }).click()
+    await expect(page.getByTestId('fm-audit-summary')).toContainText('2 verified', { timeout: 30_000 })
+    await rateSong(page, 'navidrome-s1')
+    const path = `${servers.dir}/Song One.mp3`
+    const before = Buffer.from(servers.fileBytes(path)!)
+    await openSettingsSection(page, 'library')
+    await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
+    await page.getByRole('button', { name: 'Write to files' }).click()
+    await expect(page.getByText(/Pushed 0 track\(s\), 1 failed/)).toBeVisible({ timeout: 30_000 })
+    expect(servers.counts().put).toBe(0)
+    expect(servers.counts().move).toBe(0)
+    expect(servers.fileBytes(path)).toEqual(before)
+    const dump = await hudDump(page) as { lastPushReport: { rows: Array<PushReportRow & { remainsPending: boolean }> } }
+    expect(dump.lastPushReport.rows[0].remainsPending).toBe(true)
+    expect(dump.lastPushReport.rows[0].stage).toBe('pre-move-validation')
   } finally {
     await servers.close()
   }
@@ -221,13 +249,9 @@ test('a pending song with no file is linked by a scan, and the edit pushes to th
   }
 })
 
-test('a server that refuses the tagged-If dialect still commits, without re-uploading', async ({ page }) => {
-  // The 2026-10-27 field shape, on a real server: the tagged `If` is refused
-  // (412) and `If-Match` is scoped to the request URI, so a destination etag
-  // there can never pass. The push ladder must walk tagged-if → if-match →
-  // if-unmodified-since, keep the temp (ONE upload per row), and still land
-  // the bytes. TWO rows, so the rung it learned on the first one is also
-  // proven to carry to the rest of the run.
+test('browser pushes need no conditional-header dialect, across multiple rows', async ({ page }) => {
+  // Browsers rely on fresh revalidation and send no optional guard headers.
+  // This server refuses tagged If: neither row should need that dialect.
   const servers = await startLocalServers({ dialect: 'sabre-like' })
   const logs: string[] = []
   page.on('console', (msg) => logs.push(`${msg.type()}: ${msg.text()}`))
@@ -252,13 +276,10 @@ test('a server that refuses the tagged-If dialect still commits, without re-uplo
     await expect(page.getByText(/Pushed 2 track\(s\)/)).toBeVisible({ timeout: 30_000 })
 
     const counts = servers.counts()
-    expect(counts.put, 'each row was uploaded EXACTLY once (the ladder re-materializes no bytes)').toBe(2)
-    expect(
-      counts.move,
-      'row 1 walks rungs 1→2→3 (tagged-if refused, if-match scoped to the source, date accepted); row 2 resumes at the learned rung',
-    ).toBe(4)
-    expect(counts.preconditionRejects, 'the server really did refuse two rungs, once').toBe(2)
-    expect(counts.delete, 'no temp cleanup: the temp was reused across rungs').toBe(0)
+    expect(counts.put, 'each row was uploaded exactly once').toBe(2)
+    expect(counts.move, 'one MOVE per row without probing optional headers').toBe(2)
+    expect(counts.preconditionRejects).toBe(0)
+    expect(counts.delete, 'no temp cleanup after successful writes').toBe(0)
     for (const title of ['Song One', 'Song Two']) {
       expect(
         servers.fileBytes(`${servers.dir}/${title}.mp3`)!.indexOf(Buffer.from('POPM')),
@@ -268,10 +289,10 @@ test('a server that refuses the tagged-If dialect still commits, without re-uplo
 
     const dump = await hudDump(page)
     writeReport({
-      name: 'dialect-ladder',
+      name: 'browser-minimal-headers',
       summary: [
         `dialect: the server refuses the tagged If and scopes If-Match to the source (the field shape)`,
-        `ladder: put=${counts.put} move=${counts.move} precondition412=${counts.preconditionRejects} delete=${counts.delete} → committed without a second upload`,
+        `minimal headers: put=${counts.put} move=${counts.move} precondition412=${counts.preconditionRejects} delete=${counts.delete} → committed without conditional headers`,
         pushFacts(dump),
         `server bytes carry POPM: yes`,
         `app log lines captured: ${logs.length}`,

@@ -155,6 +155,44 @@ test('a server that refuses the tagged If falls to If-Match with the SAME temp (
   assert.equal(tempDeletes(r.calls).length, 0, 'the temp is carried from rung to rung')
 })
 
+test('minimal-header writes use a verified fresh destination and no optional MOVE headers', async () => {
+  const r = await run([PUT_OK, READ(), { status: 201 }], { revalidateOnly: true })
+  assert.ok(r.value, String(r.error))
+  assert.equal(r.value.precondition, 'revalidated')
+  assert.deepEqual(methods(r.calls), ['PUT', 'PROPFIND', 'MOVE'])
+  assert.deepEqual(Object.keys(r.calls[2].headers).sort(), ['Authorization', 'Destination'])
+})
+
+test('minimal-header writes refuse a missing baseline without uploading', async () => {
+  const r = await run([], { revalidateOnly: true }, null)
+  assert.ok(r.error instanceof AtomicWriteError)
+  assert.equal(r.error.stage, 'pre-move-validation')
+  assert.equal(r.error.cleanup, 'not-needed')
+  assert.equal(r.calls.length, 0)
+})
+
+test('minimal-header writes refuse failed or incomparable rechecks, cleaning the temp once', async () => {
+  for (const read of [{ status: 500 }, { reject: new Error('network') }, READ({})]) {
+    const r = await run([PUT_OK, read, { status: 204 }], { revalidateOnly: true })
+    assert.ok(r.error instanceof AtomicWriteError, String(r.error))
+    assert.equal(r.error.stage, 'pre-move-validation')
+    assert.deepEqual(methods(r.calls), ['PUT', 'PROPFIND', 'DELETE'])
+    assert.equal(r.error.cleanup, 'deleted')
+  }
+})
+
+test('minimal-header writes refuse a changed destination before sending MOVE', async () => {
+  const r = await run([PUT_OK, READ({ etag: '"new"' }), { status: 204 }], { revalidateOnly: true })
+  assert.ok(r.error instanceof ConflictError)
+  assert.deepEqual(methods(r.calls), ['PUT', 'PROPFIND', 'DELETE'])
+})
+
+test('minimal-header MOVE network failures remain unknown and are never retried with weaker headers', async () => {
+  const r = await run([PUT_OK, READ(), { reject: new Error('lost response') }, { status: 204 }], { revalidateOnly: true })
+  assert.equal((r.error as { remoteState: string }).remoteState, 'unknown')
+  assert.deepEqual(methods(r.calls), ['PUT', 'PROPFIND', 'MOVE', 'DELETE'])
+})
+
 test('a server that refuses both etag rungs falls to the date rung, then to the re-check alone', async () => {
   const dateRung = await run([
     PUT_OK, READ(),

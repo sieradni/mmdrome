@@ -978,6 +978,7 @@ export async function runManualWebDAVSync(
           {
             ...(deps.useUniqueTempToken ? { runToken: `${runId}-a1` } : {}),
             ...(learnedPrecondition ? { startAt: learnedPrecondition } : {}),
+            revalidateOnly: transport === "web",
             beforeMove: checkBeforeMove,
           },
           deps.webdavFetch,
@@ -1085,6 +1086,7 @@ export async function runManualWebDAVSync(
               {
                 ...(deps.useUniqueTempToken ? { runToken: `${runId}-a2` } : {}),
                 ...(learnedPrecondition ? { startAt: learnedPrecondition } : {}),
+                revalidateOnly: transport === "web",
                 beforeMove: checkBeforeMove,
               },
               deps.webdavFetch,

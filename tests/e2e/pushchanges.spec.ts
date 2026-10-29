@@ -15,19 +15,9 @@ import { openSettingsSection } from './libraryHarness'
 
 // Push Changes end-to-end against the REAL bundle: a UI rating edit marks a
 // bound row pending_sync (webdav rating source), and Push writes it back
-// through the atomic temp-write path — GET (etag) → PUT <file>.mmdrome-tmp →
-// MOVE guarded by a destination-tagged `If` condition (never `If-Match` — that
-// header is scoped to the temp SOURCE). The route-mocked WebDAV server keeps
-// mutable state and
-// honors the concurrency headers, so the specs prove the browser actually
-// performed the whole write sequence exactly once, left no temp orphan, and
-// physically changed the stored file bytes (a POPM frame now present).
-//
-// The second spec arms the mock's conflict simulation: the first MOVE hits a
-// replayed concurrent writer (file mutated + etag advanced BEFORE the
-// precondition check → 412) and proves Push's documented single retry in the
-// browser — re-GET the fresh etag, re-modify, re-PUT, MOVE succeeds. A client
-// that retried with the STALE etag (or gave up) fails these assertions.
+// through GET → PUT temp → fresh PROPFIND re-check → MOVE. Browser writes use
+// essential headers only; native conditional-header behavior is unit-pinned.
+// Concurrent updates during upload must be re-read and merged before MOVE.
 
 /** Boot → load 2 songs → rescan binds both files (2 probe reads) → rate Song
  *  One to 100 through the real UI → back to Settings → Library, ready for
@@ -132,16 +122,12 @@ test('a rating edit in the UI is pushed to the WebDAV file via PUT-temp + MOVE',
   expect(dav.getMoveCount(), 'one atomic MOVE over the target').toBe(1)
   expect(dav.storedPaths(), 'no .mmdrome-tmp orphan after a successful push').not.toContain('Song One.mp3.mmdrome-tmp')
 
-  // WIRE-LEVEL PRECONDITION SCOPE (2026-10-20). The MOVE must guard the
-  // DESTINATION through a tagged `If` list. `If-Match` is evaluated against
-  // the request URI — the temp SOURCE — by RFC 7232 §3.1 and by sabre/dav
-  // (Nextcloud), so a destination etag there 412s every guarded row and no
-  // retry can recover. The mock now enforces the RFC scope (a destination etag
-  // in If-Match fails), so this spec would fail outright on the old client;
-  // these assertions name the exact headers either way.
+  // No optional header may silently expand the browser's CORS requirements.
   const moveHeaders = dav.lastMoveHeaders()!
   expect(moveHeaders['if-match']).toBeUndefined()
-  expect(moveHeaders['if']).toMatch(/^<https:\/\/dav\.test\/files\/user\/Song%20One\.mp3> \(\["etag-\d+"\]\)$/)
+  expect(moveHeaders['if']).toBeUndefined()
+  expect(moveHeaders['if-unmodified-since']).toBeUndefined()
+  expect(moveHeaders['overwrite']).toBeUndefined()
   const original = fixtureFiles().find((f) => f.path === 'Song One.mp3')!.bytes
   const pushed = dav.bytesOf('Song One.mp3')
   expect(pushed, 'the pushed file exists with new bytes').toBeTruthy()
@@ -149,20 +135,16 @@ test('a rating edit in the UI is pushed to the WebDAV file via PUT-temp + MOVE',
   expect(pushed!.indexOf(Buffer.from('POPM'))).toBeGreaterThan(-1)
 })
 
-test('a 412 on MOVE (concurrent writer) is retried once: re-GET, re-modify, succeed', async ({ page }) => {
+test('a changed pre-MOVE destination is retried once: re-GET, re-modify, succeed', async ({ page }) => {
   await bootApp(page)
   await mockSubsonic(page)
   const dav = await installWebdavMock(page, { baseUrl: DAV_BASE, files: fixtureFiles() })
   const readsAfterScan = await preparePendingRating(page, dav)
 
-  // Arm the conflict BEFORE opening Push: the first MOVE on Song One replays
-  // a concurrent writer — the stored file is replaced with OTHER VALID AUDIO
-  // (a realistic writer leaves a playable file) and its etag advances — then
-  // answers 412. The returned etag is what the server holds afterwards, so
-  // Push can only succeed by re-GETting it (retrying the stale etag would 412
-  // forever, and no retry would leave the rating unwritten).
+  // A writer changes the destination while the temp uploads. The fresh
+  // pre-MOVE check must catch it without any conditional header permission.
   const concurrentBytes = buildMp3Fixture({ title: 'Song One', artist: 'Artist A', album: 'Album X', track: 1, frames: 12 })
-  dav.armConflict('Song One.mp3', 1, concurrentBytes)
+  dav.armConflict('Song One.mp3', 1, concurrentBytes, 'put')
 
   await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Write ratings to WebDAV files?' })).toBeVisible()
@@ -170,29 +152,20 @@ test('a 412 on MOVE (concurrent writer) is retried once: re-GET, re-modify, succ
   await page.getByRole('button', { name: 'Write to files' }).click()
   await expect(page.getByText(/Pushed 1 track/)).toBeVisible({ timeout: 30_000 })
 
-  // Retry shape, exactly as documented (syncEngine webdavPutAtomic + the
-  // ConflictError branch): attempt 1 GET(etag) + PUT + MOVE(412) + temp-DELETE
-  // cleanup, then the retry re-GETs, re-modifies, PUTs, and MOVEs with the
-  // FRESH etag. One retry, no more — and the mock's conflict arm fired once.
-  // (The mock exposes ETag via Access-Control-Expose-Headers; without that
-  // the browser hides it and Push silently degrades to a blind overwrite.)
-  expect(dav.getConflictCount(), 'the armed 412 was served exactly once').toBe(1)
+  // The first attempt cleans its temp without MOVE; the retry merges fresh bytes.
+  expect(dav.getConflictCount(), 'the concurrent writer ran once').toBe(1)
   expect(dav.getReadCount(), 'initial GET + conflict re-GET only').toBe(readsAfterScan + 2)
   expect(dav.getPutCount(), 'one temp PUT per attempt').toBe(2)
-  expect(dav.getMoveCount(), 'one rejected MOVE + one successful retry MOVE').toBe(2)
+  expect(dav.getMoveCount(), 'only the retry sends MOVE').toBe(1)
   // Exactly one DELETE: the temp cleanup lives in webdavPutAtomic
-  // (webdavAtomicWrite.ts) as ONE `discardTemp()` call on the failed MOVE's
+  // (webdavAtomicWrite.ts) as ONE `discardTemp()` call on the conflict
   // branch. The old double-DELETE (branch + catch-all both cleaning) was
   // extracted and fixed; tests/webdavAtomicWrite.test.ts pins the exactly-once
   // contract at the Node level.
   expect(dav.getDeleteCount(), 'the failed attempt cleans its temp file exactly once').toBe(1)
   expect(dav.storedPaths(), 'no .mmdrome-tmp orphan after the retry').not.toContain('Song One.mp3.mmdrome-tmp')
 
-  // The stored file: the retry overwrote the concurrent writer's bytes (its
-  // distinct audio length is gone) and the app's tags won with a POPM frame
-  // present. The retry MOVE only succeeded because its destination-tagged
-  // `If` condition carried the FRESH etag from the re-GET — the mock rejects a
-  // destination etag mismatch with 412, exactly like a real server.
+  // The rating was written into the refreshed remote file.
   const finalBytes = dav.bytesOf('Song One.mp3')!
   expect(finalBytes.length, 'concurrent-writer bytes replaced by the push').not.toBe(concurrentBytes.length)
   expect(finalBytes.indexOf(Buffer.from('POPM'))).toBeGreaterThan(-1)
@@ -272,13 +245,8 @@ test('a destination deleted between GET and MOVE is a skip, not a failure', asyn
   const dav = await installWebdavMock(page, { baseUrl: DAV_BASE, files: fixtureFiles() })
   await preparePendingRating(page, dav)
 
-  // A concurrent deleter (another client, a sync tool, the library's own
-  // cleanup) removes the file after our GET. sabre/dav resolves the
-  // destination-tagged `If` with tree->getNodeForPath and does not catch
-  // NotFound, so the conditional MOVE answers 404 — NOT 412. Treating only
-  // 412 as "re-read the destination" reported this as `1 failed, WebDAV MOVE
-  // failed (404)` even though the file is simply gone and the correct outcome
-  // is the same skip a missing file already gets on the GET path.
+  // A concurrent deletion during upload is seen by the fresh destination
+  // check. Recovery GET reports it gone; no MOVE can resurrect the file.
   dav.armVanish('Song One.mp3', 1)
 
   await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
@@ -289,9 +257,9 @@ test('a destination deleted between GET and MOVE is a skip, not a failure', asyn
   await expect(result).not.toContainText('failed')
 
   // One attempt, one temp cleanup, nothing orbiting the collection.
-  expect(dav.getMoveCount(), 'the conditional MOVE was attempted once').toBe(1)
-  expect(dav.getDeleteCount(), 'the 404 MOVE cleaned its temp exactly once').toBe(1)
-  expect(dav.storedPaths(), 'no .mmdrome-tmp orphan after the 404').not.toContain('Song One.mp3.mmdrome-tmp')
+  expect(dav.getMoveCount(), 'the vanished destination is detected before MOVE').toBe(0)
+  expect(dav.getDeleteCount(), 'the refused attempt cleaned its temp exactly once').toBe(1)
+  expect(dav.storedPaths(), 'no .mmdrome-tmp orphan after deletion').not.toContain('Song One.mp3.mmdrome-tmp')
   expect(dav.bytesOf('Song One.mp3'), 'the vanished destination was not resurrected').toBeUndefined()
 })
 

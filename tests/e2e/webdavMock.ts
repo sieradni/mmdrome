@@ -145,19 +145,16 @@ export interface WebdavMockStats {
   setPreconditionDialect: (mode: WebdavPreconditionDialect) => void
   /** Delay every GET by `ms` (slow-server simulation); pass 0 to restore. */
   setGetDelay: (ms: number) => void
-  /** How many 412s the mock actually served (spec asserts the arm fired). */
+  /** How many simulated concurrent writes actually fired. */
   getConflictCount: () => number
-  /** Headers of the last MOVE request received (wire-level assertions: the
-   *  precondition must be a destination-tagged `If`, never `If-Match`). */
+  /** Headers of the last MOVE request received (wire-level assertions). */
   lastMoveHeaders: () => Record<string, string> | null
   /** Opt-in: the next `times` MOVEs on `destPath` fail with `status` (a server
    *  refusing the rename AFTER the temp was written) so the push result line
    *  has to surface a real cause, not just a count. */
   armMoveFailure: (destPath: string, status: number, times?: number) => void
-  /** Opt-in: delete `destPath` just before the next `times` MOVEs evaluate
-   *  their preconditions — a concurrent deleter between the client's GET and
-   *  its rename. A destination-tagged `If` then hits a missing node (404 on
-   *  sabre/dav), which the client must treat as a stale read, not a failure. */
+  /** Opt-in: delete `destPath` during the next `times` temp uploads, so the
+   *  pre-MOVE destination read detects a concurrent deletion. */
   armVanish: (destPath: string, times?: number) => void
   /** Opt-in: drop the connection instead of answering the next `times` MOVEs
    *  on `destPath` (a response lost after the rename may have happened). The
@@ -302,6 +299,12 @@ export async function installWebdavMock(
         conflictsServed++
         store.set(destKeyOfTemp(rel), { bytes: armedPut.newBytes, etag: armedPut.newEtag, mtime: MTIME_AFTER_WRITE })
       }
+      const vanishedDest = destKeyOfTemp(rel)
+      const vanishing = vanishArms.get(vanishedDest) ?? 0
+      if (vanishing > 0) {
+        vanishArms.set(vanishedDest, vanishing - 1)
+        store.delete(vanishedDest)
+      }
       await route.fulfill({ status: 201, headers: { ...CORS, ETag: etag }, body: '' })
       return
     }
@@ -333,11 +336,6 @@ export async function installWebdavMock(
         arm.remaining--
         conflictsServed++
         store.set(destRel, { bytes: arm.newBytes, etag: arm.newEtag, mtime: MTIME_AFTER_WRITE })
-      }
-      const vanishing = vanishArms.get(destRel) ?? 0
-      if (vanishing > 0) {
-        vanishArms.set(destRel, vanishing - 1)
-        store.delete(destRel)
       }
       const aborting = moveAbortArms.get(destRel) ?? 0
       if (aborting > 0) {

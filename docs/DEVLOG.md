@@ -2595,3 +2595,22 @@ Unit coverage pins both read options and the native translation. Conditional
 MOVE header CORS compatibility remains a separate limitation; this fix does
 not weaken guards on opaque network failures. Analysis:
 `docs/plans/2026-10-29-webdav-browser-cors-regression.md`.
+
+## 2026-10-29b — Browser pushes with essential CORS permissions
+
+The 1.4.3 freshness fix exposed the next denied header: `If`. Removing one
+permission requirement at a time was insufficient. Browser writes now select
+`AtomicWriteOptions.revalidateOnly` on both attempts: no conditional MOVE
+headers, no redundant Overwrite header, and a mandatory unchanged fresh
+destination check. Missing baselines fail before upload; unreadable or
+incomparable re-checks clean the temp and refuse MOVE. Network errors during
+MOVE remain unknown outcomes, without weakening or retrying the guard. Native
+retains its ladder, pinned by the core tests and native orchestration case.
+
+The baseline CORS fixture allows only Authorization, Content-Type, Depth and
+Destination and exposes no response headers. Browser coverage proves cached
+bytes cannot clobber a newer remote tag and missing validators leave the file
+untouched/pending. Concurrent-write and deletion browser cases now exercise
+changes during upload (before the re-check); native core tests retain 412/404
+coverage. The check→MOVE race remains a documented limit, not an atomic guard.
+`docs/WEBDAV-CORS.md` gives the minimum configuration and its concurrency limit.
