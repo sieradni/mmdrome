@@ -76,7 +76,7 @@ interface Harness {
   liveMap: Map<string, LocalMetadataStore>
   upserted: LocalMetadataStore[]
   reports: PushRunReport[]
-  calls: Array<{ method: string; url: string; headers: Record<string, string> }>
+  calls: Array<{ method: string; url: string; headers: Record<string, string>; cache?: RequestCache }>
   scanTriggered: number
   deps: Partial<PushSyncDeps>
 }
@@ -85,7 +85,7 @@ function createHarness(rows: LocalMetadataStore[]): Harness {
   const liveMap = new Map(rows.map((r) => [r.trackId, { ...r }]))
   const upserted: LocalMetadataStore[] = []
   const reports: PushRunReport[] = []
-  const calls: Array<{ method: string; url: string; headers: Record<string, string> }> = []
+  const calls: Harness['calls'] = []
   let scanTriggered = 0
   let clock = 1_700_000_000_000
 
@@ -163,7 +163,7 @@ test('W1 / W-01: mixed HTTP and stage failures preserve per-row stages, HTTP sta
     ...h.deps,
     webdavFetch: async (url, options) => {
       const method = String(options.method ?? 'GET')
-      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string> })
+      h.calls.push({ method, url, headers: (options.headers ?? {}) as Record<string, string>, cache: options.cache })
       if (method === 'PROPFIND') return makeRes(207, {}, VALIDATOR_XML)
       if (url.includes('Auth.mp3')) {
         return makeRes(401, { 'X-Request-Id': 'req-auth-1' }, 'Unauthorized')
@@ -192,11 +192,12 @@ test('W1 / W-01: mixed HTTP and stage failures preserve per-row stages, HTTP sta
   assert.equal(byId.get('t-auth')?.error?.status, 401)
   assert.equal(byId.get('t-auth')?.error?.requestId, 'req-auth-1')
 
-  // The destination read and the body read both send `no-cache`: the body IS
-  // the payload the write's guard is anchored to, and a cached pair (stale body
-  // + fresh baseline) would let an older payload overwrite a newer file.
-  assert.equal(h.calls.find((c) => c.method === 'GET')?.headers['Cache-Control'], 'no-cache')
-  assert.equal(h.calls.find((c) => c.method === 'PROPFIND')?.headers['Cache-Control'], 'no-cache')
+  // Fresh bytes and fresh validators, without an extra CORS header permission.
+  for (const method of ['GET', 'PROPFIND']) {
+    const call = h.calls.find((c) => c.method === method)!
+    assert.equal(call.cache, 'no-store')
+    assert.equal(new Headers(call.headers).has('Cache-Control'), false)
+  }
 
   assert.equal(byId.get('t-lock')?.disposition, 'failed-move')
   assert.equal(byId.get('t-lock')?.stage, 'move')

@@ -2576,3 +2576,22 @@ manifest-size backfill, Pages deployment, CDN purge and exact-size verification.
 Physical iPhone slow-network/background/route/interruption acceptance remains
 outstanding in the streaming implementation plan; this release does not claim
 that those device scenarios were exercised automatically.
+
+## 2026-10-29 — Fresh WebDAV push reads without an extra CORS permission
+
+The October 27 write ladder explicitly added `Cache-Control: no-cache` to
+PROPFIND validator reads and the file GET. That preserved freshness but broke
+browser pushes against servers whose CORS allowlist omitted `cache-control`.
+Both reads now express the intent with `RequestInit.cache: 'no-store'`; the
+native adapter translates it to its existing `Cache-Control: no-cache` header.
+The ordering and collision policies are unchanged, with no new retry or server
+capability state. Native header conversion also accepts all HeadersInit forms.
+
+The real-server browser regression deliberately omits the header permission,
+warms a cacheable file GET, updates the remote tags and validators, proves a
+default GET still returns the old cached file, then pushes a rating. The new
+remote tags survive and the report records a server-enforced tagged-If guard.
+Unit coverage pins both read options and the native translation. Conditional
+MOVE header CORS compatibility remains a separate limitation; this fix does
+not weaken guards on opaque network failures. Analysis:
+`docs/plans/2026-10-29-webdav-browser-cors-regression.md`.

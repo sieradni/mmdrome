@@ -4,6 +4,7 @@ import { resolve } from 'node:path'
 import { bootApp } from './boot'
 import { openSources, openSettingsSection } from './libraryHarness'
 import { startLocalServers, type LocalServers } from './localServers'
+import { buildMp3Fixture } from './fixture'
 
 // ── REAL SERVERS, not route mocks (2026-10-28) ─────────────────────────────
 // The two passes before this one shipped with correctness 6 for one reason:
@@ -106,6 +107,53 @@ async function hudDump(page: Page): Promise<unknown> {
     return { unparsed: text.slice(0, 4000) }
   }
 }
+
+test('push stays fresh when CORS forbids cache-control and an older GET is cached', async ({ page }) => {
+  const servers = await startLocalServers({ allowCacheControl: false, cacheableGets: true })
+  try {
+    await bootApp(page)
+    await page.goto('/mmdrome/?debug=tags,sync')
+    await expect(page.locator('[data-app-ready]')).toBeAttached({ timeout: 15_000 })
+    await connectTo(page, servers)
+    await openSettingsSection(page, 'library')
+    await page.getByRole('button', { name: /Rescan All Metadata \(re-reads all tags\)/ }).click()
+    await expect(page.getByTestId('fm-audit-summary')).toContainText('2 verified', { timeout: 30_000 })
+    await rateSong(page, 'navidrome-s1')
+
+    const path = `${servers.dir}/Song One.mp3`
+    const url = servers.webdavBaseUrl + path.split('/').map(encodeURIComponent).join('/')
+    const oldBytes = servers.fileBytes(path)!
+    const cachedRead = () => page.evaluate(async (url) => {
+      const response = await fetch(url, { headers: { Authorization: 'Basic ' + btoa('demo:demo') } })
+      return Array.from(new Uint8Array(await response.arrayBuffer()))
+    }, url)
+    expect(Buffer.from(await cachedRead())).toEqual(oldBytes)
+    const getsAfterWarm = servers.counts().get
+
+    // A real external update after the browser cached the original body.
+    // The newer artist must survive the app's rating edit and whole-file PUT.
+    servers.replaceFile(path, buildMp3Fixture({ title: 'Song One', artist: 'Remote Updated Artist', frames: 8 }))
+    expect(Buffer.from(await cachedRead()), 'the default GET demonstrably returns stale bytes').toEqual(oldBytes)
+    expect(servers.counts().get, 'the second default GET was served by the browser cache').toBe(getsAfterWarm)
+
+    await openSettingsSection(page, 'library')
+    await page.getByRole('button', { name: 'Push Changes', exact: true }).click()
+    await expect(page.getByText('1 file will be updated:')).toBeVisible()
+    await page.getByRole('button', { name: 'Write to files' }).click()
+    await expect(page.getByText(/Pushed 1 track/)).toBeVisible({ timeout: 30_000 })
+
+    const written = servers.fileBytes(path)!
+    expect(written.includes(Buffer.from('Remote Updated Artist')), 'push preserves the newer remote tags').toBe(true)
+    expect(written.includes(Buffer.from('POPM')), 'the requested rating was written').toBe(true)
+    expect(servers.counts().put).toBe(1)
+    expect(servers.counts().move).toBe(1)
+    expect(servers.storedPaths().some((p) => p.endsWith('.mmdrome-tmp'))).toBe(false)
+    const dump = await hudDump(page) as { lastPushReport: { rows: PushReportRow[] } }
+    expect(dump.lastPushReport.rows[0].precondition, 'validator reads still support a server-enforced guard').toBe('tagged-if')
+  } finally {
+    await servers.close()
+  }
+})
 
 test('a pending song with no file is linked by a scan, and the edit pushes to the real server', async ({ page }) => {
   const servers = await startLocalServers()

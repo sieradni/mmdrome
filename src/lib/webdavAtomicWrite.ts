@@ -155,14 +155,13 @@ export async function readDestinationValidators(
       destinationUrl,
       {
         method: 'PROPFIND',
-        // `no-cache` = revalidate before use: a CACHED multistatus would hand
-        // this read a validator for a state the destination has left, and the
-        // guard built on it would then let an older payload through.
+        // Keep collision checks fresh without requiring the server to allow
+        // an application-supplied Cache-Control header in CORS preflight.
+        cache: 'no-store',
         headers: {
           ...headers,
           Depth: '0',
           'Content-Type': 'application/xml; charset=utf-8',
-          'Cache-Control': 'no-cache',
         },
         body: propfindValidatorsBody(),
       },

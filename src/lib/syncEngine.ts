@@ -235,10 +235,10 @@ async function webdavGet(
     url,
     {
       method: "GET",
-      // Revalidate rather than reuse: this body is the payload the write's
-      // guard is anchored to, so a cached copy is a body for a state the
-      // destination has left (see webdavAtomicWrite.ts).
-      headers: { ...authHeaders(user, token), "Cache-Control": "no-cache" },
+      // Fresh bytes must match the collision baseline. Use the cache option:
+      // an explicit Cache-Control header adds a CORS preflight requirement.
+      cache: "no-store",
+      headers: authHeaders(user, token),
     },
     WEBDAV_TIMEOUT,
   )

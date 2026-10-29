@@ -60,6 +60,8 @@ export interface LocalServers {
   dir: string
   /** Current stored bytes for a relative path (undefined when absent). */
   fileBytes(path: string): Buffer | undefined
+  /** Simulate an external writer, updating the destination's validators too. */
+  replaceFile(path: string, bytes: Buffer): void
   /** Every relative path currently stored (a temp orphan shows up here). */
   storedPaths(): string[]
   /** Live request counters — the assertions that prove "no re-upload". */
@@ -108,6 +110,10 @@ async function readBody(req: IncomingMessage): Promise<Buffer> {
 
 export async function startLocalServers(options: {
   dialect?: WebdavDialect
+  /** Model servers whose CORS policy predates the push cache-header change. */
+  allowCacheControl?: boolean
+  /** Make a stale browser GET reusable unless the caller requests freshness. */
+  cacheableGets?: boolean
   /** Bind address. Loopback for tests; `0.0.0.0` when a real device on the
    *  LAN has to reach these servers (`scripts/serve-fixtures.mjs`). */
   host?: string
@@ -213,7 +219,8 @@ export async function startLocalServers(options: {
       'Access-Control-Allow-Origin': req.headers.origin ?? '*',
       'Access-Control-Allow-Methods': 'OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, MOVE',
       'Access-Control-Allow-Headers':
-        'authorization, content-type, depth, destination, overwrite, if, if-match, if-unmodified-since, cache-control, range',
+        'authorization, content-type, depth, destination, overwrite, if, if-match, if-unmodified-since, range' +
+        (options.allowCacheControl === false ? '' : ', cache-control'),
       'Access-Control-Expose-Headers': 'etag, last-modified, content-length, content-range, accept-ranges, dav',
       Vary: 'Origin',
     }
@@ -322,7 +329,10 @@ export async function startLocalServers(options: {
         return
       }
       counters.get++
-      const base = { ...headers, 'Content-Type': 'audio/mpeg', ETag: file.etag, 'Last-Modified': file.lastModified }
+      const base = {
+        ...headers, 'Content-Type': 'audio/mpeg', ETag: file.etag, 'Last-Modified': file.lastModified,
+        ...(options.cacheableGets ? { 'Cache-Control': 'public, max-age=3600' } : {}),
+      }
       const range = /^bytes=(\d+)-(\d*)$/.exec(String(req.headers.range ?? ''))
       if (range) {
         const start = Number(range[1])
@@ -404,6 +414,10 @@ export async function startLocalServers(options: {
     webdavBaseUrl: `http://127.0.0.1:${webdavPort}/dav/`,
     dir,
     fileBytes: (p) => files.get(p)?.bytes,
+    replaceFile: (path, bytes) => {
+      if (!files.has(path)) throw new Error(`No fixture file: ${path}`)
+      files.set(path, { path, bytes, etag: strongEtag(bytes, ++revision), lastModified: httpDate(Date.now()) })
+    },
     storedPaths: () => [...files.keys()],
     counts: () => ({ ...counters }),
     close: () => new Promise<void>((resolve) => {

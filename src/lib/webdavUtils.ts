@@ -201,13 +201,17 @@ export async function nativeWebdavFetch(
   const body = options.body
   const data = body instanceof ArrayBuffer ? arrayBufferToBase64(body) : typeof body === 'string' ? body : undefined
   const dataType = body instanceof ArrayBuffer ? 'file' : undefined
+  // CapacitorHttp does not accept RequestInit.cache. Preserve the native
+  // push reads' revalidation directive when callers request fresh bytes.
+  const headers = new Headers(options.headers)
+  if (options.cache === 'no-store') headers.set('Cache-Control', 'no-cache')
 
   let response: HttpResponse
   try {
     response = await httpRequest({
       url,
       method,
-      headers: (options.headers ?? {}) as Record<string, string>,
+      headers: Object.fromEntries(headers),
       data,
       dataType,
       responseType: 'arraybuffer',

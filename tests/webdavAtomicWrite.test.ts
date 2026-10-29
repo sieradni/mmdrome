@@ -43,6 +43,7 @@ interface Call {
   url: string
   headers: Record<string, string>
   body?: unknown
+  cache?: RequestCache
 }
 
 /** A `Depth: 0` multistatus for the destination, as sabre/Nextcloud answer. */
@@ -66,6 +67,7 @@ function fakeTransport(script: Step[]) {
       url,
       headers: (options.headers ?? {}) as Record<string, string>,
       body: options.body,
+      cache: options.cache,
     })
     const step = script[Math.min(i, script.length - 1)]
     i++
@@ -126,7 +128,8 @@ test('the first rung holds: PUT temp → re-check → MOVE with the tagged If', 
   const read = r.calls[1]
   assert.equal(read.url, DEST_URL)
   assert.equal(read.headers.Depth, '0')
-  assert.equal(read.headers['Cache-Control'], 'no-cache', 'a cached multistatus would be a validator for a past state')
+  assert.equal(read.cache, 'no-store', 'a cached multistatus would be a validator for a past state')
+  assert.equal(new Headers(read.headers).has('Cache-Control'), false, 'do not add a CORS header permission')
   assert.match(String(read.body), /getetag/)
   assert.match(String(read.body), /getlastmodified/)
 
