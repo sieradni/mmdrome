@@ -27,7 +27,8 @@
           "date": "2026-10-29T21:39:05.201Z",
           "localizedDescription": "Fix browser WebDAV pushes on servers with restrictive CORS settings while preserving fresh reads and collision checks.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.3/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5265383
         },
         {
           "version": "1.4.2",
