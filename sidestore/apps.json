@@ -27,7 +27,8 @@
           "date": "2026-10-29T23:13:56.507Z",
           "localizedDescription": "Improve WebDAV server compatibility and preserve uncertain MOVE outcomes safely.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.4.5/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5265556
         },
         {
           "version": "1.4.4",
