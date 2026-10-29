@@ -2614,3 +2614,16 @@ untouched/pending. Concurrent-write and deletion browser cases now exercise
 changes during upload (before the re-check); native core tests retain 412/404
 coverage. The check→MOVE race remains a documented limit, not an atomic guard.
 `docs/WEBDAV-CORS.md` gives the minimum configuration and its concurrency limit.
+
+## 2026-10-29c — Explicit overwrite intent on browser MOVE
+
+The 1.4.4 field trace reached MOVE and received HTTP 412, with no conditional
+headers and a CORS policy permitting Overwrite. Omitting `Overwrite: T` relied
+on the standards default but missed real implementation behavior: Go's WebDAV
+MOVE requires explicit T to replace an existing destination. Browser MOVE now
+sends T too; fresh reads, mandatory revalidation, omitted If headers and native
+guards are unchanged. The browser regression runs against both a standards
+default and an explicit-T-required server. The fixture also enforces F, and
+protocol tests prove rejected moves leave source and destination intact.
+The CORS baseline now includes Overwrite. No same-host verification is claimed.
+Analysis: `docs/plans/2026-10-29-webdav-move-412-analysis.md`.

@@ -127,7 +127,7 @@ test('a rating edit in the UI is pushed to the WebDAV file via PUT-temp + MOVE',
   expect(moveHeaders['if-match']).toBeUndefined()
   expect(moveHeaders['if']).toBeUndefined()
   expect(moveHeaders['if-unmodified-since']).toBeUndefined()
-  expect(moveHeaders['overwrite']).toBeUndefined()
+  expect(moveHeaders['overwrite']).toBe('T')
   const original = fixtureFiles().find((f) => f.path === 'Song One.mp3')!.bytes
   const pushed = dav.bytesOf('Song One.mp3')
   expect(pushed, 'the pushed file exists with new bytes').toBeTruthy()

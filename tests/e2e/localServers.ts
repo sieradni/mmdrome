@@ -114,6 +114,8 @@ export async function startLocalServers(options: {
   allowCacheControl?: boolean
   /** Essential CORS permissions only; no optional MOVE or exposed headers. */
   minimalCors?: boolean
+  /** Go-style MOVE behavior: replacing a destination requires explicit T. */
+  requireExplicitOverwrite?: boolean
   /** Exercise refusal when collision checks have no usable baseline. */
   publishValidators?: boolean
   /** Make a stale browser GET reusable unless the caller requests freshness. */
@@ -223,7 +225,7 @@ export async function startLocalServers(options: {
       'Access-Control-Allow-Origin': req.headers.origin ?? '*',
       'Access-Control-Allow-Methods': 'OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, MOVE',
       'Access-Control-Allow-Headers':
-        options.minimalCors ? 'authorization, content-type, depth, destination' :
+        options.minimalCors ? 'authorization, content-type, depth, destination, overwrite' :
           'authorization, content-type, depth, destination, overwrite, if, if-match, if-unmodified-since, range' +
           (options.allowCacheControl === false ? '' : ', cache-control'),
       ...(options.minimalCors ? {} : { 'Access-Control-Expose-Headers': 'etag, last-modified, content-length, content-range, accept-ranges, dav' }),
@@ -390,6 +392,12 @@ export async function startLocalServers(options: {
         return
       }
       const replaced = files.has(destination)
+      if (replaced && (req.headers.overwrite === 'F' ||
+          (options.requireExplicitOverwrite && req.headers.overwrite !== 'T'))) {
+        counters.preconditionRejects++
+        res.writeHead(412, headers).end('Precondition Failed')
+        return
+      }
       files.delete(path)
       files.set(destination, {
         path: destination,

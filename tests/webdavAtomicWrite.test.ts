@@ -155,12 +155,13 @@ test('a server that refuses the tagged If falls to If-Match with the SAME temp (
   assert.equal(tempDeletes(r.calls).length, 0, 'the temp is carried from rung to rung')
 })
 
-test('minimal-header writes use a verified fresh destination and no optional MOVE headers', async () => {
+test('minimal-header writes use a verified fresh destination and no conditional MOVE headers', async () => {
   const r = await run([PUT_OK, READ(), { status: 201 }], { revalidateOnly: true })
   assert.ok(r.value, String(r.error))
   assert.equal(r.value.precondition, 'revalidated')
   assert.deepEqual(methods(r.calls), ['PUT', 'PROPFIND', 'MOVE'])
-  assert.deepEqual(Object.keys(r.calls[2].headers).sort(), ['Authorization', 'Destination'])
+  assert.deepEqual(Object.keys(r.calls[2].headers).sort(), ['Authorization', 'Destination', 'Overwrite'])
+  assert.equal(r.calls[2].headers.Overwrite, 'T', 'existing files need explicit overwrite on Go-style servers')
 })
 
 test('minimal-header writes refuse a missing baseline without uploading', async () => {

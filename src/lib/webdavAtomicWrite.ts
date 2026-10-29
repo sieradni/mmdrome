@@ -306,9 +306,9 @@ export async function webdavPutAtomic(
     const moveHeaders: Record<string, string> = {
       ...headers,
       Destination: destUrl,
-      // RFC 4918 §10.6 defaults Overwrite to T. Browsers need not request
-      // another CORS header permission for an explicit copy of that default.
-      ...(opts?.revalidateOnly ? {} : { Overwrite: 'T' }),
+      // Go-style servers require explicit T to replace an existing file,
+      // despite RFC 4918 §10.6 defining T as the default when omitted.
+      Overwrite: 'T',
       ...movePreconditionHeaders(rung, destUrl, validators),
     }
 
