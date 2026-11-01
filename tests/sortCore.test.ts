@@ -92,8 +92,16 @@ test('a secondary random scrambles ONLY the groups the primary ties on', () => {
 
   // The tied 2020 group is genuinely resampled by a different seed.
   const tied = (seed: number) => order(seed).filter((id) => id === 'a' || id === 'c' || id === 'd').join('')
-  const permutations = new Set()
-  for (let seed = 1; seed <= 20; seed++) permutations.add(tied(seed))
+  const permutations = new Set<string>()
+  for (let seed = 1; seed <= 20; seed++) {
+    permutations.add(tied(seed))
+    // Re-rolling is a new seed and NOTHING else: the primary order survives it.
+    assert.deepEqual(
+      order(seed).map((id) => rows.find((r) => r.id === id)!.year),
+      [2019, 2020, 2020, 2020, 2021],
+      `seed ${seed}: the scramble stays inside the tied group`,
+    )
+  }
   assert.ok(permutations.size > 1, 'a secondary random actually permutes the ties')
 })
 
@@ -197,6 +205,21 @@ test('setTier: a SECONDARY random is the tie-break and survives a primary change
 
   // Clearing the secondary leaves the primary alone.
   assert.deepEqual(tiers(setTier(s, 1, null)), ['year+'])
+
+  // Promoting random to PRIMARY drops the tie-break entirely and remembers only
+  // the real stack, so the shuffle-off memory can never hold a random tier.
+  const promoted = setTier(s, 0, 'random')
+  assert.deepEqual(tiers(promoted), ['random+'], 'a random primary keeps no secondary')
+  assert.deepEqual(tiers({ tiers: promoted.restore ?? [], randomSeed: 0 }), ['year+'])
+
+  // The same rule holds through persistence: a stored `restore` that carries a
+  // random tier is filtered by the decoder, so no reload can answer a stack the
+  // toggle could never produce.
+  const stored = normalizeSort({
+    tiers: [{ key: 'year', asc: true }],
+    restore: [{ key: 'year', asc: true }, { key: 'random', asc: true }],
+  })
+  assert.deepEqual(tiers({ tiers: stored.restore ?? [], randomSeed: 0 }), ['year+'], 'restore never carries random')
 
   // Moving a real secondary up over a random primary: random cannot stay below.
   const random = setTier(sortOf(), 0, 'random')

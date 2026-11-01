@@ -95,7 +95,7 @@
       </div>
       <div class="mt-1.5 flex flex-wrap gap-1.5" role="group" aria-label="Secondary sort">
         {#each SORT_TIER_KEYS as key (key)}
-          {#if key !== primary?.key}
+          {#if key !== primary?.key && (key !== 'random' || allowRandom)}
             <button
               type="button"
               class={chipClass(secondary?.key === key)}
