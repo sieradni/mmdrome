@@ -27,7 +27,8 @@
           "date": "2026-11-01T05:02:27.128Z",
           "localizedDescription": "Sort by two levels at once, with Random as a sort you can pick — turning shuffle off returns to the order it replaced. The queue can fetch new suggestions on demand, and Settings → Playback gains a recently-played horizon.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.5.0/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5267403
         },
         {
           "version": "1.4.5",
