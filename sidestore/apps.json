@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.5.0",
-      "versionDate": "2026-11-01T05:02:27.128Z",
-      "versionDescription": "Sort by two levels at once, with Random as a sort you can pick — turning shuffle off returns to the order it replaced. The queue can fetch new suggestions on demand, and Settings → Playback gains a recently-played horizon.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.5.0/mmdrome.ipa",
+      "version": "1.5.1",
+      "versionDate": "2026-11-01T06:53:05.809Z",
+      "versionDescription": "Pick Random as the second sort level, so songs that tie on your first sort shuffle among themselves.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.5.1/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.5.1",
+          "buildVersion": "84",
+          "date": "2026-11-01T06:53:05.809Z",
+          "localizedDescription": "Pick Random as the second sort level, so songs that tie on your first sort shuffle among themselves.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.5.1/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.5.0",
           "buildVersion": "83",
@@ -764,6 +772,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.5.1",
+      "identifier": "ios-v1.5.1",
+      "appID": "com.mmdrome.player",
+      "caption": "Pick Random as the second sort level, so songs that tie on your first sort shuffle among themselves.",
+      "date": "2026-11-01T06:53:05.809Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.5.0",
       "identifier": "ios-v1.5.0",
       "appID": "com.mmdrome.player",
@@ -796,15 +813,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Fix browser WebDAV pushes on servers with restrictive CORS settings while preserving fresh reads and collision checks.",
       "date": "2026-10-29T21:39:05.201Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.4.2",
-      "identifier": "ios-v1.4.2",
-      "appID": "com.mmdrome.player",
-      "caption": "Pushing tag changes now works with the WebDAV servers that rejected the previous conflict check, so edits no longer fail as changed when not",
-      "date": "2026-10-28T00:09:09.982Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
