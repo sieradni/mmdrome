@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sortOf, sortSignature } from '../src/lib/sortCore'
 import assert from 'node:assert/strict'
 import { get } from 'svelte/store'
 import { db } from '../src/lib/db'
@@ -33,8 +34,7 @@ function state(over: Partial<LibraryFilterState> = {}): LibraryFilterState {
     toYear: '',
     minLength: '',
     maxLength: '',
-    sortBy: null,
-    sortAsc: true,
+    sort: sortOf(null, true),
     ...over,
   }
 }
@@ -44,8 +44,7 @@ function preset(over: Partial<FilterPreset> = {}): FilterPreset {
     id: 'p1',
     name: 'Late night',
     filters: filtersFromState(state({ minRating: 80, lovedOnly: true })),
-    sortBy: 'rating',
-    sortAsc: false,
+    sort: sortOf('rating', false),
     ...over,
   }
 }
@@ -93,14 +92,14 @@ test('planSavePreset truncates an over-long name instead of rejecting it', () =>
 
 test('planSavePreset REPLACES an existing name in place, keeping its id, position and count', () => {
   const old = [preset({ id: 'a', name: 'Focus' }), preset({ id: 'b', name: 'Big room' })]
-  const r = planSavePreset(old, '  focus ', state({ maxLength: 180, sortBy: 'length', sortAsc: true }), 'ignored')
+  const r = planSavePreset(old, '  focus ', state({ maxLength: 180, sort: sortOf('length', true) }), 'ignored')
   assert.equal(r.ok, true)
   if (!r.ok) return
   assert.equal(r.presets.length, 2, 'a replace never grows the list')
   assert.equal(r.presets[0].id, 'a')
   assert.equal(r.presets[0].name, 'Focus')
   assert.equal(r.presets[0].filters.maxLength, 180)
-  assert.equal(r.presets[0].sortBy, 'length')
+  assert.equal(sortSignature(r.presets[0].sort), 'length+')
   assert.equal(r.presets[1].id, 'b')
 })
 
@@ -132,8 +131,7 @@ test('applyPreset writes the filters and sort and CLOSES both popups', () => {
     state({ filterOpen: true, sortOpen: true, genre: 'Rock' }),
     preset({
       filters: filtersFromState(state({ minRating: 70, lovedOnly: true, toYear: 2010, genre: 'Soul' })),
-      sortBy: 'year',
-      sortAsc: false,
+      sort: sortOf('year', false),
     }),
   )
   assert.equal(applied.filterOpen, false)
@@ -143,37 +141,35 @@ test('applyPreset writes the filters and sort and CLOSES both popups', () => {
   assert.equal(applied.toYear, 2010)
   // The preset owns every FILTER field, so its saved genre replaces the live one.
   assert.equal(applied.genre, 'Soul')
-  assert.equal(applied.sortBy, 'year')
-  assert.equal(applied.sortAsc, false)
+  assert.equal(sortSignature(applied.sort), 'year-')
 })
 
 test('applyPreset clears a sort the preset did not save', () => {
-  const applied = applyPreset(state({ sortBy: 'added', sortAsc: false }), preset({ sortBy: null, sortAsc: true }))
-  assert.equal(applied.sortBy, null)
-  assert.equal(applied.sortAsc, true)
+  const applied = applyPreset(state({ sort: sortOf('added', false) }), preset({ sort: sortOf(null, true) }))
+  assert.equal(sortSignature(applied.sort), '')
 })
 
 test('applyPresetById resolves the id once for both surfaces and ignores a stale chip', () => {
-  const list = [preset({ id: 'a', name: 'A', sortBy: 'year', sortAsc: true })]
-  assert.equal(applyPresetById(state(), list, 'a')?.sortBy, 'year')
+  const list = [preset({ id: 'a', name: 'A', sort: sortOf('year', true) })]
+  const appliedA = applyPresetById(state(), list, 'a')
+  assert.equal(appliedA && sortSignature(appliedA.sort), 'year+')
   assert.equal(applyPresetById(state(), list, 'gone'), null, 'a removed view must not write anything')
 })
 
 test('presetIsActive matches the exact saved combination only', () => {
   const p = preset({
     filters: filtersFromState(state({ minRating: 80, lovedOnly: true })),
-    sortBy: 'rating',
-    sortAsc: false,
+    sort: sortOf('rating', false),
   })
-  assert.equal(presetIsActive(p, state({ minRating: 80, lovedOnly: true, sortBy: 'rating', sortAsc: false })), true)
+  assert.equal(presetIsActive(p, state({ minRating: 80, lovedOnly: true, sort: sortOf('rating', false) })), true)
   // Open popups are not part of the comparison.
   assert.equal(
-    presetIsActive(p, state({ minRating: 80, lovedOnly: true, sortBy: 'rating', sortAsc: false, filterOpen: true })),
+    presetIsActive(p, state({ minRating: 80, lovedOnly: true, sort: sortOf('rating', false), filterOpen: true })),
     true,
   )
-  assert.equal(presetIsActive(p, state({ minRating: 70, lovedOnly: true, sortBy: 'rating', sortAsc: false })), false)
-  assert.equal(presetIsActive(p, state({ minRating: 80, lovedOnly: true, sortBy: 'rating', sortAsc: true })), false)
-  assert.equal(presetIsActive(p, state({ minRating: 80, lovedOnly: false, sortBy: 'rating', sortAsc: false })), false)
+  assert.equal(presetIsActive(p, state({ minRating: 70, lovedOnly: true, sort: sortOf('rating', false) })), false)
+  assert.equal(presetIsActive(p, state({ minRating: 80, lovedOnly: true, sort: sortOf('rating', true) })), false)
+  assert.equal(presetIsActive(p, state({ minRating: 80, lovedOnly: false, sort: sortOf('rating', false) })), false)
 })
 
 test('removePreset drops one id and leaves the rest in order; unknown ids are a no-op', () => {
@@ -194,7 +190,7 @@ test('decodeFilterPresets drops malformed rows and keeps valid ones', () => {
     'string',
     { id: '', name: 'nameless id' },
     { id: 'ok', name: '   ' },
-    { id: 'keep', name: '  Keep  me ', filters: { minRating: 40 }, sortBy: 'length', sortAsc: false },
+    { id: 'keep', name: '  Keep  me ', filters: { minRating: 40 }, sort: sortOf('length', false) },
   ])
   assert.equal(out.length, 1)
   assert.deepEqual(out[0], {
@@ -210,8 +206,7 @@ test('decodeFilterPresets drops malformed rows and keeps valid ones', () => {
       minLength: '',
       maxLength: '',
     },
-    sortBy: 'length',
-    sortAsc: false,
+    sort: sortOf('length', false),
   })
 })
 
@@ -244,9 +239,7 @@ test('decodeFilterPresets coerces out-of-range and mistyped filter values', () =
   assert.equal(out[0].filters.minLength, '')
   assert.equal(out[0].filters.maxLength, '')
   // An unknown sort key degrades to "no sort" rather than throwing.
-  assert.equal(out[0].sortBy, null)
-  // sortAsc defaults to true unless explicitly false.
-  assert.equal(out[0].sortAsc, true)
+  assert.equal(sortSignature(out[0].sort), '')
 })
 
 test('decodeFilterPresets keeps the first of a duplicated name and caps the list', () => {
@@ -264,12 +257,12 @@ test('decodeFilterPresets keeps the first of a duplicated name and caps the list
 
 test('a decoded row round-trips through planSavePreset and applyPreset', () => {
   const saved = decodeFilterPresets([
-    { id: 'r1', name: 'Warm', filters: { minRating: 60, lovedOnly: true, genre: 'Soul' }, sortBy: 'rating', sortAsc: false },
+    { id: 'r1', name: 'Warm', filters: { minRating: 60, lovedOnly: true, genre: 'Soul' }, sort: sortOf('rating', false) },
   ])
   const applied = applyPreset(state(), saved[0])
   assert.equal(applied.minRating, 60)
   assert.equal(applied.genre, 'Soul')
-  assert.equal(applied.sortBy, 'rating')
+  assert.equal(sortSignature(applied.sort), 'rating-')
   assert.equal(presetIsActive(saved[0], applied), true)
 })
 
@@ -292,7 +285,7 @@ Object.getPrototypeOf(db.localMetadata).toArray = (async () => []) as never
 
 test('initStores restores saved views through decodeFilterPresets and drops a malformed row', async () => {
   rows.set('filterPresets', [
-    { id: 'saved', name: '  Late  night ', filters: { minRating: 80, lovedOnly: true }, sortBy: 'rating', sortAsc: false },
+    { id: 'saved', name: '  Late  night ', filters: { minRating: 80, lovedOnly: true }, sort: sortOf('rating', false) },
     { id: '', name: 'no id' },
     { id: 'dup', name: 'late night' },
   ])
@@ -301,5 +294,5 @@ test('initStores restores saved views through decodeFilterPresets and drops a ma
   assert.deepEqual(restored.map((p) => p.id), ['saved'], 'invalid and duplicate rows never become chips')
   assert.equal(restored[0].name, 'Late night', 'the name is normalized on the way in')
   assert.equal(restored[0].filters.minRating, 80)
-  assert.equal(restored[0].sortBy, 'rating')
+  assert.equal(sortSignature(restored[0].sort), 'rating-')
 })

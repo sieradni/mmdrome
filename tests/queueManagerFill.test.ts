@@ -1,4 +1,5 @@
 // Pins the thin-glue half of the auto-queue fill: the REAL QueueManager
+import { sortOf } from '../src/lib/sortCore'
 // applying the pure plan to the REAL stores (queue + saveQueue + wrapNotice).
 // The pure decision is pinned by autoQueuePlan.test.ts; this suite closes the
 // "decision vs application" gap for the interpreter — the two no-op guards
@@ -16,7 +17,6 @@ import { libraryFilters } from '../src/lib/libraryFilters'
 import {
   queue,
   library,
-  shuffleEnabled,
   metadataCache,
   queueWrapNotice,
   autoQueueFilterFields,
@@ -69,15 +69,14 @@ function reset(): void {
   playQueueWrites.length = 0
   setQueue({})
   library.set([])
-  shuffleEnabled.set(false)
   metadataCache.set(new Map())
   autoQueueFilterFields.set({ ...FIELDS })
-  autoQueueSort.set({ sortBy: null, sortAsc: true })
+  autoQueueSort.set(sortOf(null, true))
   autoQueueScope.set({})
   autoQueueEnabled.set(true)
   libraryFilters.set({
     filterOpen: false, sortOpen: false, minRating: 0, maxRating: 100, lovedOnly: false,
-    genre: '', fromYear: '', toYear: '', minLength: '', maxLength: '', sortBy: null, sortAsc: true,
+    genre: '', fromYear: '', toYear: '', minLength: '', maxLength: '', sort: sortOf(null, true),
   })
   queueWrapNotice.set(false)
   autoQueueEmptyNotice.set(false)
@@ -231,7 +230,7 @@ test('a sort change rebuilds the whole auto queue in the auto-sort order (B7)', 
   library.set(['c', 'e', 'a', 'f', 'b', 'd'].map((id) => track(id)))
   metadataCache.set(metaOf([['a', 10], ['b', 20], ['c', 30], ['d', 40], ['e', 50], ['f', 100]]))
   setQueue({ userQueue: ['f'], activeIndex: 0 })
-  autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
+  autoQueueSort.set(sortOf('rating', true))
 
   queueManager.rebuildAutoQueue()
 
@@ -248,7 +247,7 @@ test('the auto queue follows its OWN sort, never the library sort (2026-09-29 de
   metadataCache.set(metaOf([['a', 10], ['b', 20], ['c', 30], ['d', 40], ['e', 50], ['f', 100]]))
   setQueue({ userQueue: ['f'], activeIndex: 0 })
   // Library sort active; auto sort at its library-order default.
-  libraryFilters.update((lf) => ({ ...lf, sortBy: 'rating', sortAsc: true }))
+  libraryFilters.update((lf) => ({ ...lf, sort: sortOf('rating', true) }))
 
   queueManager.rebuildAutoQueue()
 
@@ -259,14 +258,14 @@ test('the auto queue follows its OWN sort, never the library sort (2026-09-29 de
   assert.deepEqual(get(queue).autoQueue, repeatTo(['b', 'd', 'c', 'e', 'a']), 'library-order fill (anchor-rotated) despite an active library sort')
 
   // The AUTO sort is what re-ranks.
-  autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
+  autoQueueSort.set(sortOf('rating', true))
   queueManager.rebuildAutoQueue()
   assert.deepEqual(get(queue).autoQueue, repeatTo(['a', 'b', 'c', 'd', 'e']), 'the auto sort re-ranks the fill')
 
   // An explicit sort FLIP still visibly re-ranks the head (the 2026-09-29
   // "flip does nothing" report stays fixed) — the head is the anchor's OTHER
   // neighbor, so the direction is visible without restarting from the top.
-  autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
+  autoQueueSort.set(sortOf('rating', false))
   queueManager.rebuildAutoQueue()
   assert.deepEqual(get(queue).autoQueue, repeatTo(['e', 'd', 'c', 'b', 'a']), 'rating-sorted DESC, continuing after the anchor f (excluded)')
   assert.equal(get(queueWrapNotice), false, 'the anchor sits at the DESC top — no wrap')
@@ -279,7 +278,7 @@ test('shuffle mode permutes the pool (set-preserving) and clears the wrap notice
   // A shuffle toggle reorders the SAME rule set, so it is not a rule change
   // (D7): the anti-repeat window must survive it.
   setQueue({ recentTrackIds: ['t9'] })
-  shuffleEnabled.set(true)
+  autoQueueSort.set(sortOf('random'))
   queueWrapNotice.set(true)
 
   queueManager.rebuildAutoQueue()
@@ -332,11 +331,11 @@ test('a fully-tied library still shows the flip at the queue head (rotation pres
   library.set(['a', 'b', 'c', 'd', 'e'].map((id) => track(id))) // no ratings → all tie
   setQueue({ userQueue: ['c'], activeIndex: 0 }) // playing c
 
-  autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
+  autoQueueSort.set(sortOf('rating', true))
   queueManager.rebuildAutoQueue()
   assert.deepEqual(get(queue).autoQueue, repeatTo(['d', 'e', 'a', 'b']), 'ascending head is the anchor\'s up-neighbor')
 
-  autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
+  autoQueueSort.set(sortOf('rating', false))
   queueManager.rebuildAutoQueue()
   assert.deepEqual(get(queue).autoQueue, repeatTo(['b', 'a', 'e', 'd']), 'descending head is the anchor\'s down-neighbor — the flip is visible')
 })
@@ -360,7 +359,7 @@ test('the autoQueueSort subscription continues the fill from the playing track (
   priv._initialized = true
   const unsubs = priv._subscribeShared()
   try {
-    autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
+    autoQueueSort.set(sortOf('rating', true))
     // A rule change lands on the next tick (D7 coalesces it with a filter edit
     // in the same task), so the rebuild is awaited rather than assumed sync.
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -424,7 +423,7 @@ test('a filter edit PROMOTES the audible auto row first, so the anchor still nam
 test('a sort edit re-derives the order after the PROMOTED anchor (D7 / G2 closed)', () => {
   playingAuto()
 
-  autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
+  autoQueueSort.set(sortOf('rating', false))
   queueManager.rebuildForFreshContext()
 
   const q = get(queue)
@@ -511,7 +510,7 @@ test('a filter edit and a sort pick in ONE task collapse into a single fresh-con
     const writesBefore = playQueueWrites.length
     const userBefore = [...get(queue).userQueue]
     autoQueueFilterFields.set({ ...FIELDS, minRating: 10 })
-    autoQueueSort.set({ sortBy: 'rating', sortAsc: false })
+    autoQueueSort.set(sortOf('rating', false))
     await new Promise((resolve) => setTimeout(resolve, 300))
 
     assert.equal(playQueueWrites.length, writesBefore + 1, 'the apply is ONE queue write')
@@ -527,14 +526,14 @@ test('a filter edit and a sort pick in ONE task collapse into a single fresh-con
   }
 })
 
-test('a sort flip is a rule change even while shuffling (never skipped)', async () => {
-  // Shuffle decides how a rebuilt pool is SAMPLED, not whether the rule
-  // changed: the flip must still reset the window and re-derive the tail. The
-  // old `if (get(shuffleEnabled)) return` early-out would make this a no-op.
+test('leaving random rebuilds without resetting the window (a boundary crossing is not a rule change)', async () => {
+  // Crossing the random boundary (shuffle on/off) reorders the SAME rule set,
+  // so it rebuilds the tail and KEEPS the anti-repeat window (D6a). A plain
+  // tier/direction change is the destructive case — asserted separately.
   reset()
   library.set(['a', 'b', 'c', 'd', 'e', 'f'].map((id) => track(id)))
   setQueue({ userQueue: ['a'], activeIndex: 0, recentTrackIds: ['b'] })
-  shuffleEnabled.set(true)
+  autoQueueSort.set(sortOf('random'))
 
   const m = new PlaybackManager({
     engine: new FakeEngine() as unknown as typeof engine,
@@ -545,15 +544,15 @@ test('a sort flip is a rule change even while shuffling (never skipped)', async 
   const unsubs = priv._subscribeShared()
   try {
     const writesBefore = playQueueWrites.length
-    autoQueueSort.set({ sortBy: 'rating', sortAsc: true })
+    autoQueueSort.set(sortOf('rating', true))
     await new Promise((resolve) => setTimeout(resolve, 50))
 
     assert.equal(playQueueWrites.length, writesBefore + 1, 'the flip re-derived the tail')
     const q = get(queue)
-    assert.deepEqual(q.recentTrackIds, [], 'a RULE CHANGE resets the window even under shuffle')
-    // Shuffle permutes within tiers, so the membership is the assertion; the
-    // cooled 'b' returns because the window was cleared.
-    assert.deepEqual([...new Set(q.autoQueue)].sort(), ['b', 'c', 'd', 'e', 'f'], 'the cleared window re-admits b')
+    assert.deepEqual(q.recentTrackIds, ['b'], 'crossing the random boundary keeps the window')
+    // A kept window means the cooled 'b' is admitted only through tier 2 (the
+    // pool is short of the 50-row target), never as a fresh pick.
+    assert.equal(q.autoQueue[0] === 'b', false, 'the cooled head stays out of the fresh fill')
   } finally {
     for (const u of unsubs) u()
     m.destroy()
@@ -590,7 +589,7 @@ const AQ_LIB = (): Track[] => [
 test('a library press re-derives the auto tail from the pressed row (ordered fill)', () => {
   reset()
   library.set(AQ_LIB())
-  autoQueueSort.set({ sortBy: 'added', sortAsc: false })
+  autoQueueSort.set(sortOf('added', false))
   // aq1 played: the Added ↓ continuation from it is aq4, aq2, aq3, aq5, aq6.
   setQueue({ userQueue: ['aq1'], autoQueue: ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'], activeIndex: 0 })
 
@@ -613,7 +612,7 @@ test('a filter and sort applied mid-play keep holding as playback advances', () 
   // The maxLength filter excludes the long aq2 for the whole session; Added ↓
   // decides the order. A rule change is a fresh context (D7).
   autoQueueFilterFields.set({ ...FIELDS, maxLength: 300 })
-  autoQueueSort.set({ sortBy: 'added', sortAsc: false })
+  autoQueueSort.set(sortOf('added', false))
   queueManager.rebuildForFreshContext()
   assert.deepEqual(get(queue).autoQueue, repeatTo(['aq4', 'aq3', 'aq5', 'aq6']), 'Added ↓ after aq1, aq2 filtered out')
 
@@ -633,7 +632,7 @@ test('a filter and sort applied mid-play keep holding as playback advances', () 
 test('a dragged auto order survives the next advance, and a rule change re-derives it', () => {
   reset()
   library.set(AQ_LIB())
-  autoQueueSort.set({ sortBy: 'added', sortAsc: false })
+  autoQueueSort.set(sortOf('added', false))
   // Playing aq1: Added ↓ continues aq4, aq2, aq3, aq5, aq6.
   setQueue({ userQueue: ['aq1'], autoQueue: ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'], activeIndex: 0 })
 
@@ -651,7 +650,7 @@ test('a dragged auto order survives the next advance, and a rule change re-deriv
   assert.notDeepEqual(get(queue).autoQueue.slice(0, 2), ['aq2', 'aq3'])
 
   // A sort change is a rule change: the new ordering wins over the hand order.
-  autoQueueSort.set({ sortBy: 'added', sortAsc: true })
+  autoQueueSort.set(sortOf('added', true))
   queueManager.rebuildForFreshContext()
   // Added ↑ after the promoted aq4: aq6, aq5, aq3, aq2 (aq1/aq4 are user rows;
   // the short pool then recycles them at the tail).
@@ -662,7 +661,7 @@ test('a dragged auto order survives the next advance, and a rule change re-deriv
 test('a press ends the hand-ordered tail and re-derives it from the pressed row', () => {
   reset()
   library.set(AQ_LIB())
-  autoQueueSort.set({ sortBy: 'added', sortAsc: false })
+  autoQueueSort.set(sortOf('added', false))
   setQueue({ userQueue: ['aq1'], autoQueue: ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'], activeIndex: 0 })
   queueManager.applyDragDrop('auto:aq6', 2, ['aq1'], ['aq4', 'aq2', 'aq3', 'aq5', 'aq6'])
   assert.deepEqual(get(queue).autoQueue, ['aq4', 'aq6', 'aq2', 'aq3', 'aq5'], 'the drop hand-ordered the tail')
@@ -678,4 +677,27 @@ test('a press ends the hand-ordered tail and re-derives it from the pressed row'
   // then the short pool recycles the user-queued aq1 (B4).
   assert.deepEqual(q.autoQueue, repeatTo(['aq5', 'aq6', 'aq4', 'aq2', 'aq1']), 'the sorted continuation wins')
   assert.notDeepEqual(q.autoQueue.slice(0, 4), ['aq4', 'aq6', 'aq2', 'aq5'], 'the dragged order must not survive a press')
+})
+
+test('a plain tier change (rating to added) is a RULE CHANGE and resets the window', async () => {
+  reset()
+  library.set(['a', 'b', 'c', 'd', 'e', 'f'].map((id) => track(id)))
+  setQueue({ userQueue: ['a'], activeIndex: 0, recentTrackIds: ['b'] })
+  autoQueueSort.set(sortOf('rating', true))
+
+  const m = new PlaybackManager({
+    engine: new FakeEngine() as unknown as typeof engine,
+    queueManager,
+  })
+  const priv = m as unknown as { _subscribeShared(): Array<() => void>; _initialized: boolean }
+  priv._initialized = true
+  const unsubs = priv._subscribeShared()
+  try {
+    autoQueueSort.set(sortOf('added', true))
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    assert.deepEqual(get(queue).recentTrackIds, [], 'a fresh context clears the window')
+  } finally {
+    for (const u of unsubs) u()
+    m.destroy()
+  }
 })

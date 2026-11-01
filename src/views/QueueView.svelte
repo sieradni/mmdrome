@@ -36,7 +36,8 @@
   import { queueManager } from '../lib/queueManager'
   import { distinctGenres } from '../lib/libraryFilters'
   import { restoreViewState } from '../lib/viewState'
-  import { sortLabels, type LibrarySortKey } from '../lib/libraryFilters'
+  import type { SortState } from '../lib/sortCore'
+  import SortStackEditor from '../components/SortStackEditor.svelte'
   import { ESTIMATED_ROW_H, OVERSCAN_ROWS, endOffsetPx, startOffsetPx } from '../lib/virtualWindow'
   import { createScrollWindow, firstRowMeasure } from '../lib/scrollWindow'
   import LazyThumb from '../components/LazyThumb.svelte'
@@ -79,18 +80,13 @@
     return v === '' ? '' : Number(v)
   }
 
-  /** Auto-queue sort editor (the filter modal's Sort section). Same pick /
-   *  flip / clear contract as the library sort menu: picking the active key
-   *  flips direction, picking a new key sets its default direction, null
-   *  clears. Writes the PERSISTED setting; the fill only acts on it while
-   *  shuffle is off (under shuffle the eligible pool is sampled uniformly and
-   *  the sort has no effect). The editor is always rendered (2026-10-24). */
-  function setAutoSort(key: LibrarySortKey | null): void {
-    autoQueueSort.update((s) => {
-      if (key === null) return { ...s, sortBy: null }
-      if (s.sortBy === key) return { ...s, sortAsc: !s.sortAsc }
-      return { sortBy: key, sortAsc: key === 'length' || key === 'year' }
-    })
+  /** The auto queue's sort IS the shared two-tier stack (2026-11-01), and
+   *  RANDOM inside it IS shuffle. The editor writes the persisted setting; the
+   *  manager's reaction layer classifies the change (crossing the random
+   *  boundary rebuilds without resetting the anti-repeat window, any other
+   *  tier/direction change is a fresh context). */
+  function setAutoSort(next: SortState): void {
+    autoQueueSort.set(next)
   }
 
   onMount(() => {
@@ -702,6 +698,21 @@
             <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
           </button>
 
+          <!-- Refresh (2026-11-01): the user asked for this exact tail again —
+               a fresh sampled order under random, the continuing ordered pool
+               otherwise. Disabled while suggestions are off (there is no tail
+               to refresh, and turning it on is the header row's job). -->
+          <button
+            use:tooltip={"New suggestions"}
+            onclick={() => queueManager.refreshAutoQueue()}
+            disabled={!$autoQueueEnabled}
+            class="absolute left-12 top-1/2 -translate-y-1/2 rounded-full p-2.5 text-muted transition-colors hover:text-primary disabled:opacity-30 disabled:hover:text-muted"
+            aria-label="New suggestions"
+            data-testid="refresh-auto-queue"
+          >
+            <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V2L7.5 6.5 12 11V8a4 4 0 114 4v2a6 6 0 10-6-6z"/><path d="M12 16h4v6h-4z" opacity="0"/></svg>
+          </button>
+
           <div class="flex items-center justify-center gap-1.5">
             <button use:tooltip class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
               <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
@@ -875,20 +886,33 @@
          row is the boundary), and the drag-over-seam conversion banner lives
          there too so the seam affordance survives without a dedicated row. -->
 
-    <!-- D9: the auto queue's own switch. It is mirrored here (next to the
-         section it controls) and is the ONLY place it is offered, so the
-         section and its control can never drift onto different screens. Off
-         renders the quiet state, NOT the filter warning: "nothing matches" and
-         "you turned suggestions off" are different facts. -->
-    {#if $queue.userQueue.length > 0}
-      <div class="mx-4 mb-1 flex items-center gap-2 px-1" role="group" aria-label="Auto queue settings">
-        <span class="text-[11px] font-semibold uppercase tracking-widest {$autoQueueEnabled ? 'text-muted/70' : 'text-muted'}">
-          {$autoQueueEnabled ? 'Suggestions on' : 'Auto queue off'}
-        </span>
-        <div class="h-0.5 flex-1 rounded-full bg-white/15"></div>
+    <!-- D9 + 2026-11-01: the auto queue's own switch lives ON the section
+         header — one row for "where am I" and "turn this off", instead of a
+         separate SUGGESTIONS line that vanished with an empty tail (a user who
+         turned suggestions off on an empty queue had no way back on). The row
+         renders whenever the queue has ANY content, carries the count, the
+         scope, the drop banner and a full-size switch, and keeps the
+         jump-to-boundary scroll target (data-boundary). Off renders the quiet
+         state, NOT the filter warning: "nothing matches" and "you turned
+         suggestions off" are different facts. -->
+    {#if $queue.userQueue.length > 0 || previewAutoItems.length > 0}
+      <div class="mx-4 mb-1 flex items-center gap-2 px-1" role="heading" aria-level="2" data-boundary data-testid="auto-header">
+        <span class="text-[11px] font-semibold uppercase tracking-widest" class:text-accent={isConvertingUserToAuto} class:text-muted={!isConvertingUserToAuto}>{$autoQueueEnabled ? 'Auto' : 'Auto queue off'}</span>
+        {#if $autoQueueEnabled && previewAutoItems.length > 0}
+          <span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted">{previewAutoItems.length}</span>
+        {/if}
+        {#if $autoQueueEnabled && $scopeLabel}
+          <!-- B5: persistent scope indicator — the auto queue draws from this
+               album/artist only; truncation-safe (names can be long). -->
+          <span class="max-w-[45%] truncate rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium text-primary" title={$scopeLabel}>{$scopeLabel}</span>
+        {/if}
+        <div class="h-0.5 flex-1 rounded-full bg-white/25"></div>
+        {#if isConvertingUserToAuto}
+          <span class="text-xs font-medium uppercase tracking-wider text-accent">Release to convert to User Queue</span>
+        {/if}
         <button
           type="button"
-          class="rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors {$autoQueueEnabled ? 'bg-white/10 text-muted hover:text-primary' : 'bg-accent-soft text-accent hover:bg-accent-ring/30'}"
+          class="min-h-9 rounded-full px-3 py-1.5 text-[11px] font-semibold transition-colors {$autoQueueEnabled ? 'bg-white/10 text-muted hover:text-primary' : 'bg-accent-soft text-accent hover:bg-accent-ring/30'}"
           aria-pressed={$autoQueueEnabled}
           onclick={() => queueManager.setAutoQueueEnabled(!$autoQueueEnabled)}
           data-testid="toggle-auto-queue"
@@ -911,21 +935,8 @@
       {/if}
     {/if}
 
-    <!-- === AUTO QUEUE === -->
+    <!-- === AUTO QUEUE === (its header is the merged row above) -->
     {#if previewAutoItems.length > 0}
-      <div class="mx-4 mb-1 flex items-center gap-2 px-1" role="heading" aria-level="2" data-boundary>
-        <span class="text-[11px] font-semibold uppercase tracking-widest" class:text-accent={isConvertingUserToAuto} class:text-muted={!isConvertingUserToAuto}>Auto</span>
-        <span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted">{previewAutoItems.length}</span>
-        {#if $scopeLabel}
-          <!-- B5: persistent scope indicator — the auto queue draws from this
-               album/artist only; truncation-safe (names can be long). -->
-          <span class="max-w-[45%] truncate rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium text-primary" title={$scopeLabel}>{$scopeLabel}</span>
-        {/if}
-        <div class="h-0.5 flex-1 rounded-full bg-white/25"></div>
-        {#if isConvertingUserToAuto}
-          <span class="text-xs font-medium uppercase tracking-wider text-accent">Release to convert to User Queue</span>
-        {/if}
-      </div>
       <div class="mx-2 space-y-0.5" role="group" aria-label="Auto queue">
         <div style="height:{autoTopPad}px" aria-hidden="true"></div>
         {#each mountedAutoItems as item (item.key)}
@@ -1138,30 +1149,10 @@
              `{#if !$shuffleEnabled}` gate made a persisted setting look
              missing); shuffle only changes how the pool is sampled, never
              what this editor shows. -->
-        <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+        <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5" data-testid="auto-sort-card">
           <span class="text-sm font-medium text-muted">Sort order</span>
-          <div class="mt-1.5 space-y-0.5">
-            {#each ['rating', 'loved', 'year', 'length', 'added'] as key (key)}
-              {@const k = key as LibrarySortKey}
-              <button
-                onclick={() => setAutoSort(k)}
-                class="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm transition-colors"
-                class:bg-surface-hover={$autoQueueSort.sortBy === k}
-                class:text-primary={$autoQueueSort.sortBy === k}
-                class:text-muted={$autoQueueSort.sortBy !== k}
-              >
-                <span>{sortLabels[k]}</span>
-                {#if $autoQueueSort.sortBy === k}
-                  <span class="text-accent">{$autoQueueSort.sortAsc ? '↑' : '↓'}</span>
-                {/if}
-              </button>
-            {/each}
-            {#if $autoQueueSort.sortBy}
-              <button
-                onclick={() => setAutoSort(null)}
-                class="mt-1 w-full rounded-t-none border-t border-white/5 px-2 py-1.5 text-xs text-muted transition-colors hover:text-primary"
-              >Clear sort</button>
-            {/if}
+          <div class="mt-2">
+            <SortStackEditor state={$autoQueueSort} onchange={setAutoSort} />
           </div>
         </div>
         <div>

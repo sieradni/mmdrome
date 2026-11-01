@@ -1,4 +1,5 @@
 // Pins the playback-param restore ordering and the cancellable shared
+import { sortOf } from '../src/lib/sortCore'
 // subscriptions. The persisted stores are restored by `initStores` (see
 // tests/persistedStore.test.ts), so the manager only needs to push them to the
 // engine — `_applyPlaybackParams` does that in snap-before-pitch order. The
@@ -16,7 +17,7 @@ import {
   snapTolerance,
   masterGain,
   settings,
-  shuffleEnabled,
+  autoQueueSort,
   loopMode,
   autoQueueFilterFields,
 } from '../src/stores/appState'
@@ -148,9 +149,9 @@ test('_subscribeShared still runs the one-shot auto-queue replenish', () => {
   assert.equal(qm.replenished, 1, 'the subscribe-time replenish is a call-site side effect, not a subscription')
 })
 
-test('_subscribeShared rebuilds the auto queue on a shuffle toggle, and unsubscribing stops it', () => {
+test('_subscribeShared rebuilds the auto queue when the sort crosses the random boundary, and unsubscribing stops it', () => {
   resetParamStores()
-  shuffleEnabled.set(false)
+  autoQueueSort.set(sortOf())
   const { qm, m } = makeHarness()
   m._initialized = true
   const unsubs = m._subscribeShared()
@@ -158,13 +159,13 @@ test('_subscribeShared rebuilds the auto queue on a shuffle toggle, and unsubscr
     // A Svelte store subscription fires immediately; that initial fire is a
     // real rebuild too, so measure deltas from the post-subscribe count.
     const baseline = qm.rebuilt
-    shuffleEnabled.set(true)
+    autoQueueSort.set(sortOf('random'))
     assert.equal(qm.rebuilt, baseline + 1, 'shuffle on re-samples the auto fill')
-    shuffleEnabled.set(false)
+    autoQueueSort.set(sortOf())
     assert.equal(qm.rebuilt, baseline + 2, 'shuffle off returns the fill to the sort order')
 
     unsubs.forEach((unsubscribe) => unsubscribe())
-    shuffleEnabled.set(true)
+    autoQueueSort.set(sortOf('random'))
     assert.equal(qm.rebuilt, baseline + 2, 'the subscription is released by destroy()')
   } finally {
     for (const u of unsubs) u()

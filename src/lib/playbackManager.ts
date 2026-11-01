@@ -28,6 +28,7 @@ import { decideAdvance, type LoopMode } from './playbackCore/advanceDecider'
 import { reconcileCrossfadeTarget } from './playbackCore/crossfadeReconcile'
 import { freshSeekThrottle, resetSeekThrottle, shouldEmitSeek } from './playbackCore/seekThrottle'
 import { clearSeekIntent, consumeSeekIntent, createSeekIntentState, latchSeekIntent } from './playbackCore/seekIntent'
+import { classifySortChange, isRandomSort, normalizeSort, type SortState } from './sortCore'
 import { computeReplayGainFields } from './playbackCore/replayGain'
 import {
   currentTrack,
@@ -35,7 +36,7 @@ import {
   queue,
   library,
   settings,
-  shuffleEnabled,
+  autoQueueRecentLimit,
   playbackSpeed,
   pitchOctaves,
   tapeMode,
@@ -115,7 +116,13 @@ export class PlaybackManager {
   /** The track an in-flight bg load request resolved to — the machine's
    *  'reload' decision loads this (an exit-race re-routes it to the fg path). */
   private _pendingBgTrack: Track | null = null
-  private _lastSortKey = ''
+  /** The normalized auto-queue sort last reacted to (2026-11-01): the
+   *  two-tier stack, compared through `classifySortChange` so a seed re-roll
+   *  is a no-op and a random-boundary crossing rebuilds WITHOUT the destructive
+   *  fresh-context write. */
+  private _lastSort: SortState = { tiers: [], randomSeed: 0 }
+  /** The recently-played horizon last reacted to (rebuild, never reset). */
+  private _lastRecentLimit = -1
   /** The auto-filter VALUES last reacted to. A Svelte subscription fires once
    *  at subscribe time, and D7's reaction is destructive (it clears the
    *  anti-repeat window), so the boot fire must be a no-op — without this
@@ -559,16 +566,12 @@ export class PlaybackManager {
     unsubs.push(metadataScanState.subscribe((st) => {
       if (!this._initialized) return
       if (st.status !== 'complete') return
-      const sort = get(autoQueueSort)
-      if (get(shuffleEnabled)) return
-      if (sort.sortBy !== 'rating' && sort.sortBy !== 'loved') return
+      // Any tier may carry rating/loved now, and random lives in the sort
+      // itself — a sampling order does not re-rank on a metadata scan.
+      const sort = normalizeSort(get(autoQueueSort))
+      if (isRandomSort(sort)) return
+      if (!sort.tiers.some((t) => t.key === 'rating' || t.key === 'loved')) return
       this._qm.replenishAutoQueue()
-    }))
-
-    unsubs.push(shuffleEnabled.subscribe(() => {
-      if (this._initialized) {
-        this._qm.rebuildAutoQueue()
-      }
     }))
 
     // The web arm is never established under loop-one (the loads cancel it,
@@ -603,19 +606,42 @@ export class PlaybackManager {
     // (libraryFilters) is a VIEW concern and never re-ranks the queue — the
     // Songs-view sort applying to the queue happens only through the
     // FilterSortBar apply button (which writes THIS store).
-    // Only sortBy/sortAsc matter here (the rank map in queueManager ignores
-    // the filter ranges), so skip no-op subscription fires.
-    this._lastSortKey = `${get(autoQueueSort).sortBy}|${get(autoQueueSort).sortAsc}`
+    // 2026-11-01: the sort IS the two-tier stack (random included), so a
+    // change is CLASSIFIED (`sortCore.classifySortChange`) instead of being
+    // blanket-treated as a rule change:
+    //  - 'none'   — a seed re-roll or a subscribe fire: nothing to do;
+    //  - 'random' — the edit crossed the random boundary (shuffle on/off). It
+    //               reorders the SAME rule set, so it REBUILDS without
+    //               resetting the anti-repeat window (D6a, decision 11);
+    //  - 'rule'   — any other tier/direction change: a FRESH CONTEXT (D7),
+    //               zero delay so the re-order reads as immediate. Still
+    //               COALESCED: the FilterSortBar apply writes filters AND sort
+    //               in one task, so this fire replaces the filter's pending
+    //               250 ms timer and both land in ONE write.
+    this._lastSort = normalizeSort(get(autoQueueSort))
     unsubs.push(autoQueueSort.subscribe((sort) => {
       if (!this._initialized) return
-      const key = `${sort.sortBy}|${String(sort.sortAsc)}`
-      if (key === this._lastSortKey) return
-      this._lastSortKey = key
-      // A sort edit is a rule change too (D7), and it fires with ZERO delay so
-      // the re-order still reads as immediate. It is still COALESCED: the
-      // FilterSortBar apply writes filters AND sort in one task, so this fire
-      // replaces the filter's pending 250 ms timer and both land in ONE write.
+      const next = normalizeSort(sort)
+      const kind = classifySortChange(this._lastSort, next)
+      this._lastSort = next
+      if (kind === 'none') return
+      if (kind === 'random') {
+        this._qm.rebuildAutoQueue()
+        return
+      }
       this._scheduleRuleChange(0)
+    }))
+
+    // The recently-played HORIZON (2026-11-01) resizes which plays the fill
+    // holds back. It must NOT go through `rebuildForFreshContext` — that
+    // resets the very window this setting sizes — so it rebuilds the tail and
+    // keeps the window (a horizon edit is not a new rule set).
+    this._lastRecentLimit = get(autoQueueRecentLimit)
+    unsubs.push(autoQueueRecentLimit.subscribe((limit) => {
+      if (!this._initialized) return
+      if (limit === this._lastRecentLimit) return
+      this._lastRecentLimit = limit
+      this._qm.rebuildAutoQueue()
     }))
 
     // Keep the native engine's queue snapshot in step with ANY queue mutation

@@ -92,16 +92,22 @@ test('the auto-queue sort editor stays visible and armed while shuffle is on', a
   await expect(filterDialog.getByRole('button', { name: 'Rating ↓' })).toBeVisible()
   await page.keyboard.press('Escape')
 
-  // Shuffle ON: the editor STAYS rendered (2026-10-24) and the picked sort
-  // is still the armed one — the toggle never touched the setting.
+  // Shuffle ON: the editor STAYS rendered (2026-10-24). Since the 2026-11-01
+  // sort rework shuffle IS a sort — turning it on arms Random and remembers the
+  // stack that was armed, so the honest state of this dialog is Random live with
+  // its re-roll control, not a stale Rating chip that no longer orders anything.
   await page.getByRole('button', { name: 'Toggle shuffle', exact: true }).click()
   await page.getByRole('button', { name: 'Auto queue filters' }).click()
   const shuffleDialog = page.getByRole('dialog', { name: 'Auto queue filters' })
   await expect(shuffleDialog.getByText('Sort order')).toBeVisible()
-  await expect(shuffleDialog.getByRole('button', { name: 'Rating ↓' })).toBeVisible()
+  await expect(shuffleDialog.getByRole('button', { name: 'Random', exact: true })).toBeVisible()
+  await expect(shuffleDialog.getByTestId('reroll-random')).toBeVisible()
 
-  // …and it is still WRITABLE under shuffle: re-tapping the active key flips
-  // direction, so the arrow is a live control rather than a stale badge.
+  // …and it is still WRITABLE under shuffle: picking a real key exits random
+  // (the button un-highlights, restore is dropped) and the next tap flips it,
+  // so the arrows are live controls rather than stale badges.
+  await shuffleDialog.getByRole('button', { name: 'Rating', exact: true }).click()
+  await expect(shuffleDialog.getByRole('button', { name: 'Rating ↓' })).toBeVisible()
   await shuffleDialog.getByRole('button', { name: 'Rating ↓' }).click()
   await expect(shuffleDialog.getByRole('button', { name: 'Rating ↑' })).toBeVisible()
 })

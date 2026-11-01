@@ -1,4 +1,5 @@
 import './stub-audio-worklet-node'
+import { sortOf } from '../src/lib/sortCore'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { get } from 'svelte/store'
@@ -10,7 +11,7 @@ import { entryIdAt } from '../src/lib/queueOccurrence'
 import { planAutoQueueFill, selectAutoQueueFill, type AutoQueuePlanState } from '../src/lib/autoQueuePlan'
 import { reconcileCrossfadeTarget } from '../src/lib/playbackCore/crossfadeReconcile'
 import { NativeTransport, type NativeEngineClient, type NativeRefreshPayload, type NativeSnapshotTrack } from '../src/lib/playbackCore/nativeTransport'
-import { queue, library, currentTrack, shuffleEnabled, autoQueueScope, autoQueueFilterFields, autoQueueSort, metadataCache, loopMode, type Track } from '../src/stores/appState'
+import { queue, library, currentTrack, autoQueueScope, autoQueueFilterFields, autoQueueSort, metadataCache, loopMode, type Track } from '../src/stores/appState'
 import { setCachedConfig } from '../src/lib/navidromeApi'
 
 Object.getPrototypeOf(db.playQueue).put = (async () => undefined) as never
@@ -21,8 +22,8 @@ function reset(ids: string[]): void {
   metadataCache.set(new Map())
   autoQueueScope.set({})
   autoQueueFilterFields.set(filters)
-  autoQueueSort.set({ sortBy: null, sortAsc: true })
-  shuffleEnabled.set(true)
+  autoQueueSort.set(sortOf(null, true))
+  autoQueueSort.set(sortOf('random'))
   loopMode.set('none')
   setCachedConfig({ baseUrl: 'https://srv.example', username: 'u', password: 'p' })
 }
@@ -30,7 +31,7 @@ function nativeManager(): { _onNativeTrackChanged(id: string, entryId?: string):
   return new PlaybackManager({ queueManager, isNative: () => true }) as unknown as { _onNativeTrackChanged(id: string, entryId?: string): void }
 }
 function state(over: Partial<AutoQueuePlanState> = {}): AutoQueuePlanState {
-  return { library: [], userQueue: [], autoQueue: [], recentTrackIds: [], activeId: undefined, activeAutoIndex: -1, shuffle: true, sort: { sortBy: null, sortAsc: true }, filters, meta: new Map(), ...over }
+  return { library: [], userQueue: [], autoQueue: [], recentTrackIds: [], activeId: undefined, activeAutoIndex: -1, sort: sortOf('random'), filters, meta: new Map(), ...over }
 }
 
 test('occurrence resolver preserves selection, prefers forward auto, and supports wraps/missing rows', () => {
@@ -159,7 +160,7 @@ test('shuffle samples entire tiers without mixing priority or mutating the plan'
     assert.deepEqual(chosen.slice(2), ['cool', 'old'])
   }
   assert.equal(JSON.stringify(plan), before)
-  const sorted = planAutoQueueFill({ ...s, shuffle: false }, 50, { keepAuto: false })
+  const sorted = planAutoQueueFill({ ...s, sort: sortOf() }, 50, { keepAuto: false })
   assert.deepEqual(sorted.pool.map(t => t.trackId), ['fresh1', 'fresh2', 'cool', 'old'])
 })
 

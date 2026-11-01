@@ -1,5 +1,13 @@
 import { trackMatchesGenre, type LibraryFilterState } from './libraryFilters'
 import { parseSearchQuery, trackMatchesQuery } from './searchCore'
+import {
+  isRandomSort,
+  normalizeSort,
+  sortSignature,
+  sortWithTiers,
+  trackSortCmp,
+  type SortInput,
+} from './sortCore'
 import type { Track, AutoQueueFilters, AutoQueueFilterFields, AutoQueueSort } from '../stores/appState'
 import type { LocalMetadataStore } from './db'
 
@@ -35,10 +43,15 @@ export interface AutoQueuePlanState {
    *  it (dropping them would shift the anchor off the playing song) and
    *  continue from it. */
   activeAutoIndex: number
-  shuffle: boolean
-  /** The fill's own sort order — the persisted `autoQueueSort` setting
-   *  (structurally the shared `{sortBy, sortAsc}` pair). */
+  /** The fill's own sort order — the persisted `autoQueueSort` setting, i.e.
+   *  the shared two-tier stack. SHUFFLE IS THIS STACK'S RANDOM KEY (2026-11-01):
+   *  there is no separate `shuffle` field, so the setting and the sampling can
+   *  never disagree. */
   sort: AutoQueueSort
+  /** How many recent plays count as "recent" (the user's window setting). Part
+   *  of the ordering RULE for hand-order identity; the caller has already
+   *  applied it to `recentTrackIds` (`effectiveRecent`). */
+  recentLimit?: number
   filters: AutoQueueFilters
   meta: Map<string, LocalMetadataStore>
 }
@@ -84,8 +97,8 @@ function boundVal(v: number | '' | null | undefined): number | '' {
  * predicates can never disagree about whether an apply does something).
  *
  * Deliberately ignored: UI flags (filterOpen/sortOpen) and auto-only fields
- * (searchQuery, session scope). `sortAsc` is only compared when a sort key is
- * active (with no key, direction is meaningless).
+ * (searchQuery, session scope). The sort is compared by `sortSignature`, so
+ * the random SEED is ignored: two random orders are the same RULE.
  */
 export function autoQueueSettingsDiffer(
   lib: LibraryFilterState,
@@ -111,7 +124,8 @@ export interface ApplyLibraryPlan {
  * Pure half of the apply button: copy the library filter/sort into the
  * auto-queue settings. Returns ONLY the stores whose values actually differ,
  * so the manager's existing reaction layer picks the right refill semantics
- * for free (filters-only apply → replenish; any sort change → rebuild).
+ * for free (filters-only apply → replenish; a sort change → rebuild, or a
+ * random-boundary crossing → rebuild without a window reset).
  */
 export function planApplyLibraryToAutoQueue(
   lib: LibraryFilterState,
@@ -140,9 +154,8 @@ export function planApplyLibraryToAutoQueue(
       maxLength: lib.maxLength,
     }
   }
-  const sortDiffers = lib.sortBy !== autoSort.sortBy || (lib.sortBy !== null && lib.sortAsc !== autoSort.sortAsc)
-  if (sortDiffers) {
-    plan.sort = { sortBy: lib.sortBy, sortAsc: lib.sortAsc }
+  if (sortSignature(lib.sort) !== sortSignature(autoSort)) {
+    plan.sort = normalizeSort(lib.sort)
   }
   return plan
 }
@@ -190,52 +203,40 @@ export function matchesAutoQueueFilters(
 }
 
 /**
- * Rank map for every library track using the shared library-filter sort
- * ordering (the same order shown in the Songs view). When no sort is active,
- * ranks equal the library index (library-order fallback). Tie values are
- * broken by library index so the order is always total and the anchor
- * rotation below is deterministic.
+ * Rank map for every library track using the fill's sort ordering (the shared
+ * two-tier stack, same comparator the Songs view uses). When no sort is active,
+ * ranks equal the library index (library-order fallback).
+ *
+ * The TIE rule is `mirror`: ties mirror the last tier's arrow, so the order is
+ * always total and the anchor rotation below is deterministic, and a fully
+ * tied library still answers a direction flip (QUEUE-INVARIANTS E6, the
+ * 2026-09-29 "arrow flips but the queue doesn't change" report).
+ *
+ * A random sort ranks by the seeded per-id hash — the *ordered* branch never
+ * runs under random (the fill samples instead), but the rank map stays
+ * meaningful for callers that ask for an order anyway.
  */
 export function buildOrderRank(
   library: Track[],
-  sort: Pick<LibraryFilterState, 'sortBy' | 'sortAsc'>,
+  sort: SortInput,
   meta: Map<string, LocalMetadataStore>,
 ): Map<string, number> {
-  const base = library.map((t, i) => [t, i] as const)
-  if (sort.sortBy) {
-    base.sort((a, b) => {
-      let cmp = 0
-      switch (sort.sortBy) {
-        case 'rating':
-          cmp = (meta.get(a[0].trackId)?.rating ?? 0) - (meta.get(b[0].trackId)?.rating ?? 0)
-          break
-        case 'loved':
-          cmp = Number(meta.get(a[0].trackId)?.loved ?? false) - Number(meta.get(b[0].trackId)?.loved ?? false)
-          break
-        case 'year':
-          cmp = (a[0].year ?? 0) - (b[0].year ?? 0)
-          break
-        case 'length':
-          cmp = a[0].duration - b[0].duration
-          break
-        case 'added':
-          cmp = (a[0].createdAt ?? 0) - (b[0].createdAt ?? 0)
-          break
-      }
-      if (cmp !== 0) return cmp * (sort.sortAsc ? 1 : -1)
-      // Ties MIRROR the arrow (2026-09-29, the "arrow flips but the queue
-      // doesn't change" report): an unrated/unloved library ties on every
-      // comparison, and the old fixed library-index tie-break made the
-      // direction a no-op — the whole order must answer the arrow.
-      return sort.sortAsc ? a[1] - b[1] : b[1] - a[1]
-    })
+  const ctx = {
+    ratingOf: (id: string) => meta.get(id)?.rating ?? 0,
+    lovedOf: (id: string) => meta.get(id)?.loved ?? false,
   }
+  const ordered = sortWithTiers(library, {
+    sort,
+    cmp: (key, a, b) => trackSortCmp(key, a, b, ctx),
+    idOf: (t) => t.trackId,
+    tie: 'mirror',
+  })
   // The rank value is the SORTED POSITION, not the pre-sort index: the old
   // code mapped `[t, i]` with i = the ORIGINAL library index, so the primary
   // sort was computed and then discarded — the fill stayed in library order
   // under every active sort (B7's documented behavior wasn't wired). The
   // no-sort case is unaffected (sorted position == library index).
-  return new Map(base.map(([t], sortedIndex) => [t.trackId, sortedIndex]))
+  return new Map(ordered.map((t, sortedIndex) => [t.trackId, sortedIndex]))
 }
 
 /**
@@ -276,30 +277,25 @@ export function filterRangesValid(f: Pick<AutoQueueFilterFields, 'minRating' | '
 
 /**
  * The fill decision (the old QueueManager._buildPool): tiers 1–3 admission,
- * then sort + anchor rotation (non-shuffle) or a shuffle marker.
+ * then sort + anchor rotation (non-random) or a shuffle marker.
  *
- * NON-SHUFFLE is an ORDERED CONTINUATION (2026-10-24): the auto rows are
- * ordinary candidates of the same filtered+sorted set, the tiers are ranked
- * and rotated after the anchor (the user-queue tail — the point playback is
- * headed from), and `kept` is the leading run of the current auto queue that
- * this order still starts with. A pressed song, a manual jump or a re-rank
- * therefore re-derives the whole tail; a plain advance keeps it (the consumed
- * head was the next ordered row, so the remainder is still the continuation).
- * `pool` then holds the ordered candidates AFTER that run, so the caller's
- * `kept + selectAutoQueueFill(...)` always equals the leading slice of the
- * continuation. `wrapNotice` is false whenever the pool is empty.
+ * RANDOM IS THE SORT (2026-11-01): `isRandomSort(state.sort)` decides sampling,
+ * so the old separate `shuffle` flag and its store cannot drift. Everything
+ * else is unchanged from the ordered-continuation design (2026-10-24):
+ * a pressed song, a manual jump or a re-rank re-derives the whole tail; a
+ * plain advance keeps it. `pool` holds the ordered candidates AFTER the kept
+ * run, so the caller's `kept + selectAutoQueueFill(...)` is always the leading
+ * slice of the continuation. `wrapNotice` is false whenever the pool is empty.
  *
  * A HAND-ORDERED tail (a drop the user made — `HandOrder`) outranks the
  * derived order: the tail is the user's own sequence, so it stays verbatim
  * (minus rows that no longer exist or match) and the fill appends AFTER its
  * last row. The intent carries the RULE it was captured under, and
- * `resolveHandOrder` voids it against the live state — a filter/sort/shuffle
- * change, an emptied/replaced tail, or a row the drop never placed. Only a new
- * PICK (the user choosing a position) ends it explicitly (2026-10-24c/d/e).
+ * `resolveHandOrder` voids it against the live state.
  *
- * SHUFFLE keeps a SAMPLED prefix on a keepAuto replenish: the kept rows are
+ * RANDOM keeps a SAMPLED prefix on a keepAuto replenish: the kept rows are
  * excluded from admission and only the still-matching ones are retained, so a
- * replenish cannot reshuffle the audible head. The shuffle branch never ranks
+ * replenish cannot reshuffle the audible head. The random branch never ranks
  * (its tiers stay in library order for `selectAutoQueueFill` to sample).
  */
 /**
@@ -320,10 +316,15 @@ export interface HandOrder {
  * moot. Folded from the objects themselves (keys sorted), so a future filter
  * field is part of the rule automatically — the alternative (an explicit
  * field list) would silently let a new filter keep a stale hand order.
+ *
+ * The sort participates as its SIGNATURE (tiers + directions, random included,
+ * seed excluded) and the recently-played HORIZON participates too: shrinking
+ * or growing the window changes which rows the order considers, so it voids a
+ * drag just like a filter edit does.
  */
-export function handOrderRule(state: Pick<AutoQueuePlanState, 'filters' | 'sort' | 'shuffle'>): string {
+export function handOrderRule(state: Pick<AutoQueuePlanState, 'filters' | 'sort'> & { recentLimit?: number }): string {
   const fold = (o: object) => Object.keys(o).sort().map((k) => [k, (o as Record<string, unknown>)[k] ?? null])
-  return JSON.stringify([fold(state.filters), fold(state.sort), state.shuffle])
+  return JSON.stringify([fold(state.filters), sortSignature(state.sort), state.recentLimit ?? null])
 }
 
 /**
@@ -337,7 +338,7 @@ export function handOrderRule(state: Pick<AutoQueuePlanState, 'filters' | 'sort'
  */
 export function resolveHandOrder(
   intent: HandOrder | null | undefined,
-  state: Pick<AutoQueuePlanState, 'autoQueue' | 'filters' | 'sort' | 'shuffle'>,
+  state: Pick<AutoQueuePlanState, 'autoQueue' | 'filters' | 'sort' | 'recentLimit'>,
 ): HandOrder | null {
   if (!intent || intent.tail.length === 0) return null
   if (intent.rule !== handOrderRule(state)) return null
@@ -351,16 +352,18 @@ export function planAutoQueueFill(
   needed: number,
   opts: { keepAuto: boolean; handOrder?: HandOrder | null },
 ): AutoQueueFillPlan {
-  const { library: lib, userQueue, autoQueue, recentTrackIds, activeId, shuffle, sort, filters, meta } = state
+  const { library: lib, userQueue, autoQueue, recentTrackIds, activeId, sort, filters, meta } = state
+  // The ONE derivation of "is this a random fill" (2026-11-01).
+  const shuffle = isRandomSort(sort)
   const inUser = new Set(userQueue)
   const recent = new Set(recentTrackIds)
   const matches = (t: Track) => matchesAutoQueueFilters(t, filters, meta)
 
-  // Only a SHUFFLE replenish keeps its already-sampled prefix: the order below
+  // Only a RANDOM replenish keeps its already-sampled prefix: the order below
   // it is a permutation, so re-deriving it would reshuffle the audible head on
   // every fill. The old queue (not just the kept subset) is excluded from
   // admission — a non-matching track being dropped cannot re-enter any tier
-  // (all tiers require a match). A non-shuffle fill re-derives the order, so
+  // (all tiers require a match). An ordered fill re-derives the order, so
   // there the auto rows are ordinary candidates (inAuto stays empty) and the
   // leading run is computed from that order below.
   const keepsSampledPrefix = shuffle && opts.keepAuto

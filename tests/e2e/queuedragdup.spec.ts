@@ -147,6 +147,7 @@ test('dragging an AUTO copy of a queued song moves THAT occurrence into Up next 
       (el) => (el as HTMLElement).dataset.trackId ?? '',
     ),
   )
+  const autoBefore = await autoSectionInfo(page)
   const userIds = userBefore.map((r) => r.track)
   const shared = autoIds.find((id) => userIds.includes(id))
   expect(
@@ -173,12 +174,31 @@ test('dragging an AUTO copy of a queued song moves THAT occurrence into Up next 
   expect(userAfter.length).toBe(userBefore.length + 1)
   expect(userAfter.filter((r) => r.track === shared).length).toBe(2)
   expect(new Set(userAfter.map((r) => r.entry)).size).toBe(userAfter.length)
-  const autoAfter: string[] = await page.evaluate(() =>
-    [...document.querySelectorAll('[aria-label="Auto queue"] .queue-track-item')].map(
-      (el) => (el as HTMLElement).dataset.trackId ?? '',
-    ),
-  )
-  expect(autoAfter.length).toBe(autoIds.length - 1)
-  expect(autoAfter[0]).not.toBe(shared)
+  const autoAfter = await autoSectionInfo(page)
+  // The auto section is a VIRTUAL WINDOW (AGENTS.md §2.5): its MOUNTED row
+  // count is a viewport fact — Up next grew by one row, which moved the window
+  // edge and unmounted two more auto rows — while the queue itself only lost
+  // the dragged occurrence (50 → 49). Pin the queue fact, not the window.
+  expect(autoAfter.total).toBe(autoBefore.total - 1)
+  expect(autoAfter.mounted[0]).not.toBe(shared)
   expect(pageErrors).toEqual([])
 })
+
+/** The auto section's TRUE length plus its mounted (windowed) rows. The section
+ *  renders a virtual window, so its spacers carry the off-screen rows: spacing
+ *  plus mounted rows divided by the real row height is the list length. */
+async function autoSectionInfo(page: Page): Promise<{ total: number; mounted: string[] }> {
+  return page.evaluate(() => {
+    const section = document.querySelector('[aria-label="Auto queue"]')
+    if (!section) return { total: 0, mounted: [] }
+    const rows = [...section.querySelectorAll('.queue-track-item')] as HTMLElement[]
+    const rowH = rows[0]?.getBoundingClientRect().height ?? 0
+    const pads = ([...section.children] as HTMLElement[])
+      .filter((el) => el.getAttribute('aria-hidden') === 'true')
+      .reduce((sum, el) => sum + (parseFloat(el.style.height) || 0), 0)
+    return {
+      total: rowH ? Math.round((pads + rows.length * rowH) / rowH) : rows.length,
+      mounted: rows.map((el) => el.dataset.trackId ?? ''),
+    }
+  })
+}

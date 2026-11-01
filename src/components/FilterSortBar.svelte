@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { libraryFilters, sortLabels, distinctGenres } from '../lib/libraryFilters'
-  import type { LibrarySortKey } from '../lib/libraryFilters'
+  import { libraryFilters, distinctGenres } from '../lib/libraryFilters'
+  import { describeSort, type SortState } from '../lib/sortCore'
+  import SortStackEditor from './SortStackEditor.svelte'
   import { library } from '../stores/appState'
-  import { autoQueueFilterFields, autoQueueSort, shuffleEnabled } from '../stores/appState'
+  import { autoQueueFilterFields, autoQueueSort } from '../stores/appState'
   import { autoQueueSettingsDiffer, planApplyLibraryToAutoQueue } from '../lib/autoQueuePlan'
   import { tooltip } from '../lib/tooltip'
   import AppSlider from './AppSlider.svelte'
@@ -32,21 +33,13 @@
     libraryFilters.update((f) => ({ ...f, sortOpen: false }))
   }
 
-  function setSort(key: LibrarySortKey) {
-    libraryFilters.update((f) => {
-      if (f.sortBy === key) {
-        return { ...f, sortAsc: !f.sortAsc }
-      }
-      return { ...f, sortBy: key, sortAsc: key === 'length' || key === 'year' }
-    })
+  // The stack editor (2026-11-01) writes the WHOLE sort state: picking a key
+  // applies it and KEEPS the menu open (flip through directions and compare
+  // the list without re-opening). Closing stays on X / backdrop / Esc /
+  // re-tapping the Sort pill.
+  function setSort(next: SortState) {
+    libraryFilters.update((f) => ({ ...f, sort: next }))
     onopen?.()
-  }
-
-  // Picking a sort option applies it and KEEPS the menu open (user request:
-  // flip through directions and compare the list without re-opening). Closes
-  // stay on X / backdrop / Esc / re-tapping the Sort pill.
-  function applySort(key: LibrarySortKey) {
-    setSort(key)
   }
 
   function clearFilters() {
@@ -261,26 +254,8 @@
         <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
       </button>
     </div>
-    <div class="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-3">
-      {#each ['rating', 'loved', 'year', 'length', 'added'] as key (key)}
-        {@const k = key as LibrarySortKey}
-        <button
-          onclick={() => applySort(k)}
-          class="flex w-full items-center justify-between rounded px-2 py-1.5 text-sm transition-colors"
-          class:bg-surface-hover={$libraryFilters.sortBy === k}
-          class:text-primary={$libraryFilters.sortBy === k}
-          class:text-muted={$libraryFilters.sortBy !== k}
-        >
-          <span>{sortLabels[k]}</span>
-          {#if $libraryFilters.sortBy === k}<span class="text-accent">{$libraryFilters.sortAsc ? '↑' : '↓'}</span>{/if}
-        </button>
-      {/each}
-      {#if $libraryFilters.sortBy}
-        <button
-          onclick={() => libraryFilters.update((f) => ({ ...f, sortBy: null }))}
-          class="mt-2 w-full rounded px-2 py-1 text-sm text-muted transition-colors hover:text-primary"
-        >Clear sort</button>
-      {/if}
+    <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+      <SortStackEditor state={$libraryFilters.sort} onchange={setSort} />
     </div>
   </ModalShell>
 {/if}
@@ -302,7 +277,7 @@
     onclick={toggleSort}
     aria-expanded={$libraryFilters.sortOpen}
     class={"rounded-full px-5 py-2.5 text-sm font-medium transition-colors ring-1 " + ($libraryFilters.sortOpen ? 'text-primary bg-[#191919] ring-white/15' : 'text-muted bg-[#0f0f0f] ring-white/10 hover:text-primary hover:ring-white/20')}
-  >Sort{$libraryFilters.sortBy ? `: ${sortLabels[$libraryFilters.sortBy]} ${$libraryFilters.sortAsc ? '↑' : '↓'}` : ''}</button>
+  >Sort{$libraryFilters.sort.tiers.length ? `: ${describeSort($libraryFilters.sort)}` : ''}</button>
   {#if showApplyButton}
     <!-- Apply-library-filter/sort-to-auto-queue: appears ONLY when the two
          settings differ (the pure diff predicate). Icon-only round button,
@@ -344,11 +319,11 @@
           <span class="rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-primary">Filters</span>
         {/if}
         {#if applyPlan.sort}
-          <span class="rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-primary">Sort{applyPlan.sort.sortBy ? `: ${sortLabels[applyPlan.sort.sortBy]} ${applyPlan.sort.sortAsc ? '↑' : '↓'}` : ''}</span>
+          <span class="rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium text-primary">Sort: {describeSort(applyPlan.sort) || 'none'}</span>
         {/if}
       </div>
-      {#if $shuffleEnabled}
-        <p class="text-xs text-muted/70">Shuffle is on — the sort is saved but the order applies when shuffle is off.</p>
+      {#if applyPlan.sort?.tiers[0]?.key === 'random'}
+        <p class="text-xs text-muted/70">Random: the auto queue samples a new order on every refill.</p>
       {/if}
       <p class="text-xs text-muted/70">Only the auto queue's settings change; your search filter and any album/artist scope stay as they are.</p>
       <div class="flex justify-end gap-2 pt-1">

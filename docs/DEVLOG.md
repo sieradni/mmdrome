@@ -2662,3 +2662,48 @@ and 15 built-bundle push/browser tests passed. The integration command stays out
 of Node's default unit discovery and stores evidence outside Playwright's
 auto-cleaned test-results directory, so the independent suites cannot remove
 live backend files. CI runs both browser engines on relevant branch pushes.
+
+## 2026-11-01 — Two-tier sort, random-as-sort, queue refresh, recency horizon
+
+Everything below came out of one request: two-tier sorting with Random as a sort
+value, shuffle reduced to "sort = random", a queue refresh button, a merged Auto
+header, and a setting for how many recent plays the auto queue cools down.
+
+- **`src/lib/sortCore.ts` (new)** owns the sort model, the comparator, the
+  labels, the legacy decode and the random rules. The old scalar pair
+  `{sortBy, sortAsc}` was implemented five times (SongsView's inline switch,
+  `applyFilterSort`, `buildOrderRank`, two editors) plus three decoders; adding a
+  second tier there would have rotted on day one. A sort is now a stack of 0–2
+  `{key, asc}` tiers; `random` is legal only as the sole first tier.
+- **Random is SEEDED** and per-id (`randomRank`), not a whole-list Fisher–Yates:
+  a library list re-derives on every store write, so an unseeded shuffle would
+  reshuffle mid-scroll and adding one track would scramble the rest. "New random
+  order" re-rolls the seed; the auto queue instead SAMPLES at fill time, so its
+  refresh button yields a genuinely new order.
+- **Shuffle is gone as a setting**: `shuffleEnabled` is `derived(autoQueueSort,
+  isRandomSort)`; `toggleShuffle()` writes the sort through `planRandomToggle`,
+  which stores the previous tiers in `SortState.restore` — in the same persisted
+  object, so "turn it off and get back what it was" survives a relaunch. The
+  legacy `shuffleEnabled` Dexie row is migrated once and cleared, or every boot
+  would re-apply it.
+- **Sort changes are CLASSIFIED** (`classifySortChange`): `none` (seed re-roll,
+  subscribe fire), `random` (crossed the random boundary → rebuild, KEEP the
+  anti-repeat window, D6a) and `rule` (any tier/direction change → the
+  destructive fresh context, D7). The blanket "a sort change is a rule change"
+  reaction would have made turning shuffle on wipe the window.
+- **Recency horizon setting** (`autoQueueRecentLimit`, default 100, 0 = off):
+  the stored window is capped at `RECENT_LIMIT_MAX` (500) and the horizon is
+  applied at read time (`effectiveRecent`), so shrinking it and raising it again
+  recovers history instead of having discarded it. A horizon edit REBUILDS the
+  tail and never clears the window — routing it through `rebuildForFreshContext`
+  would have reset the very window it sizes. It participates in `handOrderRule`,
+  so it voids a hand-ordered tail like any other rule field.
+- **Queue view**: the separate "Suggestions on" row is folded into the Auto
+  header (it also vanished with an empty tail, stranding a user who turned
+  suggestions off), the switch is a full-size target, and a refresh button sits
+  right of shuffle (`queueManager.refreshAutoQueue()` = a rebuild, not a rule
+  change).
+- Tests: new `tests/sortCore.test.ts`; updated `libraryFilters`, `filterPresets`,
+  `autoQueuePlan`, `queueManagerFill` (incl. a new "a plain tier change resets
+  the window" pin), `queueContinuation`, `playbackManagerRestore`,
+  `playbackManagerAdvance`, `autoQueueFiltersPersistence`, `recentWindow`.

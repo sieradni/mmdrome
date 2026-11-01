@@ -1,4 +1,5 @@
 // Manager-level integration tests for the 2.4 option-b interplay with the
+import { sortOf } from '../src/lib/sortCore'
 // advance chain. After removing the ACTIVE row the playing track is no longer
 // in the queue, so `_hasNextQueued`/`advanceQueue`/`next` must target the row
 // AT activeIndex (the highlighted next row) instead of `activeIndex + 1` —
@@ -857,7 +858,7 @@ test('picking a queue row ends a hand-ordered auto tail', async () => {
   const ts = [mk('a1', 1), mk('a2', 2), mk('a3', 3), mk('a4', 4), mk('a5', 5), mk('a6', 6)]
   try {
     library.set(ts)
-    autoQueueSort.set({ sortBy: 'added', sortAsc: true }) // Added ↑ = a1 … a6
+    autoQueueSort.set(sortOf('added', true)) // Added ↑ = a1 … a6
     queue.set({ userQueue: ['a1'], autoQueue: ['a2', 'a3', 'a4', 'a5', 'a6'], recentTrackIds: [], activeIndex: 0 })
     setCurrentTrack(ts[0])
     setPlaybackState('playing')
@@ -882,6 +883,6 @@ test('picking a queue row ends a hand-ordered auto tail', async () => {
     assert.deepEqual([...new Set(q.autoQueue)], ['a3', 'a4', 'a5', 'a6', 'a1'], 'the tail is exactly the continuation, cycled (D6)')
     assert.notEqual(q.autoQueue[0], 'a6', 'the hand-ordered tail must not survive a tap')
   } finally {
-    autoQueueSort.set({ sortBy: null, sortAsc: true })
+    autoQueueSort.set(sortOf(null, true))
   }
 })

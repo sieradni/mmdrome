@@ -8,7 +8,14 @@ import { describeStorageError, planStorageInitAttempt, STORAGE_INIT_MAX_ATTEMPTS
 import { persistQueue } from '$lib/queuePersistence'
 import { persisted, type PersistedValue } from '$lib/persistedStore'
 import { sanitizeRecent } from '$lib/recentWindow'
-import type { LibrarySortKey } from '$lib/libraryFilters'
+import {
+  EMPTY_SORT,
+  isRandomSort,
+  normalizeSort,
+  planRandomToggle,
+  type SortState,
+} from '$lib/sortCore'
+import { clampRecentLimit, RECENT_LIMIT, RECENT_LIMIT_MAX, RECENT_LIMIT_MIN } from '$lib/recentWindow'
 import { planPendingRelink } from '$lib/pendingRelink'
 import { dbgAlways, dbgDanger } from '$lib/debugLog'
 import { DEFAULT_LOVE_POLICY } from '$lib/scrobbleLove'
@@ -185,10 +192,7 @@ const _pitchOctaves = persisted<number>('pitchOctaves', 0)
 const _tapeMode = persisted<boolean>('tapeMode', false)
 const _snapTolerance = persisted<number>('snapTolerance', 0.15)
 const _masterGain = persisted<number>('masterGain', 1)
-const _shuffleEnabled = persisted<boolean>('shuffleEnabled', false)
 const _loopMode = persisted<LoopMode>('loopMode', 'none')
-
-export const shuffleEnabled = _shuffleEnabled.store
 export const currentTime = writable<number>(0)
 export const playbackSpeed = _playbackSpeed.store
 export const tapeMode = _tapeMode.store
@@ -254,31 +258,19 @@ export interface AutoQueueScope {
  * library sort: existing installs start at library order (user decision), so
  * the apply button appears the moment the two diverge.
  */
-export interface AutoQueueSort {
-  /** Which sort key the fill follows. `null` = library order (the default). */
-  sortBy: LibrarySortKey | null
-  /** Sort direction. Only meaningful when `sortBy` is set; kept (not reset)
-   *  when the key clears so re-picking a key restores the prior direction. */
-  sortAsc: boolean
-}
+export type AutoQueueSort = SortState
 
-/** Dexie-legal initial value: library order, ascending. */
-export const AUTO_QUEUE_SORT_DEFAULT: AutoQueueSort = { sortBy: null, sortAsc: true }
+/** Initial value: library order, no tiers. */
+export const AUTO_QUEUE_SORT_DEFAULT: AutoQueueSort = { ...EMPTY_SORT, tiers: [] }
 
 /**
- * Shape-validating decode for the persisted `autoQueueSort` row (same seam
- * as `decodeAutoQueueFilters` — corrupt/partial rows fall back to the
- * default instead of spreading junk into the fill planner).
+ * Shape-validating decode for the persisted `autoQueueSort` row. Also migrates
+ * the legacy `{sortBy, sortAsc}` pair (and the pre-2026-11-01 `shuffleEnabled`
+ * row, see `initStores`) through the shared rules. Always answers a valid state:
+ * corrupt rows degrade to "library order", never to junk in the fill planner.
  */
-export function decodeAutoQueueSort(raw: unknown): AutoQueueSort | undefined {
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
-  const p = raw as Partial<AutoQueueSort>
-  const validKeys: LibrarySortKey[] = ['rating', 'loved', 'year', 'length', 'added']
-  if (p.sortBy !== null && p.sortBy !== undefined && !validKeys.includes(p.sortBy)) return undefined
-  return {
-    sortBy: p.sortBy ?? null,
-    sortAsc: typeof p.sortAsc === 'boolean' ? p.sortAsc : true,
-  }
+export function decodeAutoQueueSort(raw: unknown): AutoQueueSort {
+  return normalizeSort(raw)
 }
 
 export type AutoQueueFilters = AutoQueueFilterFields & AutoQueueScope
@@ -382,6 +374,30 @@ const _autoQueueSort = persisted<AutoQueueSort>('autoQueueSort', AUTO_QUEUE_SORT
 })
 
 export const autoQueueSort = _autoQueueSort.store
+
+/**
+ * Shuffle (2026-11-01): a DERIVED VIEW of the auto-queue sort, not its own
+ * setting. "Shuffle on" means the auto queue sorts by random; there is one
+ * source of truth, so the button, the sort editor and the fill can never
+ * disagree. Turning it on remembers the previous tiers inside the same sort
+ * object (`SortState.restore`), which is what makes turning it off return to
+ * what it was — across sessions too.
+ */
+export const shuffleEnabled = derived(autoQueueSort, (s) => isRandomSort(s))
+
+/** How many recent plays the auto queue holds back (2026-11-01). The window is
+ *  STORED up to `RECENT_LIMIT_MAX` and this horizon is applied at read time, so
+ *  shrinking it and raising it again recovers the history. `0` disables the
+ *  cool-down. Read by the manager's fill snapshot; a change rebuilds the tail
+ *  WITHOUT resetting the window (a horizon edit, not a new rule set). */
+const _autoQueueRecentLimit = persisted<number>('autoQueueRecentLimit', RECENT_LIMIT, {
+  decode: (raw) => (typeof raw === 'number' ? clampRecentLimit(raw) : undefined),
+})
+
+export const autoQueueRecentLimit = _autoQueueRecentLimit.store
+
+export const AUTO_QUEUE_RECENT_LIMIT_MIN = RECENT_LIMIT_MIN
+export const AUTO_QUEUE_RECENT_LIMIT_MAX = RECENT_LIMIT_MAX
 
 /**
  * Auto-queue on/off (D9, QUEUE-DESIGN §2). Persisted like the other queue
@@ -671,11 +687,11 @@ async function restoreLocalState(): Promise<void> {
     _tapeMode.restore(),
     _snapTolerance.restore(),
     _masterGain.restore(),
-    _shuffleEnabled.restore(),
     _loopMode.restore(),
     _autoQueueFilterFields.restore(),
     _autoQueueSort.restore(),
     _autoQueueEnabled.restore(),
+    _autoQueueRecentLimit.restore(),
     _filterPresets.restore(),
     getSetting<PushRunReport>('lastPushReport')
       .then((saved) => {
@@ -687,6 +703,8 @@ async function restoreLocalState(): Promise<void> {
       })
       .catch(() => {}),
   ])
+
+  await migrateLegacyShuffle()
 }
 
 /**
@@ -794,9 +812,32 @@ export function updateMetadata(meta: LocalMetadataStore): void {
   upsertMetadata(meta)
 }
 
+/**
+ * The shuffle button's single write (2026-11-01): toggling shuffle sets the
+ * auto sort to random (remembering the previous tiers) or restores them. One
+ * store update = one Dexie row write and one subscriber fire, so the queue
+ * cannot observe a half-applied toggle.
+ */
 export function toggleShuffle(): void {
-  shuffleEnabled.update((v) => !v)
+  autoQueueSort.update((s) => planRandomToggle(s, !isRandomSort(s)))
   autoQueueScope.set({})
+}
+
+/**
+ * One-time migration (2026-11-01): `shuffleEnabled` used to be its own persisted
+ * row. It is a derived view of the auto sort now, so an install that had
+ * shuffle ON must turn that fact into sort=random ONCE — and the old row is
+ * cleared, or every boot would re-apply it after the user turned shuffle off.
+ */
+async function migrateLegacyShuffle(): Promise<void> {
+  try {
+    const legacy = await getSetting<boolean>('shuffleEnabled')
+    if (legacy !== true) return
+    autoQueueSort.update((s) => planRandomToggle(s, true))
+    await setSetting('shuffleEnabled', false)
+  } catch {
+    /* a failed migration must not block boot */
+  }
 }
 
 export function initMetadataForTracks(tracks: Track[]): void {

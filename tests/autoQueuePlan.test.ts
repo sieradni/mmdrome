@@ -1,4 +1,5 @@
 // Pins the pure auto-queue fill decision (the extracted half of the old
+import { sortOf } from '../src/lib/sortCore'
 // QueueManager._buildPool): the filter predicate, the shared-sort rank map,
 // the anchor rotation, and the tier-1/2/3 admission + ordering plan. The
 // manager glue (queue write + saveQueue + wrapNotice) is a thin interpreter
@@ -159,13 +160,13 @@ test('filterRangesValid: inverted ranges are invalid; one-sided bounds are fine'
 test('buildOrderRank: no sort keeps library order; ranks are SORTED POSITIONS (the B7 fix)', () => {
   const ts = [track('a'), track('b'), track('c')]
   const meta = metaOf([['a', 10], ['b', 90], ['c', 10]])
-  const none = buildOrderRank(ts, { sortBy: null, sortAsc: true }, meta)
+  const none = buildOrderRank(ts, sortOf(null, true), meta)
   assert.deepEqual([...none.entries()], [['a', 0], ['b', 1], ['c', 2]], 'no sort = library order')
-  const asc = buildOrderRank(ts, { sortBy: 'rating', sortAsc: true }, meta)
+  const asc = buildOrderRank(ts, sortOf('rating', true), meta)
   assert.deepEqual([...asc.entries()], [['a', 0], ['c', 1], ['b', 2]], 'rating asc ranks by sorted position (a,c tie broken by index)')
-  const desc = buildOrderRank(ts, { sortBy: 'rating', sortAsc: false }, meta)
+  const desc = buildOrderRank(ts, sortOf('rating', false), meta)
   assert.deepEqual([...desc.entries()], [['b', 0], ['c', 1], ['a', 2]], 'rating desc ranks by sorted position; TIES MIRROR THE ARROW (c before a)')
-  const year = buildOrderRank(ts, { sortBy: 'year', sortAsc: true }, meta)
+  const year = buildOrderRank(ts, sortOf('year', true), meta)
   assert.deepEqual([...year.entries()], [['a', 0], ['b', 1], ['c', 2]], 'missing years tie → library order')
 })
 
@@ -177,9 +178,9 @@ test('buildOrderRank: added sorts by createdAt; undated tracks are oldest', () =
     track('undated'),
   ]
   const meta = metaOf([])
-  const asc = buildOrderRank(ts, { sortBy: 'added', sortAsc: true }, meta)
+  const asc = buildOrderRank(ts, sortOf('added', true), meta)
   assert.deepEqual([...asc.keys()], ['undated', 'old', 'mid', 'new'], 'asc = oldest first, undated (0) leads')
-  const desc = buildOrderRank(ts, { sortBy: 'added', sortAsc: false }, meta)
+  const desc = buildOrderRank(ts, sortOf('added', false), meta)
   assert.deepEqual([...desc.keys()], ['new', 'mid', 'old', 'undated'], 'desc = newest first, undated last')
 })
 
@@ -187,8 +188,8 @@ test('buildOrderRank: a fully-tied library mirrors the arrow (the "flip does not
   // Unrated library: every comparison ties, so the tie-break IS the order.
   const ts = [track('a'), track('b'), track('c'), track('d')]
   const meta = metaOf([])
-  const asc = buildOrderRank(ts, { sortBy: 'rating', sortAsc: true }, meta)
-  const desc = buildOrderRank(ts, { sortBy: 'rating', sortAsc: false }, meta)
+  const asc = buildOrderRank(ts, sortOf('rating', true), meta)
+  const desc = buildOrderRank(ts, sortOf('rating', false), meta)
   assert.deepEqual([...asc.keys()], ['a', 'b', 'c', 'd'], 'asc = library order')
   assert.deepEqual([...desc.keys()], ['d', 'c', 'b', 'a'], 'desc = REVERSED library order — the arrow must always answer')
 })
@@ -244,8 +245,7 @@ function state(over: Partial<AutoQueuePlanState> = {}): AutoQueuePlanState {
     recentTrackIds: [],
     activeId: undefined,
     activeAutoIndex: -1,
-    shuffle: false,
-    sort: { sortBy: null, sortAsc: true },
+    sort: sortOf(),
     filters: filters(),
     meta: new Map(),
     ...over,
@@ -256,7 +256,7 @@ test('tier 1: fresh tracks fill first; the user-queued track is excluded', () =>
   // shuffle: true pins the RAW tier order — non-shuffle mode re-sorts the pool
   // by rank (even with no sort: library order), which is asserted separately.
   const ts = lib(['t1', 't2', 't3', 't4', 't5', 't6'].map((id) => track(id)))
-  const plan = planAutoQueueFill(state({ library: ts, userQueue: ['t1'], activeId: 't1', shuffle: true }), 50, { keepAuto: true })
+  const plan = planAutoQueueFill(state({ library: ts, userQueue: ['t1'], activeId: 't1', sort: sortOf('random') }), 50, { keepAuto: true })
   assert.deepEqual(plan.kept, [])
   assert.deepEqual(plan.pool.map((t) => t.trackId), ['t2', 't3', 't4', 't5', 't6'], 'user-queued t1 excluded (activeId + tier 1)')
   assert.equal(plan.shuffle, true)
@@ -266,7 +266,7 @@ test('tier 1: fresh tracks fill first; the user-queued track is excluded', () =>
 
 test('tier 2 admits cooling-down tracks when the fresh pool is short', () => {
   const ts = lib(['t1', 't2', 't3', 't4', 't5', 't6'].map((id) => track(id)))
-  const plan = planAutoQueueFill(state({ library: ts, recentTrackIds: ['t4', 't5'], shuffle: true }), 50, { keepAuto: true })
+  const plan = planAutoQueueFill(state({ library: ts, recentTrackIds: ['t4', 't5'], sort: sortOf('random') }), 50, { keepAuto: true })
   // tier1 = t1,t2,t3,t6 (t4,t5 cooling); tier2 appends t4,t5 in library order.
   assert.deepEqual(plan.pool.map((t) => t.trackId), ['t1', 't2', 't3', 't6', 't4', 't5'])
   assert.deepEqual(plan.tiers, { 1: ['t1', 't2', 't3', 't6'], 2: ['t4', 't5'], 3: [] })
@@ -280,7 +280,7 @@ test('tier 3 recycles user-queued + recent tracks and excludes the active id (B4
     autoQueue: ['t2'],
     recentTrackIds: ['t3', 't4'],
     activeId: 't2',
-    shuffle: true,
+    sort: sortOf('random'),
   }), 50, { keepAuto: true })
   // kept = [t2]; inAuto excludes t2 from every tier.
   // tier1 = t5,t6 (t1 inUser, t2 inAuto, t3/t4 recent)
@@ -332,7 +332,7 @@ test('non-shuffle ordering follows the shared sort and rotates after the last us
   const meta = metaOf([['a', 10], ['b', 20], ['c', 30], ['d', 40], ['e', 50], ['f', 100]])
   const plan = planAutoQueueFill(state({
     library: ts, userQueue: ['f'], meta,
-    sort: { sortBy: 'rating', sortAsc: true },
+    sort: sortOf('rating', true),
   }), 50, { keepAuto: true })
   // Fresh tier = c,e,a,b,d (f is user-queued); the rotation tier recycles f
   // (B4) because the pool is short. Sorted by rating asc → a..f; nothing ranks
@@ -343,7 +343,7 @@ test('non-shuffle ordering follows the shared sort and rotates after the last us
 
 test('shuffle is reported as data, not applied', () => {
   const ts = lib(['t1', 't2', 't3'].map((id) => track(id)))
-  const plan = planAutoQueueFill(state({ library: ts, shuffle: true }), 50, { keepAuto: true })
+  const plan = planAutoQueueFill(state({ library: ts, sort: sortOf('random') }), 50, { keepAuto: true })
   assert.equal(plan.shuffle, true)
   assert.equal(plan.wrapNotice, false, 'shuffle clears the wrap hint')
   assert.deepEqual([...plan.pool].map((t) => t.trackId).sort(), ['t1', 't2', 't3'], 'pool intact; permutation is the caller\'s job')
@@ -362,7 +362,7 @@ const libFilters = (over: Partial<LibraryFilterState> = {}): LibraryFilterState 
   filterOpen: false, sortOpen: false,
   minRating: 0, maxRating: 100, lovedOnly: false, genre: '',
   fromYear: '', toYear: '', minLength: '', maxLength: '',
-  sortBy: null, sortAsc: true,
+  sort: sortOf(null, true),
   ...over,
 })
 
@@ -372,7 +372,7 @@ const autoFields = (over: Partial<AutoQueueFilterFields> = {}): AutoQueueFilterF
   ...over,
 })
 
-const autoSortOf = (sortBy: LibrarySortKey | null, sortAsc = true) => ({ sortBy, sortAsc })
+const autoSortOf = (key: LibrarySortKey | null, asc = true) => sortOf(key, asc)
 
 test('differ: identical settings → false; any shared field drift → true', () => {
   const f = autoFields()
@@ -384,9 +384,9 @@ test('differ: identical settings → false; any shared field drift → true', ()
   assert.equal(autoQueueSettingsDiffer(libFilters({ genre: 'Rock' }), f, s), true)
   assert.equal(autoQueueSettingsDiffer(libFilters({ fromYear: 1990 }), f, s), true)
   assert.equal(autoQueueSettingsDiffer(libFilters({ minLength: 90 }), f, s), true)
-  assert.equal(autoQueueSettingsDiffer(libFilters({ sortBy: 'year' }), f, s), true)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ sort: sortOf('year', true) }), f, s), true)
   // Direction with NO active key is meaningless — not a difference.
-  assert.equal(autoQueueSettingsDiffer(libFilters({ sortAsc: false }), f, s), false, 'sortAsc ignored without a key')
+  assert.equal(autoQueueSettingsDiffer(libFilters({ sort: sortOf() }), f, s), false, 'sortAsc ignored without a key')
 })
 
 test('differ: UI flags, searchQuery and scope are never compared', () => {
@@ -407,21 +407,21 @@ test('apply plan: copies only the store that differs; searchQuery preserved', ()
   assert.equal('searchQuery' in (plan.filters ?? {}), false, 'searchQuery is NOT part of the plan shape')
   assert.equal(plan.sort, undefined, 'no sort drift → no sort write')
 
-  const sortOnly = planApplyLibraryToAutoQueue(libFilters({ sortBy: 'year', sortAsc: false }), autoFields(), s)
+  const sortOnly = planApplyLibraryToAutoQueue(libFilters({ sort: sortOf('year', false) }), autoFields(), s)
   assert.equal(sortOnly.filters, undefined, 'no filter drift → no filter write')
-  assert.deepEqual(sortOnly.sort, { sortBy: 'year', sortAsc: false })
+  assert.deepEqual(sortOnly.sort, sortOf('year', false))
 })
 
 test('apply plan: identical settings plan nothing (the button is hidden)', () => {
-  const plan = planApplyLibraryToAutoQueue(libFilters({ sortBy: 'rating' }), autoFields(), autoSortOf('rating', true))
+  const plan = planApplyLibraryToAutoQueue(libFilters({ sort: sortOf('rating', true) }), autoFields(), autoSortOf('rating', true))
   assert.equal(plan.filters, undefined)
   assert.equal(plan.sort, undefined)
-  assert.equal(autoQueueSettingsDiffer(libFilters({ sortBy: 'rating' }), autoFields(), autoSortOf('rating', true)), false)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ sort: sortOf('rating', true) }), autoFields(), autoSortOf('rating', true)), false)
 })
 
 test('apply plan: direction-only drift under an active key plans a sort write', () => {
-  const plan = planApplyLibraryToAutoQueue(libFilters({ sortBy: 'rating', sortAsc: false }), autoFields(), autoSortOf('rating', true))
-  assert.deepEqual(plan.sort, { sortBy: 'rating', sortAsc: false })
+  const plan = planApplyLibraryToAutoQueue(libFilters({ sort: sortOf('rating', false) }), autoFields(), autoSortOf('rating', true))
+  assert.deepEqual(plan.sort, sortOf('rating', false))
 })
 
 test('apply plan: empty and null bounds compare equal through the bound fold', () => {
@@ -447,7 +447,7 @@ const AQ = (): Track[] => [
   track('aq5', { createdAt: Date.parse('2023-05-01T00:00:00Z') }),
   track('aq6', { createdAt: Date.parse('2023-04-01T00:00:00Z') }),
 ]
-const ADDED_DESC = { sortBy: 'added', sortAsc: false } as const
+const ADDED_DESC = sortOf('added', false)
 const ids = (ts: Track[]): string[] => ts.map((t) => t.trackId)
 
 test('a moved anchor re-derives the kept run instead of keeping the stale prefix', () => {
@@ -564,14 +564,14 @@ test('a hand order is void once the rule, the tail or a row stops being what the
   assert.equal(resolveHandOrder(null, captured), null, 'no intent, nothing to honour')
 
   // A rule change: the same rows under a different sort are a different order.
-  assert.equal(resolveHandOrder(intent, { ...captured, sort: { sortBy: 'added', sortAsc: true } }), null, 'sort change voids it')
+  assert.equal(resolveHandOrder(intent, { ...captured, sort: sortOf('added', true) }), null, 'sort change voids it')
   // …and so does any other rule field, folded from the objects themselves.
   assert.equal(
     resolveHandOrder(intent, { ...captured, filters: { ...captured.filters, minRating: 50 } }),
     null,
     'filter change voids it',
   )
-  assert.equal(resolveHandOrder(intent, { ...captured, shuffle: true }), null, 'a shuffle toggle voids it')
+  assert.equal(resolveHandOrder(intent, { ...captured, sort: sortOf('random') }), null, 'a shuffle toggle voids it')
 
   // A replaced tail (Play All / a rebuild) and an emptied one (Clear): the
   // head is the replacement check, since rows only leave from the head and are

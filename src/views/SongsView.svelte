@@ -3,6 +3,7 @@
   import { library, metadataCache, currentTrack, navidromeConnection, navidromeLoadStatus } from '../stores/appState'
   import { restoreViewState } from '../lib/viewState'
   import { libraryFilters, trackMatchesGenre } from '../lib/libraryFilters'
+  import { sortWithTiers, trackSortCmp } from '../lib/sortCore'
   import { parseSearchQuery, rankTrackMatch } from '../lib/searchCore'
   import {
     ESTIMATED_ROW_H,
@@ -73,30 +74,15 @@
     if (toY !== null) list = list.filter((t) => (t.year ?? 9999) <= toY)
     if (minL !== null) list = list.filter((t) => t.duration >= minL)
     if (maxL !== null) list = list.filter((t) => t.duration <= maxL)
-    if (f.sortBy) {
-      list = [...list].sort((a, b) => {
-        let cmp = 0
-        switch (f.sortBy) {
-          case 'rating':
-            cmp = getRating(a.trackId) - getRating(b.trackId)
-            break
-          case 'loved':
-            cmp = Number(getLoved(a.trackId)) - Number(getLoved(b.trackId))
-            break
-          case 'year':
-            cmp = (a.year ?? 0) - (b.year ?? 0)
-            break
-          case 'length':
-            cmp = a.duration - b.duration
-            break
-          case 'added':
-            cmp = (a.createdAt ?? 0) - (b.createdAt ?? 0)
-            break
-        }
-        return cmp * (f.sortAsc ? 1 : -1)
-      })
-    }
-    return list
+    // The shared two-tier comparator (sortCore) — the ONE sort implementation
+    // this list and the auto-queue rank map both use. Random is a SEEDED order
+    // (per-id hash), so a store write never reshuffles the list underneath the
+    // user; "New random order" is the only thing that re-rolls it.
+    return sortWithTiers(list, {
+      sort: f.sort,
+      cmp: (key, a, b) => trackSortCmp(key, a, b, { ratingOf: getRating, lovedOf: getLoved }),
+      idOf: (t) => t.trackId,
+    })
   })
 
   let currentIndex = $derived(

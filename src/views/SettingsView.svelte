@@ -2,6 +2,7 @@
   import PushChangesSection from '../components/PushChangesSection.svelte'
 
   import AppSlider from '../components/AppSlider.svelte'
+import { autoQueueRecentLimit, AUTO_QUEUE_RECENT_LIMIT_MAX } from '../stores/appState'
   import ClearableSearch from '../components/ClearableSearch.svelte'
   import { onMount } from 'svelte'
   import { get } from 'svelte/store'
@@ -1755,6 +1756,29 @@
               class="flex-1"
             />
             <span class="w-10 text-right text-sm text-muted">{($settings.crossfadeDuration ?? 0)}s</span>
+          </div>
+        </section>
+
+        <!-- Transcoding (server-side, Navidrome) -->
+        <!-- Auto queue (2026-11-01): how far back the anti-repeat window
+             reaches. The window itself is stored up to the MAX, so lowering
+             this and raising it again recovers the history instead of having
+             discarded it. -->
+        <section class="px-4 py-4">
+          <h3 class="mb-1 text-base font-medium text-primary">Auto queue</h3>
+          <p class="mb-3 text-sm text-muted">Songs you've heard in your last N plays are held back from the auto queue until the pool runs short. 0 turns the cool-down off.</p>
+          <div class="flex items-center gap-3">
+            <AppSlider
+              value={$autoQueueRecentLimit}
+              min={0}
+              max={AUTO_QUEUE_RECENT_LIMIT_MAX}
+              step={10}
+              label="Recently played window"
+              valueText={(v) => `${v} songs`}
+              onInput={(v) => autoQueueRecentLimit.set(Math.min(AUTO_QUEUE_RECENT_LIMIT_MAX, Math.max(0, Math.round(v))))}
+              class="flex-1"
+            />
+            <span class="w-16 text-right text-sm text-muted" data-testid="recent-window-value">{$autoQueueRecentLimit} songs</span>
           </div>
         </section>
 

@@ -1,4 +1,5 @@
 import { test } from 'node:test'
+import { sortOf } from '../src/lib/sortCore'
 import assert from 'node:assert/strict'
 import {
   applyFilterSort,
@@ -26,8 +27,7 @@ function defaults(over: Partial<LibraryFilterState> = {}): LibraryFilterState {
     toYear: '',
     minLength: '',
     maxLength: '',
-    sortBy: null,
-    sortAsc: true,
+    sort: sortOf(null, true),
     ...over,
   }
 }
@@ -140,13 +140,13 @@ test('applyFilterSort sorts by rating (avg over rated tracks), loved, year, leng
     group('mid', [mkTrack('b')], { avgRating: 50, lovedCount: 2, year: 2005, length: 100 }),
     group('high', [mkTrack('c')], { avgRating: 90, lovedCount: 0, year: 2010, length: 200 }),
   ]
-  const byRating = applyFilterSort(groups, defaults({ sortBy: 'rating' }), () => 0).map((g) => g.id)
+  const byRating = applyFilterSort(groups, defaults({ sort: sortOf('rating', true) }), () => 0).map((g) => g.id)
   assert.deepEqual(byRating, ['low', 'mid', 'high'])
-  const byRatingDesc = applyFilterSort(groups, defaults({ sortBy: 'rating', sortAsc: false }), () => 0).map((g) => g.id)
+  const byRatingDesc = applyFilterSort(groups, defaults({ sort: sortOf('rating', false) }), () => 0).map((g) => g.id)
   assert.deepEqual(byRatingDesc, ['high', 'mid', 'low'])
-  assert.deepEqual(applyFilterSort(groups, defaults({ sortBy: 'loved', sortAsc: false }), () => 0).map((g) => g.id), ['mid', 'low', 'high'])
-  assert.deepEqual(applyFilterSort(groups, defaults({ sortBy: 'year' }), () => 0).map((g) => g.id), ['low', 'mid', 'high'])
-  assert.deepEqual(applyFilterSort(groups, defaults({ sortBy: 'length' }), () => 0).map((g) => g.id), ['mid', 'high', 'low'])
+  assert.deepEqual(applyFilterSort(groups, defaults({ sort: sortOf('loved', false) }), () => 0).map((g) => g.id), ['mid', 'low', 'high'])
+  assert.deepEqual(applyFilterSort(groups, defaults({ sort: sortOf('year', true) }), () => 0).map((g) => g.id), ['low', 'mid', 'high'])
+  assert.deepEqual(applyFilterSort(groups, defaults({ sort: sortOf('length', true) }), () => 0).map((g) => g.id), ['mid', 'high', 'low'])
 })
 
 test('applyFilterSort sorts by added (latestAdded) x asc/desc', () => {
@@ -158,12 +158,12 @@ test('applyFilterSort sorts by added (latestAdded) x asc/desc', () => {
   ]
   // Ascending: undated (0) first, then oldest to newest.
   assert.deepEqual(
-    applyFilterSort(groups, defaults({ sortBy: 'added' }), () => 0).map((g) => g.id),
+    applyFilterSort(groups, defaults({ sort: sortOf('added', true) }), () => 0).map((g) => g.id),
     ['undated', 'old', 'mid', 'new'],
   )
   // Descending (the picker default): newest first, undated last.
   assert.deepEqual(
-    applyFilterSort(groups, defaults({ sortBy: 'added', sortAsc: false }), () => 0).map((g) => g.id),
+    applyFilterSort(groups, defaults({ sort: sortOf('added', false) }), () => 0).map((g) => g.id),
     ['new', 'mid', 'old', 'undated'],
   )
 })
@@ -171,7 +171,7 @@ test('applyFilterSort sorts by added (latestAdded) x asc/desc', () => {
 test('applyFilterSort returns a new array and never mutates the input', () => {
   const g1 = group('g1', [mkTrack('a')], { avgRating: 10 })
   const input = [g1]
-  const result = applyFilterSort(input, defaults({ sortBy: 'rating', sortAsc: false }), () => 0)
+  const result = applyFilterSort(input, defaults({ sort: sortOf('rating', false) }), () => 0)
   assert.notEqual(result, input)
   assert.equal(input.length, 1)
   assert.equal(result.length, 1)

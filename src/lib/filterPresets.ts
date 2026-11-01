@@ -12,18 +12,14 @@
  * `decodeFilterPresets`, and the view calls `planSavePreset`/`applyPreset`.
  */
 
-import type { LibraryFilterState, LibrarySortKey } from './libraryFilters'
+import type { LibraryFilterState } from './libraryFilters'
+import { normalizeSort, sortSignature, type SortState } from './sortCore'
 
 /** Longest accepted preset name (after whitespace normalization). */
 export const PRESET_NAME_MAX = 40
 
 /** Most presets a library may hold — a chip strip, not a filing cabinet. */
 export const PRESET_MAX_COUNT = 30
-
-/** The sort keys a preset may name. Anything else decodes to "no sort"
- *  (mirrors `libraryFilters`' keys; `libraryFilters` cannot be imported here at
- *  runtime because this module is loaded by Node-only store tests). */
-const PRESET_SORT_KEYS: readonly LibrarySortKey[] = ['rating', 'loved', 'year', 'length', 'added']
 
 /** The filter fields a preset stores — never the popup open/close flags. */
 export interface PresetFilters {
@@ -41,8 +37,9 @@ export interface FilterPreset {
   id: string
   name: string
   filters: PresetFilters
-  sortBy: LibrarySortKey | null
-  sortAsc: boolean
+  /** The whole two-tier sort stack, seed included (a preset restores its own
+   *  random order — "Random" in a saved view is the same random view). */
+  sort: SortState
 }
 
 export type SavePresetResult =
@@ -96,8 +93,7 @@ export function planSavePreset(
   if (!name) return { ok: false, reason: 'empty-name' }
 
   const filter = filtersFromState(state)
-  const sortBy = state.sortBy
-  const sortAsc = state.sortAsc
+  const sort = normalizeSort(state.sort)
 
   const key = nameKey(name)
   const existing = presets.findIndex((p) => nameKey(p.name) === key)
@@ -107,14 +103,14 @@ export function planSavePreset(
     return {
       ok: true,
       presets: presets.map((p, i) =>
-        i === existing ? { ...p, filters: filter, sortBy, sortAsc } : p,
+        i === existing ? { ...p, filters: filter, sort } : p,
       ),
     }
   }
 
   if (presets.length >= PRESET_MAX_COUNT) return { ok: false, reason: 'limit' }
 
-  return { ok: true, presets: [...presets, { id, name, filters: filter, sortBy, sortAsc }] }
+  return { ok: true, presets: [...presets, { id, name, filters: filter, sort }] }
 }
 
 /** Removes one preset by id; unknown ids are a no-op. */
@@ -130,8 +126,7 @@ export function applyPreset(state: LibraryFilterState, preset: FilterPreset): Li
   return {
     ...state,
     ...preset.filters,
-    sortBy: preset.sortBy,
-    sortAsc: preset.sortAsc,
+    sort: normalizeSort(preset.sort),
     filterOpen: false,
     sortOpen: false,
   }
@@ -151,9 +146,13 @@ export function applyPresetById(
   return preset ? applyPreset(state, preset) : null
 }
 
-/** True when the live state already equals the preset (drives the chip highlight). */
+/**
+ * True when the live state already equals the preset (drives the chip
+ * highlight). The random SEED is ignored: re-rolling a random view is the same
+ * view in a new order, and the chip must stay lit.
+ */
 export function presetIsActive(preset: FilterPreset, state: LibraryFilterState): boolean {
-  if (state.sortBy !== preset.sortBy || state.sortAsc !== preset.sortAsc) return false
+  if (sortSignature(state.sort) !== sortSignature(preset.sort)) return false
   const live = filtersFromState(state)
   const saved = preset.filters
   return (
@@ -200,6 +199,9 @@ function decodeFilters(raw: unknown): PresetFilters {
  * this store. Malformed rows are dropped (not repaired into nonsense), a
  * duplicated name keeps its first occurrence, an unknown sort key becomes "no
  * sort", and the list is capped. A missing/old value yields `[]`.
+ *
+ * Legacy rows (a top-level `sortBy`/`sortAsc` pair) decode through the shared
+ * `normalizeSort`, so a preset saved before 2026-11-01 keeps its sort.
  */
 export function decodeFilterPresets(raw: unknown): FilterPreset[] {
   if (!Array.isArray(raw)) return []
@@ -215,16 +217,11 @@ export function decodeFilterPresets(raw: unknown): FilterPreset[] {
     const key = nameKey(name)
     if (seen.has(key)) continue
     seen.add(key)
-    const sortBy =
-      typeof r.sortBy === 'string' && (PRESET_SORT_KEYS as readonly string[]).includes(r.sortBy)
-        ? (r.sortBy as LibrarySortKey)
-        : null
     out.push({
       id,
       name,
       filters: decodeFilters(r.filters),
-      sortBy,
-      sortAsc: r.sortAsc !== false,
+      sort: normalizeSort(r.sort ?? r),
     })
   }
   return out

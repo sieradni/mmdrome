@@ -9,9 +9,19 @@
  *
  * Persisted inside the playQueue row, so the anti-repeat memory survives
  * restarts; `sanitizeRecent` is the load-time dedupe + cap.
+ *
+ * TWO numbers (2026-11-01):
+ *  - `RECENT_LIMIT` is the DEFAULT HORIZON — how many plays count as "recent",
+ *    overridable by the user through Settings → Playback (`autoQueueRecentLimit`).
+ *  - `RECENT_LIMIT_MAX` is the STORAGE cap. The window is kept up to the max
+ *    and the horizon is applied at READ time (`effectiveRecent`), so shrinking
+ *    the setting and raising it again RECOVERS the history instead of having
+ *    silently discarded it. A destructive trim would make the setting one-way.
  */
 
 export const RECENT_LIMIT = 100
+export const RECENT_LIMIT_MAX = 500
+export const RECENT_LIMIT_MIN = 0
 
 /**
  * Pure LRU inscription: removes any earlier occurrence of `trackId`, appends it
@@ -19,7 +29,7 @@ export const RECENT_LIMIT = 100
  * Array order is exactly recency order (newest last), duplicates never waste
  * cap space, and re-playing a cooled-down track refreshes its recency.
  */
-export function inscribeRecent(arr: string[], trackId: string, limit = RECENT_LIMIT): string[] {
+export function inscribeRecent(arr: string[], trackId: string, limit = RECENT_LIMIT_MAX): string[] {
   if (arr[arr.length - 1] === trackId) return arr
   const next = arr.filter((id) => id !== trackId)
   next.push(trackId)
@@ -31,7 +41,7 @@ export function inscribeRecent(arr: string[], trackId: string, limit = RECENT_LI
  * and caps at `limit` keeping the newest entries. Tolerates legacy or foreign
  * persisted data (old `historyQueue` rows, duplicate inscriptions).
  */
-export function sanitizeRecent(arr: string[] | undefined, limit = RECENT_LIMIT): string[] {
+export function sanitizeRecent(arr: string[] | undefined, limit = RECENT_LIMIT_MAX): string[] {
   if (!arr || arr.length === 0) return []
   const seen = new Set<string>()
   const deduped: string[] = []
@@ -43,4 +53,22 @@ export function sanitizeRecent(arr: string[] | undefined, limit = RECENT_LIMIT):
   }
   deduped.reverse()
   return deduped.length > limit ? deduped.slice(deduped.length - limit) : deduped
+}
+
+/** Clamps a user-chosen horizon into the storable band. */
+export function clampRecentLimit(limit: unknown): number {
+  if (typeof limit !== 'number' || !Number.isFinite(limit)) return RECENT_LIMIT
+  return Math.min(RECENT_LIMIT_MAX, Math.max(RECENT_LIMIT_MIN, Math.round(limit)))
+}
+
+/**
+ * The exclusion set the fill sees: the newest `limit` entries of the stored
+ * window. `limit >= length` returns the window untouched; `0` disables the
+ * cool-down entirely (nothing is held back).
+ */
+export function effectiveRecent(ids: readonly string[], limit: number): string[] {
+  const n = clampRecentLimit(limit)
+  if (n === 0) return []
+  if (ids.length <= n) return [...ids]
+  return ids.slice(ids.length - n)
 }

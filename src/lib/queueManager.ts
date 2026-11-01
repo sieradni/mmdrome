@@ -10,13 +10,13 @@ import {
   type AutoQueuePlanState,
   type HandOrder,
 } from './autoQueuePlan'
-import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
+import { effectiveRecent, inscribeRecent, RECENT_LIMIT_MAX } from './recentWindow'
 import { syncFillProvenance } from './queueProvenance'
 import * as queueMutation from './queueMutation'
 import {
   queue,
   library,
-  shuffleEnabled,
+  autoQueueRecentLimit,
   autoQueueFilters,
   autoQueueSort,
   autoQueueEnabled,
@@ -110,20 +110,23 @@ class QueueManager {
   private _planState(): AutoQueuePlanState {
     const q = get(queue)
     const combined = [...q.userQueue, ...q.autoQueue]
+    const recentLimit = get(autoQueueRecentLimit)
     return {
       library: get(library),
       userQueue: q.userQueue,
       autoQueue: q.autoQueue,
-      recentTrackIds: q.recentTrackIds,
+      recentTrackIds: effectiveRecent(q.recentTrackIds, recentLimit),
       activeId: combined[q.activeIndex],
       // Where the audible occurrence sits RIGHT NOW: between an anchor move and
       // its post-load promotion it is still an AUTO row, and the ordered fill
       // must pin it there (see AutoQueuePlanState.activeAutoIndex).
       activeAutoIndex: q.activeIndex >= q.userQueue.length ? q.activeIndex - q.userQueue.length : -1,
-      shuffle: get(shuffleEnabled),
       // The auto queue follows its OWN sort (2026-09-29 decoupling) — the
       // shared library sort is a view concern and never re-ranks the fill.
+      // Random lives INSIDE this stack now (2026-11-01), so there is no
+      // separate shuffle flag that could disagree with it.
       sort: get(autoQueueSort),
+      recentLimit,
       filters: get(autoQueueFilters),
       meta: get(metadataCache),
     }
@@ -252,7 +255,7 @@ class QueueManager {
    */
   markRecent(trackId: string): void {
     queue.update((q) => {
-      const updated = { ...q, recentTrackIds: inscribeRecent(q.recentTrackIds, trackId, RECENT_LIMIT) }
+      const updated = { ...q, recentTrackIds: inscribeRecent(q.recentTrackIds, trackId, RECENT_LIMIT_MAX) }
       persistQueue('markRecent', updated)
       return updated
     })
@@ -269,7 +272,7 @@ class QueueManager {
       const updated = {
         ...q,
         activeIndex: index,
-        recentTrackIds: markRecentId ? inscribeRecent(q.recentTrackIds, markRecentId, RECENT_LIMIT) : q.recentTrackIds,
+        recentTrackIds: markRecentId ? inscribeRecent(q.recentTrackIds, markRecentId, RECENT_LIMIT_MAX) : q.recentTrackIds,
       }
       persistQueue('advanceTo', updated)
       return updated
@@ -373,8 +376,8 @@ class QueueManager {
     // sequence it asserts (the tail the drop left) and the rule it was made
     // under. A drag that only touched the user section leaves the intent alone.
     if (!sameIds(before, after)) {
-      const { filters, sort, shuffle } = this._planState()
-      this._handOrder = { tail: [...after], rule: handOrderRule({ filters, sort, shuffle }) }
+      const { filters, sort, recentLimit } = this._planState()
+      this._handOrder = { tail: [...after], rule: handOrderRule({ filters, sort, recentLimit }) }
     }
   }
 
@@ -533,8 +536,8 @@ class QueueManager {
         recentTrackIds: [],
         activeId: combined[base.activeIndex],
         activeAutoIndex: base.activeIndex >= base.userQueue.length ? base.activeIndex - base.userQueue.length : -1,
-        shuffle: get(shuffleEnabled),
         sort: get(autoQueueSort),
+        recentLimit: get(autoQueueRecentLimit),
         filters: get(autoQueueFilters),
         meta: get(metadataCache),
       }
@@ -548,7 +551,20 @@ class QueueManager {
     })
   }
 
-  /** Rebuilds the whole auto queue (keepAuto: false — a shuffle toggle).
+  /**
+   * The QUEUE VIEW's refresh button (2026-11-01): the user asked for this
+   * exact tail again. Identical to what a random toggle does — re-derive the
+   * tail from the anchor under the CURRENT rule (a fresh sampled order under
+   * random, the continuing ordered pool otherwise) without resetting the
+   * anti-repeat window. Not a rule change, so it never goes through
+   * `rebuildForFreshContext`.
+   */
+  refreshAutoQueue(): void {
+    this.rebuildAutoQueue()
+  }
+
+  /** Rebuilds the whole auto queue (keepAuto: false — a random toggle or the
+   *  refresh button).
    *  The fill ALWAYS continues from the anchor (the last user-queue entry —
    *  the point playback is headed from) in the new order, so an explicit
    *  sort change keeps the current position and fills the upcoming songs

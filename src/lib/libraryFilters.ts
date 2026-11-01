@@ -1,7 +1,19 @@
 import { writable } from 'svelte/store'
 import type { Track } from '../stores/appState'
+import {
+  EMPTY_SORT,
+  normalizeSort,
+  sortWithTiers,
+  sortLabels,
+  type SortKey,
+  type SortState,
+} from './sortCore'
 
-export type LibrarySortKey = 'rating' | 'loved' | 'year' | 'length' | 'added'
+/** Every key the shared library sort may use (random included, 2026-11-01). */
+export type LibrarySortKey = SortKey
+
+export { sortLabels }
+export type { SortState, SortTier, SortKey } from './sortCore'
 
 export interface LibraryFilterState {
   filterOpen: boolean
@@ -14,38 +26,46 @@ export interface LibraryFilterState {
   toYear: number | ''
   minLength: number | ''
   maxLength: number | ''
-  sortBy: LibrarySortKey | null
-  sortAsc: boolean
+  /** The TWO-TIER sort stack (primary first) — see `sortCore`. */
+  sort: SortState
 }
 
 const STORAGE_KEY = 'mmdrome/libraryFilters'
 
-const defaults: LibraryFilterState = {
-  filterOpen: false,
-  sortOpen: false,
-  minRating: 0,
-  maxRating: 100,
-  lovedOnly: false,
-  genre: '',
-  fromYear: '',
-  toYear: '',
-  minLength: '',
-  maxLength: '',
-  sortBy: null,
-  sortAsc: true,
+function defaults(): LibraryFilterState {
+  return {
+    filterOpen: false,
+    sortOpen: false,
+    minRating: 0,
+    maxRating: 100,
+    lovedOnly: false,
+    genre: '',
+    fromYear: '',
+    toYear: '',
+    minLength: '',
+    maxLength: '',
+    sort: { ...EMPTY_SORT, tiers: [] },
+  }
 }
 
+/**
+ * The localStorage trust boundary. `sort` is decoded through the shared
+ * `normalizeSort` (which also migrates the legacy `{sortBy, sortAsc}` pair a
+ * row persisted before 2026-11-01 still holds); the scalar filter fields keep
+ * their historical pass-through.
+ */
 function load(): LibraryFilterState {
+  const base = defaults()
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
-      const p = JSON.parse(raw) as Partial<LibraryFilterState>
-      return { ...defaults, ...p }
+      const p = JSON.parse(raw) as Partial<LibraryFilterState> & { sortBy?: SortKey | null; sortAsc?: boolean }
+      return { ...base, ...p, sort: normalizeSort(p.sort ?? p) }
     }
   } catch {
     /* ignore corrupt saved filters */
   }
-  return { ...defaults }
+  return base
 }
 
 /**
@@ -62,15 +82,9 @@ libraryFilters.subscribe((s) => {
   }
 })
 
-export const sortLabels: Record<LibrarySortKey, string> = {
-  rating: 'Rating',
-  loved: 'Loved',
-  year: 'Year',
-  length: 'Length',
-  added: 'Added',
-}
-
 export interface TrackGroupAggregates {
+  /** Stable identity for the seeded random order (album/artist name). */
+  groupKey?: string
   avgRating: number
   lovedCount: number
   year: number | null
@@ -84,7 +98,8 @@ export interface TrackGroupAggregates {
 export function makeGroupAggregates(
   tracks: readonly Track[],
   ratingOf: (trackId: string) => number,
-  lovedOf: (trackId: string) => boolean
+  lovedOf: (trackId: string) => boolean,
+  groupKey = '',
 ): TrackGroupAggregates {
   let sum = 0
   let ratedCount = 0
@@ -107,6 +122,7 @@ export function makeGroupAggregates(
     if (added > latestAdded) latestAdded = added
   }
   return {
+    groupKey: groupKey || tracks[0]?.trackId || '',
     avgRating: ratedCount > 0 ? sum / ratedCount : 0,
     lovedCount,
     year: minYear,
@@ -146,6 +162,28 @@ export function distinctGenres(tracks: readonly Track[]): string[] {
   return [...seen].sort((a, b) => a.localeCompare(b))
 }
 
+/** The group key comparator (rating/loved/year/length/added aggregates). */
+function compareGroupKey(
+  key: SortKey,
+  a: TrackGroupAggregates,
+  b: TrackGroupAggregates,
+): number {
+  switch (key) {
+    case 'rating':
+      return a.avgRating - b.avgRating
+    case 'loved':
+      return a.lovedCount - b.lovedCount
+    case 'year':
+      return (a.year ?? 0) - (b.year ?? 0)
+    case 'length':
+      return a.length - b.length
+    case 'added':
+      return a.latestAdded - b.latestAdded
+    default:
+      return 0
+  }
+}
+
 /**
  * Applies the shared filter/sort to album/artist groups (each group must carry
  * TrackGroupAggregates fields plus its `tracks` array). Returns a new array;
@@ -155,6 +193,9 @@ export function distinctGenres(tracks: readonly Track[]): string[] {
  * tracks falls inside the configured rating range (an unrated track never
  * blocks a group). `avgRating` (computed over rated tracks only) is still used
  * for sorting.
+ *
+ * Sorting is the shared two-tier stack (`sortCore`): tied groups keep their
+ * incoming (alphabetical) order — a list never reverses on a direction flip.
  */
 export function applyFilterSort<T extends TrackGroupAggregates & { tracks: readonly Track[] }>(
   groups: T[],
@@ -167,7 +208,7 @@ export function applyFilterSort<T extends TrackGroupAggregates & { tracks: reado
   const maxL = toNum(f.maxLength)
   const ratingActive = f.minRating > 0 || f.maxRating < 100
 
-  let result = groups.filter((g) => {
+  const result = groups.filter((g) => {
     if (ratingActive) {
       const anyMatch = g.tracks.some((t) => {
         const r = ratingOf(t.trackId)
@@ -184,29 +225,14 @@ export function applyFilterSort<T extends TrackGroupAggregates & { tracks: reado
     return true
   })
 
-  if (f.sortBy) {
-    result = [...result].sort((a, b) => {
-      let cmp = 0
-      switch (f.sortBy) {
-        case 'rating':
-          cmp = a.avgRating - b.avgRating
-          break
-        case 'loved':
-          cmp = a.lovedCount - b.lovedCount
-          break
-        case 'year':
-          cmp = (a.year ?? 0) - (b.year ?? 0)
-          break
-        case 'length':
-          cmp = a.length - b.length
-          break
-        case 'added':
-          cmp = a.latestAdded - b.latestAdded
-          break
-      }
-      return cmp * (f.sortAsc ? 1 : -1)
-    })
-  }
-
-  return result
+  // The arrow wrapper keeps T as the CALLER's group type (passing the
+  // comparator directly would widen it to the aggregate base type and drop
+  // `album`/`artist` from the result).
+  const sorted: T[] = sortWithTiers(result, {
+    sort: f.sort,
+    cmp: (key, a, b) => compareGroupKey(key, a, b),
+    idOf: (g) => g.groupKey ?? g.tracks[0]?.trackId ?? '',
+    tie: 'natural',
+  })
+  return sorted
 }

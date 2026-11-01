@@ -72,7 +72,7 @@
         if (r > bestRating) { bestRating = r; bestTrack = t }
       }
       const sorted = [...tracks].sort((a, b) => (a.year ?? 0) - (b.year ?? 0) || a.album.localeCompare(b.album) || a.title.localeCompare(b.title))
-      result.push({ artist, tracks: sorted, thumbnailTrackId: bestTrack.trackId, rating: bestRating, ...makeGroupAggregates(sorted, getRating, getLoved) })
+      result.push({ artist, tracks: sorted, thumbnailTrackId: bestTrack.trackId, rating: bestRating, ...makeGroupAggregates(sorted, getRating, getLoved, artist) })
     }
     result.sort((a, b) => a.artist.localeCompare(b.artist))
 
