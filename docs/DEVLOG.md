@@ -2707,3 +2707,32 @@ header, and a setting for how many recent plays the auto queue cools down.
   `autoQueuePlan`, `queueManagerFill` (incl. a new "a plain tier change resets
   the window" pin), `queueContinuation`, `playbackManagerRestore`,
   `playbackManagerAdvance`, `autoQueueFiltersPersistence`, `recentWindow`.
+
+## 2026-11-01b — Secondary random is the tie-break
+
+`random` was primary-only: `normalizeSort` collapsed any stack that contained it.
+That rule is right for the PRIMARY — a random order has no ties left for a second
+tier to break — but it was being applied to the secondary too, where the same
+value means something different and useful: "shuffle THIS level". Sorting by year
+with a random secondary leaves the years in order and scrambles the songs that
+share a year, which is what a tie-break is for.
+
+- `SORT_TIER_KEYS` offers `random` again; `decodeTiers` collapses only when random
+  is at index 0, so a persisted `[year, random]` restores as itself.
+- `sortWithTiers` builds ONE seeded rank map when any tier is random and reads it
+  at that tier's position — the primary case is the same code path, just first.
+- `setTier` grew the slot distinction: primary random still collapses and
+  remembers `restore`; secondary random keeps the primary and assigns a seed when
+  there was none. A new primary KEEPS a random tie-break (replacing the key above
+  the scramble does not unmake it); a real secondary pick replaces it.
+- `planRandomToggle`'s memory is `randomlessRestore`, so `restore` can never hold
+  a random tier: turning shuffle off must not answer an unreachable stack.
+- `reRollRandom` re-samples a random tier in EITHER slot. `isRandomSort` — and so
+  `shuffleEnabled` and `classifySortChange` — still keys on the primary only,
+  because a secondary scramble is not shuffle.
+
+Tests: `tests/sortCore.test.ts` (primary-alone vs secondary-tie-break rules, the
+group-local scramble with its determinism and re-roll, the restore memory, and
+the editor's per-slot behaviour) plus `tests/e2e/secondaryrandom.spec.ts` (the
+chip exists in the Secondary row, the summary reads "Year ↑ · Random", a random
+primary hides that row, and the tie-break survives a relaunch).

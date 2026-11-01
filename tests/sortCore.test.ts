@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   SORT_MAX_TIERS,
+  SORT_TIER_KEYS,
   classifySortChange,
   clearSort,
   defaultDirection,
@@ -21,9 +22,10 @@ import {
 
 // The two-tier sort core (2026-11-01). Every rule that used to be duplicated
 // across five comparators and three decoders lives here, so this file is the
-// single pin for: the legacy migration, the tier rules (random is primary-only
-// and alone), the comparator contract (tiers in order, ties), the seeded random
-// order, and the shuffle-as-sort toggle that must survive relaunch.
+// single pin for: the legacy migration, the tier rules (random stands alone as a
+// PRIMARY and is the seeded TIE-BREAK as a secondary), the comparator contract
+// (tiers in order, ties), the seeded random order, and the shuffle-as-sort
+// toggle that must survive relaunch.
 
 const tiers = (s: SortState) => s.tiers.map((t) => `${t.key}${t.asc ? '+' : '-'}`)
 
@@ -46,14 +48,53 @@ test('normalizeSort keeps at most two tiers, drops duplicates and unknown keys',
   assert.deepEqual(tiers(normalizeSort({ tiers: [{ key: 'tempo', asc: true }] })), [], 'unknown key dropped')
 })
 
-test('random is legal ONLY as the sole, first tier', () => {
-  const s = normalizeSort({
-    tiers: [{ key: 'rating', asc: false }, { key: 'random', asc: true }],
-  })
-  assert.deepEqual(tiers(s), ['random+'], 'a random tier collapses the stack (nothing breaks its ties)')
-
+test('random as the PRIMARY stands alone; as the SECONDARY it is the tie-break', () => {
+  // A random primary IS the whole order, so anything below it is dropped.
   const first = normalizeSort({ tiers: [{ key: 'random', asc: false }, { key: 'year', asc: true }] })
   assert.deepEqual(tiers(first), ['random+'], 'random is one tier, direction irrelevant')
+
+  // A random SECONDARY is legal and keeps the primary: it scrambles that level.
+  const secondary = normalizeSort({
+    tiers: [{ key: 'year', asc: true }, { key: 'random', asc: true }],
+  })
+  assert.deepEqual(tiers(secondary), ['year+', 'random+'], 'random breaks the primary ties')
+  assert.equal(isRandomSort(secondary), false, 'a secondary scramble is NOT shuffle')
+
+  // Random first in RAW input still collapses even with a tier after it, and a
+  // duplicate random can never produce two random tiers.
+  assert.deepEqual(tiers(normalizeSort({ tiers: [{ key: 'random' }, { key: 'random' }] })), ['random+'])
+
+  // The editor offers random in the secondary slot.
+  assert.ok(SORT_TIER_KEYS.includes('random'), 'random is a legal secondary key')
+})
+
+test('a secondary random scrambles ONLY the groups the primary ties on', () => {
+  const rows = [
+    { id: 'a', year: 2020 },
+    { id: 'b', year: 2021 },
+    { id: 'c', year: 2020 },
+    { id: 'd', year: 2020 },
+    { id: 'e', year: 2019 },
+  ]
+  const order = (seed: number) =>
+    sortWithTiers(rows, {
+      sort: { tiers: [{ key: 'year', asc: true }, { key: 'random', asc: true }], randomSeed: seed },
+      cmp: (key, a, b) => (key === 'year' ? a.year - b.year : 0),
+      idOf: (r) => r.id,
+    }).map((r) => r.id)
+
+  assert.deepEqual(
+    order(101).map((id) => rows.find((r) => r.id === id)!.year),
+    [2019, 2020, 2020, 2020, 2021],
+    'the primary order wins: the scramble never crosses a group boundary',
+  )
+  assert.deepEqual(order(101), order(101), 'the same seed is the same order')
+
+  // The tied 2020 group is genuinely resampled by a different seed.
+  const tied = (seed: number) => order(seed).filter((id) => id === 'a' || id === 'c' || id === 'd').join('')
+  const permutations = new Set()
+  for (let seed = 1; seed <= 20; seed++) permutations.add(tied(seed))
+  assert.ok(permutations.size > 1, 'a secondary random actually permutes the ties')
 })
 
 test('normalizeSort is total: junk degrades to no sort, never throws', () => {
@@ -126,6 +167,40 @@ test('planRandomToggle: on captures once, off restores, and it survives a persis
   // A seedless random state gets a real seed when it is turned on.
   const fromLegacyRandom = planRandomToggle({ sortBy: 'random' }, true)
   assert.equal(fromLegacyRandom.randomSeed, 0, 'already random: unchanged (the legacy row keeps its order)')
+
+  // A stack with a random TIE-BREAK remembers only its real tiers, so turning
+  // shuffle off can never answer an unreachable (random-secondary) stack.
+  const withScramble = setTier(sortOf('year', true), 1, 'random')
+  assert.deepEqual(tiers(withScramble), ['year+', 'random+'])
+  const shuffleOn = planRandomToggle(withScramble, true)
+  assert.deepEqual(tiers(shuffleOn), ['random+'])
+  assert.deepEqual(tiers({ tiers: shuffleOn.restore ?? [], randomSeed: 0 }), ['year+'], 'the memory never carries a random tier')
+  assert.deepEqual(tiers(planRandomToggle(shuffleOn, false)), ['year+'])
+})
+
+test('setTier: a SECONDARY random is the tie-break and survives a primary change', () => {
+  let s = sortOf('year', true)
+  s = setTier(s, 1, 'random')
+  assert.deepEqual(tiers(s), ['year+', 'random+'])
+  assert.ok(s.randomSeed > 0, 'a seed is assigned when the scramble starts')
+  const seed = s.randomSeed
+
+  // Re-tapping random in the secondary slot is a no-op (no direction to flip).
+  assert.deepEqual(tiers(setTier(s, 1, 'random')), ['year+', 'random+'])
+  assert.equal(setTier(s, 1, 'random').randomSeed, seed, 'the scramble does not re-roll itself')
+
+  // A new PRIMARY keeps the scramble the user chose.
+  assert.deepEqual(tiers(setTier(s, 0, 'rating')), ['rating-', 'random+'])
+
+  // A real secondary REPLACES it — an explicit pick wins over the scramble.
+  assert.deepEqual(tiers(setTier(s, 1, 'added')), ['year+', 'added-'])
+
+  // Clearing the secondary leaves the primary alone.
+  assert.deepEqual(tiers(setTier(s, 1, null)), ['year+'])
+
+  // Moving a real secondary up over a random primary: random cannot stay below.
+  const random = setTier(sortOf(), 0, 'random')
+  assert.deepEqual(tiers(setTier(random, 1, 'year')), ['year+'])
 })
 
 test('reRollRandom only re-rolls a random order', () => {
@@ -136,6 +211,12 @@ test('reRollRandom only re-rolls a random order', () => {
 
   const plain = sortOf('rating', false)
   assert.deepEqual(reRollRandom(plain, 7), plain, 'a non-random sort has no seed to re-roll')
+
+  // A SECONDARY scramble re-rolls too — that is "new shuffle of the ties".
+  const secondary = setTier(sortOf('year', true), 1, 'random')
+  assert.equal(reRollRandom(secondary, 4242).randomSeed, 4242)
+  assert.deepEqual(tiers(reRollRandom(secondary, 4242)), ['year+', 'random+'])
+  assert.equal(isRandomSort(reRollRandom(secondary, 4242)), false)
 })
 
 test('sortSignature ignores the seed; classifySortChange tells the three cases apart', () => {
@@ -162,6 +243,7 @@ test('describeSort is the one label source', () => {
   assert.equal(describeSort(sortOf('rating', false)), 'Rating ↓')
   assert.equal(describeSort(sortOf('rating', false, 'added', true)), 'Rating ↓ · Added ↑')
   assert.equal(describeSort(setTier(sortOf(), 0, 'random')), 'Random')
+  assert.equal(describeSort(sortOf('year', true, 'random')), 'Year ↑ · Random', 'a secondary scramble is named')
 })
 
 test('sortWithTiers orders by the primary tier, then the secondary', () => {

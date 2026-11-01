@@ -35,6 +35,7 @@
   const primary = $derived(state.tiers[0])
   const secondary = $derived(state.tiers[1])
   const random = $derived(isRandomSort(state))
+  const hasRandom = $derived(state.tiers.some((t) => t.key === 'random'))
 
   function chipClass(active: boolean): string {
     return (
@@ -104,18 +105,22 @@
               onclick={() => onchange(setTier(state, 1, key))}
             >
               {sortLabels[key]}
-              {#if secondary?.key === key}
+              {#if secondary?.key === key && key !== 'random'}
                 <span class="text-accent">{secondary.asc ? '↑' : '↓'}</span>
               {/if}
             </button>
           {/if}
         {/each}
       </div>
-      <p class="mt-1.5 text-[11px] text-muted/60">Tied songs are ordered by the secondary key.</p>
+      {#if secondary}
+        <p class="mt-1.5 text-[11px] text-muted/60">
+          {secondary.key === 'random' ? 'Tied songs are shuffled.' : 'Tied songs are ordered by the secondary key.'}
+        </p>
+      {/if}
     </div>
   {/if}
 
-  {#if random}
+  {#if hasRandom}
     <div class="flex flex-wrap items-center gap-3">
       <button
         type="button"
@@ -123,7 +128,9 @@
         onclick={() => onchange(reRollRandom(state))}
         data-testid="reroll-random"
       >New random order</button>
-      <span class="text-[11px] text-muted/60">Random has no direction and no secondary key.</span>
+      <span class="text-[11px] text-muted/60">
+        {random ? 'Random has no direction and no secondary key.' : 'A new shuffle of the tied songs.'}
+      </span>
     </div>
   {/if}
 

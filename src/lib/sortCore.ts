@@ -10,9 +10,12 @@
  *
  * Model:
  *  - a sort is a STACK of 0..2 tiers (`SORT_MAX_TIERS`), primary first;
- *  - `random` is a sort VALUE, not a separate mode. It is legal only as the
- *    primary (and therefore only) tier — a random order has nothing for a
- *    secondary key to break ties on;
+ *  - `random` is a sort VALUE, not a separate mode, and it means the same
+ *    thing in either slot: "this level is a shuffle". As the PRIMARY it is the
+ *    whole order, so it stands ALONE (a secondary could never break a random
+ *    order's ties). As the SECONDARY it is the tie-break — every group the
+ *    primary ties on is scrambled by the same seeded hash, which is how "same
+ *    year → shuffle that level" works;
  *  - a random order is SEEDED (`randomSeed`). Library lists re-derive on every
  *    store write, so an unseeded shuffle would reshuffle mid-scroll; the rank
  *    is a per-id hash, so it also survives relaunch and does not scramble the
@@ -30,7 +33,7 @@ export interface SortTier {
 }
 
 export interface SortState {
-  /** Normalized: 0, 1 or 2 tiers, no duplicate keys, `random` alone-first. */
+  /** Normalized: 0, 1 or 2 tiers, no duplicate keys, `random` alone when first. */
   tiers: SortTier[]
   /** Seed for the `random` tier's hash order. 0 = not yet chosen. */
   randomSeed: number
@@ -60,8 +63,15 @@ export const SORT_MAX_TIERS = 2
 /** Every key the sort editor offers, in display order. */
 export const SORT_KEYS: readonly SortKey[] = ['rating', 'loved', 'year', 'length', 'added', 'random']
 
-/** Keys a SECONDARY tier may use — random is primary-only by construction. */
-export const SORT_TIER_KEYS: readonly SortKey[] = ['rating', 'loved', 'year', 'length', 'added']
+/**
+ * Keys a SECONDARY tier may use. Random belongs here: as a secondary it is the
+ * seeded TIE-BREAK (each group the primary ties on is scrambled) — a real
+ * order, unlike a random primary, which leaves no ties to break. It is derived
+ * from `SORT_KEYS` on purpose: every key is legal in both rows, and keeping one
+ * list means a new key cannot appear in one editor and be missing from the
+ * other (an EMPTY difference is the invariant, not an oversight).
+ */
+export const SORT_TIER_KEYS: readonly SortKey[] = SORT_KEYS
 
 export const sortLabels: Record<SortKey, string> = {
   rating: 'Rating',
@@ -113,10 +123,12 @@ function decodeTiers(raw: unknown): SortTier[] {
       key,
       asc: typeof row.asc === 'boolean' ? row.asc : defaultDirection(key),
     })
-    if (key === 'random' || out.length >= SORT_MAX_TIERS) break
+    if (out.length >= SORT_MAX_TIERS) break
   }
-  // Random is legal ONLY as the sole, first tier: nothing breaks its ties.
-  if (out.some((t) => t.key === 'random')) return [{ key: 'random', asc: true }]
+  // A random PRIMARY is the whole order, so it stands alone — a secondary could
+  // never break a random order's ties. A random SECONDARY is legal and is the
+  // seeded tie-break for the primary.
+  if (out[0]?.key === 'random') return [{ key: 'random', asc: true }]
   return out
 }
 
@@ -189,9 +201,12 @@ export type SortSlot = 0 | 1
  *  - `key === null` removes that tier. Clearing random falls back to the
  *    remembered `restore` stack (the "shuffle off returns to what it was"
  *    contract); clearing a plain tier shifts the secondary up.
- *  - picking `random` collapses the stack to random alone and remembers the
- *    previous tiers in `restore`;
- *  - picking the key already at that slot FLIPS its direction;
+ *  - picking `random` as the PRIMARY collapses the stack to random alone and
+ *    remembers the previous tiers in `restore`; picking it as the SECONDARY
+ *    keeps the primary and makes random its tie-break (a seed is assigned if
+ *    it had none, and a random tie-break SURVIVES a new primary pick);
+ *  - picking the key already at that slot FLIPS its direction (random has none
+ *    to flip);
  *  - picking a key that lives in the other slot MOVES it here.
  */
 export function setTier(sort: SortInput, slot: SortSlot, key: SortKey | null): SortState {
@@ -204,33 +219,62 @@ export function setTier(sort: SortInput, slot: SortSlot, key: SortKey | null): S
     return { ...s, tiers }
   }
 
-  if (key === 'random') {
+  // Tapping the chip AT this slot flips its direction. `at` clamps to the last
+  // EXISTING tier, so picking at slot 1 on a one-tier stack still addresses the
+  // key already there (a duplicate can never be created). Random has no
+  // direction, so re-tapping it is a no-op.
+  const at = Math.min(slot, Math.max(0, tiers.length - 1))
+  if (tiers[at]?.key === key) {
+    if (key === 'random') return s
+    return { ...s, tiers: tiers.map((t, i) => (i === at ? { ...t, asc: !t.asc } : t)) }
+  }
+
+  // PRIMARY random IS shuffle: the whole order, so it collapses the stack
+  // (nothing can break its ties) and remembers what it replaced.
+  if (key === 'random' && slot === 0) {
     if (isRandomSort(s)) return s
     return {
       tiers: [{ key: 'random', asc: true }],
       randomSeed: s.randomSeed || newSeed(),
-      restore: tiers.length > 0 ? tiers : (s.restore ?? []).map((t) => ({ ...t })),
+      restore: randomlessRestore(tiers, s.restore),
     }
   }
 
-  // Random -> a real key is an explicit pick: it wins over the memory.
-  const existing = tiers.findIndex((t) => t.key === key)
-  // Tapping the chip AT this slot flips it. `at` clamps to the last EXISTING
-  // tier, so picking at slot 1 on a one-tier stack still addresses the key
-  // already there (a duplicate can never be created).
-  const at = Math.min(slot, Math.max(0, tiers.length - 1))
-  if (existing >= 0 && existing === at) {
-    tiers[existing] = { ...tiers[existing], asc: !tiers[existing].asc }
-    return { ...s, tiers }
+  // SECONDARY random is the tie-break: the primary keeps the order and every
+  // group it ties on is scrambled by the seeded hash.
+  if (key === 'random') {
+    const primary = tiers[0]
+    if (!primary) {
+      return { tiers: [{ key: 'random', asc: true }], randomSeed: s.randomSeed || newSeed(), ...restoreOf(s) }
+    }
+    return { tiers: [primary, { key: 'random', asc: true }], randomSeed: s.randomSeed || newSeed(), ...restoreOf(s) }
   }
-  // Placing a real key always drops a random tier: random is primary-only and
-  // can never sit under another key.
-  const without = tiers.filter((t) => t.key !== key && t.key !== 'random')
+
+  // A real key is an explicit pick, so it wins over a random PRIMARY.
   const placed: SortTier = { key, asc: defaultDirection(key) }
-  // INSERTION clamps to the array LENGTH: a second pick appends at slot 1
-  // instead of overwriting the primary.
-  without.splice(Math.min(slot, without.length), 0, placed)
-  return { ...s, tiers: without.slice(0, SORT_MAX_TIERS) }
+  const primary = tiers[0]
+
+  if (slot === 0) {
+    if (primary?.key === key) return { ...s, tiers: tiers.map((t, i) => (i === 0 ? placed : t)) }
+    // MOVE the secondary up (a random secondary included: random can never sit
+    // above another key).
+    if (tiers[1]?.key === key) return { ...s, tiers: [placed, { ...tiers[0] }] }
+    // A new primary KEEPS a random tie-break — the user picked that scramble
+    // deliberately, and replacing the key above it does not unmake it.
+    const keepRandom = tiers[1]?.key === 'random'
+    return { ...s, tiers: keepRandom ? [placed, { key: 'random', asc: true }] : [placed] }
+  }
+
+  // Slot 1. Random primary + a real key = replace random (an explicit pick
+  // beats shuffle); otherwise the pick becomes the secondary.
+  if (!primary || primary.key === 'random') return { ...s, tiers: [placed] }
+  // MOVE the primary DOWN into the slot you picked: the picked key takes slot 1
+  // and the old secondary shifts up (the documented swap — never a duplicate).
+  if (primary.key === key) {
+    const other = tiers[1]
+    return { ...s, tiers: other ? [{ ...other }, placed] : [placed] }
+  }
+  return { ...s, tiers: [primary, placed] }
 }
 
 /** Clears both tiers (the "Clear sort" action). */
@@ -251,10 +295,12 @@ export function planRandomToggle(sort: SortInput, on: boolean): SortState {
   const random = isRandomSort(s)
   if (on) {
     if (random) return s
+    // The memory is the REAL stack: a restore carrying a random secondary would
+    // be a stack the toggle cannot produce, so random never enters it.
     return {
       tiers: [{ key: 'random', asc: true }],
       randomSeed: s.randomSeed || newSeed(),
-      restore: s.tiers.length > 0 ? s.tiers.map((t) => ({ ...t })) : (s.restore ?? []).map((t) => ({ ...t })),
+      restore: randomlessRestore(s.tiers, s.restore),
     }
   }
   if (!random) return s
@@ -265,11 +311,32 @@ export function planRandomToggle(sort: SortInput, on: boolean): SortState {
   }
 }
 
-/** A NEW random order (the "New random order" action). No-op off random. */
+/**
+ * A NEW random order (the "New random order" action). Applies to a random tier
+ * in EITHER slot — re-sampling a secondary scramble is a real order change too
+ * — and is a no-op when no tier is random.
+ */
 export function reRollRandom(sort: SortInput, seed: number = newSeed()): SortState {
   const s = normalizeSort(sort)
-  if (!isRandomSort(s)) return s
+  if (!s.tiers.some((t) => t.key === 'random')) return s
   return { ...s, randomSeed: seed }
+}
+
+/**
+ * The stack remembered as "what random replaced": the current tiers minus any
+ * random one, or the previous memory when there is nothing to remember. A
+ * `restore` containing random would be unreachable — turning shuffle off
+ * cannot produce a random secondary — so random never enters the memory.
+ */
+function randomlessRestore(tiers: readonly SortTier[], previous?: readonly SortTier[]): SortTier[] {
+  const fromTiers = tiers.filter((t) => t.key !== 'random').map((t) => ({ ...t }))
+  if (fromTiers.length > 0) return fromTiers
+  return (previous ?? []).filter((t) => t.key !== 'random').map((t) => ({ ...t }))
+}
+
+/** Carries an existing `restore` memory through an edit that does not own it. */
+function restoreOf(s: SortState): { restore?: SortTier[] } {
+  return s.restore ? { restore: s.restore.map((t) => ({ ...t })) } : {}
 }
 
 export type SortChangeKind = 'none' | 'random' | 'rule'
@@ -379,16 +446,18 @@ export function sortWithTiers<T>(rows: readonly T[], opts: TierSortOptions<T>): 
   const sort = normalizeSort(opts.sort)
   if (sort.tiers.length === 0) return [...rows]
   const decorated = rows.map((row, index) => ({ row, index }))
-  const rank = isRandomSort(sort) ? randomRank(sort.randomSeed, rows.map(opts.idOf)) : null
+  // One seeded rank map serves a random tier in EITHER slot: as the primary it
+  // IS the order, as the secondary it breaks the primary's ties (the same rank,
+  // read only once the tiers above it compare equal).
+  const rank = sort.tiers.some((t) => t.key === 'random') ? randomRank(sort.randomSeed, rows.map(opts.idOf)) : null
   const last = sort.tiers[sort.tiers.length - 1]
   const mirror = (opts.tie ?? 'natural') === 'mirror'
   decorated.sort((a, b) => {
-    if (rank) {
-      const d = (rank.get(opts.idOf(a.row)) ?? 0) - (rank.get(opts.idOf(b.row)) ?? 0)
-      return d !== 0 ? d : a.index - b.index
-    }
     for (const tier of sort.tiers) {
-      const c = opts.cmp(tier.key, a.row, b.row)
+      const c =
+        tier.key === 'random'
+          ? (rank?.get(opts.idOf(a.row)) ?? 0) - (rank?.get(opts.idOf(b.row)) ?? 0)
+          : opts.cmp(tier.key, a.row, b.row)
       if (c !== 0) return tier.asc ? c : -c
     }
     if (!mirror) return a.index - b.index
