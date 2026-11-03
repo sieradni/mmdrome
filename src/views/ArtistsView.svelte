@@ -83,7 +83,7 @@
     return result
   })
 
-  let visibleGroups = $derived(applyFilterSort(artistGroups, $libraryFilters, getRating))
+  let visibleGroups = $derived(applyFilterSort(artistGroups, $libraryFilters, getRating, getLoved))
 
   // Virtual grid window (2026-09-28; identical to AlbumsView — see the
   // gridWindow.ts docs): a CELL exists iff its index is inside `gridWin`,

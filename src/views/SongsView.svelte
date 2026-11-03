@@ -2,7 +2,8 @@
   import { onMount, tick } from 'svelte'
   import { library, metadataCache, currentTrack, navidromeConnection, navidromeLoadStatus } from '../stores/appState'
   import { restoreViewState } from '../lib/viewState'
-  import { libraryFilters, trackMatchesGenre } from '../lib/libraryFilters'
+  import { libraryFilters } from '../lib/libraryFilters'
+  import { matchesFilterRuleSet } from '../lib/filterCore'
   import { sortWithTiers, trackSortCmp } from '../lib/sortCore'
   import { parseSearchQuery, rankTrackMatch } from '../lib/searchCore'
   import {
@@ -59,21 +60,13 @@
       scored.sort((a, b) => b.rank - a.rank)
       list = scored.map((s) => s.t)
     }
-    list = list.filter((t) => {
-      const r = getRating(t.trackId)
-      return r >= f.minRating && r <= f.maxRating
-    })
-    if (f.lovedOnly) list = list.filter((t) => getLoved(t.trackId))
-    if (f.genre) list = list.filter((t) => trackMatchesGenre(t, f.genre))
-    const fromY = f.fromYear !== null && f.fromYear !== undefined && f.fromYear !== '' ? Number(f.fromYear) : null
-    const toY = f.toYear !== null && f.toYear !== undefined && f.toYear !== '' ? Number(f.toYear) : null
-    const minL = f.minLength !== null && f.minLength !== undefined && f.minLength !== '' ? Number(f.minLength) : null
-    const maxL = f.maxLength !== null && f.maxLength !== undefined && f.maxLength !== '' ? Number(f.maxLength) : null
-
-    if (fromY !== null) list = list.filter((t) => (t.year ?? 0) >= fromY)
-    if (toY !== null) list = list.filter((t) => (t.year ?? 9999) <= toY)
-    if (minL !== null) list = list.filter((t) => t.duration >= minL)
-    if (maxL !== null) list = list.filter((t) => t.duration <= maxL)
+    // The SHARED rule-set predicate (filterCore): rating range, loved switch
+    // and every elemental AND clause. The same function decides the queue
+    // fill and album/artist groups, so a filter can never mean two things.
+    list = list.filter((t) => matchesFilterRuleSet(t, f, {
+      ratingOf: getRating,
+      lovedOf: getLoved,
+    }))
     // The shared two-tier comparator (sortCore) — the ONE sort implementation
     // this list and the auto-queue rank map both use. Random is a SEEDED order
     // (per-id hash), so a store write never reshuffles the list underneath the

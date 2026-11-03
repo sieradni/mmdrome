@@ -87,12 +87,19 @@ test('a filter edit REBUILDS the tail in the new order and never disturbs the au
   await page.waitForTimeout(1200)
   await openQueue(page)
 
-  // Narrow first: years 2015..2020 (six of the twelve songs).
+  // Narrow first: years 2015..2020 (six of the twelve songs). Since
+  // 2026-11-03 the year bound is a typed CLAUSE reached through Add filter
+  // (the Year button here is the sort chip), not a pair of legacy inputs.
   await page.getByRole('button', { name: 'Auto queue filters' }).click()
-  await page.getByRole('dialog', { name: 'Auto queue filters' }).waitFor({ state: 'visible' })
+  const filterDialog = page.getByRole('dialog', { name: 'Auto queue filters' })
+  await filterDialog.waitFor({ state: 'visible' })
   await page.getByRole('button', { name: 'Year', exact: true }).click()
-  await page.getByPlaceholder('From', { exact: true }).fill('2015')
-  await page.getByPlaceholder('To', { exact: true }).fill('2020')
+  await filterDialog.getByTestId('add-filter').click()
+  await page.getByRole('dialog', { name: 'Add filter' }).locator('[data-add-filter="year"]').click()
+  const yearMin = filterDialog.getByLabel('Year minimum')
+  const yearMax = filterDialog.getByLabel('Year maximum')
+  await yearMin.fill('2015')
+  await yearMax.fill('2020')
   await page.waitForTimeout(800)
 
   const narrow = await autoIds(page)
@@ -102,7 +109,7 @@ test('a filter edit REBUILDS the tail in the new order and never disturbs the au
   // Now WIDEN the lower bound. The old patch kept 2015..2020 at the head and
   // appended 2011..2014, leaving the tail out of order; a fresh context
   // re-derives the whole order.
-  await page.getByPlaceholder('From', { exact: true }).fill('2010')
+  await yearMin.fill('2010')
   await page.waitForTimeout(900)
 
   const widened = await autoIds(page)

@@ -11,12 +11,10 @@
     autoQueueFilterFields,
     autoQueueSort,
     autoQueueEnabled,
-    ratingBound,
     queueWrapNotice,
     autoQueueEmptyNotice,
     autoQueueScope,
     type Track,
-    type AutoQueueFilterFields,
   } from '../stores/appState'
   import { bufferedRanges, preloadEntries } from '../stores/loadStatus'
   import { planDragDrop } from '../lib/queueMutation'
@@ -27,11 +25,12 @@
     sectionOccurrences,
   } from '../lib/queueOccurrence'
   import { currentLoadedFraction } from '../lib/loadStatus'
-  import { filterRangesValid } from '../lib/autoQueuePlan'
+  import { addedBoundsOf, type FilterRuleSet } from '../lib/filterCore'
   import { onMount, onDestroy, tick } from 'svelte'
   import { derived } from 'svelte/store'
-  import AppSlider from '../components/AppSlider.svelte'
   import ClearableSearch from '../components/ClearableSearch.svelte'
+  import FilterRulesEditor from '../components/FilterRulesEditor.svelte'
+  import ModalShell from '../components/ModalShell.svelte'
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
   import { distinctGenres } from '../lib/libraryFilters'
@@ -52,6 +51,7 @@
   let filterOpen = $state(false)
   let detailsTrack: Track | null = $state(null)
   let genres = $derived(distinctGenres($library))
+  let addedBounds = $derived(addedBoundsOf($library))
 
   // Whether the active row sits in the user section (the clear-above/below
   // buttons only apply there — B2's position anchor is a user-queue concept).
@@ -72,12 +72,17 @@
   // single source of truth. The store layer persists changes, and the
   // playbackManager reaction replenishes the auto queue (trailing-debounced).
   // No local mirrors, no debounce here (C1).
-  function setFilter<K extends keyof AutoQueueFilterFields>(field: K, value: AutoQueueFilterFields[K]): void {
-    autoQueueFilterFields.update((f) => ({ ...f, [field]: value }))
+  //
+  // Since 2026-11-03 the rule set (rating + loved + elemental clauses) is the
+  // SHARED `FilterRulesEditor`; only the auto-only search query is written
+  // here. `applyRules` spreads the returned rule set over the store so the
+  // query (and any future auto-only field) survives every filter edit.
+  function setSearchQuery(value: string): void {
+    autoQueueFilterFields.update((f) => ({ ...f, searchQuery: value }))
   }
 
-  function numFilterField(v: string): number | '' {
-    return v === '' ? '' : Number(v)
+  function applyRules(next: FilterRuleSet): void {
+    autoQueueFilterFields.update((f) => ({ ...f, ...next }))
   }
 
   /** The auto queue's sort IS the shared two-tier stack (2026-11-01), and
@@ -1119,104 +1124,39 @@
 <!-- Auto-queue filter popup: a centered modal (TrackDetailsModal idiom) —
      closes via Esc, backdrop, X, or Done; never demands a precise click. -->
 {#if filterOpen}
-  <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-  <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-    onclick={() => filterOpen = false}
-    role="presentation"
-  >
-    <div
-      class="max-h-[80vh] w-full max-w-md overflow-y-auto rounded-xl border border-white/10 bg-surface shadow-2xl"
-      onclick={(e) => e.stopPropagation()}
-      role="dialog"
-      aria-label="Auto queue filters"
-      tabindex="-1"
-    >
-      <div class="flex items-center justify-between border-b border-white/10 px-5 py-3">
-        <span class="text-base font-bold text-primary">Auto queue filters</span>
-        <button onclick={() => filterOpen = false} class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Close filters">
-          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
-        </button>
-      </div>
-      <div class="space-y-4 px-5 py-4">
-        <!-- Auto-queue SORT (2026-09-29, restyled same day after user
-             feedback): the fill follows its own sort now; edited here like
-             the library sort menu. A bordered card so the section reads as
-             its own control, not one more filter blob; re-tapping the
-             active key flips direction (the library menu's contract — the
-             separate Reverse-direction button was clutter and is gone).
-             ALWAYS rendered since 2026-10-24 (user decision — the old
-             `{#if !$shuffleEnabled}` gate made a persisted setting look
-             missing); shuffle only changes how the pool is sampled, never
-             what this editor shows. -->
-        <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5" data-testid="auto-sort-card">
-          <span class="text-sm font-medium text-muted">Sort order</span>
-          <div class="mt-2">
-            <SortStackEditor state={$autoQueueSort} onchange={setAutoSort} />
-          </div>
-        </div>
-        <div>
-          <span class="text-sm font-medium text-muted">Search Query</span>
-          <div class="mt-1">
-            <ClearableSearch
-              value={$autoQueueFilterFields.searchQuery ?? ''}
-              placeholder="Fuzzy search title, artist, album..."
-              onInput={(v) => setFilter('searchQuery', v)}
-              class="rounded bg-surface-hover px-2 py-1 pr-8 text-sm text-primary ring-1 ring-white/10 placeholder-muted outline-none focus:ring-accent-ring"
-            />
-          </div>
-        </div>
-
-        <div>
-          <span class="text-sm font-medium text-muted">Rating range</span>
-          <div class="mt-1 flex items-center gap-2">
-            <AppSlider value={$autoQueueFilterFields.minRating} min={0} max={100} step={10} label="Minimum rating" onInput={(v) => setFilter('minRating', v)} class="w-20 shrink" />
-            <input data-testid="min-rating" type="number" min="0" max="100" value={$autoQueueFilterFields.minRating} oninput={(e) => setFilter('minRating', ratingBound((e.target as HTMLInputElement).value, 0))} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
-            <span class="text-sm text-muted">–</span>
-            <input data-testid="max-rating" type="number" min="0" max="100" value={$autoQueueFilterFields.maxRating} oninput={(e) => setFilter('maxRating', ratingBound((e.target as HTMLInputElement).value, 100))} class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10" />
-            <AppSlider value={$autoQueueFilterFields.maxRating} min={0} max={100} step={10} label="Maximum rating" onInput={(v) => setFilter('maxRating', v)} class="w-20 shrink" />
-          </div>
-        </div>
-        <label class="flex cursor-pointer items-center gap-2 text-sm text-muted">
-          <input type="checkbox" checked={$autoQueueFilterFields.lovedOnly} onchange={(e) => setFilter('lovedOnly', (e.target as HTMLInputElement).checked)} />
-          Loved tracks only
-        </label>
-        {#if genres.length > 0}
-          <div>
-            <span class="text-sm font-medium text-muted">Genre</span>
-            <select value={$autoQueueFilterFields.genre ?? ''} onchange={(e) => setFilter('genre', (e.target as HTMLSelectElement).value)} class="mt-1 block w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 outline-none">
-              <option value="">All genres</option>
-              {#each genres as g}
-                <option value={g}>{g}</option>
-              {/each}
-            </select>
-          </div>
-        {/if}
-        <div>
-          <span class="text-sm font-medium text-muted">Year</span>
-          <div class="mt-1 flex items-center gap-2">
-            <input type="number" placeholder="From" value={$autoQueueFilterFields.fromYear} oninput={(e) => setFilter('fromYear', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
-            <span class="text-sm text-muted">to</span>
-            <input type="number" placeholder="To" value={$autoQueueFilterFields.toYear} oninput={(e) => setFilter('toYear', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
-          </div>
-        </div>
-        <div>
-          <span class="text-sm font-medium text-muted">Length (seconds)</span>
-          <div class="mt-1 flex items-center gap-2">
-            <input type="number" placeholder="Min" value={$autoQueueFilterFields.minLength} oninput={(e) => setFilter('minLength', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
-            <span class="text-sm text-muted">to</span>
-            <input type="number" placeholder="Max" value={$autoQueueFilterFields.maxLength} oninput={(e) => setFilter('maxLength', numFilterField((e.target as HTMLInputElement).value))} class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted" />
-          </div>
-        </div>
-        {#if !filterRangesValid($autoQueueFilterFields)}
-          <p class="text-[11px] text-yellow-500/80">Ranges are inverted — no track can match both bounds</p>
-        {/if}
-      </div>
+  <ModalShell ariaLabel="Auto queue filters" onclose={() => (filterOpen = false)}>
+    <div class="flex shrink-0 items-center justify-between border-b border-white/10 px-5 py-3">
+      <span class="text-base font-bold text-primary">Auto queue filters</span>
+      <button onclick={() => (filterOpen = false)} class="rounded-full p-1.5 text-muted transition-colors hover:text-primary" aria-label="Close filters">
+        <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+      </button>
     </div>
-  </div>
+    <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+      <!-- The auto queue's OWN sort. Shuffle IS this stack's Random key, so
+           the editor stays honest under shuffle (it shows Random live). -->
+      <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5" data-testid="auto-sort-card">
+        <span class="text-sm font-medium text-muted">Sort order</span>
+        <div class="mt-2">
+          <SortStackEditor state={$autoQueueSort} onchange={setAutoSort} />
+        </div>
+      </div>
+      <div>
+        <span class="text-sm font-medium text-muted">Search Query</span>
+        <div class="mt-1">
+          <ClearableSearch
+            value={$autoQueueFilterFields.searchQuery ?? ''}
+            placeholder="Search title, artist, album…"
+            onInput={setSearchQuery}
+            class="rounded bg-surface-hover px-2 py-1 pr-8 text-sm text-primary ring-1 ring-white/10 placeholder-muted outline-none focus:ring-accent-ring"
+          />
+        </div>
+      </div>
+      <!-- The SAME rule-set builder the library Filters dialog uses: rating
+           range + Loved always visible, every other field via Add filter. -->
+      <FilterRulesEditor rules={$autoQueueFilterFields} onchange={applyRules} {genres} {addedBounds} />
+    </div>
+  </ModalShell>
 {/if}
-
-<svelte:window onkeydown={(e) => { if (e.key === 'Escape' && filterOpen) filterOpen = false }} />
 
 <!-- Floating Drag Proxy (Ghost) -->
 {#if isDragging && draggedTrack}

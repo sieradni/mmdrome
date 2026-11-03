@@ -15,7 +15,6 @@ import {
   resolveHandOrder,
   planAutoQueueFill,
   planRepeatPass,
-  filterRangesValid,
   autoQueueSettingsDiffer,
   planApplyLibraryToAutoQueue,
   type AutoQueuePlanState,
@@ -23,6 +22,13 @@ import {
 import type { AutoQueueFilters, AutoQueueFilterFields, Track } from '../src/stores/appState'
 import type { LibraryFilterState, LibrarySortKey } from '../src/lib/libraryFilters'
 import type { LocalMetadataStore } from '../src/lib/db'
+import {
+  emptyFilterRuleSet,
+  type RangeFilterClause,
+  type RangeFilterField,
+  type TextFilterClause,
+  type TextFilterField,
+} from '../src/lib/filterCore'
 
 const track = (id: string, over: Partial<Track> = {}): Track => ({
   trackId: id,
@@ -40,12 +46,17 @@ const filters = (over: Record<string, unknown> = {}): AutoQueueFilters => ({
   minRating: 0,
   maxRating: 100,
   lovedOnly: false,
-  fromYear: '',
-  toYear: '',
-  minLength: '',
-  maxLength: '',
+  clauses: [],
   ...over,
 }) as AutoQueueFilters
+
+function textClause(field: TextFilterField, query: string): TextFilterClause {
+  return { id: `c-${field}`, kind: 'text', field, query }
+}
+
+function rangeClause(field: RangeFilterField, min: number | null, max: number | null): RangeFilterClause {
+  return { id: `c-${field}`, kind: 'range', field, min, max }
+}
 
 const metaOf = (rows: [string, number, boolean?][]): Map<string, LocalMetadataStore> =>
   new Map(rows.map(([trackId, rating, loved = false]) => [trackId, {
@@ -74,20 +85,23 @@ test('lovedOnly requires the cached loved flag', () => {
 
 test('year bounds: out-of-range fails; a track without a year is excluded by EITHER bound', () => {
   const meta = metaOf([])
-  assert.equal(matchesAutoQueueFilters(track('t1', { year: 2000 }), filters({ fromYear: '1990', toYear: '2010' }), meta), true)
-  assert.equal(matchesAutoQueueFilters(track('t1', { year: 1980 }), filters({ fromYear: '1990' }), meta), false)
-  assert.equal(matchesAutoQueueFilters(track('t1', { year: 2020 }), filters({ toYear: '2010' }), meta), false)
-  // `year ?? 0` / `year ?? 9999`: a missing year fails BOTH a fromYear and a toYear filter.
-  assert.equal(matchesAutoQueueFilters(track('t1'), filters({ fromYear: '1990' }), meta), false)
-  assert.equal(matchesAutoQueueFilters(track('t1'), filters({ toYear: '2010' }), meta), false)
-  assert.equal(matchesAutoQueueFilters(track('t1'), filters({ fromYear: '1990', toYear: '2010' }), meta), false)
+  const both = filters({ clauses: [rangeClause('year', 1990, 2010)] })
+  assert.equal(matchesAutoQueueFilters(track('t1', { year: 2000 }), both, meta), true)
+  assert.equal(matchesAutoQueueFilters(track('t1', { year: 1980 }), filters({ clauses: [rangeClause('year', 1990, null)] }), meta), false)
+  assert.equal(matchesAutoQueueFilters(track('t1', { year: 2020 }), filters({ clauses: [rangeClause('year', null, 2010)] }), meta), false)
+  // A missing year fails BOTH a lower and an upper bound — an unknown year
+  // cannot honestly satisfy a year range.
+  assert.equal(matchesAutoQueueFilters(track('t1'), filters({ clauses: [rangeClause('year', 1990, null)] }), meta), false)
+  assert.equal(matchesAutoQueueFilters(track('t1'), filters({ clauses: [rangeClause('year', null, 2010)] }), meta), false)
+  assert.equal(matchesAutoQueueFilters(track('t1'), both, meta), false)
 })
 
-test('length bounds: out-of-range fails; empty bounds pass', () => {
+test('length bounds: out-of-range fails; fully open bounds pass', () => {
   const meta = metaOf([])
-  assert.equal(matchesAutoQueueFilters(track('t1', { duration: 200 }), filters({ minLength: '100', maxLength: '300' }), meta), true)
-  assert.equal(matchesAutoQueueFilters(track('t1', { duration: 50 }), filters({ minLength: '100' }), meta), false)
-  assert.equal(matchesAutoQueueFilters(track('t1', { duration: 400 }), filters({ maxLength: '300' }), meta), false)
+  assert.equal(matchesAutoQueueFilters(track('t1', { duration: 200 }), filters({ clauses: [rangeClause('length', 100, 300)] }), meta), true)
+  assert.equal(matchesAutoQueueFilters(track('t1', { duration: 50 }), filters({ clauses: [rangeClause('length', 100, null)] }), meta), false)
+  assert.equal(matchesAutoQueueFilters(track('t1', { duration: 400 }), filters({ clauses: [rangeClause('length', null, 300)] }), meta), false)
+  assert.equal(matchesAutoQueueFilters(track('t1', { duration: 400 }), filters({ clauses: [rangeClause('length', null, null)] }), meta), true, 'an open clause is a no-op')
 })
 
 test('album/artist scopes match exactly; absent scope passes', () => {
@@ -100,10 +114,12 @@ test('album/artist scopes match exactly; absent scope passes', () => {
   assert.equal(matchesAutoQueueFilters(t, filters(), meta), true)
 })
 
-test('genre uses the shared token matcher', () => {
+test('a genre clause is fuzzy and scoped to the genre field', () => {
   const meta = metaOf([])
-  assert.equal(matchesAutoQueueFilters(track('t1', { genre: 'Alt Rock / Indie' }), filters({ genre: 'Alt Rock' }), meta), true)
-  assert.equal(matchesAutoQueueFilters(track('t1', { genre: 'Jazz' }), filters({ genre: 'Rock' }), meta), false)
+  assert.equal(matchesAutoQueueFilters(track('t1', { genre: 'Alt Rock / Indie' }), filters({ clauses: [textClause('genre', 'alt roc')] }), meta), true)
+  assert.equal(matchesAutoQueueFilters(track('t1', { genre: 'Jazz' }), filters({ clauses: [textClause('genre', 'rock')] }), meta), false)
+  assert.equal(matchesAutoQueueFilters(track('t1', { title: 'Rock', genre: 'Jazz' }), filters({ clauses: [textClause('genre', 'rock')] }), meta), false, 'a title hit cannot satisfy a genre filter')
+  assert.equal(matchesAutoQueueFilters(track('t1', { genre: 'Jazz' }), filters({ clauses: [textClause('genre', '"jass"')] }), meta), false, 'quoted = exact')
 })
 
 test('searchQuery matches title/artist/album/composer substrings, case- and trim-insensitive', () => {
@@ -135,24 +151,6 @@ test('searchQuery folds punctuation and diacritics; all-symbol tokens pass every
   assert.equal(matchesAutoQueueFilters(track('t3', { artist: 'AC/DC' }), filters({ searchQuery: 'ac dc' }), meta), true)
   assert.equal(matchesAutoQueueFilters(track('t4', { title: 'バビロン' }), filters({ searchQuery: 'バビロン' }), meta), true, 'CJK voicing preserved')
   assert.equal(matchesAutoQueueFilters(track('t5', { title: 'Anything' }), filters({ searchQuery: '!!!' }), meta), true, 'all-symbol tokens are dropped (never a vacuous includes(""))')
-})
-
-// ── filterRangesValid ──────────────────────────────────────────────────
-
-test('filterRangesValid: inverted ranges are invalid; one-sided bounds are fine', () => {
-  // `Record<string, unknown>` widens the string-numeral overrides (same
-  // reason as the filters() helper above).
-  const range = (over: Record<string, unknown> = {}): Pick<AutoQueueFilterFields, 'minRating' | 'maxRating' | 'fromYear' | 'toYear' | 'minLength' | 'maxLength'> => ({
-    minRating: 0, maxRating: 100, fromYear: '', toYear: '', minLength: '', maxLength: '', ...over,
-  }) as Pick<AutoQueueFilterFields, 'minRating' | 'maxRating' | 'fromYear' | 'toYear' | 'minLength' | 'maxLength'>
-  assert.equal(filterRangesValid(range()), true, 'defaults are valid')
-  assert.equal(filterRangesValid(range({ minRating: 90, maxRating: 10 })), false, 'minRating > maxRating')
-  assert.equal(filterRangesValid(range({ fromYear: '2000', toYear: '1990' })), false, 'fromYear > toYear')
-  assert.equal(filterRangesValid(range({ fromYear: '1990', toYear: '2000' })), true)
-  assert.equal(filterRangesValid(range({ minLength: '300', maxLength: '100' })), false, 'minLength > maxLength')
-  assert.equal(filterRangesValid(range({ minLength: '100', maxLength: '300' })), true)
-  assert.equal(filterRangesValid(range({ fromYear: '1990' })), true, 'one-sided bound is fine')
-  assert.equal(filterRangesValid(range({ maxRating: 50 })), true)
 })
 
 // ── buildOrderRank ─────────────────────────────────────────────────────
@@ -360,15 +358,13 @@ test('rebuild (keepAuto false) admits the old auto tracks as ordinary pool membe
 
 const libFilters = (over: Partial<LibraryFilterState> = {}): LibraryFilterState => ({
   filterOpen: false, sortOpen: false,
-  minRating: 0, maxRating: 100, lovedOnly: false, genre: '',
-  fromYear: '', toYear: '', minLength: '', maxLength: '',
+  ...emptyFilterRuleSet(),
   sort: sortOf(null, true),
   ...over,
 })
 
 const autoFields = (over: Partial<AutoQueueFilterFields> = {}): AutoQueueFilterFields => ({
-  minRating: 0, maxRating: 100, lovedOnly: false,
-  fromYear: '', toYear: '', minLength: '', maxLength: '',
+  ...emptyFilterRuleSet(),
   ...over,
 })
 
@@ -381,9 +377,9 @@ test('differ: identical settings → false; any shared field drift → true', ()
   assert.equal(autoQueueSettingsDiffer(libFilters({ minRating: 40 }), f, s), true)
   assert.equal(autoQueueSettingsDiffer(libFilters({ maxRating: 60 }), f, s), true)
   assert.equal(autoQueueSettingsDiffer(libFilters({ lovedOnly: true }), f, s), true)
-  assert.equal(autoQueueSettingsDiffer(libFilters({ genre: 'Rock' }), f, s), true)
-  assert.equal(autoQueueSettingsDiffer(libFilters({ fromYear: 1990 }), f, s), true)
-  assert.equal(autoQueueSettingsDiffer(libFilters({ minLength: 90 }), f, s), true)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ clauses: [textClause('genre', 'Rock')] }), f, s), true)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ clauses: [rangeClause('year', 1990, null)] }), f, s), true)
+  assert.equal(autoQueueSettingsDiffer(libFilters({ clauses: [rangeClause('length', 90, null)] }), f, s), true)
   assert.equal(autoQueueSettingsDiffer(libFilters({ sort: sortOf('year', true) }), f, s), true)
   // Direction with NO active key is meaningless — not a difference.
   assert.equal(autoQueueSettingsDiffer(libFilters({ sort: sortOf() }), f, s), false, 'sortAsc ignored without a key')
@@ -399,11 +395,14 @@ test('differ: UI flags, searchQuery and scope are never compared', () => {
 })
 
 test('apply plan: copies only the store that differs; searchQuery preserved', () => {
-  const f = autoFields({ searchQuery: 'beatles', minLength: 60 })
+  const f = autoFields({ searchQuery: 'beatles', clauses: [rangeClause('length', 60, null)] })
   const s = autoSortOf(null)
-  const plan = planApplyLibraryToAutoQueue(libFilters({ minLength: 120 }), f, s)
+  const plan = planApplyLibraryToAutoQueue(libFilters({ clauses: [rangeClause('length', 120, null)] }), f, s)
   assert.ok(plan.filters, 'filter drift → filters planned')
-  assert.equal(plan.filters?.minLength, 120, 'the library value wins')
+  const length = plan.filters?.clauses.find((c) => c.field === 'length')
+  assert.ok(length?.kind === 'range')
+  assert.equal(length.min, 120, 'the library value wins')
+  assert.equal(length.max, null, 'an open side stays open')
   assert.equal('searchQuery' in (plan.filters ?? {}), false, 'searchQuery is NOT part of the plan shape')
   assert.equal(plan.sort, undefined, 'no sort drift → no sort write')
 
@@ -424,14 +423,10 @@ test('apply plan: direction-only drift under an active key plans a sort write', 
   assert.deepEqual(plan.sort, sortOf('rating', false))
 })
 
-test('apply plan: empty and null bounds compare equal through the bound fold', () => {
-  // The auto fields may hold null from older persisted rows; the library side
-  // holds '' for empty. Both mean "no bound" and must not trip the button.
-  assert.equal(
-    autoQueueSettingsDiffer(libFilters(), autoFields({ fromYear: null as never, maxLength: null as never }), autoSortOf(null)),
-    false,
-    'null bounds == empty bounds',
-  )
+test('apply plan: clause IDs and clause ORDER are not part of the comparison', () => {
+  const a = autoFields({ clauses: [{ id: 'one', kind: 'range', field: 'year', min: 1990, max: null }] })
+  const b = libFilters({ clauses: [{ id: 'two', kind: 'range', field: 'year', min: 1990, max: null }] })
+  assert.equal(autoQueueSettingsDiffer(b, a, autoSortOf(null)), false, 'the same filter under another id is the same filter')
 })
 
 // ── the ordered continuation (2026-10-24) ──────────────────────────────

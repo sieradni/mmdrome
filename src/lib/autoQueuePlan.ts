@@ -1,5 +1,11 @@
-import { trackMatchesGenre, type LibraryFilterState } from './libraryFilters'
+import type { LibraryFilterState } from './libraryFilters'
 import { parseSearchQuery, trackMatchesQuery } from './searchCore'
+import {
+  cloneFilterRuleSet,
+  filterRuleSetsEqual,
+  matchesFilterRuleSet,
+  type FilterRuleSet,
+} from './filterCore'
 import {
   isRandomSort,
   normalizeSort,
@@ -80,14 +86,6 @@ export interface AutoQueueFillPlan {
   tiers: { 1: string[]; 2: string[]; 3: string[] }
 }
 
-/** A shared-semantics bound arrives as `number | ''` on BOTH models; coerce
- *  both sides through the same `'' ⇔ null` fold so `0` is preserved but empty
- *  and null compare equal (the auto fields may hold null from older rows). */
-function boundVal(v: number | '' | null | undefined): number | '' {
-  if (v === '' || v === null || v === undefined) return ''
-  return Number(v)
-}
-
 /**
  * Compare a `LibraryFilterState` with the auto-queue's filter/sort settings
  * over the shared-semantics fields. Returns true when an apply would change
@@ -116,7 +114,7 @@ export function autoQueueSettingsDiffer(
  * differs. Both absent = nothing to do (the button is hidden in that case).
  */
 export interface ApplyLibraryPlan {
-  filters?: Omit<AutoQueueFilterFields, 'searchQuery'>
+  filters?: FilterRuleSet
   sort?: AutoQueueSort
 }
 
@@ -133,26 +131,8 @@ export function planApplyLibraryToAutoQueue(
   autoSort: AutoQueueSort,
 ): ApplyLibraryPlan {
   const plan: ApplyLibraryPlan = {}
-  const filtersDiffer =
-    lib.minRating !== autoFilters.minRating ||
-    lib.maxRating !== autoFilters.maxRating ||
-    lib.lovedOnly !== autoFilters.lovedOnly ||
-    (lib.genre ?? '') !== (autoFilters.genre ?? '') ||
-    boundVal(lib.fromYear) !== boundVal(autoFilters.fromYear) ||
-    boundVal(lib.toYear) !== boundVal(autoFilters.toYear) ||
-    boundVal(lib.minLength) !== boundVal(autoFilters.minLength) ||
-    boundVal(lib.maxLength) !== boundVal(autoFilters.maxLength)
-  if (filtersDiffer) {
-    plan.filters = {
-      minRating: lib.minRating,
-      maxRating: lib.maxRating,
-      lovedOnly: lib.lovedOnly,
-      genre: lib.genre,
-      fromYear: lib.fromYear,
-      toYear: lib.toYear,
-      minLength: lib.minLength,
-      maxLength: lib.maxLength,
-    }
+  if (!filterRuleSetsEqual(lib, autoFilters)) {
+    plan.filters = cloneFilterRuleSet(lib)
   }
   if (sortSignature(lib.sort) !== sortSignature(autoSort)) {
     plan.sort = normalizeSort(lib.sort)
@@ -162,37 +142,26 @@ export function planApplyLibraryToAutoQueue(
 
 /**
  * The queue filter predicate: does this track belong in the auto queue under
- * `filters`? Rating/recency come from the metadata cache (unrated = 0); year
- * and length bounds reject tracks with missing values (unknown year fails
- * BOTH fromYear and toYear via the ?? 0 / ?? 9999 fallbacks); album/artist
- * scopes match exactly; genre is a shared token match; the search filter is
- * the keyword-token core (`searchCore`) — every whitespace/quoted token must
- * substring-hit one of title/artist/album/composer/albumArtist.
+ * `filters`? The rating range, loved switch and every elemental clause are the
+ * SHARED `filterCore` predicate (so a genre/artist/year filter means exactly
+ * the same thing in the queue as in the library); album/artist scopes match
+ * exactly; the search filter is the keyword-token core (`searchCore`) — every
+ * whitespace/quoted token must substring-hit one of
+ * title/artist/album/composer/albumArtist.
  */
 export function matchesAutoQueueFilters(
   track: Track,
   filters: AutoQueueFilters,
   meta: Map<string, LocalMetadataStore>,
 ): boolean {
-  const m = meta.get(track.trackId)
-  const r = m?.rating ?? 0
-  if (r < filters.minRating || r > filters.maxRating) return false
-  if (filters.lovedOnly && !m?.loved) return false
-
-  const fromYear = filters.fromYear !== null && filters.fromYear !== undefined && filters.fromYear !== '' ? Number(filters.fromYear) : null
-  const toYear = filters.toYear !== null && filters.toYear !== undefined && filters.toYear !== '' ? Number(filters.toYear) : null
-  const minLength = filters.minLength !== null && filters.minLength !== undefined && filters.minLength !== '' ? Number(filters.minLength) : null
-  const maxLength = filters.maxLength !== null && filters.maxLength !== undefined && filters.maxLength !== '' ? Number(filters.maxLength) : null
-
-  if (fromYear !== null && (track.year ?? 0) < fromYear) return false
-  if (toYear !== null && (track.year ?? 9999) > toYear) return false
-  if (minLength !== null && track.duration < minLength) return false
-  if (maxLength !== null && track.duration > maxLength) return false
+  const ctx = {
+    ratingOf: (id: string) => meta.get(id)?.rating ?? 0,
+    lovedOf: (id: string) => meta.get(id)?.loved ?? false,
+  }
+  if (!matchesFilterRuleSet(track, filters, ctx)) return false
 
   if (filters.albumScope && track.album !== filters.albumScope) return false
   if (filters.artistScope && track.artist !== filters.artistScope) return false
-
-  if (filters.genre && !trackMatchesGenre(track, filters.genre)) return false
 
   if (filters.searchQuery) {
     const tokens = parseSearchQuery(filters.searchQuery)
@@ -260,19 +229,6 @@ export function rotateAfterAnchor<T extends { trackId: string }>(
     return { pool: [...pool.slice(splitAt), ...pool.slice(0, splitAt)], wrapNotice: false }
   }
   return { pool, wrapNotice: splitAt < 0 && pool.length > 0 }
-}
-
-/**
- * Input validation for the filter panel: inverted ranges can never match a
- * track (min > max fails every candidate), so surface them instead of letting
- * the auto queue silently go empty. One-sided bounds are fine; only a
- * min-over-max pair is invalid.
- */
-export function filterRangesValid(f: Pick<AutoQueueFilterFields, 'minRating' | 'maxRating' | 'fromYear' | 'toYear' | 'minLength' | 'maxLength'>): boolean {
-  if (f.minRating > f.maxRating) return false
-  if (f.fromYear !== '' && f.toYear !== '' && Number(f.fromYear) > Number(f.toYear)) return false
-  if (f.minLength !== '' && f.maxLength !== '' && Number(f.minLength) > Number(f.maxLength)) return false
-  return true
 }
 
 /**

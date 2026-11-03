@@ -16,7 +16,7 @@ import { setCachedConfig } from '../src/lib/navidromeApi'
 
 Object.getPrototypeOf(db.playQueue).put = (async () => undefined) as never
 const track = (trackId: string): Track => ({ trackId, title: trackId, artist: 'A', album: 'B', duration: 180, fileType: 'mp3' })
-const filters = { minRating: 0, maxRating: 100, lovedOnly: false, fromYear: '' as const, toYear: '' as const, minLength: '' as const, maxLength: '' as const, searchQuery: '' }
+const filters = { minRating: 0, maxRating: 100, lovedOnly: false, clauses: [], searchQuery: '' }
 function reset(ids: string[]): void {
   library.set(ids.map(track))
   metadataCache.set(new Map())

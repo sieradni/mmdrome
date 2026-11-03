@@ -1,19 +1,21 @@
 <script lang="ts">
   import { libraryFilters, distinctGenres } from '../lib/libraryFilters'
   import { describeSort, type SortState } from '../lib/sortCore'
+  import { addedBoundsOf, filterRuleSetActive, type FilterRuleSet } from '../lib/filterCore'
   import SortStackEditor from './SortStackEditor.svelte'
   import { library } from '../stores/appState'
   import { autoQueueFilterFields, autoQueueSort } from '../stores/appState'
   import { autoQueueSettingsDiffer, planApplyLibraryToAutoQueue } from '../lib/autoQueuePlan'
   import { tooltip } from '../lib/tooltip'
-  import AppSlider from './AppSlider.svelte'
   import ModalShell from './ModalShell.svelte'
   import SavedViewsPanel from './SavedViewsPanel.svelte'
   import SavedViewsStrip from './SavedViewsStrip.svelte'
+  import FilterRulesEditor from './FilterRulesEditor.svelte'
 
   let { onopen }: { onopen?: () => void } = $props()
 
   let genres = $derived(distinctGenres($library))
+  let addedBounds = $derived(addedBoundsOf($library))
 
   function toggleFilter() {
     libraryFilters.update((f) => ({ ...f, filterOpen: !f.filterOpen, sortOpen: false }))
@@ -33,6 +35,12 @@
     libraryFilters.update((f) => ({ ...f, sortOpen: false }))
   }
 
+  // The shared rule-set editor writes rating / loved / clauses; spreading the
+  // result keeps the sort and the dialog flags on this store.
+  function setRules(next: FilterRuleSet) {
+    libraryFilters.update((f) => ({ ...f, ...next }))
+  }
+
   // The stack editor (2026-11-01) writes the WHOLE sort state: picking a key
   // applies it and KEEPS the menu open (flip through directions and compare
   // the list without re-opening). Closing stays on X / backdrop / Esc /
@@ -42,42 +50,10 @@
     onopen?.()
   }
 
-  function clearFilters() {
-    libraryFilters.update((f) => ({
-      ...f,
-      minRating: 0,
-      maxRating: 100,
-      lovedOnly: false,
-      genre: '',
-      fromYear: '',
-      toYear: '',
-      minLength: '',
-      maxLength: '',
-    }))
-  }
-
-  // Whether any filter is non-default — drives the Filter pill's active dot so
-  // a set-but-closed filter is never invisible.
-  const filterActive = $derived(
-    $libraryFilters.minRating > 0
-      || $libraryFilters.maxRating < 100
-      || $libraryFilters.lovedOnly
-      || $libraryFilters.genre !== ''
-      || $libraryFilters.fromYear !== ''
-      || $libraryFilters.toYear !== ''
-      || $libraryFilters.minLength !== ''
-      || $libraryFilters.maxLength !== '',
-  )
-
-  // Mouse-free close: Escape closes whichever popup is open. Window-level so
-  // it works no matter where focus sits (inputs, selects, nowhere).
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key !== 'Escape') return
-    if (applyOpen) return // the confirm modal owns Escape while open
-    if ($libraryFilters.filterOpen || $libraryFilters.sortOpen) {
-      libraryFilters.update((f) => ({ ...f, filterOpen: false, sortOpen: false }))
-    }
-  }
+  // Whether any filter narrows anything — drives the Filter pill's active dot
+  // so a set-but-closed filter is never invisible. One predicate (filterCore)
+  // shared by both surfaces.
+  const filterActive = $derived(filterRuleSetActive($libraryFilters))
 
   // ── Apply-to-auto-queue (2026-09-29) ─────────────────────────────────
   // The auto queue carries its OWN filter/sort settings; the library sort no
@@ -107,8 +83,6 @@
   }
 </script>
 
-<svelte:window onkeydown={onKeydown} />
-
 {#if $libraryFilters.filterOpen}
   <ModalShell ariaLabel="Library filters" onclose={closeFilter}>
     <div class="flex shrink-0 items-center justify-between border-b border-white/10 px-5 py-3">
@@ -122,121 +96,12 @@
       </button>
     </div>
     <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
-      <div>
-        <span class="text-sm font-medium text-muted">Rating range</span>
-        <div class="mt-1 flex items-center gap-2">
-          <AppSlider
-            value={$libraryFilters.minRating}
-            min={0}
-            max={100}
-            step={10}
-            label="Minimum rating"
-            onInput={(v) => libraryFilters.update((f) => ({ ...f, minRating: v }))}
-            class="w-24 shrink"
-          />
-          <input
-            type="number"
-            min="0"
-            max="100"
-            value={$libraryFilters.minRating}
-            oninput={(e) => libraryFilters.update((f) => ({ ...f, minRating: Number((e.target as HTMLInputElement).value) }))}
-            class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10"
-          />
-          <span class="text-sm text-muted">–</span>
-          <input
-            type="number"
-            min="0"
-            max="100"
-            value={$libraryFilters.maxRating}
-            oninput={(e) => libraryFilters.update((f) => ({ ...f, maxRating: Number((e.target as HTMLInputElement).value) }))}
-            class="w-14 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10"
-          />
-          <AppSlider
-            value={$libraryFilters.maxRating}
-            min={0}
-            max={100}
-            step={10}
-            label="Maximum rating"
-            onInput={(v) => libraryFilters.update((f) => ({ ...f, maxRating: v }))}
-            class="w-24 shrink"
-          />
-        </div>
-      </div>
-
-      <label class="flex cursor-pointer items-center gap-2 text-sm text-muted">
-        <input
-          type="checkbox"
-          checked={$libraryFilters.lovedOnly}
-          onchange={(e) => libraryFilters.update((f) => ({ ...f, lovedOnly: (e.target as HTMLInputElement).checked }))}
-
-        />
-        Loved tracks only
-      </label>
-
-      {#if genres.length > 0}
-        <div>
-          <span class="text-sm font-medium text-muted">Genre</span>
-          <select
-            value={$libraryFilters.genre}
-            onchange={(e) => libraryFilters.update((f) => ({ ...f, genre: (e.target as HTMLSelectElement).value }))}
-            class="mt-1 block w-full rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 outline-none"
-          >
-            <option value="">All genres</option>
-            {#each genres as g}
-              <option value={g}>{g}</option>
-            {/each}
-          </select>
-        </div>
-      {/if}
-
-      <div>
-        <span class="text-sm font-medium text-muted">Year</span>
-        <div class="mt-1 flex items-center gap-2">
-          <input
-            type="number"
-            placeholder="From"
-            value={$libraryFilters.fromYear === '' ? '' : $libraryFilters.fromYear}
-            oninput={(e) => libraryFilters.update((f) => ({ ...f, fromYear: (e.target as HTMLInputElement).value === '' ? '' : Number((e.target as HTMLInputElement).value) }))}
-            class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted"
-          />
-          <span class="text-sm text-muted">to</span>
-          <input
-            type="number"
-            placeholder="To"
-            value={$libraryFilters.toYear === '' ? '' : $libraryFilters.toYear}
-            oninput={(e) => libraryFilters.update((f) => ({ ...f, toYear: (e.target as HTMLInputElement).value === '' ? '' : Number((e.target as HTMLInputElement).value) }))}
-            class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted"
-          />
-        </div>
-      </div>
-
-      <div>
-        <span class="text-sm font-medium text-muted">Length (seconds)</span>
-        <div class="mt-1 flex items-center gap-2">
-          <input
-            type="number"
-            placeholder="Min"
-            value={$libraryFilters.minLength === '' ? '' : $libraryFilters.minLength}
-            oninput={(e) => libraryFilters.update((f) => ({ ...f, minLength: (e.target as HTMLInputElement).value === '' ? '' : Number((e.target as HTMLInputElement).value) }))}
-            class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted"
-          />
-          <span class="text-sm text-muted">to</span>
-          <input
-            type="number"
-            placeholder="Max"
-            value={$libraryFilters.maxLength === '' ? '' : $libraryFilters.maxLength}
-            oninput={(e) => libraryFilters.update((f) => ({ ...f, maxLength: (e.target as HTMLInputElement).value === '' ? '' : Number((e.target as HTMLInputElement).value) }))}
-            class="w-24 rounded bg-surface-hover px-2 py-1 text-sm text-primary ring-1 ring-white/10 placeholder-muted"
-          />
-        </div>
-      </div>
-
-      {#if filterActive}
-        <button onclick={clearFilters} class="w-full rounded px-2 py-1.5 text-sm text-muted transition-colors hover:text-primary">
-          Clear all filters
-        </button>
-      {/if}
-
+      <FilterRulesEditor
+        rules={$libraryFilters}
+        onchange={setRules}
+        {genres}
+        {addedBounds}
+      />
       <SavedViewsPanel />
     </div>
   </ModalShell>

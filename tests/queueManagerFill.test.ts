@@ -52,7 +52,7 @@ Object.getPrototypeOf(db.playQueue).put = (async function (this: { name: string 
 }) as never
 
 const FIELDS: AutoQueueFilterFields = {
-  minRating: 0, maxRating: 100, lovedOnly: false, fromYear: '', toYear: '', minLength: '', maxLength: '',
+  minRating: 0, maxRating: 100, lovedOnly: false, clauses: [],
 }
 
 function setQueue(q: Partial<QueueState>): void {
@@ -75,8 +75,8 @@ function reset(): void {
   autoQueueScope.set({})
   autoQueueEnabled.set(true)
   libraryFilters.set({
-    filterOpen: false, sortOpen: false, minRating: 0, maxRating: 100, lovedOnly: false,
-    genre: '', fromYear: '', toYear: '', minLength: '', maxLength: '', sort: sortOf(null, true),
+    filterOpen: false, sortOpen: false, minRating: 0, maxRating: 100, lovedOnly: false, clauses: [],
+    sort: sortOf(null, true),
   })
   queueWrapNotice.set(false)
   autoQueueEmptyNotice.set(false)
@@ -609,9 +609,9 @@ test('a filter and sort applied mid-play keep holding as playback advances', () 
   reset()
   library.set(AQ_LIB())
   setQueue({ userQueue: ['aq1'], activeIndex: 0 })
-  // The maxLength filter excludes the long aq2 for the whole session; Added ↓
+  // The length clause excludes the long aq2 for the whole session; Added ↓
   // decides the order. A rule change is a fresh context (D7).
-  autoQueueFilterFields.set({ ...FIELDS, maxLength: 300 })
+  autoQueueFilterFields.set({ ...FIELDS, clauses: [{ id: 'c-length', kind: 'range', field: 'length', min: null, max: 300 }] })
   autoQueueSort.set(sortOf('added', false))
   queueManager.rebuildForFreshContext()
   assert.deepEqual(get(queue).autoQueue, repeatTo(['aq4', 'aq3', 'aq5', 'aq6']), 'Added ↓ after aq1, aq2 filtered out')

@@ -1,10 +1,11 @@
 // Pins the autoQueueFilters store split: the persisted row holds ONLY the
 import { sortOf } from '../src/lib/sortCore'
-// filter fields (legacy JSON-string migration included), session scopes live
-// in their own writable and can never leak into Dexie, and the combined store
-// still carries both for queueManager/playbackManager. `initStores` is
+// filter fields (legacy JSON-string/scalar migration included), session scopes
+// live in their own writable and can never leak into Dexie, and the combined
+// store still carries both for queueManager/playbackManager. `initStores` is
 // once-per-process, so the restore-dependent assertions run in the first test
-// and the store-direct assertions after it.
+// and the store-direct assertions after it. Since 2026-11-03 the fields are the
+// shared filter RULE SET (rating + loved + elemental clauses).
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -18,7 +19,6 @@ import {
   autoQueueFilters,
   decodeAutoQueueFilters,
   decodeAutoQueueSort,
-  ratingBound,
 } from '../src/stores/appState'
 
 const rows = new Map<string, unknown>()
@@ -37,7 +37,7 @@ Object.getPrototypeOf(db.userSettings).put = (async (entry: { key: string; value
 }) as never
 Object.getPrototypeOf(db.localMetadata).toArray = (async () => []) as never
 
-test('legacy JSON-string row migrates into the fields store on initStores', async () => {
+test('a legacy JSON-string row migrates into the fields store on initStores', async () => {
   rows.set(
     'autoQueueFilters',
     JSON.stringify({
@@ -57,21 +57,22 @@ test('legacy JSON-string row migrates into the fields store on initStores', asyn
   assert.equal(f.minRating, 20)
   assert.equal(f.maxRating, 80)
   assert.equal(f.lovedOnly, true)
-  assert.equal(f.genre, 'Rock')
-  assert.equal(f.fromYear, 1990, 'year strings coerce to numbers')
-  assert.equal(f.toYear, 2000)
-  assert.equal(f.minLength, '')
-  assert.equal(f.maxLength, 300)
   assert.equal(f.searchQuery, 'foo')
   assert.ok(!('albumScope' in f), 'scopes are absent from the fields type')
+  // The five legacy scalars became three typed clauses, exactly as they
+  // filtered before (an empty minLength is "no lower bound", never 0).
+  assert.deepEqual(f.clauses.map((c) => c.field), ['genre', 'year', 'length'])
+  const [genre, year, length] = f.clauses
+  assert.deepEqual(genre, { id: 'clause-genre-1', kind: 'text', field: 'genre', query: 'Rock' })
+  assert.ok(year.kind === 'range')
+  assert.deepEqual([year.min, year.max], [1990, 2000])
+  assert.ok(length.kind === 'range')
+  assert.deepEqual([length.min, length.max], [null, 300])
 })
 
-test('rating input clear snaps to the field boundary, not 0', () => {
-  assert.equal(ratingBound('', 0), 0, 'cleared minRating keeps its 0 boundary')
-  assert.equal(ratingBound('', 100), 100, 'cleared maxRating snaps to 100 instead of 0')
-  assert.equal(ratingBound('0', 100), 0, 'a typed 0 maxRating is preserved (the only-unrated filter)')
-  assert.equal(ratingBound('75', 100), 75)
-  assert.equal(ratingBound('40', 0), 40)
+test('a cleared legacy bound decodes to an OPEN side, not a zero value', () => {
+  const decoded = decodeAutoQueueFilters({ minLength: '', maxLength: '' })
+  assert.deepEqual(decoded?.clauses, [], 'both empty bounds mean no clause at all')
 })
 
 test('decodeAutoQueueFilters falls back to defaults on corrupt or wrong-typed rows', () => {
@@ -88,9 +89,21 @@ test('decodeAutoQueueFilters falls back to defaults on corrupt or wrong-typed ro
   const merged = decodeAutoQueueFilters({ minRating: 40, genre: 'Jazz' })
   assert.equal(merged?.minRating, 40)
   assert.equal(merged?.maxRating, 100, 'missing fields merge over the defaults')
-  assert.equal(merged?.genre, 'Jazz')
+  assert.deepEqual(merged?.clauses, [{ id: 'clause-genre-1', kind: 'text', field: 'genre', query: 'Jazz' }])
   const coerced = decodeAutoQueueFilters({ fromYear: '1985' })
-  assert.equal(coerced?.fromYear, 1985)
+  const year = coerced?.clauses[0]
+  assert.ok(year?.kind === 'range')
+  assert.equal(year.min, 1985)
+  assert.equal(year.max, null)
+})
+
+test('decodeAutoQueueFilters reads the CURRENT clause shape and ignores stray legacy keys', () => {
+  const decoded = decodeAutoQueueFilters({
+    minRating: 30,
+    clauses: [{ id: 'c1', kind: 'text', field: 'artist', query: 'beatl' }],
+    genre: 'ignored when clauses exist',
+  })
+  assert.deepEqual(decoded?.clauses, [{ id: 'c1', kind: 'text', field: 'artist', query: 'beatl' }])
 })
 
 test('scopes never persist: setting a scope writes no scope keys into the Dexie row', () => {

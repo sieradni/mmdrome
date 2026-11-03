@@ -90,7 +90,7 @@
     return result
   })
 
-  let visibleGroups = $derived(applyFilterSort(albumGroups, $libraryFilters, getRating))
+  let visibleGroups = $derived(applyFilterSort(albumGroups, $libraryFilters, getRating, getLoved))
 
   // Virtual grid window (2026-09-28; the SongsView model applied to the grid):
   // a CELL exists iff its index is inside `gridWin` — no growth sentinel, no

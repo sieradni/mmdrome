@@ -20,6 +20,7 @@ import { planPendingRelink } from '$lib/pendingRelink'
 import { dbgAlways, dbgDanger } from '$lib/debugLog'
 import { DEFAULT_LOVE_POLICY } from '$lib/scrobbleLove'
 import { decodeFilterPresets, type FilterPreset } from '$lib/filterPresets'
+import { decodeFilterRuleSet, emptyFilterRuleSet, type FilterRuleSet } from '$lib/filterCore'
 import type { ConnectFailure } from '$lib/authHealth'
 
 export type PlaybackState = 'playing' | 'paused' | 'stopped' | 'buffering'
@@ -227,16 +228,13 @@ export const pushState = writable<PushProgress>({ active: false, done: 0, total:
  *  restarts preserve the batch outcome, stage breakdown, and recovery groups. */
 export const lastPushReport = writable<PushRunReport | null>(null)
 
-/** Fields the user edits in the Queue filter panel — persisted via `persisted`. */
-export interface AutoQueueFilterFields {
-  minRating: number
-  maxRating: number
-  lovedOnly: boolean
-  fromYear: number | ''
-  toYear: number | ''
-  minLength: number | ''
-  maxLength: number | ''
-  genre?: string
+/**
+ * Fields the user edits in the Queue filter panel — persisted via `persisted`.
+ * The shared filter RULE SET (rating range + loved + elemental AND clauses,
+ * see `filterCore`) plus the auto-only full-text query. Album/artist scopes
+ * are session-only and live in `autoQueueScope` (never in this row).
+ */
+export interface AutoQueueFilterFields extends FilterRuleSet {
   searchQuery?: string
 }
 
@@ -296,30 +294,8 @@ export const sleepTimer = writable<SleepTimerState>({
 })
 
 const AUTO_QUEUE_FILTER_DEFAULTS: AutoQueueFilterFields = {
-  minRating: 0,
-  maxRating: 100,
-  lovedOnly: false,
-  fromYear: '',
-  toYear: '',
-  minLength: '',
-  maxLength: '',
+  ...emptyFilterRuleSet(),
   searchQuery: '',
-}
-
-function normNumber(v: unknown): number | '' {
-  if (v === 0 || v === null || v === undefined || v === '') return ''
-  const num = Number(v)
-  return isNaN(num) ? '' : num
-}
-
-/**
- * Coerces a rating filter number-input value (QueueView). A cleared field
- * (`''`) snaps to its boundary — min 0 / max 100 — instead of 0: snapping a
- * cleared maxRating to 0 would make the filter reject every rated track. A
- * typed `0` is preserved (the only-unrated filter).
- */
-export function ratingBound(v: string, fallback: number): number {
-  return v === '' ? fallback : Number(v)
 }
 
 /**
@@ -344,17 +320,11 @@ export function decodeAutoQueueFilters(raw: PersistedValue | undefined): AutoQue
   // from a corrupt row — any of those must fall back to the initial, not crash
   // (`p.minRating` on null) or spread junk keys (a string/array).
   if (p === null || typeof p !== 'object' || Array.isArray(p)) return undefined
+  // The shared decoder also migrates a pre-2026-11-03 row (scalar `genre` /
+  // `fromYear` / `toYear` / `minLength` / `maxLength`) into clauses.
+  const rules = decodeFilterRuleSet(p)
   return {
-    ...AUTO_QUEUE_FILTER_DEFAULTS,
-    ...p,
-    minRating: typeof p.minRating === 'number' ? p.minRating : AUTO_QUEUE_FILTER_DEFAULTS.minRating,
-    maxRating: typeof p.maxRating === 'number' ? p.maxRating : AUTO_QUEUE_FILTER_DEFAULTS.maxRating,
-    lovedOnly: typeof p.lovedOnly === 'boolean' ? p.lovedOnly : AUTO_QUEUE_FILTER_DEFAULTS.lovedOnly,
-    fromYear: normNumber(p.fromYear),
-    toYear: normNumber(p.toYear),
-    minLength: normNumber(p.minLength),
-    maxLength: normNumber(p.maxLength),
-    genre: typeof p.genre === 'string' ? p.genre : undefined,
+    ...rules,
     searchQuery: typeof p.searchQuery === 'string' ? p.searchQuery : undefined,
   }
 }

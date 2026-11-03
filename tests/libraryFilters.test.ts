@@ -5,28 +5,35 @@ import {
   applyFilterSort,
   distinctGenres,
   makeGroupAggregates,
-  trackMatchesGenre,
   type LibraryFilterState,
   type TrackGroupAggregates,
 } from '../src/lib/libraryFilters'
+import {
+  emptyFilterRuleSet,
+  type RangeFilterClause,
+  type RangeFilterField,
+  type TextFilterClause,
+  type TextFilterField,
+} from '../src/lib/filterCore'
 import type { Track } from '../src/stores/appState'
 
 function mkTrack(id: string, over: Partial<Track> = {}): Track {
   return { trackId: id, title: id, artist: 'A', album: 'B', duration: 0, fileType: 'mp3', ...over } as unknown as Track
 }
 
+function textClause(field: TextFilterField, query: string): TextFilterClause {
+  return { id: `c-${field}`, kind: 'text', field, query }
+}
+
+function rangeClause(field: RangeFilterField, min: number | null, max: number | null): RangeFilterClause {
+  return { id: `c-${field}`, kind: 'range', field, min, max }
+}
+
 function defaults(over: Partial<LibraryFilterState> = {}): LibraryFilterState {
   return {
     filterOpen: false,
     sortOpen: false,
-    minRating: 0,
-    maxRating: 100,
-    lovedOnly: false,
-    genre: '',
-    fromYear: '',
-    toYear: '',
-    minLength: '',
-    maxLength: '',
+    ...emptyFilterRuleSet(),
     sort: sortOf(null, true),
     ...over,
   }
@@ -75,15 +82,6 @@ test('makeGroupAggregates: latestAdded is the newest createdAt, 0 when none date
   assert.equal(makeGroupAggregates([mkTrack('a')], () => 0, () => false).latestAdded, 0)
 })
 
-test('trackMatchesGenre is case-insensitive and token-aware', () => {
-  const t = mkTrack('a', { genre: 'Alt Rock / Indie' })
-  assert.equal(trackMatchesGenre(t, 'alt rock'), true)
-  assert.equal(trackMatchesGenre(t, 'Indie'), true)
-  assert.equal(trackMatchesGenre(t, 'alt'), false)
-  assert.equal(trackMatchesGenre(t, ''), true)
-  assert.equal(trackMatchesGenre(mkTrack('b'), 'anything'), false)
-})
-
 test('distinctGenres dedupes tokens, trims, and sorts (case preserved)', () => {
   const tracks = [mkTrack('a', { genre: 'Rock; Punk' }), mkTrack('b', { genre: 'Instrumental, Jazz' }), mkTrack('c', { genre: ' Punk ' })]
   assert.deepEqual(distinctGenres(tracks), ['Instrumental', 'Jazz', 'Punk', 'Rock'])
@@ -112,26 +110,53 @@ test('applyFilterSort: lovedOnly keeps groups with at least one loved track', ()
   assert.deepEqual(result.map((g) => g.id), ['g1'])
 })
 
-test('applyFilterSort: genre filter matches any track in the group', () => {
-  const g1 = group('g1', [mkTrack('a'), mkTrack('b', { genre: 'Jazz' })])
+test('applyFilterSort: a genre clause is fuzzy and matches any track in the group', () => {
+  const g1 = group('g1', [mkTrack('a'), mkTrack('b', { genre: 'Jazz Fusion' })])
   const g2 = group('g2', [mkTrack('c', { genre: 'Rock' })])
-  const result = applyFilterSort([g1, g2], defaults({ genre: 'jazz' }), () => 0)
-  assert.deepEqual(result.map((g) => g.id), ['g1'])
+  // "jaz" is a substring; "jazzz" is one edit away from "jazz" — both are
+  // fuzzy hits, which is the point of field-scoped fuzzy genre search.
+  assert.deepEqual(applyFilterSort([g1, g2], defaults({ clauses: [textClause('genre', 'jaz')] }), () => 0).map((g) => g.id), ['g1'])
+  assert.deepEqual(applyFilterSort([g1, g2], defaults({ clauses: [textClause('genre', 'jazzz')] }), () => 0).map((g) => g.id), ['g1'])
+  assert.deepEqual(applyFilterSort([g1, g2], defaults({ clauses: [textClause('genre', 'rock')] }), () => 0).map((g) => g.id), ['g2'])
 })
 
-test('applyFilterSort: year bounds use the group min year', () => {
+test('applyFilterSort: a quoted genre is exact (a typo no longer matches)', () => {
+  const g1 = group('g1', [mkTrack('a', { genre: 'Jazz' })])
+  assert.deepEqual(applyFilterSort([g1], defaults({ clauses: [textClause('genre', '"jass"')] }), () => 0), [])
+  assert.deepEqual(applyFilterSort([g1], defaults({ clauses: [textClause('genre', '"jazz"')] }), () => 0).map((g) => g.id), ['g1'])
+})
+
+test('applyFilterSort: year bounds use the group min year; a missing year is excluded by a bound', () => {
   const g1 = group('g1', [mkTrack('a', { year: 2000 })], { year: 2000 })
   const g2 = group('g2', [mkTrack('b', { year: 2010 })], { year: 2010 })
-  assert.deepEqual(applyFilterSort([g1, g2], defaults({ fromYear: 2005 }), () => 0).map((g) => g.id), ['g2'])
-  assert.deepEqual(applyFilterSort([g1, g2], defaults({ toYear: 2005 }), () => 0).map((g) => g.id), ['g1'])
-  assert.deepEqual(applyFilterSort([g1], defaults({ fromYear: 2001 }), () => 0), [])
+  const g3 = group('g3', [mkTrack('c')], { year: null })
+  assert.deepEqual(applyFilterSort([g1, g2], defaults({ clauses: [rangeClause('year', 2005, null)] }), () => 0).map((g) => g.id), ['g2'])
+  assert.deepEqual(applyFilterSort([g1, g2], defaults({ clauses: [rangeClause('year', null, 2005)] }), () => 0).map((g) => g.id), ['g1'])
+  assert.deepEqual(applyFilterSort([g1], defaults({ clauses: [rangeClause('year', 2001, null)] }), () => 0), [])
+  assert.deepEqual(applyFilterSort([g3], defaults({ clauses: [rangeClause('year', 2000, 2010)] }), () => 0), [], 'unknown year cannot satisfy a year bound')
 })
 
 test('applyFilterSort: length bounds use the group total', () => {
   const g1 = group('g1', [mkTrack('a', { duration: 100 })], { length: 100 })
   const g2 = group('g2', [mkTrack('b', { duration: 400 })], { length: 400 })
-  assert.deepEqual(applyFilterSort([g1, g2], defaults({ minLength: 300 }), () => 0).map((g) => g.id), ['g2'])
-  assert.deepEqual(applyFilterSort([g1, g2], defaults({ maxLength: 300 }), () => 0).map((g) => g.id), ['g1'])
+  assert.deepEqual(applyFilterSort([g1, g2], defaults({ clauses: [rangeClause('length', 300, null)] }), () => 0).map((g) => g.id), ['g2'])
+  assert.deepEqual(applyFilterSort([g1, g2], defaults({ clauses: [rangeClause('length', null, 300)] }), () => 0).map((g) => g.id), ['g1'])
+})
+
+test('applyFilterSort: a date-added clause uses the group latestAdded', () => {
+  const g1 = group('g1', [mkTrack('a', { createdAt: 1000 })], { latestAdded: 1000 })
+  const g2 = group('g2', [mkTrack('b', { createdAt: 5000 })], { latestAdded: 5000 })
+  assert.deepEqual(
+    applyFilterSort([g1, g2], defaults({ clauses: [rangeClause('added', 2000, null)] }), () => 0).map((g) => g.id),
+    ['g2'],
+  )
+})
+
+test('applyFilterSort: clauses are ANDed, so every one must match', () => {
+  const g1 = group('g1', [mkTrack('a', { genre: 'Jazz', year: 1959 })], { year: 1959 })
+  const g2 = group('g2', [mkTrack('b', { genre: 'Jazz', year: 2020 })], { year: 2020 })
+  const clauses = [textClause('genre', 'jazz'), rangeClause('year', null, 1969)]
+  assert.deepEqual(applyFilterSort([g1, g2], defaults({ clauses }), () => 0).map((g) => g.id), ['g1'])
 })
 
 test('applyFilterSort sorts by rating (avg over rated tracks), loved, year, length x asc/desc', () => {
@@ -156,12 +181,10 @@ test('applyFilterSort sorts by added (latestAdded) x asc/desc', () => {
     group('new', [mkTrack('c')], { latestAdded: 5000 }),
     group('undated', [mkTrack('d')], { latestAdded: 0 }),
   ]
-  // Ascending: undated (0) first, then oldest to newest.
   assert.deepEqual(
     applyFilterSort(groups, defaults({ sort: sortOf('added', true) }), () => 0).map((g) => g.id),
     ['undated', 'old', 'mid', 'new'],
   )
-  // Descending (the picker default): newest first, undated last.
   assert.deepEqual(
     applyFilterSort(groups, defaults({ sort: sortOf('added', false) }), () => 0).map((g) => g.id),
     ['new', 'mid', 'old', 'undated'],

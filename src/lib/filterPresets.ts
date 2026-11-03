@@ -13,6 +13,12 @@
  */
 
 import type { LibraryFilterState } from './libraryFilters'
+import {
+  cloneFilterRuleSet,
+  decodeFilterRuleSet,
+  filterRuleSetsEqual,
+  type FilterRuleSet,
+} from './filterCore'
 import { normalizeSort, sortSignature, type SortState } from './sortCore'
 
 /** Longest accepted preset name (after whitespace normalization). */
@@ -21,17 +27,8 @@ export const PRESET_NAME_MAX = 40
 /** Most presets a library may hold — a chip strip, not a filing cabinet. */
 export const PRESET_MAX_COUNT = 30
 
-/** The filter fields a preset stores — never the popup open/close flags. */
-export interface PresetFilters {
-  minRating: number
-  maxRating: number
-  lovedOnly: boolean
-  genre: string
-  fromYear: number | ''
-  toYear: number | ''
-  minLength: number | ''
-  maxLength: number | ''
-}
+/** The filter RULE SET a preset stores — never the popup open/close flags. */
+export type PresetFilters = FilterRuleSet
 
 export interface FilterPreset {
   id: string
@@ -48,16 +45,7 @@ export type SavePresetResult =
 
 /** The part of the shared state a preset snapshots. */
 export function filtersFromState(state: LibraryFilterState): PresetFilters {
-  return {
-    minRating: state.minRating,
-    maxRating: state.maxRating,
-    lovedOnly: state.lovedOnly,
-    genre: state.genre,
-    fromYear: state.fromYear,
-    toYear: state.toYear,
-    minLength: state.minLength,
-    maxLength: state.maxLength,
-  }
+  return cloneFilterRuleSet(state)
 }
 
 function sanitizeName(raw: string): string {
@@ -153,45 +141,7 @@ export function applyPresetById(
  */
 export function presetIsActive(preset: FilterPreset, state: LibraryFilterState): boolean {
   if (sortSignature(state.sort) !== sortSignature(preset.sort)) return false
-  const live = filtersFromState(state)
-  const saved = preset.filters
-  return (
-    live.minRating === saved.minRating
-    && live.maxRating === saved.maxRating
-    && live.lovedOnly === saved.lovedOnly
-    && live.genre === saved.genre
-    && live.fromYear === saved.fromYear
-    && live.toYear === saved.toYear
-    && live.minLength === saved.minLength
-    && live.maxLength === saved.maxLength
-  )
-}
-
-function num(v: unknown, fallback: number): number {
-  return typeof v === 'number' && Number.isFinite(v) ? v : fallback
-}
-
-function clamp(v: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, v))
-}
-
-function numOrEmpty(v: unknown): number | '' {
-  if (v === '') return ''
-  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : ''
-}
-
-function decodeFilters(raw: unknown): PresetFilters {
-  const f = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
-  return {
-    minRating: clamp(num(f.minRating, 0), 0, 100),
-    maxRating: clamp(num(f.maxRating, 100), 0, 100),
-    lovedOnly: f.lovedOnly === true,
-    genre: typeof f.genre === 'string' ? f.genre : '',
-    fromYear: numOrEmpty(f.fromYear),
-    toYear: numOrEmpty(f.toYear),
-    minLength: numOrEmpty(f.minLength),
-    maxLength: numOrEmpty(f.maxLength),
-  }
+  return filterRuleSetsEqual(preset.filters, state)
 }
 
 /**
@@ -220,7 +170,10 @@ export function decodeFilterPresets(raw: unknown): FilterPreset[] {
     out.push({
       id,
       name,
-      filters: decodeFilters(r.filters),
+      // Legacy scalar filter fields inside a saved preset migrate to clauses
+      // through the shared decoder — a view saved before 2026-11-03 restores
+      // as the view it described, not as an empty filter.
+      filters: decodeFilterRuleSet(r.filters),
       sort: normalizeSort(r.sort ?? r),
     })
   }
