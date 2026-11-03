@@ -124,3 +124,95 @@ test('the Queue filter dialog renders the same builder and rating range', async 
   await expect(page.getByRole('dialog', { name: 'Add filter' })).toHaveCount(0)
   await expect(dialog).toBeVisible()
 })
+
+async function addYearClause(page: Page): Promise<void> {
+  const dialog = filterDialog(page)
+  await dialog.getByTestId('add-filter').click()
+  await page.getByRole('dialog', { name: 'Add filter' }).locator('[data-add-filter="year"]').click()
+}
+
+// Keyboard-only coverage for the dual-handle range (2026-11-03 review fix):
+// every edit below goes through a focused handle's keydown, never a pointer.
+// The typed bound at the end is deliberately an EXTERNAL prop change — the
+// pre-fix keyboard path parked `dragLo`/`dragHi` and kept painting the old
+// value after the store had already moved.
+test('the dual range responds to keyboard edits and follows an external reset', async ({ page }) => {
+  await bootWithMockLibrary(page)
+  await openFilters(page)
+  const dialog = filterDialog(page)
+  await addYearClause(page)
+
+  const yearMin = dialog.getByLabel('Year minimum')
+  const yearMax = dialog.getByLabel('Year maximum')
+  const minHandle = dialog.getByRole('slider', { name: 'Year filter minimum' })
+  const maxHandle = dialog.getByRole('slider', { name: 'Year filter maximum' })
+  await expect(rows(page)).toHaveCount(3)
+
+  // Arrow on the minimum: the bounded value is 2022-and-up unless raised.
+  await minHandle.focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(yearMin).toHaveValue('1901')
+  await expect(minHandle).toHaveAttribute('aria-valuenow', '1901')
+  await expect(rows(page)).toHaveCount(3)
+
+  // Arrow on the maximum handle, independently.
+  await maxHandle.focus()
+  await page.keyboard.press('ArrowLeft')
+  await expect(yearMax).toHaveValue('2099')
+  await expect(maxHandle).toHaveAttribute('aria-valuenow', '2099')
+  await expect(rows(page)).toHaveCount(3)
+
+  // End on the minimum collapses the band empty; Home re-opens it.
+  await minHandle.focus()
+  await page.keyboard.press('End')
+  await expect(yearMin).toHaveValue('2099')
+  await expect(yearMax).toHaveValue('2099')
+  await expect(rows(page)).toHaveCount(0)
+
+  await minHandle.focus()
+  await page.keyboard.press('Home')
+  await expect(yearMin).toHaveValue('')
+  await expect(yearMax).toHaveValue('2099')
+  await expect(rows(page)).toHaveCount(3)
+
+  // External reset: the typed bound must move the handle even though the last
+  // handle gesture was keyboard. Parking drag state here was the shipped bug.
+  await yearMin.fill('2022')
+  await expect(minHandle).toHaveAttribute('aria-valuenow', '2022')
+  await expect(rows(page)).toHaveCount(1)
+})
+
+// The handles may never cross. Pointer edits already clamp against the other
+// handle; keyboard nudges used to clamp only to the domain, so this exact
+// sequence stored min > max (1902/1901) and turned the filter into a silent
+// empty result.
+test('a keyboard nudge cannot cross the other range handle', async ({ page }) => {
+  await bootWithMockLibrary(page)
+  await openFilters(page)
+  const dialog = filterDialog(page)
+  await addYearClause(page)
+
+  const yearMin = dialog.getByLabel('Year minimum')
+  const yearMax = dialog.getByLabel('Year maximum')
+  const minHandle = dialog.getByRole('slider', { name: 'Year filter minimum' })
+  const maxHandle = dialog.getByRole('slider', { name: 'Year filter maximum' })
+
+  await minHandle.focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(yearMin).toHaveValue('1901')
+
+  // Park the maximum on the same year as the minimum.
+  await maxHandle.focus()
+  await page.keyboard.press('Home')
+  await expect(yearMax).toHaveValue('1901')
+  await expect(rows(page)).toHaveCount(0)
+
+  // Nudging the minimum right must clamp at the maximum, not invert the pair.
+  await minHandle.focus()
+  await page.keyboard.press('ArrowRight')
+  await expect(yearMin).toHaveValue('1901')
+  await expect(yearMax).toHaveValue('1901')
+  await expect(minHandle).toHaveAttribute('aria-valuenow', '1901')
+  await expect(maxHandle).toHaveAttribute('aria-valuenow', '1901')
+  await expect(rows(page)).toHaveCount(0)
+})

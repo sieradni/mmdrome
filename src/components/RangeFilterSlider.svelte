@@ -114,8 +114,11 @@
   function nudge(which: 0 | 1, dir: 1 | -1, multiplier = 1): void {
     if (disabled) return
     const delta = dir * step * multiplier
-    if (which === 0) onInput?.(clamp(lo + delta), hi)
-    else onInput?.(lo, clamp(hi + delta))
+    // Clamp against the OTHER handle, not just the domain: a keyboard nudge
+    // while the handles touch must be a no-op, never store min > max (the
+    // pointer paths already clamp the same way).
+    if (which === 0) onInput?.(Math.min(clamp(lo + delta), hi), hi)
+    else onInput?.(lo, Math.max(clamp(hi + delta), lo))
   }
 
   function edge(which: 0 | 1, toMax: boolean): void {
