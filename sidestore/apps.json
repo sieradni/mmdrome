@@ -27,7 +27,8 @@
           "date": "2026-11-03T22:50:00.159Z",
           "localizedDescription": "Filter by any field: genre, artist, album, title, composer, year, length or date added, with fuzzy text, quotes for exact matches, and dual range sliders.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.6.0/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5271665
         },
         {
           "version": "1.5.1",
