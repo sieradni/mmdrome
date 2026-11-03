@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.6.0",
-      "versionDate": "2026-11-03T22:50:00.159Z",
-      "versionDescription": "Filter by any field: genre, artist, album, title, composer, year, length or date added, with fuzzy text, quotes for exact matches, and dual range sliders.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.6.0/mmdrome.ipa",
+      "version": "1.6.1",
+      "versionDate": "2026-11-03T23:39:48.712Z",
+      "versionDescription": "Fix keyboard range editing: arrow/Home/End nudges now stop at the other handle instead of silently inverting the filter.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.6.1/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.6.1",
+          "buildVersion": "86",
+          "date": "2026-11-03T23:39:48.712Z",
+          "localizedDescription": "Fix keyboard range editing: arrow/Home/End nudges now stop at the other handle instead of silently inverting the filter.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.6.1/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5271670
+        },
         {
           "version": "1.6.0",
           "buildVersion": "85",
@@ -782,6 +791,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.6.1",
+      "identifier": "ios-v1.6.1",
+      "appID": "com.mmdrome.player",
+      "caption": "Fix keyboard range editing: arrow/Home/End nudges now stop at the other handle instead of silently inverting the filter.",
+      "date": "2026-11-03T23:39:48.712Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.6.0",
       "identifier": "ios-v1.6.0",
       "appID": "com.mmdrome.player",
@@ -814,15 +832,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Improve WebDAV server compatibility and preserve uncertain MOVE outcomes safely.",
       "date": "2026-10-29T23:13:56.507Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.4.4",
-      "identifier": "ios-v1.4.4",
-      "appID": "com.mmdrome.player",
-      "caption": "Support browser WebDAV pushes with minimal CORS permissions and verified fresh destination checks.",
-      "date": "2026-10-29T22:11:13.356Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
