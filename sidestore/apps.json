@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.7.0",
-      "versionDate": "2026-11-04T07:45:36.677Z",
-      "versionDescription": "A new context menu: hold or right-click any song, queue row, album, artist or the player for play, queue, loved, rating and details actions.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.7.0/mmdrome.ipa",
+      "version": "1.8.0",
+      "versionDate": "2026-11-04T09:59:28.363Z",
+      "versionDescription": "Multi-select: shift-click songs in the library or the queue and act on the whole set. The suggestion queue now has an adjustable length and a refresh button on its header, and the queue's now-playing island always keeps its transport controls.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.8.0/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.8.0",
+          "buildVersion": "88",
+          "date": "2026-11-04T09:59:28.363Z",
+          "localizedDescription": "Multi-select: shift-click songs in the library or the queue and act on the whole set. The suggestion queue now has an adjustable length and a refresh button on its header, and the queue's now-playing island always keeps its transport controls.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.8.0/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.7.0",
           "buildVersion": "87",
@@ -800,6 +808,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.8.0",
+      "identifier": "ios-v1.8.0",
+      "appID": "com.mmdrome.player",
+      "caption": "Multi-select: shift-click songs in the library or the queue and act on the whole set. The suggestion queue now has an adjustable length and ",
+      "date": "2026-11-04T09:59:28.363Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.7.0",
       "identifier": "ios-v1.7.0",
       "appID": "com.mmdrome.player",
@@ -832,15 +849,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Pick Random as the second sort level, so songs that tie on your first sort shuffle among themselves.",
       "date": "2026-11-01T06:53:05.809Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.5.0",
-      "identifier": "ios-v1.5.0",
-      "appID": "com.mmdrome.player",
-      "caption": "Sort by two levels at once, with Random as a sort you can pick — turning shuffle off returns to the order it replaced. The queue can fetch n",
-      "date": "2026-11-01T05:02:27.128Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
