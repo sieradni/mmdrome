@@ -370,6 +370,33 @@ export const AUTO_QUEUE_RECENT_LIMIT_MIN = RECENT_LIMIT_MIN
 export const AUTO_QUEUE_RECENT_LIMIT_MAX = RECENT_LIMIT_MAX
 
 /**
+ * How many suggestion rows the auto queue holds (2026-11-04). One persisted
+ * number, read by the manager at EVERY fill site (`_targetLength`) — a
+ * constant here would silently disagree with the setting after the first
+ * change. The bounds are enforced by the decoder as well as the writer, so a
+ * corrupt or out-of-range IndexedDB row degrades to the nearest usable value
+ * instead of a zero-length tail or a 10 000-row fill.
+ *
+ * Changing it resizes the tail in ONE write (`queueManager.resizeAutoQueue`:
+ * trims, never dropping the audible row; otherwise replenishes). It is NOT a
+ * rule change — the anti-repeat window survives, like the horizon edit.
+ */
+export const AUTO_QUEUE_LENGTH_DEFAULT = 50
+export const AUTO_QUEUE_LENGTH_MIN = 5
+export const AUTO_QUEUE_LENGTH_MAX = 200
+
+export function clampAutoQueueLength(value: number): number {
+  if (!Number.isFinite(value)) return AUTO_QUEUE_LENGTH_DEFAULT
+  return Math.min(AUTO_QUEUE_LENGTH_MAX, Math.max(AUTO_QUEUE_LENGTH_MIN, Math.round(value)))
+}
+
+const _autoQueueLength = persisted<number>('autoQueueLength', AUTO_QUEUE_LENGTH_DEFAULT, {
+  decode: (raw) => (typeof raw === 'number' ? clampAutoQueueLength(raw) : undefined),
+})
+
+export const autoQueueLength = _autoQueueLength.store
+
+/**
  * Auto-queue on/off (D9, QUEUE-DESIGN §2). Persisted like the other queue
  * settings and restored in `initStores`. OFF means the suggestion source is
  * empty: the manager clears the auto section in one write, suppresses every
@@ -662,6 +689,7 @@ async function restoreLocalState(): Promise<void> {
     _autoQueueSort.restore(),
     _autoQueueEnabled.restore(),
     _autoQueueRecentLimit.restore(),
+    _autoQueueLength.restore(),
     _filterPresets.restore(),
     getSetting<PushRunReport>('lastPushReport')
       .then((saved) => {

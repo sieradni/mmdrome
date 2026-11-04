@@ -2,8 +2,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   CONTEXT_MENU_RATING_STEPS,
+  SELECTION_MENU_RATING_PREFIX,
+  buildBatchRatingMenu,
   buildGroupMenu,
   buildRatingMenu,
+  buildSelectionMenu,
   buildTrackMenu,
   menuNavigableIds,
   placeContextMenu,
@@ -125,6 +128,84 @@ test('rating menu covers the full 0–100-in-tens scale and marks the current va
   assert.deepEqual(ids(menu), ['rate:0', 'rate:20', 'rate:40', 'rate:60', 'rate:80', 'rate:100'])
   const checked = menu.filter((entry) => entry.type === 'action' && entry.checked)
   assert.deepEqual(checked.map((entry) => entry.id), ['rate:40'])
+})
+
+test('every row surface offers the multi-select entry point; transient rows do not', () => {
+  const library = buildTrackMenu({ ...baseTrack, showSelect: true })
+  assert.deepEqual(ids(library).slice(0, 3), ['menu-context', 'play', 'select'])
+  const select = library.find((entry) => entry.type === 'action' && entry.id === 'select')
+  assert.equal(select?.type === 'action' && select.label, 'Select')
+
+  // The select verb is optional: the push-confirm rows deliberately omit it.
+  assert.equal(ids(buildTrackMenu(baseTrack)).includes('select'), false)
+})
+
+test('an auto queue row can convert its whole suggestion prefix into the user queue', () => {
+  const menu = buildTrackMenu({ ...baseTrack, queueRow: 'auto' })
+  const convert = menu.find((entry) => entry.type === 'action' && entry.id === 'convertUpTo')
+  assert.equal(convert?.type === 'action' && convert.label, 'Convert up to here')
+  assert.match(
+    String(convert?.type === 'action' ? convert.ariaLabel : ''),
+    /up to and including this one/,
+    'the label must state the INCLUSIVE boundary — it is the one thing a user cannot guess',
+  )
+  // A user row is already queued: no conversion command exists there.
+  const userRow = buildTrackMenu({ ...baseTrack, queueRow: 'user' })
+  assert.equal(ids(userRow).includes('convertUpTo'), false)
+})
+
+test('the batch menu offers the same verbs for both surfaces, surface-appropriate', () => {
+  const library = buildSelectionMenu({ surface: 'library', count: 3, canRemove: false, allInUserQueue: false })
+  assert.deepEqual(ids(library), [
+    'menu-context',
+    'selectionPlayNext',
+    'selectionAddToQueue',
+    'selectionSetUserQueue',
+    'menu-sep-feedback',
+    'selectionLove',
+    'selectionRating',
+    'menu-sep-selection',
+    'clearSelection',
+  ])
+  const heading = library[0]
+  assert.equal(heading.type === 'label' && heading.label, '3 selected')
+  const add = library.find((entry) => entry.type === 'action' && entry.id === 'selectionAddToQueue')
+  assert.equal(add?.type === 'action' && add.label, 'Add to queue')
+
+  const queue = buildSelectionMenu({ surface: 'queue', count: 2, canRemove: true, allInUserQueue: false })
+  assert.equal(ids(queue).includes('selectionRemove'), true)
+  // "Play next" is a library verb: queue rows are already queued, and a dead
+  // command must not be offered (the host would silently no-op on it).
+  assert.equal(ids(queue).includes('selectionPlayNext'), false)
+  const queueAdd = queue.find((entry) => entry.type === 'action' && entry.id === 'selectionAddToQueue')
+  assert.equal(queueAdd?.type === 'action' && queueAdd.label, 'Add to user queue')
+  const remove = queue.find((entry) => entry.type === 'action' && entry.id === 'selectionRemove')
+  assert.equal(remove?.type === 'action' && remove.danger, true)
+
+  // Every selected row already sits in the user queue: the verb is present but
+  // inert, rather than silently doing nothing when tapped.
+  const alreadyQueued = buildSelectionMenu({
+    surface: 'queue',
+    count: 2,
+    canRemove: true,
+    allInUserQueue: true,
+  })
+  const disabledAdd = alreadyQueued.find((entry) => entry.type === 'action' && entry.id === 'selectionAddToQueue')
+  assert.equal(disabledAdd?.type === 'action' && disabledAdd.disabled, true)
+  // A queue selection with nothing removable hides the destructive verb.
+  const locked = buildSelectionMenu({ surface: 'queue', count: 1, canRemove: false, allInUserQueue: true })
+  assert.equal(ids(locked).includes('selectionRemove'), false)
+})
+
+test('the batch rating submenu writes a distinct command prefix and claims no checked row', () => {
+  const items = buildBatchRatingMenu()
+  assert.deepEqual(
+    ids(items),
+    CONTEXT_MENU_RATING_STEPS.map((step) => `${SELECTION_MENU_RATING_PREFIX}:${step}`),
+  )
+  // Different rows may hold different values: a single check mark would lie.
+  assert.equal(items.some((entry) => entry.type === 'action' && entry.checked !== undefined), false)
+  assert.equal(items[0].type === 'action' && items[0].label, 'Clear rating')
 })
 
 test('album and artist menus reuse the same command vocabulary for whole groups', () => {

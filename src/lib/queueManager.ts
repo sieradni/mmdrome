@@ -17,6 +17,7 @@ import {
   queue,
   library,
   autoQueueRecentLimit,
+  autoQueueLength,
   autoQueueFilters,
   autoQueueSort,
   autoQueueEnabled,
@@ -26,10 +27,9 @@ import {
   navidromeLoadStatus,
   currentTrack,
   pendingAdvanceTrackId,
+  playbackState,
 } from '../stores/appState'
 import type { Track, QueueState } from '../stores/appState'
-
-const MAX_AUTO_QUEUE = 50
 
 /**
  * The honest result of a bulk import (D12 / G4). `accepted` is exactly the
@@ -82,17 +82,26 @@ class QueueManager {
   }
 
   /**
+   * The live auto-queue target length — a SETTING, not a constant (2026-11-04):
+   * every fill site reads it through HERE, so the persisted value is the only
+   * source of truth and a trim/fill can never disagree with Settings.
+   */
+  private _targetLength(): number {
+    return get(autoQueueLength)
+  }
+
+  /**
    * Materializes a fill plan into the auto section the queue should hold
    * (D6): the kept prefix, the unique candidates this fill selected, and — only
    * when the pool ran out early — the repeat pass cycling the section it just
    * built. ONE place computes this, so replenish, the shuffle rebuild and the
    * fresh-context rebuild cannot disagree about what an exhausted pool means.
    */
-  private _materializeAuto(plan: AutoQueueFillPlan): string[] {
-    const needed = Math.max(0, MAX_AUTO_QUEUE - plan.kept.length)
+  private _materializeAuto(plan: AutoQueueFillPlan, target: number): string[] {
+    const needed = Math.max(0, target - plan.kept.length)
     const fill = needed > 0 ? selectAutoQueueFill(plan, needed) : []
     const nextAuto = [...plan.kept, ...fill.map((t) => t.trackId)]
-    const repeats = planRepeatPass(nextAuto, MAX_AUTO_QUEUE - nextAuto.length)
+    const repeats = planRepeatPass(nextAuto, target - nextAuto.length)
     return [...nextAuto, ...repeats]
   }
 
@@ -348,6 +357,87 @@ class QueueManager {
   }
 
   /**
+   * Replaces the user queue with `trackIds` (multi-select "Set as user
+   * queue"). The `playAll` validation boundary applies verbatim (D12/G4):
+   * unknown ids are dropped and reported, a deferred library load writes
+   * nothing, and an empty resolution leaves the queue untouched. The anchor
+   * rule differs from `playAll` on purpose — this is an EDIT, not a replay, so
+   * the loaded track survives (at the top, when it is not in the selection)
+   * and the anti-repeat window is kept. The suggestion tail keeps its rows
+   * except copies of the songs just queued explicitly; the next replenish
+   * brings it back to the target length.
+   */
+  replaceUserQueue(trackIds: readonly string[]): BulkImportReport {
+    const known = (id: string) => this.findTrack(id) !== undefined
+    const accepted = trackIds.filter(known)
+    const dropped = trackIds.filter((id) => !known(id))
+    if (dropped.length > 0 && get(navidromeLoadStatus).loading) {
+      return { accepted: [], dropped: [...trackIds], deferred: true }
+    }
+    if (accepted.length === 0) return { accepted: [], dropped, deferred: false }
+    const keepId = get(playbackState) === 'stopped' ? undefined : get(currentTrack)?.trackId
+    const updated = queueMutation.replaceUserQueue(get(queue), accepted, keepId)
+    if (updated === null) return { accepted: [], dropped, deferred: false }
+    queue.set(updated)
+    persistQueue('replaceUserQueue', updated)
+    this.endHandOrder()
+    return { accepted, dropped, deferred: false }
+  }
+
+  /**
+   * Removes several rows in ONE write (multi-select). Indices are section-local
+   * and belong to the CURRENT queue — the caller resolves entry ids first. The
+   * pure reducer owns the position anchor rule and the cool-down.
+   */
+  removeRows(userIndices: readonly number[], autoIndices: readonly number[]): void {
+    queue.update((q) => {
+      const updated = queueMutation.removeRows(q, userIndices, autoIndices)
+      if (updated === null) return q
+      persistQueue('removeRows', updated)
+      return updated
+    })
+  }
+
+  /** Bulk promote (multi-select): auto occurrences → appended user rows. */
+  promoteManyToUser(autoIndices: readonly number[]): void {
+    this._mutateQueue((q) => queueMutation.promoteManyToUser(q, autoIndices))
+  }
+
+  /** "Convert up to here": the suggestion prefix through `autoIndex` becomes
+   *  user rows, in order, with the rest of the tail left as suggestions.
+   *  Anchor-preserving via `_mutateQueue` (the combined order is unchanged). */
+  convertAutoUpTo(autoIndex: number): void {
+    this._mutateQueue((q) => queueMutation.convertAutoUpTo(q, autoIndex))
+  }
+
+  /**
+   * The auto queue LENGTH setting changed (2026-11-04). Shrinking TRIMS the
+   * tail in one write but never below the audible row — deleting the playing
+   * row from the queue would strand the anchor; growing replenishes to the new
+   * target. Not a rule change: the anti-repeat window and the hand order are
+   * untouched (a filled tail that violates the hand order is retired by the
+   * next replenish on its own).
+   */
+  resizeAutoQueue(): void {
+    if (get(autoQueueEnabled) === false) return
+    const target = this._targetLength()
+    const q = get(queue)
+    const activeAuto = q.activeIndex >= q.userQueue.length ? q.activeIndex - q.userQueue.length : -1
+    const keep = Math.min(q.autoQueue.length, Math.max(target, activeAuto + 1))
+    if (keep < q.autoQueue.length) {
+      queue.update((live) => {
+        const cut = Math.min(live.autoQueue.length, keep)
+        if (cut >= live.autoQueue.length) return live
+        const updated: QueueState = { ...live, autoQueue: live.autoQueue.slice(0, cut) }
+        persistQueue('resizeAutoQueue', updated)
+        return updated
+      })
+      return
+    }
+    this.replenishAutoQueue()
+  }
+
+  /**
    * Empties the queue down to the actively playing track (kept at user[0]).
    * The anti-repeat window is deliberately PRESERVED — a clear is an explicit
    * queue edit, not a "just heard it" event (asymmetric by intent vs. the
@@ -486,8 +576,9 @@ class QueueManager {
     // row the drop never placed) is dropped for good, so no rebuild path has to
     // remember to clear it.
     if (this._handOrder && !resolveHandOrder(this._handOrder, state)) this._handOrder = null
-    const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: true, handOrder: this._handOrder })
-    const autoIds = this._materializeAuto(plan)
+    const target = this._targetLength()
+    const plan = planAutoQueueFill(state, target, { keepAuto: true, handOrder: this._handOrder })
+    const autoIds = this._materializeAuto(plan, target)
     this._publishFillNotices(plan, autoIds)
     // A fill that changes nothing (full section, no drop, no repeat) skips the
     // Dexie write. Compared by CONTENT: the repeat pass makes a same-length
@@ -551,8 +642,9 @@ class QueueManager {
         filters: get(autoQueueFilters),
         meta: get(metadataCache),
       }
-      const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
-      const autoIds = this._materializeAuto(plan)
+      const target = this._targetLength()
+      const plan = planAutoQueueFill(state, target, { keepAuto: false })
+      const autoIds = this._materializeAuto(plan, target)
       this._publishFillNotices(plan, autoIds)
       const updated: QueueState = { ...base, autoQueue: autoIds }
       syncFillProvenance(updated.autoQueue, plan.tiers)
@@ -593,8 +685,9 @@ class QueueManager {
     // A shuffle toggle replaces the tail wholesale (and changes the rule's
     // shuffle bit), so no hand order can survive; the next replenish retires it.
     const state = this._planState()
-    const plan = planAutoQueueFill(state, MAX_AUTO_QUEUE, { keepAuto: false })
-    const autoIds = this._materializeAuto(plan)
+    const target = this._targetLength()
+    const plan = planAutoQueueFill(state, target, { keepAuto: false })
+    const autoIds = this._materializeAuto(plan, target)
     this._publishFillNotices(plan, autoIds)
 
     queue.update((q) => {

@@ -1,8 +1,18 @@
 import { get } from 'svelte/store'
-import { autoQueueScope, currentTrack, playbackState, queue } from '../stores/appState'
+import {
+  autoQueueScope,
+  currentTrack,
+  library,
+  metadataCache,
+  playbackState,
+  queue,
+  type Track,
+} from '../stores/appState'
+import { selection, clearSelection } from '../stores/selectionStore'
 import { findEntryIndex } from './queueOccurrence'
 import { queueManager } from './queueManager'
 import { playbackManager } from './playbackManager'
+import { commitFeedback } from './feedbackService'
 
 /**
  * Shared queue/playback commands for row-scoped actions (2026-11-04).
@@ -71,4 +81,141 @@ export function restartOrResumeCurrent(): void {
   const state = get(playbackState)
   if (state === 'playing' || state === 'buffering') playbackManager.seek(0)
   else void playbackManager.togglePlayPause()
+}
+
+/**
+ * Multi-select commands (2026-11-04). The ONE execution layer for the
+ * selection bar AND the batch context menu, exactly like the single-row
+ * commands above: a selection edits the LIVE queue, so every entry id is
+ * re-resolved at execution time (a fill/advance landing while the menu is open
+ * must not address a different row).
+ *
+ * Two invariants hold for every batch action:
+ *  - the AUDIBLE row is never deleted (removal skips it; "set as user queue"
+ *    prepends it when it is not selected) — playback must not be stranded;
+ *  - actions operate on occurrences, in the selection's own order, so a
+ *    repeated song is queued as many times as the user selected it.
+ */
+
+/** The active selection's track ids, in the surface's own order. */
+export function selectedTrackIds(): string[] {
+  const state = get(selection)
+  if (state.keys.length === 0) return []
+  if (state.surface === 'library') return [...state.keys]
+  const q = get(queue)
+  const combined = [...q.userQueue, ...q.autoQueue]
+  return state.keys
+    .map((entryId) => findEntryIndex(q.userQueue, q.autoQueue, entryId))
+    .filter((index) => index >= 0)
+    .sort((a, b) => a - b)
+    .map((index) => combined[index])
+}
+
+/** Resolved section-local indices of the queue selection. */
+function selectedQueueIndices(): { user: number[]; auto: number[]; activeSelected: boolean } {
+  const state = get(selection)
+  const q = get(queue)
+  const user: number[] = []
+  const auto: number[] = []
+  let activeSelected = false
+  if (state.surface !== 'queue') return { user, auto, activeSelected }
+  for (const entryId of state.keys) {
+    const index = findEntryIndex(q.userQueue, q.autoQueue, entryId)
+    if (index < 0) continue
+    if (index === q.activeIndex) activeSelected = true
+    if (index < q.userQueue.length) user.push(index)
+    else auto.push(index - q.userQueue.length)
+  }
+  return { user: user.sort((a, b) => a - b), auto: auto.sort((a, b) => a - b), activeSelected }
+}
+
+/** Library selection → insert right after the audible row. */
+export function applySelectionPlayNext(): void {
+  const state = get(selection)
+  if (state.surface !== 'library' || state.keys.length === 0) return
+  queueManager.playNextMany(state.keys)
+  clearSelection()
+}
+
+/**
+ * "Add to queue": appended occurrences for a library selection; for a queue
+ * selection, the AUTO rows it holds become user rows (user rows already are).
+ */
+export function applySelectionAddToQueue(): void {
+  const state = get(selection)
+  if (state.keys.length === 0) return
+  if (state.surface === 'library') {
+    queueManager.addManyToUserQueue(state.keys)
+    clearSelection()
+    return
+  }
+  const { auto } = selectedQueueIndices()
+  if (auto.length > 0) queueManager.promoteManyToUser(auto)
+  clearSelection()
+}
+
+/** "Set as user queue": the selection REPLACES the user queue, in order. */
+export function applySelectionSetUserQueue(): void {
+  const ids = selectedTrackIds()
+  if (ids.length === 0) return
+  queueManager.replaceUserQueue(ids)
+  clearSelection()
+}
+
+/**
+ * Removes the selected queue rows in one write. The audible row is skipped by
+ * design: a selection that includes the playing song must not delete it (the
+ * queue would point past its own audio) — deselect or reject it first.
+ */
+export function applySelectionRemove(): void {
+  const { user, auto, activeSelected } = selectedQueueIndices()
+  if (user.length === 0 && auto.length === 0) return
+  const q = get(queue)
+  const removableUser = user.filter((index) => index !== q.activeIndex)
+  const removableAuto = auto.filter((index) => q.userQueue.length + index !== q.activeIndex)
+  if (removableUser.length === 0 && removableAuto.length === 0) {
+    if (activeSelected) clearSelection()
+    return
+  }
+  queueManager.removeRows(removableUser, removableAuto)
+  clearSelection()
+}
+
+/**
+ * The "Loved" batch toggle: love every selected song unless they are ALL
+ * already loved, in which case the batch un-loves them. One rule for the whole
+ * set — a mixed selection resolves to "love all", which is what the label's
+ * absent check mark promises.
+ */
+export function applySelectionLove(): void {
+  applySelectionFeedback(undefined, 'toggle')
+}
+
+export function applySelectionRating(rating: number): void {
+  applySelectionFeedback(rating)
+}
+
+function applySelectionFeedback(rating: number | undefined, mode: 'set' | 'toggle' = 'set'): void {
+  // Dedupe by ID: a queue selection holds occurrences, so the same song can be
+  // in the set several times — one write per SONG, not per row.
+  const ids = [...new Set(selectedTrackIds())]
+  if (ids.length === 0) return
+  const cache = get(metadataCache)
+  const byId = new Map<string, Track>(get(library).map((track) => [track.trackId, track] as const))
+  const allLoved = ids.every((id) => cache.get(id)?.loved ?? false)
+  for (const id of ids) {
+    const track = byId.get(id)
+    if (!track) continue
+    const meta = cache.get(id)
+    const nextLoved = mode === 'toggle' ? !allLoved : (meta?.loved ?? false)
+    commitFeedback(track, rating ?? meta?.rating ?? 0, nextLoved)
+  }
+}
+
+/** "Convert up to here" on one auto row: the suggestion prefix becomes user rows. */
+export function convertAutoUpToEntry(entryId: string): void {
+  const q = get(queue)
+  const index = findEntryIndex(q.userQueue, q.autoQueue, entryId)
+  if (index < q.userQueue.length) return
+  queueManager.convertAutoUpTo(index - q.userQueue.length)
 }

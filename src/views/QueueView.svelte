@@ -14,14 +14,23 @@
     queueWrapNotice,
     autoQueueEmptyNotice,
     autoQueueScope,
+    autoQueueLength,
+    AUTO_QUEUE_LENGTH_MIN,
+    AUTO_QUEUE_LENGTH_MAX,
+    clampAutoQueueLength,
     type Track,
   } from '../stores/appState'
+  import { selection, clearSelection, selectionClick, syncSelectionOrder, toggleSelection } from '../stores/selectionStore'
+  import SelectionBar from '../components/SelectionBar.svelte'
+  import AppSlider from '../components/AppSlider.svelte'
+  import { CONTEXT_MENU_ICONS } from '../lib/contextMenuCore'
   import { bufferedRanges, preloadEntries } from '../stores/loadStatus'
   import { planDragDrop } from '../lib/queueMutation'
   import { contextMenuTrigger } from '../lib/contextMenuTrigger'
   import { openContextMenu } from '../lib/contextMenuStore'
   import { playQueueIndex, removeUserQueueIndex } from '../lib/queueCommands'
   import {
+    combinedEntryIds,
     entryIdOf,
     findEntryIndex,
     rowKeyOf,
@@ -30,7 +39,7 @@
   import { currentLoadedFraction } from '../lib/loadStatus'
   import { addedBoundsOf, type FilterRuleSet } from '../lib/filterCore'
   import { onMount, onDestroy, tick } from 'svelte'
-  import { derived } from 'svelte/store'
+  import { derived, get } from 'svelte/store'
   import ClearableSearch from '../components/ClearableSearch.svelte'
   import FilterRulesEditor from '../components/FilterRulesEditor.svelte'
   import ModalShell from '../components/ModalShell.svelte'
@@ -49,7 +58,13 @@
   import ScrollTopButton from '../components/ScrollTopButton.svelte'
   import { tooltip } from '../lib/tooltip'
 
-  let { onclose, oncloseall }: { onclose: () => void; oncloseall: () => void } = $props()
+  let { onclose, oncloseall, onopenplayer }: {
+    onclose: () => void
+    oncloseall: () => void
+    /** The island opens the PLAYER (this surface's "now playing"), never the
+     *  library — the transport controls live on the island itself. */
+    onopenplayer: () => void
+  } = $props()
 
   let filterOpen = $state(false)
   let detailsTrack: Track | null = $state(null)
@@ -100,7 +115,56 @@
   onMount(() => {
     const savedScroll = restoreViewState<{ scrollTop: number }>('queue')
     if (savedScroll?.scrollTop) queueMachine.armRestore(savedScroll.scrollTop)
+    // A library selection is track-id-keyed and means something else here; the
+    // store holds ONE surface at a time (selectionStore).
+    if (get(selection).surface === 'library') clearSelection()
   })
+
+  // ── Multi-select (2026-11-04) ──
+  // Rows are OCCURRENCES, so the selection carries entry ids and the ORDER is
+  // the combined entry-id list — a Shift range covers exactly the rows the user
+  // sees, across both sections, and a row that leaves the queue is pruned from
+  // the selection by the store.
+  let queueSelectionActive = $derived(
+    $selection.mode && $selection.surface === 'queue' && $selection.keys.length > 0,
+  )
+
+  $effect(() => {
+    syncSelectionOrder('queue', combinedEntryIds($queue.userQueue, $queue.autoQueue))
+  })
+
+  function rowSelected(entryId: string): boolean {
+    return $selection.surface === 'queue' && $selection.keys.includes(entryId)
+  }
+
+  /** Row press: modifier/selection-mode presses select, everything else keeps
+   *  the row's play semantics (a press on the audible row restarts it). */
+  function handleQueueRowPress(event: MouseEvent, item: KeyedTrack, combinedIndex: number): void {
+    if (isDragging) return
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      event.preventDefault()
+      selectionClick('queue', item.entryId, {
+        shift: event.shiftKey,
+        toggle: event.ctrlKey || event.metaKey,
+      })
+      return
+    }
+    if (queueSelectionActive) {
+      toggleSelection('queue', item.entryId)
+      return
+    }
+    playQueueItem(combinedIndex)
+  }
+
+  function handleQueueRowKey(event: KeyboardEvent, item: KeyedTrack, combinedIndex: number): void {
+    if (event.key !== 'Enter' && event.key !== ' ') return
+    event.preventDefault()
+    if (queueSelectionActive) {
+      toggleSelection('queue', item.entryId)
+      return
+    }
+    playQueueItem(combinedIndex)
+  }
 
   // Library lookup for the occurrence rows. One Map per library change; the
   // row derives below run on every queue write, so a per-id `find` over the
@@ -556,6 +620,11 @@
 
   onDestroy(() => {
     stopPointerDrag()
+    // A queue selection cannot outlive its surface: the overlay is the only
+    // place that shows the bar or offers the batch verbs, so leaving it armed
+    // would be invisible state (the album/artist detail lists clear theirs the
+    // same way — by publishing an empty order).
+    if (get(selection).surface === 'queue') clearSelection()
   })
 
   // Action Helpers
@@ -675,8 +744,10 @@
         class="ui-island relative overflow-hidden px-3 pb-0 pt-2"
         role="button"
         tabindex="0"
-        onclick={onclose}
-        onkeydown={(e) => { if (e.key === 'Enter') onclose() }}
+        onclick={onopenplayer}
+        onkeydown={(e) => { if (e.key === 'Enter') onopenplayer() }}
+        aria-label="Open the player"
+        data-testid="queue-now-playing"
       >
         <div class="flex items-center gap-3">
           <LazyThumb track={$currentTrack} size={128} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
@@ -718,21 +789,6 @@
             <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
           </button>
 
-          <!-- Refresh (2026-11-01): the user asked for this exact tail again —
-               a fresh sampled order under random, the continuing ordered pool
-               otherwise. Disabled while suggestions are off (there is no tail
-               to refresh, and turning it on is the header row's job). -->
-          <button
-            use:tooltip={"New suggestions"}
-            onclick={() => queueManager.refreshAutoQueue()}
-            disabled={!$autoQueueEnabled}
-            class="absolute left-12 top-1/2 -translate-y-1/2 rounded-full p-2.5 text-muted transition-colors hover:text-primary disabled:opacity-30 disabled:hover:text-muted"
-            aria-label="New suggestions"
-            data-testid="refresh-auto-queue"
-          >
-            <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M12 5V2L7.5 6.5 12 11V8a4 4 0 114 4v2a6 6 0 10-6-6z"/><path d="M12 16h4v6h-4z" opacity="0"/></svg>
-          </button>
-
           <div class="flex items-center justify-center gap-1.5">
             <button use:tooltip class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
               <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
@@ -757,25 +813,52 @@
         </div>
       </div>
     {:else}
-      <!-- Empty island: same silhouette as the home mini-player's empty
-           state so the two surfaces read as one design. Tappable like the
-           active island — closing lands on the expanded Now Playing view
-           (closeQueue opens it whenever a current track exists, even
-           stopped after a play-out). -->
-      <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
+      <!-- Idle island: the SAME silhouette AND the same transport controls as
+           the active one — the buttons never disappear, because "start the
+           queue" is exactly what you want them for here (play resumes the
+           anchor or starts the first row). No seek bar: there is nothing to
+           seek. Tapping the identity area opens the PLAYER, not the library. -->
       <div
-        class="ui-island flex cursor-pointer items-center gap-3 px-3 py-2.5"
+        class="ui-island relative overflow-hidden px-3 pb-0 pt-2"
         role="button"
         tabindex="0"
-        onclick={onclose}
-        onkeydown={(e) => { if (e.key === 'Enter') onclose() }}
+        onclick={onopenplayer}
+        onkeydown={(e) => { if (e.key === 'Enter') onopenplayer() }}
+        aria-label="Open the player"
+        data-testid="queue-now-playing"
       >
-        <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-white/5">
-          <svg class="h-5 w-5 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+        <div class="flex items-center gap-3 py-0.5">
+          <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-white/5">
+            <svg class="h-5 w-5 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
+          </div>
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm font-medium text-primary">Not playing</p>
+            <p class="truncate text-xs text-muted">{$queue.userQueue.length + $queue.autoQueue.length > 0 ? 'Press play to start the queue' : 'Queue is empty'}</p>
+          </div>
         </div>
-        <div class="min-w-0 flex-1">
-          <p class="truncate text-sm font-medium text-primary">Not playing</p>
-          <p class="truncate text-xs text-muted">{$queue.userQueue.length + $queue.autoQueue.length > 0 ? 'Press play on a track below' : 'Queue is empty'}</p>
+
+        <div class="relative -mt-0.5" role="presentation" onclick={(e) => e.stopPropagation()}>
+          <button
+            use:tooltip
+            onclick={() => toggleShuffle()}
+            class="absolute left-0 top-1/2 -translate-y-1/2 rounded-full p-2.5 transition-colors"
+            class:text-accent={$shuffleEnabled}
+            class:text-muted={!$shuffleEnabled}
+            aria-label="Toggle shuffle"
+          >
+            <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z"/></svg>
+          </button>
+          <div class="flex items-center justify-center gap-1.5">
+            <button use:tooltip class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={() => playbackManager.prev()}>
+              <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+            </button>
+            <button use:tooltip class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Play / Pause" onclick={() => playbackManager.togglePlayPause()}>
+              <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+            </button>
+            <button use:tooltip class="rounded-full p-2.5 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={() => playbackManager.next()}>
+              <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     {/if}
@@ -816,12 +899,14 @@
                drag drop-target, and the drag identity. -->
           {@const itemIndex = item.originalCombinedIdx}
           <div
-            onclick={() => playQueueItem(itemIndex)}
+            onclick={(e) => handleQueueRowPress(e, item, itemIndex)}
             role="button"
             tabindex="0"
             use:contextMenuTrigger={{ onOpen: (position, trigger) => openQueueRowMenu(item, position, trigger) }}
-            onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(itemIndex) }}
+            onkeydown={(e) => handleQueueRowKey(e, item, itemIndex)}
+            aria-pressed={queueSelectionActive ? rowSelected(item.entryId) : undefined}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
+              (rowSelected(item.entryId) ? 'bg-accent-soft ring-1 ring-accent-ring ' : '') +
               (isCurrentTrack(itemIndex) ? 'ui-now-playing-row ' : 'hover:bg-white/5 ') +
               (isDragging && item.entryId === draggedEntryId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
@@ -844,6 +929,19 @@
                 <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
               </svg>
             </div>
+
+            {#if queueSelectionActive}
+              <span class="flex h-5 w-5 flex-shrink-0 items-center justify-center" aria-hidden="true">
+                <span
+                  class={"flex h-5 w-5 items-center justify-center rounded-full border transition-colors " +
+                    (rowSelected(item.entryId) ? 'border-accent bg-accent text-black' : 'border-white/30')}
+                >
+                  {#if rowSelected(item.entryId)}
+                    <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
+                  {/if}
+                </span>
+              </span>
+            {/if}
 
             <LazyThumb track={item.track} size={128} windowed wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
 
@@ -932,6 +1030,22 @@
         {#if isConvertingUserToAuto}
           <span class="text-xs font-medium uppercase tracking-wider text-accent">Release to convert to User Queue</span>
         {/if}
+        <!-- New suggestions (2026-11-04): moved OUT of the transport cluster
+             (it is a queue command, not a player control) onto the row that
+             owns the tail, with the conventional refresh glyph. Disabled while
+             suggestions are off — there is no tail to refresh; the neighbouring
+             switch is how it comes back. -->
+        <button
+          type="button"
+          use:tooltip={"New suggestions"}
+          onclick={() => queueManager.refreshAutoQueue()}
+          disabled={!$autoQueueEnabled}
+          class="rounded-full p-1.5 text-muted transition-colors hover:text-primary disabled:opacity-30 disabled:hover:text-muted"
+          aria-label="New suggestions"
+          data-testid="refresh-auto-queue"
+        >
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d={CONTEXT_MENU_ICONS.refresh} /></svg>
+        </button>
         <button
           type="button"
           class="min-h-9 rounded-full px-3 py-1.5 text-[11px] font-semibold transition-colors {$autoQueueEnabled ? 'bg-white/10 text-muted hover:text-primary' : 'bg-accent-soft text-accent hover:bg-accent-ring/30'}"
@@ -966,12 +1080,14 @@
                includes the user length); no window offset may be added. -->
           {@const itemCombinedIndex = item.originalCombinedIdx}
           <div
-            onclick={() => playQueueItem(itemCombinedIndex)}
+            onclick={(e) => handleQueueRowPress(e, item, itemCombinedIndex)}
             role="button"
             tabindex="0"
             use:contextMenuTrigger={{ onOpen: (position, trigger) => openQueueRowMenu(item, position, trigger) }}
-            onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(itemCombinedIndex) }}
+            onkeydown={(e) => handleQueueRowKey(e, item, itemCombinedIndex)}
+            aria-pressed={queueSelectionActive ? rowSelected(item.entryId) : undefined}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
+              (rowSelected(item.entryId) ? 'bg-accent-soft ring-1 ring-accent-ring ' : '') +
               (isCurrentTrack(itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-white/5 ') +
               (isDragging && item.entryId === draggedEntryId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
@@ -994,6 +1110,19 @@
                 <path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/>
               </svg>
             </div>
+
+            {#if queueSelectionActive}
+              <span class="flex h-5 w-5 flex-shrink-0 items-center justify-center" aria-hidden="true">
+                <span
+                  class={"flex h-5 w-5 items-center justify-center rounded-full border transition-colors " +
+                    (rowSelected(item.entryId) ? 'border-accent bg-accent text-black' : 'border-white/30')}
+                >
+                  {#if rowSelected(item.entryId)}
+                    <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
+                  {/if}
+                </span>
+              </span>
+            {/if}
 
             <LazyThumb track={item.track} size={128} windowed wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
 
@@ -1085,6 +1214,12 @@
          2026-09-11). Hover language = ACCENT here (the island's five buttons
          are the queue's primary operable controls), matching the row-accent
          states elsewhere. -->
+    <!-- A live selection REPLACES the action shelf (never stacks on it): the
+         batch verbs are the only thing worth tapping then, and phones cannot
+         afford two rows of chrome over the list. -->
+    {#if queueSelectionActive}
+      <SelectionBar variant="queue" />
+    {:else}
     <div class="flex items-stretch gap-1.5 rounded-t-2xl bg-[#090909] p-1.5 ring-1 ring-white/10">
       <button
         use:tooltip
@@ -1137,6 +1272,7 @@
         <span class="w-full truncate text-center text-[10px] font-medium leading-none">Clear below{#if belowCount > 0}&nbsp;{belowCount}{/if}</span>
       </button>
     </div>
+    {/if}
   </div>
 </div>
 
@@ -1158,6 +1294,27 @@
         <div class="mt-2">
           <SortStackEditor state={$autoQueueSort} onchange={setAutoSort} />
         </div>
+      </div>
+      <!-- Auto queue LENGTH (2026-11-04): the same persisted setting as
+           Settings → Auto queue, surfaced where the tail is adjusted. The
+           manager resizes the tail on the write (trim never drops the playing
+           row), so the change is visible immediately. -->
+      <div class="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5" data-testid="auto-length-card">
+        <div class="flex items-center justify-between">
+          <span class="text-sm font-medium text-muted">Suggestions ahead</span>
+          <span class="text-sm tabular-nums text-primary" data-testid="auto-length-value">{$autoQueueLength}</span>
+        </div>
+        <AppSlider
+          value={$autoQueueLength}
+          min={AUTO_QUEUE_LENGTH_MIN}
+          max={AUTO_QUEUE_LENGTH_MAX}
+          step={5}
+          label="Auto queue length"
+          valueText={(v) => `${v} songs`}
+          onInput={(v) => autoQueueLength.set(clampAutoQueueLength(v))}
+          class="mt-2"
+        />
+        <p class="mt-1 text-xs text-muted">How many suggestions to keep queued ahead of the current song.</p>
       </div>
       <div>
         <span class="text-sm font-medium text-muted">Search Query</span>

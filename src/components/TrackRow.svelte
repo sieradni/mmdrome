@@ -10,6 +10,7 @@
   import TrackOptionsDropdown from './TrackOptionsDropdown.svelte'
   import { contextMenuTrigger } from '../lib/contextMenuTrigger'
   import { openContextMenu } from '../lib/contextMenuStore'
+  import { selection, selectionClick, toggleSelection } from '../stores/selectionStore'
 
   let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, dataTrackId, ondetails, onplay, highlightTokens = [], playing = false, windowed = false }: {
     track: Track
@@ -78,7 +79,32 @@
     }, 1000)
   }
 
-  function handlePlay(trackId: string) {
+  /**
+   * Multi-select (2026-11-04): Shift extends the range from the anchor, Ctrl/Cmd
+   * toggles one row, and a plain press inside selection mode toggles too (the
+   * only path a phone has — there is no modifier key on touch). Outside
+   * selection mode a press keeps its own meaning, so the row's play semantics
+   * are untouched for every existing surface.
+   */
+  let rowSelected = $derived($selection.surface === 'library' && $selection.keys.includes(track.trackId))
+  let selectionMode = $derived($selection.mode && $selection.surface === 'library')
+
+  // Click AND keydown reach the same press path: both carry the modifier
+  // flags, so one signature keeps Shift-range / Ctrl-toggle identical on a
+  // pointer and on Enter/Space (no cast, no second branch to drift).
+  function handlePlay(event: MouseEvent | KeyboardEvent, trackId: string) {
+    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+      event.preventDefault()
+      selectionClick('library', trackId, {
+        shift: event.shiftKey,
+        toggle: event.ctrlKey || event.metaKey,
+      })
+      return
+    }
+    if (selectionMode) {
+      toggleSelection('library', trackId)
+      return
+    }
     if (onplay) {
       onplay(trackId)
     } else {
@@ -107,14 +133,39 @@
 
 <div
   class={"relative flex cursor-pointer items-center gap-2 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
+    (rowSelected ? 'bg-accent-soft ring-1 ring-accent-ring ' : '') +
     (playing ? 'ui-now-playing-row' : 'hover:bg-white/5')}
   role="button"
   tabindex="0"
   use:contextMenuTrigger={{ onOpen: handleContextMenu }}
   data-track-id={dataTrackId ?? track.trackId}
-  onclick={() => handlePlay(track.trackId)}
-  onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handlePlay(track.trackId) }}
+  data-selected={rowSelected || undefined}
+  aria-pressed={selectionMode ? rowSelected : undefined}
+  onclick={(e) => handlePlay(e, track.trackId)}
+  onkeydown={(e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return
+    if (selectionMode) {
+      e.preventDefault()
+      toggleSelection('library', track.trackId)
+      return
+    }
+    handlePlay(e, track.trackId)
+  }}
 >
+  {#if selectionMode}
+    <!-- Selection affordance: a fixed-size leading check so the target row is
+         unambiguous on touch, where no hover state exists. -->
+    <span class="flex h-5 w-5 flex-shrink-0 items-center justify-center" aria-hidden="true">
+      <span
+        class={"flex h-5 w-5 items-center justify-center rounded-full border transition-colors " +
+          (rowSelected ? 'border-accent bg-accent text-black' : 'border-white/30')}
+      >
+        {#if rowSelected}
+          <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
+        {/if}
+      </span>
+    </span>
+  {/if}
   <LazyThumb {track} {windowed} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
   <div class="min-w-0 flex-1">
     <p class="truncate text-sm text-primary">

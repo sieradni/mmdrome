@@ -36,7 +36,7 @@ auto queue can be switched off.
 | Term | Meaning |
 | --- | --- |
 | user section | `queue.userQueue` — the listening list; rows above the anchor are history, rows below are upcoming. Duplicates allowed. |
-| auto section | `queue.autoQueue` — the generated suggestion tail (max 50). Duplicates allowed only on pool exhaustion. |
+| auto section | `queue.autoQueue` — the generated suggestion tail (target length: the persisted `autoQueueLength`, default 50). Duplicates allowed only on pool exhaustion. |
 | combined | `[...userQueue, ...autoQueue]` — the only order playback walks. |
 | anchor | `queue.activeIndex`, an index into combined. |
 | audible row | the track `currentTrack` names; normally `combined[activeIndex]`. |
@@ -219,7 +219,7 @@ Loop mode describes what happens at the **end of the queue** and on an explicit 
 | --- | --- | --- |
 | 1 | Press a song = start that song; remove its auto copy; append a user row (2026-10-21) | Jumping to an old copy contradicts "play this"; auto copies are suggestions, and the fill cools played songs. |
 | 2 | User-queue duplicates allowed; + always appends | The queue is a log of what was played/queued, not a set. |
-| 3 | Auto duplicates only when a refill can add nothing new | Filling to 50 immediately would produce ~16 copies of each song in a 3-song pool. |
+| 3 | Auto duplicates only when a refill can add nothing new | Filling to the target (default 50) immediately would produce ~16 copies of each song in a 3-song pool. |
 | 4 | Row identity = occurrence (keys, remove, drag, native entry id) | Duplicates make id-only identity ambiguous; G5 was the visible symptom. |
 | 5 | Filter/sort edit = promote + reset recents + full rebuild | A rule change is a fresh context; the old kept-prefix update is what let G1/G2 exist. |
 | 6 | Auto-off clears the tail immediately | Repeat-all and "end of queue" must mean what they say right away. |

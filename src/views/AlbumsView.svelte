@@ -20,6 +20,8 @@
   import ScrollTopButton from '../components/ScrollTopButton.svelte'
   import { contextMenuTrigger } from '../lib/contextMenuTrigger'
   import { openContextMenu } from '../lib/contextMenuStore'
+  import { selection, syncSelectionOrder } from '../stores/selectionStore'
+  import SelectionBar from '../components/SelectionBar.svelte'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
 
@@ -210,6 +212,14 @@
   let detailTopPad = $derived(startOffsetPx(detailWin.start, detailRowH))
   let detailBottomPad = $derived(endOffsetPx(selectedTracks.length, detailWin.end, detailRowH))
 
+  // Multi-select domain for the detail list: the FULL album order (never the
+  // mounted window), and an EMPTY domain when the detail view closes — which
+  // ends a selection that belonged to it instead of leaving an invisible one
+  // armed for the next surface.
+  $effect(() => {
+    syncSelectionOrder('library', selectedAlbum ? selectedTracks.map((t) => t.trackId) : [])
+  })
+
   // Detail list rides the SAME machine (list compute + first-row measure).
   const detailMachine = createScrollWindow<{ start: number; end: number }>({
     getTotal: () => selectedTracks.length,
@@ -365,6 +375,9 @@
     </div>
     <JumpToCurrentButton show={canJumpDetail} onclick={jumpToCurrent} />
     <ScrollTopButton target={detailScrollContainer} posClass={canJumpDetail ? 'bottom-20 right-4' : 'bottom-5 right-4'} />
+    {#if $selection.mode && $selection.surface === 'library'}
+      <SelectionBar variant="library" class="absolute inset-x-3 bottom-2 z-20 shadow-2xl" />
+    {/if}
   </div>
 
 {#if detailsTrack}

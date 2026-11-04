@@ -249,6 +249,15 @@
     queueOpen = true; nowPlayingOpen = false; overlay = null
   }
 
+  /** The queue's now-playing island opens the PLAYER (not the library): the
+   *  island always shows transport controls, so its identity area is the
+   *  player shortcut from this surface. */
+  function openPlayerFromQueue() {
+    queueOpen = false
+    overlay = null
+    nowPlayingOpen = true
+  }
+
   function closeQueue() {
     queueOpen = false
     // The queue can stay open while the last track plays out; closing it must
@@ -602,7 +611,7 @@
     </div>
     </div>
 
-    <nav class="flex border-t border-white/10 bg-surface safe-area-bottom">
+    <nav class="flex bg-surface safe-area-bottom">
       {#each tabs as tab (tab.id)}
         <button
           onclick={() => view = tab.id}
@@ -851,7 +860,7 @@
        double-counted the home-indicator inset on iOS, pushing the island
        ~2× the inset off the screen bottom (2026-09-11 iOS review). -->
   <div class="fixed inset-0 z-40 flex flex-col bg-background safe-area-top safe-area-x">
-    <QueueView onclose={closeQueue} oncloseall={closeAll} />
+    <QueueView onclose={closeQueue} oncloseall={closeAll} onopenplayer={openPlayerFromQueue} />
   </div>
 {/if}
 

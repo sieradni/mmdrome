@@ -2768,3 +2768,48 @@ group-local scramble with its determinism and re-roll, the restore memory, and
 the editor's per-slot behaviour) plus `tests/e2e/secondaryrandom.spec.ts` (the
 chip exists in the Secondary row, the summary reads "Year ↑ · Random", a random
 primary hides that row, and the tie-break survives a relaunch).
+
+## 2026-11-04 — Multi-select, batch queue writes, and a sized auto queue
+
+Multi-select is a NEW interaction layer, so the decisions worth recording are
+the identity and ordering ones — the parts that would be re-derived wrongly.
+
+- **Keys are row identity, not song identity.** A library row is selected by
+  `trackId`; a queue row by its OCCURRENCE entry id. Once the queue model allows
+  duplicates (2026-10-21c), a `trackId` names several rows, so a set of ids
+  cannot express "these two copies, not that one". Both surfaces publish an
+  ORDER per surface (`syncSelectionOrder`) and Shift ranges walk THAT order —
+  the visible filtered/sorted library order, the combined user→auto queue order.
+- **The order is per surface.** The queue is an overlay above the library, so a
+  single shared order would be overwritten by whichever effect ran last; the
+  selected keys still live in ONE state (one surface at a time), because mixing
+  `trackId`s with entry ids makes every batch verb ambiguous.
+- **Pruning, not clearing.** A filter edit that hides a selected row drops its
+  key (the order no longer contains it). A surface that publishes an EMPTY order
+  (the album/artist detail view closing) ends its selection. This is why the
+  detail views publish the full album order, never the mounted window.
+- **Batch verbs go through `queueCommands`**, exactly like the row buttons, and
+  re-resolve occurrences against the LIVE queue: a fill or advance between the
+  menu opening and the command landing cannot shift the set onto other rows.
+  The audible row is never removed by a batch removal.
+- **`convertAutoUpTo` replaces the prefix rather than moving rows.** The auto
+  prefix becomes user rows in place, so the COMBINED order is byte-identical and
+  the in-flight anchor hint (a combined index) stays valid. `removeRows` is the
+  same idea: one write, position anchors kept, removed ids cooled.
+- **`replaceUserQueue` keeps the loaded track.** "Set as user queue" replaces
+  the user section with the selected rows, but a playing track that was not part
+  of the selection stays at the top — silently stopping the music (or orphaning
+  the audible row) to honour a queue edit is the wrong trade. Suggestion copies
+  of the newly queued ids are dropped so the fill does not re-add them.
+- **The auto queue's length is a setting, not a constant** (`autoQueueLength`,
+  50 default, 5–200). Every fill reads it; a change is a RESIZE, not a rule
+  change — so the anti-repeat window and the hand order survive, and a shrink
+  never trims past the audible row.
+- **UI ownership moved where it belongs.** The refresh button sits on the AUTO
+  header (it is an auto-queue command, not a transport command), the now-playing
+  island always renders transport controls and opens the PLAYER, and the bottom
+  nav lost its hairline border.
+
+Tests: `tests/selectionCore.test.ts`, `tests/queueMultiSelect.test.ts`, additions
+to `tests/contextMenuCore.test.ts`, plus the updated keyboard traversal in
+`tests/e2e/contextmenu.spec.ts` (the menu gained its `select` entry).

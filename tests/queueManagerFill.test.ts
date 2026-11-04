@@ -24,6 +24,8 @@ import {
   autoQueueScope,
   autoQueueEnabled,
   autoQueueEmptyNotice,
+  autoQueueLength,
+  AUTO_QUEUE_LENGTH_DEFAULT,
 } from '../src/stores/appState'
 import type { Track, AutoQueueFilterFields, QueueState } from '../src/stores/appState'
 import type { LocalMetadataStore } from '../src/lib/db'
@@ -74,6 +76,7 @@ function reset(): void {
   autoQueueSort.set(sortOf(null, true))
   autoQueueScope.set({})
   autoQueueEnabled.set(true)
+  autoQueueLength.set(AUTO_QUEUE_LENGTH_DEFAULT)
   libraryFilters.set({
     filterOpen: false, sortOpen: false, minRating: 0, maxRating: 100, lovedOnly: false, clauses: [],
     sort: sortOf(null, true),
@@ -677,6 +680,71 @@ test('a press ends the hand-ordered tail and re-derives it from the pressed row'
   // then the short pool recycles the user-queued aq1 (B4).
   assert.deepEqual(q.autoQueue, repeatTo(['aq5', 'aq6', 'aq4', 'aq2', 'aq1']), 'the sorted continuation wins')
   assert.notDeepEqual(q.autoQueue.slice(0, 4), ['aq4', 'aq6', 'aq2', 'aq5'], 'the dragged order must not survive a press')
+})
+
+// ── Auto queue length (2026-11-04) ─────────────────────────────────────────
+// The target is the persisted SETTING, read at every fill site. A change is a
+// RESIZE, not a rule change: one write trims or replenishes the tail, the
+// anti-repeat window survives, and a trim never cuts the audible row.
+
+test('shrinking the length trims the tail to the setting in one write, keeping the window', () => {
+  reset()
+  library.set(['t1', 't2', 't3', 't4', 't5', 't6', 't7', 't8'].map((id) => track(id)))
+  setQueue({
+    userQueue: ['t1'],
+    autoQueue: ['t2', 't3', 't4', 't5', 't6', 't7', 't8'],
+    activeIndex: 0,
+    recentTrackIds: ['t3'],
+  })
+
+  autoQueueLength.set(4)
+  queueManager.resizeAutoQueue()
+
+  const q = get(queue)
+  assert.deepEqual(q.autoQueue, ['t2', 't3', 't4', 't5'])
+  assert.deepEqual(q.recentTrackIds, ['t3'], 'a size edit is never a fresh context')
+  assert.equal(playQueueWrites.length, 1, 'a trim is ONE write')
+  assert.deepEqual(lastWrite().autoQueue, ['t2', 't3', 't4', 't5'])
+})
+
+test('a trim never cuts the audible AUTO row, even below the new target', () => {
+  reset()
+  library.set(['t1', 't2', 't3', 't4', 't5'].map((id) => track(id)))
+  // t5 is the audible SUGGESTION (auto[3]) — the last row of the tail.
+  setQueue({ userQueue: ['t1'], autoQueue: ['t2', 't3', 't4', 't5'], activeIndex: 4 })
+
+  autoQueueLength.set(1)
+  queueManager.resizeAutoQueue()
+
+  const q = get(queue)
+  assert.deepEqual(q.autoQueue, ['t2', 't3', 't4', 't5'], 'the playing row stays in the queue')
+  assert.equal(q.activeIndex, 4)
+})
+
+test('growing the length replenishes the tail to the new target', () => {
+  reset()
+  library.set(['t1', 't2', 't3', 't4', 't5'].map((id) => track(id)))
+  setQueue({ userQueue: ['t1'], autoQueue: ['t2'], activeIndex: 0 })
+
+  autoQueueLength.set(8)
+  queueManager.resizeAutoQueue()
+
+  const tail = get(queue).autoQueue
+  assert.equal(tail.length, 8, 'the fill follows the persisted target, not a constant')
+  for (const id of tail) assert.ok(['t2', 't3', 't4', 't5'].includes(id), `${id} is a fresh candidate`)
+})
+
+test('the length edit is inert while the auto queue is off', () => {
+  reset()
+  library.set(['t1', 't2', 't3'].map((id) => track(id)))
+  autoQueueEnabled.set(false)
+  setQueue({ userQueue: ['t1'], autoQueue: [], activeIndex: 0 })
+
+  autoQueueLength.set(10)
+  queueManager.resizeAutoQueue()
+
+  assert.deepEqual(get(queue).autoQueue, [], 'off stays off')
+  assert.equal(playQueueWrites.length, 0)
 })
 
 test('a plain tier change (rating to added) is a RULE CHANGE and resets the window', async () => {

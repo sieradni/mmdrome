@@ -6,14 +6,30 @@
     closeContextMenu,
     type ContextMenuTarget,
   } from '../lib/contextMenuStore'
-  import { buildGroupMenu, buildTrackMenu, type ContextMenuEntry } from '../lib/contextMenuCore'
+  import {
+    buildGroupMenu,
+    buildSelectionMenu,
+    buildTrackMenu,
+    SELECTION_MENU_RATING_PREFIX,
+    type ContextMenuEntry,
+  } from '../lib/contextMenuCore'
   import { currentTrack, metadataCache, playbackState, queue } from '../stores/appState'
   import type { Track } from '../stores/appState'
+  import { selection, clearSelection, startSelection } from '../stores/selectionStore'
   import { commitFeedback } from '../lib/feedbackService'
   import { queueManager } from '../lib/queueManager'
   import { playbackManager } from '../lib/playbackManager'
-  // Shared row commands — the same functions the row buttons use.
+  import { findEntryIndex } from '../lib/queueOccurrence'
+  // Shared row + selection commands — the same functions the row buttons and
+  // the selection bar use.
   import {
+    applySelectionAddToQueue,
+    applySelectionLove,
+    applySelectionPlayNext,
+    applySelectionRating,
+    applySelectionRemove,
+    applySelectionSetUserQueue,
+    convertAutoUpToEntry,
     playLibraryTrack,
     playQueueIndex,
     removeUserQueueIndex,
@@ -32,6 +48,13 @@
    * rating/loved commit path, D6), and group playback reuses `playAll`'s
    * validated import.
    *
+   * MULTI-SELECT (2026-11-04b): the target stays a single row. When the row is
+   * part of an active selection, this host swaps the single-row commands for
+   * the BATCH menu (`buildSelectionMenu`) — pressing a selected row must act on
+   * the set, never silently on one row. That is why selection actions live here
+   * and not in each surface: the primitive, placement and dismissal contract
+   * stay untouched, and a new batch verb is one builder entry + one branch.
+   *
    * Execution is deferred one tick after closing: the menu must restore focus
    * to its trigger BEFORE a details dialog captures that focus as its return
    * target, and the close must be committed before the dialog opens (otherwise
@@ -39,6 +62,24 @@
    */
 
   let request = $derived($contextMenuRequest)
+
+  /** The selection key a target carries: a track id for a library row, an
+   *  OCCURRENCE entry id for a queue row (duplicates make an id ambiguous). */
+  function targetSelection(target: ContextMenuTarget): { surface: 'library' | 'queue'; key: string } | null {
+    if (target.kind === 'queue') return { surface: 'queue', key: target.entryId }
+    if (target.kind === 'track') return { surface: 'library', key: target.track.trackId }
+    return null
+  }
+
+  let batchSelection = $derived.by(() => {
+    const req = request
+    if (!req) return null
+    const owned = targetSelection(req.target)
+    if (!owned) return null
+    const sel = $selection
+    if (!sel.mode || sel.surface !== owned.surface || !sel.keys.includes(owned.key)) return null
+    return sel
+  })
 
   let menu = $derived.by((): { label: string; entries: ContextMenuEntry[] } | null => {
     const req = request
@@ -52,6 +93,25 @@
           kind: target.kind,
           name: target.kind === 'album' ? target.album : target.artist,
           trackCount: target.tracks.length,
+        }),
+      }
+    }
+
+    const batch = batchSelection
+    // `surface` is non-null exactly when a batch is (both come from the same
+    // selection state), but the narrowing has to be explicit.
+    if (batch && batch.surface !== null) {
+      const q = $queue
+      const indices = batch.keys
+        .map((key) => findEntryIndex(q.userQueue, q.autoQueue, key))
+        .filter((index) => index >= 0)
+      return {
+        label: 'Selection actions',
+        entries: buildSelectionMenu({
+          surface: batch.surface,
+          count: batch.keys.length,
+          canRemove: indices.some((index) => index !== q.activeIndex),
+          allInUserQueue: indices.length > 0 && indices.every((index) => index < q.userQueue.length),
         }),
       }
     }
@@ -70,6 +130,7 @@
         rating: meta?.rating ?? 0,
         queueRow: target.kind === 'queue' ? target.section : undefined,
         canShowDetails: Boolean(target.onDetails),
+        showSelect: true,
       }),
     }
   })
@@ -98,6 +159,41 @@
     }
 
     const track = target.track
+    const owned = targetSelection(target)
+
+    if (id === 'select' && owned) {
+      startSelection(owned.surface, owned.key)
+      return
+    }
+    if (id === 'clearSelection') {
+      clearSelection()
+      return
+    }
+    if (id.startsWith(`${SELECTION_MENU_RATING_PREFIX}:`)) {
+      applySelectionRating(Number(id.slice(SELECTION_MENU_RATING_PREFIX.length + 1)))
+      clearSelection()
+      return
+    }
+    if (id === 'selectionPlayNext') {
+      applySelectionPlayNext()
+      return
+    }
+    if (id === 'selectionAddToQueue') {
+      applySelectionAddToQueue()
+      return
+    }
+    if (id === 'selectionSetUserQueue') {
+      applySelectionSetUserQueue()
+      return
+    }
+    if (id === 'selectionLove') {
+      applySelectionLove()
+      return
+    }
+    if (id === 'selectionRemove') {
+      applySelectionRemove()
+      return
+    }
     if (id === 'details') {
       target.onDetails?.()
       return
@@ -156,6 +252,8 @@
       else queueManager.promoteToUser(autoIndex)
     } else if (id === 'addToEnd') {
       if (!inUser) queueManager.promoteToUser(autoIndex)
+    } else if (id === 'convertUpTo') {
+      if (!inUser) convertAutoUpToEntry(target.entryId)
     } else if (id === 'notNow') {
       if (!inUser) queueManager.removeFromAutoQueue(autoIndex)
     } else if (id === 'removeRow') {

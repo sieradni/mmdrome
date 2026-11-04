@@ -1,6 +1,9 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte'
+  import { get } from 'svelte/store'
   import { library, metadataCache, currentTrack, navidromeConnection, navidromeLoadStatus } from '../stores/appState'
+  import { clearSelection, selection, syncSelectionOrder } from '../stores/selectionStore'
+  import SelectionBar from '../components/SelectionBar.svelte'
   import { restoreViewState } from '../lib/viewState'
   import { libraryFilters } from '../lib/libraryFilters'
   import { matchesFilterRuleSet } from '../lib/filterCore'
@@ -78,6 +81,17 @@
     })
   })
 
+  /**
+   * The selection's DOMAIN is exactly what the user sees (search + filters +
+   * sort), so a Shift range never reaches a hidden row and "Select all" cannot
+   * silently queue songs the view is filtering out. The store prunes keys that
+   * leave this order on its own.
+   */
+  const libraryOrder = $derived(processed.map((t) => t.trackId))
+  $effect(() => {
+    syncSelectionOrder('library', libraryOrder)
+  })
+
   let currentIndex = $derived(
     $currentTrack ? processed.findIndex((t) => t.trackId === $currentTrack.trackId) : -1
   )
@@ -141,6 +155,9 @@
   onMount(() => {
     const saved = restoreViewState<{ scrollTop: number }>(viewName)
     if (saved?.scrollTop) machine.armRestore(saved.scrollTop)
+    // A queue selection is occurrence-keyed and meaningless here; the surfaces
+    // never share one selection flag (see selectionStore).
+    if (get(selection).surface === 'queue') clearSelection()
   })
 
   // ── Jump-to-current ──────────────────────────────────────────────────
@@ -181,6 +198,12 @@
   <FilterSortBar />
   <JumpToCurrentButton show={canJumpToCurrent} onclick={jumpToCurrent} />
   <ScrollTopButton target={listContainer} posClass={canJumpToCurrent ? 'bottom-20 right-4' : 'bottom-5 right-4'} />
+
+  <!-- Selection bar floats over the list (the list keeps its pb-24 clearance),
+       so the shelf of batch verbs never covers the last row or the mini player. -->
+  {#if $selection.mode && $selection.surface === 'library'}
+    <SelectionBar variant="library" class="absolute inset-x-3 bottom-2 z-20 shadow-2xl" />
+  {/if}
 
   <div bind:this={listContainer} class="flex-1 overflow-y-auto overflow-anchor-none pb-24" onscroll={machine.onScroll}>
     <div class="px-4 pt-2 pb-1">

@@ -54,8 +54,11 @@ test('keyboard: Shift+F10 opens, arrows move, Escape closes and returns focus', 
   await page.keyboard.press('Shift+F10')
 
   await expect(menu(page)).toBeVisible()
-  // Focus starts on the first command and roving traversal moves it.
+  // Focus starts on the first command and roving traversal moves it. `select`
+  // is the multi-select entry point and sits directly under Play.
   await expect(menu(page)).toHaveAttribute('aria-activedescendant', 'ctx-menu-root-play')
+  await page.keyboard.press('ArrowDown')
+  await expect(menu(page)).toHaveAttribute('aria-activedescendant', 'ctx-menu-root-select')
   await page.keyboard.press('ArrowDown')
   await expect(menu(page)).toHaveAttribute('aria-activedescendant', 'ctx-menu-root-playNext')
   await page.keyboard.press('Home')

@@ -10,9 +10,10 @@
  * with a different COMMAND LIST. The builders return commands as
  * plain ids (`play`, `playNext`, `rate:40`, `removeRow`, …); the host maps an id
  * to a side effect. That split is what keeps the menu extensible: adding a
- * command is a builder entry + one host branch, never new markup, and a future
- * multi-select target only adds a `ContextMenuTarget` variant and a builder —
- * the primitive, placement, focus and dismissal contract stay untouched.
+ * command is a builder entry + one host branch, never new markup. The
+ * multi-select batch menu reuses it unchanged (`buildSelectionMenu`): the host
+ * swaps builders when the targeted row is part of the live selection, so the
+ * primitive, placement, focus and dismissal contract stay untouched.
  */
 
 /** Icons rendered by `ContextMenu.svelte`. Paths are 24×24, fill=`currentColor`. */
@@ -29,6 +30,9 @@ export type ContextMenuIcon =
   | 'notNow'
   | 'album'
   | 'artist'
+  | 'select'
+  | 'refresh'
+  | 'convertUp'
 
 export const CONTEXT_MENU_ICONS: Record<ContextMenuIcon, string> = {
   play: 'M8 5v14l11-7z',
@@ -48,6 +52,11 @@ export const CONTEXT_MENU_ICONS: Record<ContextMenuIcon, string> = {
   album: 'M12 3v10.55A4 4 0 1014 17V7h4V3h-6z',
   artist:
     'M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z',
+  select:
+    'M19 3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V5a2 2 0 00-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z',
+  refresh:
+    'M17.65 6.35A7.95 7.95 0 0012 4a8 8 0 100 16 8 8 0 007.73-6h-2.08A6 6 0 1112 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
+  convertUp: 'M12 3L7.41 7.59 8.83 9 11 6.83V15h2V6.83L15.17 9l1.41-1.41L12 3zM5 19h14v2H5z',
 }
 
 /** A non-interactive heading (the target's title/artist). Never focusable. */
@@ -129,6 +138,9 @@ export interface TrackMenuContext {
    */
   queueRow?: 'user' | 'auto'
   canShowDetails: boolean
+  /** Offer the multi-select entry point (every row surface has one; a transient
+   *  push-confirm row deliberately does not). */
+  showSelect?: boolean
 }
 
 /**
@@ -143,6 +155,10 @@ export function buildTrackMenu(ctx: TrackMenuContext): ContextMenuEntry[] {
     { type: 'action', id: 'play', label: playLabel, icon: 'play' },
   ]
 
+  if (ctx.showSelect) {
+    entries.push({ type: 'action', id: 'select', label: 'Select', icon: 'select' })
+  }
+
   if (ctx.queueRow === 'user') {
     entries.push(
       { type: 'separator', id: 'menu-sep-queue' },
@@ -155,6 +171,13 @@ export function buildTrackMenu(ctx: TrackMenuContext): ContextMenuEntry[] {
       { type: 'separator', id: 'menu-sep-queue' },
       { type: 'action', id: 'moveNext', label: 'Play next', icon: 'moveNext' },
       { type: 'action', id: 'addToEnd', label: 'Add to end of queue', icon: 'queue' },
+      {
+        type: 'action',
+        id: 'convertUpTo',
+        label: 'Convert up to here',
+        icon: 'convertUp',
+        ariaLabel: 'Convert every suggestion up to and including this one into the user queue',
+      },
       { type: 'action', id: 'notNow', label: 'Not now', icon: 'notNow' },
     )
   } else {
@@ -211,6 +234,90 @@ export function buildGroupMenu(ctx: GroupMenuContext): ContextMenuEntry[] {
     { type: 'action', id: 'playNext', label: 'Play next', icon: 'playNext' },
     { type: 'action', id: 'addToQueue', label: 'Add to queue', icon: 'queue' },
   ]
+}
+
+/**
+ * The batch menu for a multi-select (2026-11-04). One builder for BOTH
+ * surfaces, because the command ids are the same concept and the host resolves
+ * them against the surface that owns the selection — a library selection is a
+ * list of track ids, a queue selection a list of occurrences.
+ */
+export interface SelectionMenuContext {
+  surface: 'library' | 'queue'
+  count: number
+  /** Queue selections only: at least one selected row may be removed (the
+   *  audible row never can — deleting it would strand playback). */
+  canRemove: boolean
+  /** Queue selections only: every selected row already sits in the user
+   *  queue, so "Add to user queue" would be a no-op. */
+  allInUserQueue: boolean
+}
+
+export const SELECTION_MENU_RATING_PREFIX = 'selectionRate'
+
+/** Rating choices for a multi-selection: no checked mark, because the rows may
+ *  hold different values (a single "current" star would lie about the rest). */
+export function buildBatchRatingMenu(): ContextMenuEntry[] {
+  return CONTEXT_MENU_RATING_STEPS.map((value) => ({
+    type: 'action' as const,
+    id: `${SELECTION_MENU_RATING_PREFIX}:${value}`,
+    label: value === 0 ? 'Clear rating' : ratingLabel(value),
+    ariaLabel:
+      value === 0 ? 'Clear the rating of every selected song' : `Rate every selected song ${value}`,
+  }))
+}
+
+export function buildSelectionMenu(ctx: SelectionMenuContext): ContextMenuEntry[] {
+  const entries: ContextMenuEntry[] = [
+    {
+      type: 'label',
+      id: 'menu-context',
+      label: `${ctx.count} selected`,
+      detail: ctx.surface === 'queue' ? 'Queue rows' : 'Library songs',
+    },
+    // "Play next" only means something for a library selection: a queue row is
+    // already queued, and moving a SET is a reorder the queue surfaces spell
+    // out per row. Offering a dead command would be worse than omitting it.
+    ...(ctx.surface === 'library'
+      ? ([{ type: 'action', id: 'selectionPlayNext', label: 'Play next', icon: 'playNext' }] satisfies ContextMenuEntry[])
+      : []),
+    {
+      type: 'action',
+      id: 'selectionAddToQueue',
+      label: ctx.surface === 'queue' ? 'Add to user queue' : 'Add to queue',
+      icon: 'queue',
+      disabled: ctx.surface === 'queue' && ctx.allInUserQueue,
+    },
+    {
+      type: 'action',
+      id: 'selectionSetUserQueue',
+      label: 'Set as user queue',
+      icon: 'queue',
+      ariaLabel: 'Replace the user queue with the selected songs',
+    },
+    { type: 'separator', id: 'menu-sep-feedback' },
+    { type: 'action', id: 'selectionLove', label: 'Loved', icon: 'heart' },
+    {
+      type: 'submenu',
+      id: 'selectionRating',
+      label: 'Rating',
+      icon: 'star',
+      items: buildBatchRatingMenu(),
+    },
+  ]
+
+  if (ctx.surface === 'queue' && ctx.canRemove) {
+    entries.push(
+      { type: 'separator', id: 'menu-sep-remove' },
+      { type: 'action', id: 'selectionRemove', label: 'Remove from queue', icon: 'remove', danger: true },
+    )
+  }
+
+  entries.push(
+    { type: 'separator', id: 'menu-sep-selection' },
+    { type: 'action', id: 'clearSelection', label: 'Clear selection', icon: 'remove' },
+  )
+  return entries
 }
 
 /** Ids a keyboard user can land on, in visual order (labels/separators skipped,

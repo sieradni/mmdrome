@@ -37,6 +37,7 @@ import {
   library,
   settings,
   autoQueueRecentLimit,
+  autoQueueLength,
   playbackSpeed,
   pitchOctaves,
   tapeMode,
@@ -123,6 +124,8 @@ export class PlaybackManager {
   private _lastSort: SortState = { tiers: [], randomSeed: 0 }
   /** The recently-played horizon last reacted to (rebuild, never reset). */
   private _lastRecentLimit = -1
+  /** The auto-queue LENGTH last reacted to (resize, never a rule change). */
+  private _lastQueueLength = -1
   /** The auto-filter VALUES last reacted to. A Svelte subscription fires once
    *  at subscribe time, and D7's reaction is destructive (it clears the
    *  anti-repeat window), so the boot fire must be a no-op — without this
@@ -642,6 +645,19 @@ export class PlaybackManager {
       if (limit === this._lastRecentLimit) return
       this._lastRecentLimit = limit
       this._qm.rebuildAutoQueue()
+    }))
+
+    // The auto queue's LENGTH (2026-11-04) is a SIZE, not a rule: the tail is
+    // trimmed to the new target (never below the audible row) or replenished
+    // up to it, and the anti-repeat window is left exactly as it was. The
+    // subscription's boot fire is a no-op through the last-value guard, so a
+    // restored setting never rewrites the restored tail.
+    this._lastQueueLength = get(autoQueueLength)
+    unsubs.push(autoQueueLength.subscribe((length) => {
+      if (!this._initialized) return
+      if (length === this._lastQueueLength) return
+      this._lastQueueLength = length
+      this._qm.resizeAutoQueue()
     }))
 
     // Keep the native engine's queue snapshot in step with ANY queue mutation

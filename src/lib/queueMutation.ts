@@ -250,6 +250,131 @@ export function promoteToUser(q: QueueState, autoIndex: number): QueueMutation |
 }
 
 /**
+ * Converts the auto PREFIX up to and including `autoIndex` into user-queue
+ * occurrences (2026-11-04, queue menu "Convert up to here"): every suggestion
+ * above the target becomes a real queued row, in order, and leaves the auto
+ * section. Rows BELOW the target stay suggestions.
+ *
+ * The COMBINED order is unchanged (a section splice at the boundary), so the
+ * anchor needs no arithmetic — but the audible occurrence can change SECTION,
+ * which ordinal re-resolution cannot follow, so the pre-mutation index is
+ * passed as the validated hint (`applyQueueMutation` re-checks the id).
+ * Nothing is cooled down: these rows were promoted, not skipped.
+ */
+export function convertAutoUpTo(q: QueueState, autoIndex: number): QueueMutation | null {
+  if (autoIndex < 0 || autoIndex >= q.autoQueue.length) return null
+  return {
+    userQueue: [...q.userQueue, ...q.autoQueue.slice(0, autoIndex + 1)],
+    autoQueue: q.autoQueue.slice(autoIndex + 1),
+    ...(q.activeIndex >= 0 ? { anchorIndex: q.activeIndex } : {}),
+  }
+}
+
+/**
+ * Bulk promotion: appends every selected AUTO occurrence (in the given order)
+ * to the user queue and removes them from the tail — ONE write for a whole
+ * selection (N `promoteToUser` calls would also reverse an index-based batch
+ * as each removal shifts the array).
+ *
+ * The anchor follows the audible row: promoted → its new user position;
+ * not promoted → its auto position, shifted down by the promoted rows above
+ * it (they now sit before it in combined order).
+ */
+export function promoteManyToUser(q: QueueState, autoIndices: readonly number[]): QueueMutation | null {
+  const sorted = [...new Set(autoIndices)]
+    .filter((i) => i >= 0 && i < q.autoQueue.length)
+    .sort((a, b) => a - b)
+  if (sorted.length === 0) return null
+  const remove = new Set(sorted)
+  const promoted = sorted.map((i) => q.autoQueue[i])
+  const autoQueue = q.autoQueue.filter((_, i) => !remove.has(i))
+  const userQueue = [...q.userQueue, ...promoted]
+  let anchorIndex: number | undefined
+  const activeAuto = q.activeIndex >= q.userQueue.length ? q.activeIndex - q.userQueue.length : -1
+  if (activeAuto >= 0) {
+    const promotedAt = sorted.indexOf(activeAuto)
+    if (promotedAt >= 0) {
+      anchorIndex = q.userQueue.length + promotedAt
+    } else {
+      const above = sorted.filter((i) => i < activeAuto).length
+      anchorIndex = userQueue.length + (activeAuto - above)
+    }
+  }
+  return { userQueue, autoQueue, ...(anchorIndex !== undefined ? { anchorIndex } : {}) }
+}
+
+/**
+ * Replaces the user queue wholesale with `trackIds` (2026-11-04, "Set as user
+ * queue"): the listening log becomes the selection, in the order it was
+ * selected. Deliberately a FULL-STATE reducer, like `pressTrack` — the anchor
+ * is decided here rather than re-resolved, because the previous audible row may
+ * not be in the new queue at all.
+ *
+ * The audible row is never deleted underneath playback: when `keepId` (the
+ * loaded track) is not part of the selection it is PREPENDED, the same rule
+ * `clearQueue` follows for the playing row. Auto rows of the newly queued ids
+ * are dropped (they are no longer suggestions — the explicit copy wins); the
+ * rest of the suggestion tail is left alone so the queue does not visibly empty
+ * itself, and a later replenish keeps it in step with the rule set.
+ */
+export function replaceUserQueue(q: QueueState, trackIds: readonly string[], keepId?: string): QueueState | null {
+  if (trackIds.length === 0) return null
+  const kept = keepId !== undefined && !trackIds.includes(keepId) ? [keepId] : []
+  const userQueue = [...kept, ...trackIds]
+  const queued = new Set(userQueue)
+  const autoQueue = q.autoQueue.filter((id) => !queued.has(id))
+  const activeIndex = keepId !== undefined ? (kept.length > 0 ? 0 : userQueue.indexOf(keepId)) : 0
+  return { ...q, userQueue, autoQueue, activeIndex: userQueue.length === 0 ? -1 : activeIndex }
+}
+
+/**
+ * Removes several rows in ONE write (multi-select removal). `userIndices` are
+ * user-section indices, `autoIndices` auto-section indices; both address
+ * OCCURRENCES (the caller resolved them from entry ids).
+ *
+ * FULL-STATE by design: removal keeps POSITION semantics (the same reason
+ * `removeFromUserQueue` bypasses the id re-anchor) — the audible row may be the
+ * one removed. Every removed id cools into the anti-repeat window (removal is a
+ * "not now" intent, identical to the single-row paths).
+ *
+ * The anchor slides by the number of removed rows ABOVE it. When the audible
+ * row itself was removed the index stays pointed at the row that slid into its
+ * place (2.4 option b), clamped to the new end — callers that must not remove
+ * the playing row (the selection bar) exclude it *before* calling.
+ */
+export function removeRows(
+  q: QueueState,
+  userIndices: readonly number[],
+  autoIndices: readonly number[],
+): QueueState | null {
+  const userSet = new Set(userIndices.filter((i) => i >= 0 && i < q.userQueue.length))
+  const autoSet = new Set(autoIndices.filter((i) => i >= 0 && i < q.autoQueue.length))
+  if (userSet.size === 0 && autoSet.size === 0) return null
+
+  const removedCombined = new Set<number>()
+  for (const i of userSet) removedCombined.add(i)
+  for (const i of autoSet) removedCombined.add(q.userQueue.length + i)
+
+  const userQueue = q.userQueue.filter((_, i) => !userSet.has(i))
+  const autoQueue = q.autoQueue.filter((_, i) => !autoSet.has(i))
+
+  let recentTrackIds = q.recentTrackIds
+  for (const i of userSet) recentTrackIds = inscribeRecent(recentTrackIds, q.userQueue[i], RECENT_LIMIT)
+  for (const i of autoSet) recentTrackIds = inscribeRecent(recentTrackIds, q.autoQueue[i], RECENT_LIMIT)
+
+  const total = userQueue.length + autoQueue.length
+  let activeIndex = -1
+  if (q.activeIndex >= 0) {
+    let removedBefore = 0
+    for (const idx of removedCombined) if (idx < q.activeIndex) removedBefore++
+    const slid = q.activeIndex - removedBefore
+    activeIndex = total === 0 ? -1 : Math.min(Math.max(0, slid), total - 1)
+  }
+
+  return { ...q, userQueue, autoQueue, recentTrackIds, activeIndex }
+}
+
+/**
  * Moves the auto OCCURRENCE at `autoIndex` to the slot right after the active
  * row, appending a new user occurrence (no dedupe-move: the auto row and any
  * user copy are independent rows). Out-of-range index is a no-op.

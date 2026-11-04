@@ -729,7 +729,7 @@ test('auto-row promotion cools the consumed skipped prefix so the refill cannot 
   const a1 = mk('a1')
   const a2 = mk('a2')
   const a3 = mk('a3')
-  // MAX_AUTO_QUEUE is 50: the refill needs 49 slots, so the fresh pool must
+  // The auto-queue target is the default 50 here: the refill needs 49 slots, so the fresh pool must
   // be able to cover the whole window — otherwise tier-2 anti-starvation
   // (B4, deliberate) re-admits cooled tracks by design and there is nothing
   // to pin. 55 fresh matching tracks guarantee tier 1 fills alone.

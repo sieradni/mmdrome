@@ -2,7 +2,14 @@
   import PushChangesSection from '../components/PushChangesSection.svelte'
 
   import AppSlider from '../components/AppSlider.svelte'
-import { autoQueueRecentLimit, AUTO_QUEUE_RECENT_LIMIT_MAX } from '../stores/appState'
+import {
+  autoQueueRecentLimit,
+  AUTO_QUEUE_RECENT_LIMIT_MAX,
+  autoQueueLength,
+  AUTO_QUEUE_LENGTH_MIN,
+  AUTO_QUEUE_LENGTH_MAX,
+  clampAutoQueueLength,
+} from '../stores/appState'
   import ClearableSearch from '../components/ClearableSearch.svelte'
   import { onMount } from 'svelte'
   import { get } from 'svelte/store'
@@ -1779,6 +1786,27 @@ import { autoQueueRecentLimit, AUTO_QUEUE_RECENT_LIMIT_MAX } from '../stores/app
               class="flex-1"
             />
             <span class="w-16 text-right text-sm text-muted" data-testid="recent-window-value">{$autoQueueRecentLimit} songs</span>
+          </div>
+        </section>
+
+        <!-- Auto queue length (2026-11-04): how many suggestion rows the tail
+             keeps. ONE persisted number read by the fill at every site; a change
+             resizes the tail immediately (trim never removes the playing row). -->
+        <section class="px-4 py-4">
+          <h3 class="mb-1 text-base font-medium text-primary">Auto queue length</h3>
+          <p class="mb-3 text-sm text-muted">How many upcoming suggestions the auto queue keeps. It is refilled after every track, so this is the steady size.</p>
+          <div class="flex items-center gap-3">
+            <AppSlider
+              value={$autoQueueLength}
+              min={AUTO_QUEUE_LENGTH_MIN}
+              max={AUTO_QUEUE_LENGTH_MAX}
+              step={5}
+              label="Auto queue length"
+              valueText={(v) => `${v} songs`}
+              onInput={(v) => autoQueueLength.set(clampAutoQueueLength(v))}
+              class="flex-1"
+            />
+            <span class="w-16 text-right text-sm text-muted" data-testid="auto-length-value">{$autoQueueLength} songs</span>
           </div>
         </section>
 
