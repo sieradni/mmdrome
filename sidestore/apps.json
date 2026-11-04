@@ -27,7 +27,8 @@
           "date": "2026-11-04T09:59:28.363Z",
           "localizedDescription": "Multi-select: shift-click songs in the library or the queue and act on the whole set. The suggestion queue now has an adjustable length and a refresh button on its header, and the queue's now-playing island always keeps its transport controls.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.8.0/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5282999
         },
         {
           "version": "1.7.0",
