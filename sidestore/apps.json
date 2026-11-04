@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.6.1",
-      "versionDate": "2026-11-03T23:39:48.712Z",
-      "versionDescription": "Fix keyboard range editing: arrow/Home/End nudges now stop at the other handle instead of silently inverting the filter.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.6.1/mmdrome.ipa",
+      "version": "1.7.0",
+      "versionDate": "2026-11-04T07:45:36.677Z",
+      "versionDescription": "A new context menu: hold or right-click any song, queue row, album, artist or the player for play, queue, loved, rating and details actions.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.7.0/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.7.0",
+          "buildVersion": "87",
+          "date": "2026-11-04T07:45:36.677Z",
+          "localizedDescription": "A new context menu: hold or right-click any song, queue row, album, artist or the player for play, queue, loved, rating and details actions.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.7.0/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.6.1",
           "buildVersion": "86",
@@ -791,6 +799,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.7.0",
+      "identifier": "ios-v1.7.0",
+      "appID": "com.mmdrome.player",
+      "caption": "A new context menu: hold or right-click any song, queue row, album, artist or the player for play, queue, loved, rating and details actions.",
+      "date": "2026-11-04T07:45:36.677Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.6.1",
       "identifier": "ios-v1.6.1",
       "appID": "com.mmdrome.player",
@@ -823,15 +840,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Sort by two levels at once, with Random as a sort you can pick — turning shuffle off returns to the order it replaced. The queue can fetch n",
       "date": "2026-11-01T05:02:27.128Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.4.5",
-      "identifier": "ios-v1.4.5",
-      "appID": "com.mmdrome.player",
-      "caption": "Improve WebDAV server compatibility and preserve uncertain MOVE outcomes safely.",
-      "date": "2026-10-29T23:13:56.507Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
