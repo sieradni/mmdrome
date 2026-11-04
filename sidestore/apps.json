@@ -27,7 +27,8 @@
           "date": "2026-11-04T07:45:36.677Z",
           "localizedDescription": "A new context menu: hold or right-click any song, queue row, album, artist or the player for play, queue, loved, rating and details actions.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.7.0/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5277707
         },
         {
           "version": "1.6.1",
