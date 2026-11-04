@@ -8,6 +8,8 @@
   import type { Track } from '../stores/appState'
   import LazyThumb from './LazyThumb.svelte'
   import TrackOptionsDropdown from './TrackOptionsDropdown.svelte'
+  import { contextMenuTrigger } from '../lib/contextMenuTrigger'
+  import { openContextMenu } from '../lib/contextMenuStore'
 
   let { track, showAlbum = true, showDuration = false, showAlbumArtist = false, dataTrackId, ondetails, onplay, highlightTokens = [], playing = false, windowed = false }: {
     track: Track
@@ -84,6 +86,23 @@
       playbackManager.playTrackById(trackId)
     }
   }
+
+  /** Hold / right-click opens the shared track menu. The row's press semantics
+   *  are passed through, so a detail view keeps its album/artist auto-queue
+   *  scope while a plain library row clears it. */
+  function handleContextMenu(position: { x: number; y: number }, trigger: HTMLElement) {
+    openContextMenu({
+      target: {
+        kind: 'track',
+        track,
+        onDetails: ondetails ? () => ondetails!() : undefined,
+        onPlay: onplay ? () => onplay!(track.trackId) : undefined,
+      },
+      x: position.x,
+      y: position.y,
+      trigger,
+    })
+  }
 </script>
 
 <div
@@ -91,6 +110,7 @@
     (playing ? 'ui-now-playing-row' : 'hover:bg-white/5')}
   role="button"
   tabindex="0"
+  use:contextMenuTrigger={{ onOpen: handleContextMenu }}
   data-track-id={dataTrackId ?? track.trackId}
   onclick={() => handlePlay(track.trackId)}
   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handlePlay(track.trackId) }}

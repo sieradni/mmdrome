@@ -36,6 +36,10 @@
   import LyricsView from './components/LyricsView.svelte'
   import { lyricsState } from './lib/lyricsService'
   import DebugHud from './components/DebugHud.svelte'
+  import ContextMenuHost from './components/ContextMenuHost.svelte'
+  import TrackDetailsModal from './components/TrackDetailsModal.svelte'
+  import { contextMenuTrigger } from './lib/contextMenuTrigger'
+  import { openContextMenu } from './lib/contextMenuStore'
   import EngineUnavailableBanner from './components/EngineUnavailableBanner.svelte'
   import SeekBar from './components/SeekBar.svelte'
   import BufferSpinner from './components/BufferSpinner.svelte'
@@ -46,6 +50,7 @@
   import { currentLoadedFraction } from './lib/loadStatus'
   import { setupBufferMonitor } from './lib/bufferMonitor'
   import { advanceTargetIndex } from './lib/queueMutation'
+  import type { Track } from './stores/appState'
 
   let nowPlayingOpen = $state(false)
   let queueOpen = $state(false)
@@ -66,6 +71,10 @@
     if (!hasLyrics) lyricsPaneMode = false
   })
   let overlay: 'trackOptions' | 'pitchSpeed' | 'eq' | 'volume' | 'detail' | null = $state(null)
+  /** The track a PLAYER-surface context menu is showing details for. Uses the
+   *  same modal as a library row, so the player does not grow a second details
+   *  surface. */
+  let playerDetailsTrack = $state<Track | null>(null)
   let searchQuery = $state('')
   let searchQueryDebounced = $state('')
   // Debounce the header search: every keystroke re-filters the active view,
@@ -469,6 +478,22 @@
     // idle case (and the detail view's queue button is the idle path in).
     toggleNowPlaying()
   }
+
+  /**
+   * Hold / right-click on a PLAYER surface (mini player, expanded Now Playing)
+   * targets the current track. Details opens the shared TrackDetailsModal —
+   * the player surfaces get the row's command set instead of a second one.
+   */
+  function openCurrentTrackMenu(position: { x: number; y: number }, trigger: HTMLElement) {
+    const track = $currentTrack
+    if (!track) return
+    openContextMenu({
+      target: { kind: 'track', track, onDetails: () => { playerDetailsTrack = track } },
+      x: position.x,
+      y: position.y,
+      trigger,
+    })
+  }
 </script>
 
 <div class="flex h-dvh flex-col bg-background text-primary safe-area-top safe-area-x" data-app-ready={appReady || undefined}>
@@ -532,7 +557,9 @@
       onclick={miniPlayerTap}
       role="button"
       tabindex="0"
+      data-testid="mini-player"
       onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') miniPlayerTap(); }}
+      use:contextMenuTrigger={{ onOpen: openCurrentTrackMenu, disabled: !$currentTrack }}
       class="ui-island relative flex cursor-pointer items-center gap-3 overflow-hidden px-3 py-2.5 text-left transition-colors hover:bg-white/5"
     >
       <!-- Progress: a 2px accent bar INSET at the island's bottom (user
@@ -626,7 +653,10 @@
         {/if}
         {#if isWide || !lyricsPaneMode}
           <div class="flex min-h-0 flex-1 items-center justify-center">
-            <div class="relative aspect-square w-full max-w-sm overflow-hidden rounded-2xl bg-surface-hover shadow-2xl">
+            <div
+              class="relative aspect-square w-full max-w-sm overflow-hidden rounded-2xl bg-surface-hover shadow-2xl"
+              use:contextMenuTrigger={{ onOpen: openCurrentTrackMenu }}
+            >
               <LazyThumb track={$currentTrack} size={512} wrapperClass="h-full w-full" />
               {#if $playbackState === 'buffering'}
                 <!-- Absolute overlay: no layout impact. A soft scrim + ring keeps
@@ -737,7 +767,11 @@
       </div>
 
       <!-- Track Info -->
-      <div class="w-full min-w-0 space-y-0.5 px-6 pt-2">
+      <div
+        class="w-full min-w-0 space-y-0.5 px-6 pt-2"
+        data-testid="now-playing-track"
+        use:contextMenuTrigger={{ onOpen: openCurrentTrackMenu }}
+      >
         <h2 class="truncate text-2xl font-bold text-primary">{$currentTrack.title}</h2>
         <p class="truncate text-base text-muted">{$currentTrack.artist}</p>
       </div>
@@ -855,6 +889,15 @@
     <DetailView onclose={toggleNowPlaying} oncloseall={closeAll} />
   </div>
 {/if}
+
+{#if playerDetailsTrack}
+  <TrackDetailsModal track={playerDetailsTrack} onclose={() => (playerDetailsTrack = null)} />
+{/if}
+
+<!-- The ONE custom context menu (hold / right-click / Shift+F10) shared by
+     every surface. Mounted last so its fixed layer paints above the view
+     overlays; it is request-driven and renders nothing while closed. -->
+<ContextMenuHost />
 
 <!-- Native engine-unavailable restart affordance (2026-10-04). Renders only
      while the store is set, so it is inert on web and on a healthy engine. -->

@@ -180,6 +180,31 @@ export function playNext(q: QueueState, trackId: string): QueueMutation | null {
 }
 
 /**
+ * Bulk "add to queue" (album/artist menus now; multi-select later): appends
+ * every occurrence in ORDER with ONE write. Duplicates are legal (D2) — a
+ * playlist-style import that repeats a song is representable — and an empty
+ * list is a deliberate no-op so no call site has to guard.
+ */
+export function addManyToUserQueue(q: QueueState, trackIds: readonly string[]): QueueMutation | null {
+  if (trackIds.length === 0) return null
+  return { userQueue: [...q.userQueue, ...trackIds] }
+}
+
+/**
+ * Bulk "play next": inserts the tracks, in the given order, immediately after
+ * the active row (clamped to the user tail, exactly like `playNext`). One
+ * reducer rather than N inserts — N `playNext` calls would reverse the batch,
+ * because each insert lands at the same anchor+1 slot.
+ */
+export function playNextMany(q: QueueState, trackIds: readonly string[]): QueueMutation | null {
+  if (trackIds.length === 0) return null
+  const insertAt = q.activeIndex >= 0 ? Math.min(q.activeIndex + 1, q.userQueue.length) : q.userQueue.length
+  return {
+    userQueue: [...q.userQueue.slice(0, insertAt), ...trackIds, ...q.userQueue.slice(insertAt)],
+  }
+}
+
+/**
  * A PRESS on a song outside the queue (D1): start THAT song, never jump to an
  * old copy of it. Returns the rewritten state, or `null` when the press is the
  * audible row itself (resume/restart — no new row).

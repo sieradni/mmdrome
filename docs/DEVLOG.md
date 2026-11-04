@@ -1,3 +1,25 @@
+## 2026-11-04b — Context-menu coverage audit: player surfaces, detail headers, honest Resume
+
+The menu was only mounted where the first pass happened to add it. This pass audited every surface that renders a track, queue occurrence, album or artist, and closed the two real gaps: the player surfaces (mini player and the expanded Now Playing artwork/title) and the album/artist DETAIL headers. Both reuse the existing target union and builders — no second menu, no view-specific command logic.
+
+The player surfaces target the current track through `openCurrentTrackMenu`; Details opens the same `TrackDetailsModal` a library row uses (a new `playerDetailsTrack` slot in App), and the trigger's `disabled` option makes the idle mini player (no current track) leave the native menu alone instead of swallowing it for an empty menu. The detail headers call `openSelectedAlbumMenu`/`openSelectedArtistMenu`, which pass the live `selectedTracks` and reuse `playAll` (scope + validated import), so the header and the grid cell cannot diverge.
+
+The audit also caught a semantic lie: the audible row's menu said Resume when paused, but every play path reloaded the track at 0:00. `queueCommands.restartOrResumeCurrent` is now the audible command (seek 0 while playing/buffering, toggle play/pause when paused); the host resolves queue targets by OCCURRENCE index before deciding audibility, so a duplicate of the current song does not steal the resume. Row taps keep their existing restart semantics.
+
+Deliberate omissions, recorded in AGENTS §2.5/C12: TrackOptionsView and DetailView (their controls are already the screen), push-confirm and File Matching rows (transient pending-edit rows; their explicit Details/Discard buttons must not be duplicated and discard would be surprising in a menu), playlists and liked/recently-played lists (not built), multi-select/bulk multi-item (the declared next step), and on-device iOS touch (long-press is pinned through synthetic touch pointers in Chromium).
+
+Verification: `npm run check` 0/0; `npm test` 1638/1638; `npx playwright test tests/e2e/contextmenu.spec.ts tests/e2e/queueRows.spec.ts` 19/19 (8 context-menu cases, including the two new surfaces, plus 11 queue-row regressions).
+
+## 2026-11-04 — A custom context menu for every surface (and the model that keeps it honest)
+
+Hold, right-click and Shift+F10 now open a real menu on track rows (Songs and both detail views), queue rows (user and auto sections), and album/artist grids. It offers the actions those surfaces already had — play/resume/restart, play next, add to queue, row-scoped move/remove, "Not now" for a suggestion, whole-album/artist play/enqueue — plus Loved and the 0–100 rating scale through `commitFeedback`.
+
+The implementation is split by responsibility so a second menu cannot appear. `contextMenuCore.ts` is pure (declarative entries, per-target builders, keyboard traversal, pointer-anchored placement that flips at an edge then clamps, submenu placement); `contextMenuTrigger.ts` is the one trigger action (desktop right-click, 500 ms touch long-press with the trailing click swallowed and the native callout suppressed, ContextMenu/Shift+F10); `ContextMenu.svelte` is the one primitive (role=menu, roving aria-activedescendant, focus return, outside-scroll/resize/blur/Escape dismissal); `ContextMenuHost.svelte` mounted once in App is the only executor. Views publish a target; queue targets carry the occurrence entryId, never an index, and resolve it against the live queue when the command runs. Row removal/play route through `queueCommands.ts`, so the menu and the buttons cannot drift. Multi-select later is a new target kind plus a builder — the primitive does not change.
+
+An e2e run caught one real defect before shipping: the panel was focused while still `visibility:hidden` (placement hides it to avoid a corner flash), and a hidden element silently refuses focus — the menu opened with focus still on the row, so ArrowDown/Escape did nothing. Focus now waits for placement and verifies it landed; Escape also has a document-level fallback.
+
+Verification: `npm run check` 0 errors / 0 warnings; `npm test` 1638/1638 (10 new pure-core cases); `npx playwright test tests/e2e/contextmenu.spec.ts tests/e2e/queueRows.spec.ts` 17/17 (6 new browser cases: right-click, long-press, keyboard, rating submenu, queue-row remove, album enqueue).
+
 ## 2026-11-03 — Filters become a typed rule set (elemental AND, fuzzy per field, dual ranges)
 
 The filter UI was one fixed bag of scalars: `genre` (a `<select>`), `fromYear`/`toYear`, `minLength`/`maxLength`, plus rating and loved. Every field had exactly one editor shape, adding one meant editing four predicates and two dialogs, and the genre select forced an exact name. This pass replaces the model, not the markup: `src/lib/filterCore.ts` now owns a typed rule set — the rating range + loved switch stay permanent, every other field is a clause, and all clauses are ANDed.

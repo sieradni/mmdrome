@@ -173,6 +173,16 @@ class QueueManager {
     this._mutateQueue((q) => queueMutation.playNext(q, trackId))
   }
 
+  /** Bulk append in ONE write (album/artist menus, future multi-select). */
+  addManyToUserQueue(trackIds: readonly string[]): void {
+    this._mutateQueue((q) => queueMutation.addManyToUserQueue(q, trackIds))
+  }
+
+  /** Bulk insert after the active row, preserving the given order. */
+  playNextMany(trackIds: readonly string[]): void {
+    this._mutateQueue((q) => queueMutation.playNextMany(q, trackIds))
+  }
+
   /**
    * A PRESS on a song outside the queue (D1): start THAT song. Drops the id's
    * auto occurrence(s), appends a new user occurrence at the tail, anchors it

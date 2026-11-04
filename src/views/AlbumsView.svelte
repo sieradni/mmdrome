@@ -18,6 +18,8 @@
   import FilterSortBar from '../components/FilterSortBar.svelte'
   import JumpToCurrentButton from '../components/JumpToCurrentButton.svelte'
   import ScrollTopButton from '../components/ScrollTopButton.svelte'
+  import { contextMenuTrigger } from '../lib/contextMenuTrigger'
+  import { openContextMenu } from '../lib/contextMenuStore'
 
   let { searchQuery = '' }: { searchQuery?: string } = $props()
 
@@ -292,6 +294,40 @@
     playbackManager.playTrackAt(0)
   }
 
+  /** Hold / right-click on an album CELL. "Play album" reuses the in-album
+   *  Play All semantics (scope + validated import); the menu's other commands
+   *  (play next / add to queue) run through the bulk queue reducers. */
+  function openAlbumMenu(group: AlbumGroup, position: { x: number; y: number }, trigger: HTMLElement) {
+    openContextMenu({
+      target: {
+        kind: 'album',
+        album: group.album,
+        tracks: group.tracks,
+        onPlayAll: () => {
+          autoQueueScope.set({ albumScope: group.album, artistScope: undefined })
+          const report = queueManager.playAll(group.tracks.map((t) => t.trackId))
+          if (report.deferred || report.accepted.length === 0) return
+          void playbackManager.playTrackAt(0)
+        },
+      },
+      x: position.x,
+      y: position.y,
+      trigger,
+    })
+  }
+
+  /** The album DETAIL header is an album surface too: it opens the same menu
+   *  and reuses Play All's scope + validated import through playAll. */
+  function openSelectedAlbumMenu(position: { x: number; y: number }, trigger: HTMLElement) {
+    if (!selectedAlbum || selectedTracks.length === 0) return
+    openContextMenu({
+      target: { kind: 'album', album: selectedAlbum, tracks: selectedTracks, onPlayAll: playAll },
+      x: position.x,
+      y: position.y,
+      trigger,
+    })
+  }
+
   onMount(() => {
     const saved = restoreViewState<{ selectedAlbum: string | null }>(viewName)
     if (saved) {
@@ -309,7 +345,10 @@
       <button onclick={() => selectedAlbum = null} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Back">
         <svg class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5m7-7-7 7 7 7"/></svg>
       </button>
-      <h2 class="truncate text-lg font-bold text-primary">{selectedAlbum}</h2>
+      <h2
+        class="truncate text-lg font-bold text-primary"
+        use:contextMenuTrigger={{ onOpen: openSelectedAlbumMenu }}
+      >{selectedAlbum}</h2>
       <button onclick={playAll} class="ml-auto flex items-center gap-1.5 rounded-full bg-surface-hover px-4 py-1.5 text-sm font-medium text-primary transition-opacity hover:opacity-80" aria-label="Play all">
         <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
         Play All
@@ -342,7 +381,12 @@
       <div style="height:{gridTopGap}px" aria-hidden="true"></div>
       <div class="grid grid-cols-2 gap-4 px-4 py-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
         {#each renderedGroups as group (group.album)}
-          <button onclick={() => selectedAlbum = group.album} data-album={group.album} class="group text-left transition-transform hover:scale-[1.02]">
+          <button
+            onclick={() => selectedAlbum = group.album}
+            data-album={group.album}
+            class="group text-left transition-transform hover:scale-[1.02]"
+            use:contextMenuTrigger={{ onOpen: (position, trigger) => openAlbumMenu(group, position, trigger) }}
+          >
             <LazyThumb track={group.tracks.find(t => t.trackId === group.thumbnailTrackId) || group.tracks[0]} size={256} windowed wrapperClass="mb-2 aspect-square w-full rounded-lg" />
             <p class="truncate text-sm font-bold text-primary">
               {#if searchTokens.length > 0}

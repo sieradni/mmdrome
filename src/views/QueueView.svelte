@@ -18,6 +18,9 @@
   } from '../stores/appState'
   import { bufferedRanges, preloadEntries } from '../stores/loadStatus'
   import { planDragDrop } from '../lib/queueMutation'
+  import { contextMenuTrigger } from '../lib/contextMenuTrigger'
+  import { openContextMenu } from '../lib/contextMenuStore'
+  import { playQueueIndex, removeUserQueueIndex } from '../lib/queueCommands'
   import {
     entryIdOf,
     findEntryIndex,
@@ -568,16 +571,34 @@
     if (isDragging) return
     const idx = item.originalCombinedIdx
     if (idx < $queue.userQueue.length) {
-      // Removing the PLAYING row skips to the next track immediately (2.4/2.7).
-      // With duplicates the id is ambiguous, so the ROW fact is captured
-      // before the write: only the active row's own removal is a skip
-      // (removing another copy of the audible song must not skip it).
-      const removedWasActive = idx === $queue.activeIndex
-      const removedId = queueManager.removeFromUserQueue(idx)
-      if (removedId !== undefined) playbackManager.handleQueueRowRemoved(removedId, removedWasActive)
+      // The row + "removing the PLAYING row skips" contract lives in the shared
+      // command (queueCommands), so the context menu's Remove runs the SAME
+      // code this button does (2.4/2.7).
+      removeUserQueueIndex(idx)
       return
     }
     queueManager.removeFromAutoQueue(idx - $queue.userQueue.length)
+  }
+
+  /** Hold / right-click on a queue row. The target carries the OCCURRENCE
+   *  entryId, never the row index: a fill/advance landing while the menu is
+   *  open reindexes the combined list, and the host re-resolves by entryId at
+   *  execution time. */
+  function openQueueRowMenu(item: KeyedTrack, position: { x: number; y: number }, trigger: HTMLElement) {
+    if (isDragging) return
+    const section = item.originalCombinedIdx < $queue.userQueue.length ? 'user' : 'auto'
+    openContextMenu({
+      target: {
+        kind: 'queue',
+        track: item.track,
+        entryId: item.entryId,
+        section,
+        onDetails: () => { detailsTrack = item.track },
+      },
+      x: position.x,
+      y: position.y,
+      trigger,
+    })
   }
 
   /** Section-local index of a queue row (user rows map 1:1, auto rows are
@@ -596,13 +617,7 @@
    *  makes this exact even when several rows share a track id. */
   function playQueueItem(currentCombinedIdx: number) {
     if (isDragging) return
-    const id = combinedIds[currentCombinedIdx]
-    if (id === undefined) return
-    const isAudible = currentCombinedIdx === $queue.activeIndex
-      && $currentTrack?.trackId === id
-      && $playbackState !== 'stopped'
-    if (isAudible) playbackManager.seek(0)
-    else playbackManager.playTrackAt(currentCombinedIdx)
+    playQueueIndex(currentCombinedIdx)
   }
 
   function handleClearQueue() {
@@ -804,6 +819,7 @@
             onclick={() => playQueueItem(itemIndex)}
             role="button"
             tabindex="0"
+            use:contextMenuTrigger={{ onOpen: (position, trigger) => openQueueRowMenu(item, position, trigger) }}
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(itemIndex) }}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (isCurrentTrack(itemIndex) ? 'ui-now-playing-row ' : 'hover:bg-white/5 ') +
@@ -821,6 +837,7 @@
               aria-label="Drag to reorder"
               onclick={(e) => e.stopPropagation()}
               onpointerdown={(e) => startPointerDrag(e, item)}
+              data-no-context-menu
               role="presentation"
             >
               <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
@@ -952,6 +969,7 @@
             onclick={() => playQueueItem(itemCombinedIndex)}
             role="button"
             tabindex="0"
+            use:contextMenuTrigger={{ onOpen: (position, trigger) => openQueueRowMenu(item, position, trigger) }}
             onkeydown={(e) => { if (e.key === 'Enter') playQueueItem(itemCombinedIndex) }}
             class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (isCurrentTrack(itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-white/5 ') +
@@ -969,6 +987,7 @@
               aria-label="Drag to reorder"
               onclick={(e) => e.stopPropagation()}
               onpointerdown={(e) => startPointerDrag(e, item)}
+              data-no-context-menu
               role="presentation"
             >
               <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">

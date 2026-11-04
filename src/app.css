@@ -33,6 +33,40 @@
   background: color-mix(in srgb, var(--app-accent) 15%, #141414);
 }
 
+/* Custom context menu (2026-11-04).
+   `ui-context-menu-surface` is applied by the ONE trigger action
+   (contextMenuTrigger.ts) to every hold/right-click surface: iOS Safari must
+   not paint its native callout or start a text selection under the 500 ms
+   long-press timer. `ui-context-menu` is the popover's entrance — a short
+   scale/fade, disabled for reduced-motion users. No `transform` on the menu
+   after the animation (the submenu is a sibling, never a clipped descendant). */
+.ui-context-menu-surface {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.ui-context-menu {
+  animation: ui-context-menu-in 110ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes ui-context-menu-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-context-menu {
+    animation: none;
+  }
+}
+
 /* App-wide font — a bundled monospace (Appearance tab offers the choice).
    Set on :root so every Tailwind `font-sans` default resolves through it.
    The root font-size runs at 93.75% (15px): monospace glyphs are wider and
