@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.9.0",
-      "versionDate": "2026-11-05T09:26:34.401Z",
+      "version": "1.9.1",
+      "versionDate": "2026-11-05T09:54:00.870Z",
       "versionDescription": "Keyboard-accessible library and queue: shortcuts sheet via the ? key, visible focus, aria semantics throughout, unified row menus, filter dead-end exits, and published ring-hygiene counters. Includes CI hardening (build-in-fast-gate, non-blocking coverage).",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.0/mmdrome.ipa",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.1/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.9.1",
+          "buildVersion": "90",
+          "date": "2026-11-05T09:54:00.870Z",
+          "localizedDescription": "Keyboard-accessible library and queue: shortcuts sheet via the ? key, visible focus, aria semantics throughout, unified row menus, filter dead-end exits, and published ring-hygiene counters. Includes CI hardening (build-in-fast-gate, non-blocking coverage).",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.1/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.9.0",
           "buildVersion": "89",
@@ -818,6 +826,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.9.1",
+      "identifier": "ios-v1.9.1",
+      "appID": "com.mmdrome.player",
+      "caption": "Keyboard-accessible library and queue: shortcuts sheet via the ? key, visible focus, aria semantics throughout, unified row menus, filter de",
+      "date": "2026-11-05T09:54:00.870Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.9.0",
       "identifier": "ios-v1.9.0",
       "appID": "com.mmdrome.player",
@@ -850,15 +867,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Fix keyboard range editing: arrow/Home/End nudges now stop at the other handle instead of silently inverting the filter.",
       "date": "2026-11-03T23:39:48.712Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.6.0",
-      "identifier": "ios-v1.6.0",
-      "appID": "com.mmdrome.player",
-      "caption": "Filter by any field: genre, artist, album, title, composer, year, length or date added, with fuzzy text, quotes for exact matches, and dual ",
-      "date": "2026-11-03T22:50:00.159Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }

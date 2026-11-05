@@ -52,7 +52,7 @@ async function readQueueSections(
   return page.evaluate(() => {
     const read = (label: string) =>
       Array.from(document.querySelectorAll(`[aria-label="${label}"] .queue-track-item`)).map((el) => ({
-        title: el.querySelector('p')?.textContent?.trim() ?? '',
+        title: el.querySelector('span.block.truncate')?.textContent?.trim() ?? '',
         index: Number(el.getAttribute('data-combined-index')),
         current: el.classList.contains('ui-now-playing-row'),
       }))

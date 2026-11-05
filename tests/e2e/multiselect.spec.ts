@@ -57,8 +57,11 @@ test('Shift extends a library selection and the batch menu queues the set', asyn
 
 test('a queue selection removes its rows but never the audible one', async ({ page }) => {
   await bootWithMockLibrary(page)
+  // Add no longer implies autoplay (sibling button) — press the first row to
+  // make it audible, then queue the remaining two.
+  await rows(page).first().locator('button').first().click()
+  await page.waitForTimeout(900)
   const addButtons = page.getByRole('button', { name: 'Add to queue' })
-  await addButtons.nth(0).click()
   await addButtons.nth(1).click()
   await addButtons.nth(2).click()
 
@@ -71,7 +74,7 @@ test('a queue selection removes its rows but never the audible one', async ({ pa
   // test is "the audible row survives", whatever row that is.
   const audible = page.locator('[aria-label="User queue"] .ui-now-playing-row')
   await expect(audible).toHaveCount(1)
-  const audibleTitle = ((await audible.locator('p').first().textContent()) ?? '').trim()
+  const audibleTitle = ((await audible.locator('span.block.truncate').first().textContent()) ?? '').trim()
   expect(audibleTitle.length).toBeGreaterThan(0)
 
   // Select the whole section with one anchor + one Shift press on the last row.

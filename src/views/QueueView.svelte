@@ -863,7 +863,7 @@
       <div class="flex h-full items-center justify-center" role="status">
         <p class="text-sm text-muted">Queue is empty</p>
         {#if showClearLibraryFilters}
-          <button type="button" onclick={clearAllLibraryFilters} class="btn-secondary btn-md ml-4">Clear filters</button>
+          <button type="button" onclick={clearAllLibraryFilters} class="btn-secondary btn-md ml-4">Clear library filters</button>
         {/if}
       </div>
     {/if}
@@ -1085,7 +1085,7 @@
           <div
             class={"queue-track-item flex items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (rowSelected(item.entryId) ? 'bg-accent-soft ring-1 ring-accent-ring ' : '') +
-              (isCurrentTrack(itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-white/5 ') +
+              (isCurrentTrack(itemCombinedIndex) ? 'ui-now-playing-row ' : 'hover:bg-white/5 ') +
               (isDragging && item.entryId === draggedEntryId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
             }
             style={preloadTint(item.track.trackId)}

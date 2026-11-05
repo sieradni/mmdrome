@@ -119,6 +119,11 @@ test('queue: a fling followed by immediate close-and-reopen stays clean', async 
   await bootBigLibrary(page)
   await page.waitForTimeout(900)
 
+  // Press the first row so playback starts (Add is a sibling button, not a
+  // play trigger), then queue the rest.
+  await page.locator('main [data-track-id]').first().locator('button').first().click()
+  await page.waitForTimeout(900)
+
   const addButtons = page.getByRole('button', { name: 'Add to queue' })
   const n = Math.min(await addButtons.count(), 50)
   for (let i = 0; i < n; i++) await addButtons.nth(i).click()

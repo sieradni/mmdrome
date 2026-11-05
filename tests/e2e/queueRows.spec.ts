@@ -69,7 +69,9 @@ function homeMiniTitle(page: Page): Promise<string> {
     void island
     const buttons = document.querySelectorAll('div.ui-island[role="button"]')
     const el = buttons[0]
-    return el ? (el.querySelector('p')?.textContent ?? '') : ''
+    // The mini-bar title is a <p class="truncate ..."> (App.svelte); keep
+    // the same text shape for the equality assertion.
+    return el ? (el.querySelector('p.truncate')?.textContent ?? '') : ''
   })
 }
 
@@ -134,8 +136,8 @@ test('tapping a queue row plays THAT row', async ({ page }) => {
   const count = await rows.count()
   expect(count).toBeGreaterThanOrEqual(2)
   const target = rows.nth(count - 1)
-  const title = ((await target.locator('p').first().textContent()) ?? '').trim()
-  await target.click()
+  const title = ((await target.locator('span.block.truncate').first().textContent()) ?? '').trim()
+  await target.locator('button').first().click()
   await page.waitForTimeout(900)
   expect(await homeMiniTitle(page)).toBe(title)
 })
@@ -151,8 +153,8 @@ test('drag to reorder: the drop reorders the store', async ({ page }) => {
 
   const firstRow = page.locator('[aria-label="User queue"] .queue-track-item').first()
   const secondRow = page.locator('[aria-label="User queue"] .queue-track-item').nth(1)
-  const firstTitle = ((await firstRow.locator('p').first().textContent()) ?? '').trim()
-  const secondTitle = ((await secondRow.locator('p').first().textContent()) ?? '').trim()
+  const firstTitle = ((await firstRow.locator('span.block.truncate').first().textContent()) ?? '').trim()
+  const secondTitle = ((await secondRow.locator('span.block.truncate').first().textContent()) ?? '').trim()
 
   // Drag row 0's handle onto row 1 (a one-row swap).
   const handle = firstRow.locator('.drag-handle')
@@ -165,7 +167,7 @@ test('drag to reorder: the drop reorders the store', async ({ page }) => {
   await page.mouse.up()
   await page.waitForTimeout(600)
 
-  const newFirst = ((await page.locator('[aria-label="User queue"] .queue-track-item').first().locator('p').first().textContent()) ?? '').trim()
+  const newFirst = ((await page.locator('[aria-label="User queue"] .queue-track-item').first().locator('span.block.truncate').first().textContent()) ?? '').trim()
   expect(newFirst).toBe(secondTitle)
   expect(newFirst).not.toBe(firstTitle)
 })
