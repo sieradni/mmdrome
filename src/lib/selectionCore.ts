@@ -9,9 +9,12 @@
  *
  * The model is kept free of DOM/stores so the interaction rules are unit
  * verifiable (`tests/selectionCore.test.ts`). The rules:
- *  - SHIFT extends from the ANCHOR to the clicked key, inside the surface's
- *    own ORDER (what the user is looking at, including a virtual window — the
- *    range is computed from data, never from mounted rows);
+ *  - SHIFT extends the selection from the LAST SELECTED key to the clicked
+ *    key, inside the surface's own ORDER (what the user is looking at,
+ *    including a virtual window — the range is computed from data, never from
+ *    mounted rows) and NEVER drops prior picks: selections accumulate, so
+ *    Shift-picking 1 → 3 → 5 keeps every row in between. The clicked key
+ *    becomes the new base for the next Shift pick;
  *  - CTRL/CMD toggles one key and moves the anchor;
  *  - a plain press in selection mode toggles (the touch path — there is no
  *    modifier key on a phone);
@@ -26,9 +29,10 @@ export type SelectionSurface = 'library' | 'queue'
 export interface SelectionState {
   /** Which surface owns the keys (null = nothing selected). */
   surface: SelectionSurface | null
-  /** Selected keys, in the order they were added. */
+  /** Selected keys, in the surface's own order (a Shift union stays
+   *  contiguous in that order; toggles append). */
   keys: string[]
-  /** Range origin for Shift; the last non-range pick. */
+  /** Range origin for Shift; the last picked/selected key. */
   anchor: string | null
   /** Explicit selection mode: the next row press toggles instead of acting. */
   mode: boolean
@@ -108,10 +112,12 @@ export function beginSelection(
 }
 
 /**
- * The ONE click resolver for a selectable row. `modifiers.shift` extends,
- * `modifiers.toggle` (Ctrl/Cmd) toggles one key, and a bare click in selection
- * mode toggles too — the caller decides whether a bare click is a selection
- * gesture at all (outside selection mode a row press keeps its own meaning).
+ * The ONE click resolver for a selectable row. `modifiers.shift` chains a range
+ * onto the existing selection from the last selected key (prior picks are
+ * preserved — see the module header), `modifiers.toggle` (Ctrl/Cmd) toggles one
+ * key, and a bare click in selection mode toggles too — the caller decides
+ * whether a bare click is a selection gesture at all (outside selection mode a
+ * row press keeps its own meaning).
  */
 export function planSelectionClick(
   state: SelectionState,
@@ -127,8 +133,19 @@ export function planSelectionClick(
   if (modifiers.shift) {
     const base = anchor ?? key
     const range = rangeKeys(order, base, key)
-    const keys = modifiers.toggle ? [...current, ...range.filter((k) => !current.includes(k))] : range
-    return withKeys(state, surface, keys, base)
+    // Shift ADDS to the existing selection, never replacing it: the range is
+    // measured from the last picked key, and every prior pick survives. That
+    // is the chaining behaviour (pick 1 → Shift-pick 3 → Shift-pick 5 keeps
+    // all five) and it makes Ctrl/Cmd + Shift identical to Shift — both union.
+    // The union is emitted in the surface's own ORDER, not pick order: the
+    // ordered set is what range consumers (the batch verbs, the bar count)
+    // expect, and it keeps the range contiguous even when the picks were not.
+    const union = new Set([...current, ...range])
+    const keys = order.filter((k) => union.has(k))
+    // A key outside the order (a stale click) degrades to just itself, exactly
+    // as rangeKeys always has — never drop the click.
+    if (!keys.includes(key)) keys.push(key)
+    return withKeys(state, surface, keys, key)
   }
 
   const keys = current.includes(key) ? current.filter((k) => k !== key) : [...current, key]

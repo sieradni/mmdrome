@@ -16,7 +16,8 @@ import {
 
 // The multi-select model (2026-11-04). These rules are what every row surface
 // relies on, so they are pinned once, here:
-//  - Shift extends from the ANCHOR inside the surface's own order;
+//  - Shift chains from the LAST SELECTED key and unions the range onto the
+//    existing picks (prior selections are never dropped);
 //  - Ctrl/Cmd (and a plain press in selection mode) toggles one key;
 //  - the surface's order is the selection DOMAIN: leaving it prunes keys;
 //  - an empty selection leaves selection mode (a surface can never sit in a
@@ -67,36 +68,51 @@ test('Ctrl/Cmd toggles one key and moves the anchor', () => {
   let state = planSelectionClick(withOrder(), 'library', 'b')
   state = planSelectionClick(state, 'library', 'e', { toggle: true })
   assert.deepEqual(state.keys, ['b', 'e'])
-  assert.equal(state.anchor, 'e', 'the toggle is the last non-range pick')
+  assert.equal(state.anchor, 'e', 'the toggle is the last picked key; a Shift range measures from it')
   state = planSelectionClick(state, 'library', 'b', { toggle: true })
   assert.deepEqual(state.keys, ['e'])
 })
 
-test('Shift extends from the anchor, replacing unless it is also a toggle', () => {
+test('Shift chains from the last selected key and never drops prior picks', () => {
   let state = planSelectionClick(withOrder(), 'library', 'b')
   state = planSelectionClick(state, 'library', 'd', { shift: true })
   assert.deepEqual(state.keys, ['b', 'c', 'd'])
-  assert.equal(state.anchor, 'b', 'a range keeps the original anchor, so it can grow')
+  assert.equal(state.anchor, 'd', 'the clicked key becomes the base for the next Shift pick')
 
-  // A second Shift click re-ranges from the SAME anchor (not from the last
-  // extended key) — the desktop convention.
+  // A second Shift click continues from the LAST selected key and ADDS to the
+  // set — the prior range survives. The range clicked first (b–d) must still
+  // be there, and the new stretch (d–e) is unioned onto it.
   state = planSelectionClick(state, 'library', 'e', { shift: true })
   assert.deepEqual(state.keys, ['b', 'c', 'd', 'e'])
 
-  // Backwards too.
-  state = planSelectionClick(withOrder(), 'library', 'd')
-  state = planSelectionClick(state, 'library', 'b', { shift: true })
-  assert.deepEqual(state.keys, ['b', 'c', 'd'])
+  // Backwards chaining: the anchor is the last pick, so a Shift pick BELOW it
+  // fills the gap between rather than replacing what exists.
+  let back = planSelectionClick(withOrder(), 'library', 'd')
+  back = planSelectionClick(back, 'library', 'b', { shift: true })
+  assert.deepEqual(back.keys, ['b', 'c', 'd'])
+  back = planSelectionClick(back, 'library', 'a', { shift: true })
+  assert.deepEqual(back.keys, ['a', 'b', 'c', 'd'], 'chaining extends the set, it never re-bases it')
 
-  // Ctrl/Cmd + Shift ADDS the range instead of replacing. The range stays
-  // anchored where it began, so a second additive range grows from the SAME
-  // anchor (the desktop convention) rather than from the last extended key.
+  // Ctrl/Cmd + Shift behaves identically to Shift — both union the range.
   let additive = planSelectionClick(withOrder(), 'library', 'a')
   additive = planSelectionClick(additive, 'library', 'c', { shift: true, toggle: true })
   assert.deepEqual(additive.keys, ['a', 'b', 'c'])
   additive = planSelectionClick(additive, 'library', 'e', { shift: true, toggle: true })
   assert.deepEqual(additive.keys, ['a', 'b', 'c', 'd', 'e'])
-  assert.equal(additive.anchor, 'a')
+})
+
+test('Shift chaining preserves non-contiguous picks made before the range', () => {
+  // Non-contiguous picks are preserved as-is by toggles; a Shift range unions
+  // with them, chaining from the LAST pick (the toggle's key) rather than the
+  // first — a non-contiguous pick made after the range never blocks it.
+  let state = planSelectionClick(withOrder(), 'library', 'a')
+  state = planSelectionClick(state, 'library', 'c')
+  assert.deepEqual(state.keys, ['a', 'c'])
+  state = planSelectionClick(state, 'library', 'e', { shift: true })
+  assert.deepEqual(state.keys, ['a', 'c', 'd', 'e'], 'a stays selected; the range fills between c and e')
+  // The clicked key is the new base: another Shift from there continues there.
+  state = planSelectionClick(state, 'library', 'b', { shift: true })
+  assert.deepEqual(state.keys, ['a', 'b', 'c', 'd', 'e'], 'the union is emitted in surface order')
 })
 
 test('the surface order is the selection domain: lost keys are pruned, and the same order is a no-op', () => {
