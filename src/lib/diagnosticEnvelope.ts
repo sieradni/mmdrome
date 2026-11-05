@@ -42,6 +42,8 @@ export interface DiagnosticEnvelope {
     jsEventsDropped: number
     nativeEventsCount: number
     nativeEventsDropped: number
+    coalescedDebug: number
+    debugEvictedForHeadroom: number
     controlTranscriptCount: number
     controlTranscriptDropped: number
     enabledDomains: string[]
@@ -83,6 +85,8 @@ export function buildDiagnosticEnvelope(input: {
   jsEventsDropped: number
   nativeEventsCount: number
   nativeEventsDropped: number
+  coalescedDebug?: number
+  debugEvictedForHeadroom?: number
   enabledDomains: string[]
   lastPushReport: PushRunReport | null
   hasStreamVerifyReport: boolean
@@ -128,6 +132,8 @@ export function buildDiagnosticEnvelope(input: {
       jsEventsDropped: input.jsEventsDropped,
       nativeEventsCount: input.nativeEventsCount,
       nativeEventsDropped: input.nativeEventsDropped,
+      coalescedDebug: input.coalescedDebug ?? 0,
+      debugEvictedForHeadroom: input.debugEvictedForHeadroom ?? 0,
       controlTranscriptCount: controlTranscript.length,
       controlTranscriptDropped,
       enabledDomains: input.enabledDomains,

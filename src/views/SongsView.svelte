@@ -5,8 +5,8 @@
   import { clearSelection, selection, syncSelectionOrder } from '../stores/selectionStore'
   import SelectionBar from '../components/SelectionBar.svelte'
   import { restoreViewState } from '../lib/viewState'
-  import { libraryFilters } from '../lib/libraryFilters'
-  import { matchesFilterRuleSet } from '../lib/filterCore'
+  import { libraryFilters, clearAllLibraryFilters } from '../lib/libraryFilters'
+  import { matchesFilterRuleSet, filterRuleSetActive } from '../lib/filterCore'
   import { sortWithTiers, trackSortCmp } from '../lib/sortCore'
   import { parseSearchQuery, rankTrackMatch } from '../lib/searchCore'
   import {
@@ -219,9 +219,14 @@
       <div class="py-6 text-center">
         {#if $library.length === 0}
           {#if $navidromeConnection.checking || $navidromeLoadStatus.loading}
-            <p class="text-sm text-muted">Loading library…</p>
+            <p role="status" class="text-sm text-muted">Loading library…</p>
           {:else}
             <p class="text-sm text-muted">Your library is empty. Scan your music to get started.</p>
+          {/if}
+        {:else if processed.length === 0}
+          <p role="status" class="text-sm text-muted">No songs match the current filters</p>
+          {#if filterRuleSetActive($libraryFilters)}
+            <button type="button" onclick={clearAllLibraryFilters} class="btn-secondary btn-md mt-3">Clear filters</button>
           {/if}
         {:else}
           <p class="text-sm text-muted">{processed.length} tracks</p>

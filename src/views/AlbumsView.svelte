@@ -5,7 +5,8 @@
   import { ESTIMATED_ROW_H, computeWindow, endOffsetPx, scrollTopForIndex, startOffsetPx } from '../lib/virtualWindow'
   import { computeGridWindow, endGapPx, measureGridRowPx, scrollTopForCell, startGapPx, syncGridCols } from '../lib/gridWindow'
   import { createScrollWindow, firstRowMeasure } from '../lib/scrollWindow'
-  import { libraryFilters, applyFilterSort, makeGroupAggregates } from '../lib/libraryFilters'
+  import { libraryFilters, applyFilterSort, makeGroupAggregates, clearAllLibraryFilters } from '../lib/libraryFilters'
+  import { filterRuleSetActive } from '../lib/filterCore'
   import { parseSearchQuery, fieldsMatchQuery, trackMatchesQuery, highlightSegments, type HighlightSegment } from '../lib/searchCore'
   import { foldMapForSearch } from '../lib/matchNormalize'
 
@@ -421,7 +422,12 @@
       </div>
       <div style="height:{gridBottomGap}px" aria-hidden="true"></div>
       {#if visibleGroups.length === 0}
-        <p class="px-4 py-12 text-center text-xs text-muted">No albums found</p>
+        <div class="px-4 py-12 text-center">
+          <p role="status" class="text-xs text-muted">No albums match the current filters</p>
+          {#if filterRuleSetActive($libraryFilters)}
+            <button type="button" onclick={clearAllLibraryFilters} class="btn-secondary btn-md mt-3">Clear filters</button>
+          {/if}
+        </div>
       {/if}
     </div>
     <JumpToCurrentButton show={canJumpList} onclick={jumpToCurrent} />

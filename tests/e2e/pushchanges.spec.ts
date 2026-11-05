@@ -45,7 +45,8 @@ async function preparePendingRating(page: Page, dav: WebdavMockStats): Promise<n
   const songRow = page.locator('[data-track-id="navidrome-s1"]')
   await expect(songRow).toBeVisible()
   await songRow.getByRole('button', { name: 'More options' }).click()
-  await songRow.getByRole('button', { name: 'Details' }).click()
+  await expect(page.getByRole('menu', { name: 'Track actions' })).toBeVisible()
+  await page.getByRole('menuitem', { name: 'Details' }).click()
   // The details modal is the only surface with star buttons; commit on the
   // first click writes rating 100 through the single commit path.
   await expect(page.getByRole('button', { name: 'Set rating to 100' })).toBeVisible()
@@ -313,7 +314,8 @@ test('a second pushable row does not start after a mid-run cancel', async ({ pag
   await page.getByRole('button', { name: 'Songs', exact: true }).click()
   const row2 = page.locator('[data-track-id="navidrome-s2"]')
   await row2.getByRole('button', { name: 'More options' }).click()
-  await row2.getByRole('button', { name: 'Details' }).click()
+  await expect(page.getByRole('menu', { name: 'Track actions' })).toBeVisible()
+  await page.getByRole('menuitem', { name: 'Details' }).click()
   await expect(page.getByRole('button', { name: 'Set rating to 60' })).toBeVisible()
   await page.getByRole('button', { name: 'Set rating to 60' }).click()
   await page.getByRole('button', { name: 'Close' }).click()
@@ -362,7 +364,8 @@ function threeFiles() {
 async function rateRow(page: Page, trackId: string, rating: number): Promise<void> {
   const row = page.locator(`[data-track-id="${trackId}"]`)
   await row.getByRole('button', { name: 'More options' }).click()
-  await row.getByRole('button', { name: 'Details' }).click()
+  await expect(page.getByRole('menu', { name: 'Track actions' })).toBeVisible()
+  await page.getByRole('menuitem', { name: 'Details' }).click()
   await page.getByRole('button', { name: `Set rating to ${rating}` }).click()
   await page.getByRole('button', { name: 'Close' }).click()
 }
@@ -534,7 +537,8 @@ test('the dialog × discards one pending edit after confirmation; only the survi
   await page.getByRole('button', { name: 'Songs', exact: true }).click()
   const row2 = page.locator('[data-track-id="navidrome-s2"]')
   await row2.getByRole('button', { name: 'More options' }).click()
-  await row2.getByRole('button', { name: 'Details' }).click()
+  await expect(page.getByRole('menu', { name: 'Track actions' })).toBeVisible()
+  await page.getByRole('menuitem', { name: 'Details' }).click()
   await expect(page.getByRole('button', { name: 'Set rating to 60' })).toBeVisible()
   await page.getByRole('button', { name: 'Set rating to 60' }).click()
   await page.getByRole('button', { name: 'Close' }).click()

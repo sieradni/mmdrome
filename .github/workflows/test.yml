@@ -6,7 +6,7 @@ on:
 
 jobs:
   test:
-    name: npm test + npm run check
+    name: npm test + npm run check + npm run build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -31,6 +31,28 @@ jobs:
 
       - name: Type-check
         run: npm run check
+
+      # The vite.config.ts circular-dependency guard (vite.config.ts:36-54)
+      # only runs during a build, so it must be part of the fast gate — not
+      # only the parallel smoke job which bundles anyway.
+      - name: Build (circular-dependency + bundle gate)
+        run: npm run build
+
+      # Non-blocking coverage (Node built-in only; zero new deps). No
+      # thresholds — this step never fails the gate; the report is an
+      # artifact for visibility, not a policy.
+      - name: Test coverage report (non-blocking)
+        continue-on-error: true
+        run: npm run test:coverage
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-coverage
+          path: coverage/
+          if-no-files-found: warn
+          retention-days: 14
 
   smoke:
     name: smoke (built bundle boots)

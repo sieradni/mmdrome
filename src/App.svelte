@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte'
+  import { onMount, tick } from 'svelte'
   import { Capacitor, SystemBars, SystemBarType, SystemBarsStyle } from '@capacitor/core'
   import { currentTrack, queue, playbackState, initStores, settings, library, navidromeConnection, navidromeLoadStatus, metadataScanState, pushState, shuffleEnabled, currentTime, effectiveDuration, toggleShuffle, loopMode, sleepTimer } from './stores/appState'
   import { initEqStore } from './lib/eq/eqStore'
@@ -8,6 +8,7 @@
   import { loadLibraryFromNavidrome } from './lib/syncEngine'
   import { ensureTagProbeAfterRestore, tagProbeState } from './lib/metadataScanner'
   import { deriveActivityStatus } from './lib/activityStatus'
+  import { shouldOpenShortcuts } from './lib/keyboardHelp'
   import { tooltip } from './lib/tooltip'
   import ActivityStrip from './components/ActivityStrip.svelte'
   import { saveViewStateSession } from './lib/viewState'
@@ -37,6 +38,7 @@
   import { lyricsState } from './lib/lyricsService'
   import DebugHud from './components/DebugHud.svelte'
   import ContextMenuHost from './components/ContextMenuHost.svelte'
+  import ShortcutsHelp from './components/ShortcutsHelp.svelte'
   import TrackDetailsModal from './components/TrackDetailsModal.svelte'
   import { contextMenuTrigger } from './lib/contextMenuTrigger'
   import { openContextMenu } from './lib/contextMenuStore'
@@ -326,6 +328,57 @@
 
   let volOpen = $state(false)
   let volValue = $state(engine.volume)
+  let volTriggerEl = $state<HTMLButtonElement | null>(null)
+  let shortcutsOpen = $state(false)
+  let shortcutsTriggerEl = $state<HTMLButtonElement | null>(null)
+
+  function openShortcuts(e: MouseEvent) {
+    // Capture the trigger so ModalShell's focus return + closeShortcuts'
+    // safety net land back on THIS button rather than on <body>.
+    shortcutsTriggerEl = e.currentTarget as HTMLButtonElement
+    if (!shortcutsOpen) shortcutsOpen = true
+  }
+
+  /** Keyboard path to openShortcuts: no click involved, so there is no
+   *  trigger to capture — closeShortcuts' safety net is skipped and the
+   *  dialog's native focus return handles it (the trigger is whatever
+   *  element the `?` keydown came from). */
+  function openShortcutsFromKeyboard() {
+    if (!shortcutsOpen) shortcutsOpen = true
+  }
+
+  function closeShortcuts() {
+    shortcutsOpen = false
+    // ModalShell's own focus return is the primary path (it captured the
+    // trigger on open); this is only a safety net if the sheet was opened
+    // from a detached trigger.
+    if (shortcutsTriggerEl?.isConnected) shortcutsTriggerEl.focus({ preventScroll: true })
+  }
+
+  // `?` opens the sheet from anywhere outside a text field. The gate lives
+  // in the pure keyboardHelp module so the input/modifier rules stay
+  // unit-testable (F2); this effect only owns the listener lifecycle.
+  $effect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (shortcutsOpen) return
+      const target = event.target instanceof HTMLElement ? event.target : null
+      if (shouldOpenShortcuts(event, target)) {
+        event.preventDefault()
+        openShortcutsFromKeyboard()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  })
+
+  /** The volume button's click: capture the trigger for focus return (the
+   *  popover effect reads volTriggerEl when the popover closes). */
+  function toggleVolumePopover(e: MouseEvent) {
+    e.stopPropagation()
+    volTriggerEl = e.currentTarget as HTMLButtonElement
+    sleepOpen = false
+    volOpen = !volOpen
+  }
 
   function updateVolumePopover() {
     engine.setMasterVolume(volValue)
@@ -335,20 +388,58 @@
     if (!volOpen) return
     volValue = engine.volume
     function handler(e: MouseEvent) {
-      if (!(e.target as HTMLElement).closest('[data-volume-popover]')) volOpen = false
+      if (!(e.target as HTMLElement).closest('[data-volume-popover]')) {
+        volOpen = false
+        if (volTriggerEl?.isConnected) volTriggerEl.focus({ preventScroll: true })
+      }
+    }
+    tick().then(() => {
+      const first = document.querySelector<HTMLElement>('[data-volume-popover] [role="slider"]')
+      first?.focus({ preventScroll: true })
+    })
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        volOpen = false
+        if (volTriggerEl?.isConnected) volTriggerEl.focus({ preventScroll: true })
+        return
+      }
+      if (e.key === 'Tab') {
+        // `role="dialog"` implies a focus trap: keep Tab cycling inside the
+        // popover while it is open (Escape/blur still close it).
+        const popover = document.querySelector<HTMLElement>('[data-volume-popover]')
+        if (!popover) return
+        const focusables = Array.from(popover.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+          .filter((el) => !el.hasAttribute('disabled'))
+        if (focusables.length === 0) return
+        const first = focusables[0]
+        const last = focusables[focusables.length - 1]
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault()
+          last.focus({ preventScroll: true })
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault()
+          first.focus({ preventScroll: true })
+        }
+      }
     }
     document.addEventListener('click', handler)
-    return () => document.removeEventListener('click', handler)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('click', handler)
+      document.removeEventListener('keydown', onKeyDown)
+    }
   })
 
   let sleepOpen = $state(false)
   let sleepMinutes = $state(30)
+  let sleepTriggerEl = $state<HTMLButtonElement | null>(null)
 
   function toggleSleepPopover(e: MouseEvent) {
     e.stopPropagation()
     sleepMinutes = $sleepTimer.minutes || 30
     sleepOpen = !sleepOpen
     volOpen = false
+    sleepTriggerEl = e.currentTarget as HTMLButtonElement
   }
 
   function askSleepTimer() {
@@ -369,10 +460,46 @@
   $effect(() => {
     if (!sleepOpen) return
     function handler(e: MouseEvent) {
-      if (!(e.target as HTMLElement).closest('[data-sleep-popover]')) sleepOpen = false
+      if (!(e.target as HTMLElement).closest('[data-sleep-popover]')) {
+        sleepOpen = false
+        if (sleepTriggerEl?.isConnected) sleepTriggerEl.focus({ preventScroll: true })
+      }
+    }
+    tick().then(() => {
+      const first = document.querySelector<HTMLElement>('[data-sleep-popover] input, [data-sleep-popover] button')
+      first?.focus({ preventScroll: true })
+    })
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        sleepOpen = false
+        if (sleepTriggerEl?.isConnected) sleepTriggerEl.focus({ preventScroll: true })
+        return
+      }
+      if (e.key === 'Tab') {
+        // `role="dialog"` implies a focus trap: keep Tab cycling inside the
+        // popover while it is open (Escape/blur still close it).
+        const popover = document.querySelector<HTMLElement>('[data-sleep-popover]')
+        if (!popover) return
+        const focusables = Array.from(popover.querySelectorAll<HTMLElement>('button, input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+          .filter((el) => !el.hasAttribute('disabled'))
+        if (focusables.length === 0) return
+        const first = focusables[0]
+        const last = focusables[focusables.length - 1]
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault()
+          last.focus({ preventScroll: true })
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault()
+          first.focus({ preventScroll: true })
+        }
+      }
     }
     document.addEventListener('click', handler)
-    return () => document.removeEventListener('click', handler)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('click', handler)
+      document.removeEventListener('keydown', onKeyDown)
+    }
   })
 
   let sleepDisplay = $derived.by(() => {
@@ -520,6 +647,17 @@
             class="h-11 rounded-full bg-white/5 py-2 pl-11 pr-11 text-sm text-primary outline-none ring-1 ring-white/10 transition-colors focus:ring-2 focus:ring-accent-ring-strong"
           />
         </div>
+        <button
+          type="button"
+          use:tooltip
+          onclick={openShortcuts}
+          class="rounded-full p-2 text-muted transition-colors hover:text-primary"
+          aria-label="Keyboard shortcuts"
+          aria-keyshortcuts="?"
+          aria-haspopup="dialog"
+        >
+          <svg class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h.01M18 14h.01M9 14h6"/></svg>
+        </button>
       </div>
       <ActivityStrip status={activityStatus} onclick={() => { if (activityStatus) openActivitySettings(activityStatus.targetTab) }} />
     </header>
@@ -716,13 +854,13 @@
           </svg>
         </button>
         <div class="relative" data-volume-popover>
-          <button use:tooltip onclick={(e) => { e.stopPropagation(); volOpen = !volOpen }} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Volume">
+          <button use:tooltip onclick={toggleVolumePopover} class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Volume" aria-haspopup="dialog" aria-expanded={volOpen}>
             <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
               <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
             </svg>
           </button>
           {#if volOpen}
-            <div class="absolute bottom-full right-0 z-50 mb-2 w-52 rounded-lg bg-surface px-3 py-3 shadow-xl ring-1 ring-white/10">
+            <div role="dialog" aria-label="Volume" class="absolute bottom-full right-0 z-50 mb-2 w-52 rounded-lg bg-surface px-3 py-3 shadow-xl ring-1 ring-white/10">
               <span class="mb-2 block min-w-[4ch] text-center text-xs tabular-nums text-muted">{(volValue * 100).toFixed(0)}%</span>
               <!-- Horizontal AppSlider (the popover already opens on tap): a
                    horizontal drag is more thumb-real-estate than the old
@@ -739,27 +877,29 @@
           {/if}
         </div>
         <div class="relative" data-sleep-popover>
-          <button use:tooltip onclick={toggleSleepPopover} class="rounded-full p-2 transition-colors" class:text-accent={$sleepTimer.active} class:text-muted={!$sleepTimer.active} aria-label="Sleep timer">
+          <button use:tooltip onclick={toggleSleepPopover} class="rounded-full p-2 transition-colors" class:text-accent={$sleepTimer.active} class:text-muted={!$sleepTimer.active} aria-label="Sleep timer" aria-haspopup="dialog" aria-expanded={sleepOpen}>
             <svg class="h-6 w-6" viewBox="0 0 24 24" fill="currentColor">
               <path d="M12 2a10 10 0 100 20 10 10 0 000-20zm.5 6a.5.5 0 011 0v4.25l3 1.8a.5.5 0 01-.25.93.5.5 0 01-.25-.07l-3.25-1.95a.5.5 0 01-.25-.43V8a.5.5 0 01.5-.5z"/>
             </svg>
           </button>
           {#if sleepOpen}
-            <div class="absolute bottom-full right-0 z-50 mb-2 w-56 rounded-lg bg-surface p-3 shadow-xl ring-1 ring-white/10">
+            <div role="dialog" aria-label="Sleep timer" class="absolute bottom-full right-0 z-50 mb-2 w-56 rounded-lg bg-surface p-3 shadow-xl ring-1 ring-white/10">
               <p class="mb-2 text-sm font-medium text-primary">Sleep Timer</p>
               {#if $sleepTimer.active}
                 <p class="mb-2 text-sm text-muted">Active — {$sleepTimer.mode === 'endOfTrack' ? 'end of track' : sleepDisplay}</p>
               {/if}
               <div class="space-y-2">
                 <div class="flex items-center gap-2">
+                  <label for="sleep-minutes" class="sr-only">Minutes</label>
                   <input
+                    id="sleep-minutes"
                     type="number"
                     min="1"
                     max="120"
                     bind:value={sleepMinutes}
                     class="w-20 rounded bg-surface-hover px-2 py-1.5 text-sm text-primary ring-1 ring-white/10 outline-none"
                   />
-                  <span class="text-sm text-muted">minutes</span>
+                  <span class="text-sm text-muted" aria-hidden="true">minutes</span>
                   <button onclick={askSleepTimer} class="btn-primary btn-sm">Start</button>
                 </div>
                 <div class="flex items-center gap-2">
@@ -901,6 +1041,12 @@
 
 {#if playerDetailsTrack}
   <TrackDetailsModal track={playerDetailsTrack} onclose={() => (playerDetailsTrack = null)} />
+{/if}
+
+<!-- Shortcuts sheet (opened by the header button or the `?` keydown listener
+     above). ModalShell inside owns open/close focus handling. -->
+{#if shortcutsOpen}
+  <ShortcutsHelp onclose={closeShortcuts} />
 {/if}
 
 <!-- The ONE custom context menu (hold / right-click / Shift+F10) shared by

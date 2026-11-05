@@ -82,6 +82,11 @@ function load(): LibraryFilterState {
  */
 export const libraryFilters = writable<LibraryFilterState>(load())
 
+/** Reset the shared filter state — the empty-filter dead-end exit. */
+export function clearAllLibraryFilters(): void {
+  libraryFilters.update((s) => ({ ...s, ...emptyFilterRuleSet() }))
+}
+
 libraryFilters.subscribe((s) => {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(s))

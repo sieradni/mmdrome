@@ -34,6 +34,7 @@ import {
   import { effectiveLowData, networkStatusStore } from '../lib/networkMode'
   import { BUILTIN_TRANSCODE_FORMATS, isLosslessTranscodeFormat, resolveTranscodeFormat } from '../lib/transcodePolicy'
   import ToggleSwitch from '../components/ToggleSwitch.svelte'
+  import ModalShell from '../components/ModalShell.svelte'
   import { accentHue, appFont, ACCENT_HUES, FONT_OPTIONS, NEUTRAL_ACCENT } from '../lib/appearance'
   import { ensureFormatProbe } from '../lib/formatProbe'
   import { lbValidateToken } from '../lib/listenbrainzApi'
@@ -2365,17 +2366,17 @@ import {
               >{resetCancelRequested ? 'Cancelling…' : 'Cancel reset'}</button>
             {/if}
             {#if resetResult}
-              <p class="text-sm text-green-400">{resetResult}</p>
+              <p role="status" class="text-sm text-green-400">{resetResult}</p>
             {/if}
             {#if resetError}
-              <p class="text-sm text-red-400">{resetError}</p>
+              <p role="status" class="text-sm text-red-400">{resetError}</p>
             {/if}
           </div>
         </section>
 
         {#if conflict}
-          <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-            <div class="w-full max-w-sm rounded-xl bg-surface-raised p-4">
+          <ModalShell onclose={() => conflict = null} ariaLabel="File already bound">
+            <div class="p-4">
               <h4 class="mb-2 text-base font-medium text-primary">File already bound</h4>
               <p class="mb-3 text-sm text-muted">
                 That file is already matched to <span class="text-primary">{conflict.conflictTitle}</span>. Binding it here will leave the other track unmatched.
@@ -2391,7 +2392,7 @@ import {
                 >Bind anyway</button>
               </div>
             </div>
-          </div>
+          </ModalShell>
         {/if}
       {/if}
 
@@ -2480,8 +2481,8 @@ import {
   {/if}
 
   {#if confirmReset}
-    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div class="w-full max-w-sm rounded-xl bg-surface-raised p-4">
+    <ModalShell onclose={() => { confirmReset = false }} ariaLabel="Reset metadata and re-link all files?">
+      <div class="p-4">
         <h4 class="mb-2 text-base font-medium text-red-300">Reset metadata and re-link all files?</h4>
         <p class="mb-3 text-sm text-muted">
           This clears every stored file↔track link and locally cached rating/loved/comment
@@ -2502,6 +2503,6 @@ import {
           >Reset &amp; re-link</button>
         </div>
       </div>
-    </div>
+    </ModalShell>
   {/if}
 </div>

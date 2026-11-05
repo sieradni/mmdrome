@@ -37,7 +37,7 @@
     sectionOccurrences,
   } from '../lib/queueOccurrence'
   import { currentLoadedFraction } from '../lib/loadStatus'
-  import { addedBoundsOf, type FilterRuleSet } from '../lib/filterCore'
+  import { addedBoundsOf, filterRuleSetActive, type FilterRuleSet } from '../lib/filterCore'
   import { onMount, onDestroy, tick } from 'svelte'
   import { derived, get } from 'svelte/store'
   import ClearableSearch from '../components/ClearableSearch.svelte'
@@ -45,7 +45,7 @@
   import ModalShell from '../components/ModalShell.svelte'
   import { playbackManager } from '../lib/playbackManager'
   import { queueManager } from '../lib/queueManager'
-  import { distinctGenres } from '../lib/libraryFilters'
+  import { clearAllLibraryFilters, distinctGenres, libraryFilters } from '../lib/libraryFilters'
   import { restoreViewState } from '../lib/viewState'
   import type { SortState } from '../lib/sortCore'
   import SortStackEditor from '../components/SortStackEditor.svelte'
@@ -156,16 +156,9 @@
     playQueueItem(combinedIndex)
   }
 
-  function handleQueueRowKey(event: KeyboardEvent, item: KeyedTrack, combinedIndex: number): void {
-    if (event.key !== 'Enter' && event.key !== ' ') return
-    event.preventDefault()
-    if (queueSelectionActive) {
-      toggleSelection('queue', item.entryId)
-      return
-    }
-    playQueueItem(combinedIndex)
-  }
-
+  // (The keyboard `?` gate lives in the pure keyboardHelp module; the `?`
+  //  sheet trigger button in App.svelte opens through openShortcuts.)
+  let showClearLibraryFilters = $derived(filterRuleSetActive($libraryFilters))
   // Library lookup for the occurrence rows. One Map per library change; the
   // row derives below run on every queue write, so a per-id `find` over the
   // whole library would be O(queue × library).
@@ -739,28 +732,24 @@
        the home view's island so the layout never jumps) -->
   <div class="shrink-0 px-4 pb-1.5 pt-1">
     {#if $currentTrack}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="ui-island relative overflow-hidden px-3 pb-0 pt-2"
-        role="button"
-        tabindex="0"
-        onclick={onopenplayer}
-        onkeydown={(e) => { if (e.key === 'Enter') onopenplayer() }}
-        aria-label="Open the player"
-        data-testid="queue-now-playing"
-      >
-        <div class="flex items-center gap-3">
+      <div class="ui-island relative overflow-hidden px-3 pb-0 pt-2" data-testid="queue-now-playing">
+        <button
+          type="button"
+          onclick={onopenplayer}
+          aria-label="Open the player"
+          class="flex w-full items-center gap-3 rounded-md text-left"
+        >
           <LazyThumb track={$currentTrack} size={128} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
-          <div class="min-w-0 flex-1">
-            <p class="truncate text-sm font-medium text-primary">{$currentTrack.title}</p>
-            <p class="truncate text-xs text-muted">{$currentTrack.artist}</p>
-          </div>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-sm font-medium text-primary">{$currentTrack.title}</span>
+            <span class="block truncate text-xs text-muted">{$currentTrack.artist}</span>
+          </span>
           <span class="text-xs text-muted tabular-nums">{formatTime(sliderValue)} / {formatTime($effectiveDuration)}</span>
-        </div>
+        </button>
 
         <!-- Seek Bar -->
         <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-        <div class="mt-0" onclick={(e) => e.stopPropagation()} onmousedown={(e) => e.stopPropagation()}>
+        <div class="mt-0" onclick={(e) => e.stopPropagation()} onmousedown={(e) => e.stopPropagation()} role="presentation">
           <SeekBar
             value={sliderValue}
             max={sliderMax}
@@ -777,7 +766,7 @@
              duplicates); shuffle stays pinned far left (absolute) and never
              shifts the group. -->
         <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
-        <div class="relative -mt-1" onclick={(e) => e.stopPropagation()}>
+        <div class="relative -mt-1" onclick={(e) => e.stopPropagation()} role="presentation">
           <button
             use:tooltip
             onclick={() => toggleShuffle()}
@@ -818,24 +807,21 @@
            queue" is exactly what you want them for here (play resumes the
            anchor or starts the first row). No seek bar: there is nothing to
            seek. Tapping the identity area opens the PLAYER, not the library. -->
-      <div
-        class="ui-island relative overflow-hidden px-3 pb-0 pt-2"
-        role="button"
-        tabindex="0"
-        onclick={onopenplayer}
-        onkeydown={(e) => { if (e.key === 'Enter') onopenplayer() }}
-        aria-label="Open the player"
-        data-testid="queue-now-playing"
-      >
-        <div class="flex items-center gap-3 py-0.5">
-          <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-white/5">
+      <div class="ui-island relative overflow-hidden px-3 pb-0 pt-2" data-testid="queue-now-playing">
+        <button
+          type="button"
+          onclick={onopenplayer}
+          aria-label="Open the player"
+          class="flex w-full items-center gap-3 rounded-md py-0.5 text-left"
+        >
+          <span class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded bg-white/5">
             <svg class="h-5 w-5 text-muted" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
-          </div>
-          <div class="min-w-0 flex-1">
-            <p class="truncate text-sm font-medium text-primary">Not playing</p>
-            <p class="truncate text-xs text-muted">{$queue.userQueue.length + $queue.autoQueue.length > 0 ? 'Press play to start the queue' : 'Queue is empty'}</p>
-          </div>
-        </div>
+          </span>
+          <span class="min-w-0 flex-1">
+            <span class="block truncate text-sm font-medium text-primary">Not playing</span>
+            <span class="block truncate text-xs text-muted">{$queue.userQueue.length + $queue.autoQueue.length > 0 ? 'Press play to start the queue' : 'Queue is empty'}</span>
+          </span>
+        </button>
 
         <div class="relative -mt-0.5" role="presentation" onclick={(e) => e.stopPropagation()}>
           <button
@@ -874,8 +860,11 @@
          (iOS review 2026-09-11). -->
     <ScrollTopButton target={listContainerEl} posClass="bottom-24 right-4" />
     {#if $queue.userQueue.length === 0 && $queue.autoQueue.length === 0}
-      <div class="flex h-full items-center justify-center">
+      <div class="flex h-full items-center justify-center" role="status">
         <p class="text-sm text-muted">Queue is empty</p>
+        {#if showClearLibraryFilters}
+          <button type="button" onclick={clearAllLibraryFilters} class="btn-secondary btn-md ml-4">Clear filters</button>
+        {/if}
       </div>
     {/if}
 
@@ -898,14 +887,13 @@
                or played the wrong row), the now-playing indicator, the
                drag drop-target, and the drag identity. -->
           {@const itemIndex = item.originalCombinedIdx}
+          <!-- Row container is NOT interactive: the play target is the inner
+               <button> below; drag handle + actions are SIBLINGS of it.
+               aria-keyshortcuts lives on that focusable <button> (a shortcut
+               hint on a non-focusable div never reaches AT) and mirrors the
+               contextMenuTrigger's own key path (ContextMenu/Shift+F10). -->
           <div
-            onclick={(e) => handleQueueRowPress(e, item, itemIndex)}
-            role="button"
-            tabindex="0"
-            use:contextMenuTrigger={{ onOpen: (position, trigger) => openQueueRowMenu(item, position, trigger) }}
-            onkeydown={(e) => handleQueueRowKey(e, item, itemIndex)}
-            aria-pressed={queueSelectionActive ? rowSelected(item.entryId) : undefined}
-            class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
+            class={"queue-track-item flex items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (rowSelected(item.entryId) ? 'bg-accent-soft ring-1 ring-accent-ring ' : '') +
               (isCurrentTrack(itemIndex) ? 'ui-now-playing-row ' : 'hover:bg-white/5 ') +
               (isDragging && item.entryId === draggedEntryId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
@@ -914,12 +902,13 @@
             data-combined-index={itemIndex}
             data-track-id={item.track.trackId}
             data-entry-id={item.entryId}
+            use:contextMenuTrigger={{ onOpen: (position, trigger) => openQueueRowMenu(item, position, trigger) }}
           >
             <!-- Drag Handle -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
             <div
               class="drag-handle touch-none flex-shrink-0 cursor-grab active:cursor-grabbing rounded py-1 pl-1 pr-0.5 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover"
-              aria-label="Drag to reorder"
+              aria-hidden="true"
               onclick={(e) => e.stopPropagation()}
               onpointerdown={(e) => startPointerDrag(e, item)}
               data-no-context-menu
@@ -930,6 +919,13 @@
               </svg>
             </div>
 
+            <button
+              type="button"
+              onclick={(e) => handleQueueRowPress(e, item, itemIndex)}
+              aria-pressed={queueSelectionActive ? rowSelected(item.entryId) : undefined}
+              aria-keyshortcuts="ContextMenu Shift+F10"
+              class="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md text-left"
+            >
             {#if queueSelectionActive}
               <span class="flex h-5 w-5 flex-shrink-0 items-center justify-center" aria-hidden="true">
                 <span
@@ -948,10 +944,11 @@
             <!-- Minimal: current row is the plain white/10 fill — no EQ-bar
                  glyph (de-cluttered 2026-09-10 review). -->
 
-            <div class="min-w-0 flex-1">
-              <p class="truncate text-sm text-primary">{item.track.title}</p>
-              <p class="truncate text-xs text-muted">{item.track.artist}</p>
-            </div>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-sm text-primary">{item.track.title}</span>
+              <span class="block truncate text-xs text-muted">{item.track.artist}</span>
+            </span>
+            </button>
 
             <!-- Action Buttons -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -1065,9 +1062,9 @@
            end, not a filter problem — yellow would read as a warning. The label
            names the scope so the source stays visible without auto rows. -->
       {#if $scopeLabel}
-        <p class="mx-4 mb-1 text-center text-[11px] text-muted/60">End of {$scopeLabel}</p>
+        <p role="status" class="mx-4 mb-1 text-center text-[11px] text-muted/60">End of {$scopeLabel}</p>
       {:else}
-        <p class="mx-4 mb-1 text-center text-[11px] text-yellow-500/80">Auto queue is empty — nothing left to add from the current filters</p>
+        <p role="status" class="mx-4 mb-1 text-center text-[11px] text-yellow-500/80">Auto queue is empty — nothing left to add from the current filters</p>
       {/if}
     {/if}
 
@@ -1079,14 +1076,14 @@
           <!-- Same data-stamped index as the user section (it already
                includes the user length); no window offset may be added. -->
           {@const itemCombinedIndex = item.originalCombinedIdx}
+          <!-- Same data-stamped index as the user section (it already
+               includes the user length); no window offset may be added.
+               Row container is NOT interactive: the play target is the inner
+               <button> below; drag handle + actions are SIBLINGS of it.
+               aria-keyshortcuts lives on that focusable <button> (a shortcut
+               hint on a non-focusable div never reaches AT). -->
           <div
-            onclick={(e) => handleQueueRowPress(e, item, itemCombinedIndex)}
-            role="button"
-            tabindex="0"
-            use:contextMenuTrigger={{ onOpen: (position, trigger) => openQueueRowMenu(item, position, trigger) }}
-            onkeydown={(e) => handleQueueRowKey(e, item, itemCombinedIndex)}
-            aria-pressed={queueSelectionActive ? rowSelected(item.entryId) : undefined}
-            class={"queue-track-item flex cursor-pointer items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
+            class={"queue-track-item flex items-center gap-1.5 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
               (rowSelected(item.entryId) ? 'bg-accent-soft ring-1 ring-accent-ring ' : '') +
               (isCurrentTrack(itemCombinedIndex) ? 'bg-white/10 ' : 'hover:bg-white/5 ') +
               (isDragging && item.entryId === draggedEntryId ? 'opacity-30 ring-1 ring-accent-ring bg-accent-soft ' : '')
@@ -1095,12 +1092,13 @@
             data-combined-index={itemCombinedIndex}
             data-track-id={item.track.trackId}
             data-entry-id={item.entryId}
+            use:contextMenuTrigger={{ onOpen: (position, trigger) => openQueueRowMenu(item, position, trigger) }}
           >
             <!-- Drag Handle -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
             <div
               class="drag-handle touch-none flex-shrink-0 cursor-grab active:cursor-grabbing rounded py-1 pl-1 pr-0.5 text-muted/60 transition-colors hover:text-muted hover:bg-surface-hover"
-              aria-label="Drag to reorder"
+              aria-hidden="true"
               onclick={(e) => e.stopPropagation()}
               onpointerdown={(e) => startPointerDrag(e, item)}
               data-no-context-menu
@@ -1111,6 +1109,13 @@
               </svg>
             </div>
 
+            <button
+              type="button"
+              onclick={(e) => handleQueueRowPress(e, item, itemCombinedIndex)}
+              aria-pressed={queueSelectionActive ? rowSelected(item.entryId) : undefined}
+              aria-keyshortcuts="ContextMenu Shift+F10"
+              class="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md text-left"
+            >
             {#if queueSelectionActive}
               <span class="flex h-5 w-5 flex-shrink-0 items-center justify-center" aria-hidden="true">
                 <span
@@ -1129,10 +1134,11 @@
             <!-- Minimal: current row is the plain white/10 fill — no EQ-bar
                  glyph (de-cluttered 2026-09-10 review). -->
 
-            <div class="min-w-0 flex-1">
-              <p class="truncate text-sm text-primary">{item.track.title}</p>
-              <p class="truncate text-xs text-muted">{item.track.artist}</p>
-            </div>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate text-sm text-primary">{item.track.title}</span>
+              <span class="block truncate text-xs text-muted">{item.track.artist}</span>
+            </span>
+            </button>
 
             <!-- Action Buttons -->
             <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
@@ -1182,7 +1188,7 @@
       <!-- D9: an OFF auto queue is not an empty one — the switch row above
            already says "Auto queue off", and stacking an empty-section line on
            top of it reads as a fault. -->
-      <p class="px-6 py-4 text-center text-sm text-muted/50">Auto queue is empty</p>
+      <p role="status" class="px-6 py-4 text-center text-sm text-muted/50">Auto queue is empty</p>
     {/if}
 
     <!-- End-of-queue terminus: extra scroll length past the last row so the

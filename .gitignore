@@ -36,3 +36,7 @@ dist-ssr
 
 # Disposable real-server data and compatibility evidence (not Playwright-owned)
 /webdav-compat-results/
+
+# Node --test coverage output (CI artifact is uploaded, never committed)
+/coverage/
+/.nyc_output/

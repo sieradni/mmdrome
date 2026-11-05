@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json && tsc -p tsconfig.test.json",
     "test": "node --test --import ./scripts/test-loader.mjs",
+    "test:coverage": "node --test --experimental-test-coverage --import ./scripts/test-loader.mjs",
     "test:e2e": "playwright test",
     "test:webdav-servers": "node --import ./scripts/test-loader.mjs scripts/webdav-server-compat.mjs",
     "device": "node scripts/device.mjs",

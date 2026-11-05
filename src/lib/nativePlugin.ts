@@ -182,6 +182,12 @@ export interface NativeEventsPage {
   events: NativeEventEntry[]
   nextSeq: number
   dropped: number
+  /** D-03 ring hygiene: consecutive duplicate debug entries coalesced into one
+   *  row with a repeat count. Optional — older native builds omit it. */
+  coalescedDebug?: number
+  /** D-03 ring hygiene: debug entries evicted to preserve danger/info
+   *  postmortem evidence at capacity. Optional — older native builds omit it. */
+  debugEvictedForHeadroom?: number
   /** The engine's monotonic clock (SECONDS since process start) at read time
    *  — the SAME base as each event's `t`. A caller that wants to window the
    *  ring must compare against this, never `Date.now()` (the 1.2.48 bug). */
@@ -229,11 +235,11 @@ export class NativeAudioEngineApp {
    *  Used by the Debug HUD (incremental poll while open; full pull at Copy
    *  time). No-ops to an empty page off-native or on failure. */
   async getDebugEvents(sinceSeq: number): Promise<NativeEventsPage> {
-    if (!this.isNative()) return { events: [], nextSeq: sinceSeq, dropped: 0, now: 0 }
+    if (!this.isNative()) return { events: [], nextSeq: sinceSeq, dropped: 0, coalescedDebug: 0, debugEvictedForHeadroom: 0, now: 0 }
     try {
       return await BackgroundAudio.getDebugEvents({ sinceSeq })
     } catch {
-      return { events: [], nextSeq: sinceSeq, dropped: 0, now: 0 }
+      return { events: [], nextSeq: sinceSeq, dropped: 0, coalescedDebug: 0, debugEvictedForHeadroom: 0, now: 0 }
     }
   }
 

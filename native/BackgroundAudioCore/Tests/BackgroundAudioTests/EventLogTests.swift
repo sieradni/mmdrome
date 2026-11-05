@@ -71,6 +71,7 @@ final class EventLogTests: XCTestCase {
         log.add(now: 3, domain: "preload", level: .debug, "chain: prefetch row 1")
         XCTAssertEqual(log.coalescedDebugCount, 1)
         XCTAssertEqual(log.events.last?.message, "chain: prefetch row 1 (×2)")
+        XCTAssertGreaterThan(log.coalescedDebugCount, 0)
 
         // Flood with distinct debug entries beyond capacity: the danger entry must survive.
         for i in 2..<10 {
@@ -78,5 +79,29 @@ final class EventLogTests: XCTestCase {
         }
         XCTAssertTrue(log.events.contains(where: { $0.level == .danger && $0.message == "rare danger verdict" }))
         XCTAssertGreaterThan(log.debugEvictedForHeadroomCount, 0)
+        XCTAssertGreaterThan(log.coalescedDebugCount, 0)
+        // Monotonicity: the counters never decrease as more entries churn through.
+        let coalescedBefore = log.coalescedDebugCount
+        let headroomBefore = log.debugEvictedForHeadroomCount
+        log.add(now: 99, domain: "preload", level: .debug, "chain: prefetch row 99")
+        XCTAssertGreaterThanOrEqual(log.coalescedDebugCount, coalescedBefore)
+        XCTAssertGreaterThanOrEqual(log.debugEvictedForHeadroomCount, headroomBefore)
+        // Lifetime-cumulative: eviction does not reset the counters — they only
+        // grow — and they are distinct from the head-first droppedCount.
+        XCTAssertNotEqual(log.droppedCount, log.coalescedDebugCount)
+        XCTAssertGreaterThan(log.droppedCount, 0)
+    }
+
+    func testHygieneCountersAreLifetimeCumulativeNotResetByEviction() {
+        var log = NativeEventLog(capacity: 2, activeDomains: ["preload"])
+        log.add(now: 1, domain: "preload", level: .debug, "chain: prefetch row 1")
+        log.add(now: 2, domain: "preload", level: .debug, "chain: prefetch row 1")
+        XCTAssertEqual(log.coalescedDebugCount, 1)
+        let coalesced = log.coalescedDebugCount
+        // Force entries out of the ring; the counter must not reset with them.
+        for i in 2..<8 { log.add(now: Double(i), domain: "preload", level: .debug, "chain: prefetch row \(i)") }
+        XCTAssertGreaterThanOrEqual(log.coalescedDebugCount, coalesced)
+        XCTAssertGreaterThan(log.debugEvictedForHeadroomCount, 0)
+        XCTAssertGreaterThan(log.droppedCount, 0)
     }
 }

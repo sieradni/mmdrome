@@ -38,7 +38,9 @@ test('D-01: buildDiagnosticEnvelope captures app identity, clocks, sessions, dro
     jsEventsCount: 12,
     jsEventsDropped: 0,
     nativeEventsCount: 708,
-    nativeEventsDropped: 0,
+    nativeEventsDropped: 2,
+    coalescedDebug: 12,
+    debugEvictedForHeadroom: 4,
     enabledDomains: ['loader', 'stream'],
     lastPushReport: null,
     hasStreamVerifyReport: true,
@@ -55,6 +57,9 @@ test('D-01: buildDiagnosticEnvelope captures app identity, clocks, sessions, dro
   assert.equal(env.clocks.nativeCaptureAgeMs, 40)
   assert.match(env.clocks.correlationNote, /monotonic systemUptime/)
   assert.equal(env.rings.controlTranscriptCount, 1)
+  assert.equal(env.rings.nativeEventsDropped, 2)
+  assert.equal(env.rings.coalescedDebug, 12)
+  assert.equal(env.rings.debugEvictedForHeadroom, 4)
   assert.equal(env.retainedReports.hasStreamVerifyReport, true)
   assert.ok(jsDebugSessionId().length > 0)
 })

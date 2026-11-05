@@ -22,6 +22,7 @@
     jsDebugDroppedCount,
   } from '../lib/debugLog'
   import { buildDiagnosticEnvelope, buildDiagnosticErrorSummary } from '../lib/diagnosticEnvelope'
+  import { formatRingSaturationLine } from '../lib/ringSaturation'
   import { runStreamSelfTest, getLastStreamVerifyBundle } from '../lib/streamVerifyRunner'
   import { captureTransportSelfTest } from '../lib/transportSelfTestRunner'
   import { thumbLoaderDebugSnapshot } from '../lib/thumbLoader'
@@ -58,6 +59,8 @@
   // opened is still in the native ring and arrives on the first pull.
   let nativeEvents: any[] = $state([])
   let nativeEventsDropped = $state(0)
+  let nativeCoalescedDebug = $state(0)
+  let nativeDebugEvictedForHeadroom = $state(0)
   let nativeEventsSeq = 0 // watermark — non-reactive by design
   // Opt-in verbose domains (persisted in localStorage, pushed to the native
   // engine; the JS-side debugLog reads the same store).
@@ -223,6 +226,8 @@
       if (page.events.length) nativeEvents = [...nativeEvents, ...page.events].slice(-1000)
       nativeEventsSeq = page.nextSeq
       nativeEventsDropped = page.dropped
+      nativeCoalescedDebug = page.coalescedDebug ?? 0
+      nativeDebugEvictedForHeadroom = page.debugEvictedForHeadroom ?? 0
     } catch {}
   }
 
@@ -310,6 +315,8 @@
       jsEventsDropped: jsDebugDroppedCount(),
       nativeEventsCount: nativeEvents.length,
       nativeEventsDropped,
+      coalescedDebug: nativeCoalescedDebug,
+      debugEvictedForHeadroom: nativeDebugEvictedForHeadroom,
       enabledDomains: domains,
       lastPushReport: pushRep,
       hasStreamVerifyReport: verifyBundle !== null,
@@ -381,6 +388,7 @@
       // Copy carried 120 rows of a 1000-entry ring; the bug window was in the
       // discarded tail). Paste size is the user's call; missing evidence is not.
       nativeEvents: nativeEvents.slice(-1000),
+      nativeRing: { dropped: nativeEventsDropped, coalescedDebug: nativeCoalescedDebug, debugEvictedForHeadroom: nativeDebugEvictedForHeadroom },
       jsEvents: jsDebugEventsSnapshot().slice(-1000),
       debugDomains: domains,
       // Streaming self-test: the last run's report (pure evaluation of the
@@ -492,10 +500,16 @@
       line: `+${(e.t - first).toFixed(1)}s ${e.level === 'danger' ? '⚠' : e.level === 'info' ? '·' : ' '} [${e.domain}] ${e.msg}`,
     }))
   })
-  // Header label for the events section (dropped-count marker).
+  // Header label for the events section (dropped-count marker). The D-03
+  // hygiene counters ride the same persisted summary line in the template via
+  // formatRingSaturationLine — this marker text itself is unchanged.
   let nativeEventsLabel = $derived.by(() => {
     void jsTick
     return nativeEventsDropped > 0 ? ` · ring dropped ${nativeEventsDropped}` : ''
+  })
+  let ringSaturationLine = $derived.by(() => {
+    void jsTick
+    return formatRingSaturationLine({ dropped: nativeEventsDropped, coalescedDebug: nativeCoalescedDebug, debugEvictedForHeadroom: nativeDebugEvictedForHeadroom })
   })
   // JS-side structured events (debugLog ring — the web engine's danger/info
   // verdicts + opt-in verbose entries), rendered with the SAME row shape as
@@ -609,6 +623,7 @@
         <div>activeIndex: {q.activeIndex} / {combined.length} (u:{q.userQueue.length} a:{q.autoQueue.length})</div>
         <div>activeId: {(combined[q.activeIndex] ?? '—')}</div>
         <div>ldm: {ldm ? `on-${ldmWhy}` : 'off'} stream: {streamVariant}</div>
+        <div>{ringSaturationLine}</div>
         <div>net: {netStability.metered === null ? 'unknown' : netStability.metered ? 'metered' : 'open'}{netStability.latched ? ` LATCHED(${Math.ceil(netStability.latchedRemainingMs / 1000)}s)` : ''} sup: {netStability.suppressed} flips: {netStability.transitions}</div>
         {#if retryBranch}
           <div>retry: {retryBranch.scheduled} decided (fresh {retryBranch.freshConnectionSoon} / resume {retryBranch.resumeAfterBackoff} / std {retryBranch.standard}) · fresh enacted {retryBranch.freshConnectionEnacted} · recent {retryBranchRecent}</div>

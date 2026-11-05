@@ -7,7 +7,6 @@
   import { foldMapForSearch } from '../lib/matchNormalize'
   import type { Track } from '../stores/appState'
   import LazyThumb from './LazyThumb.svelte'
-  import TrackOptionsDropdown from './TrackOptionsDropdown.svelte'
   import { contextMenuTrigger } from '../lib/contextMenuTrigger'
   import { openContextMenu } from '../lib/contextMenuStore'
   import { selection, selectionClick, toggleSelection } from '../stores/selectionStore'
@@ -129,66 +128,78 @@
       trigger,
     })
   }
+
+  /** The ⋮ button opens the SAME unified ContextMenu (full menu, Option 1).
+   *  Anchored below the button; the menu's placement flips if it would overflow.
+   *  `TrackOptionsDropdown.svelte` is DELETED — this handler is the only ⋮ path
+   *  (C12). */
+  function handleMoreOptions(e: MouseEvent) {
+    e.stopPropagation()
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    handleContextMenu(
+      { x: rect.left + rect.width / 2, y: rect.bottom },
+      e.currentTarget as HTMLElement,
+    )
+  }
 </script>
 
+<!-- Row container is NOT interactive (no role="button", no click/key handlers):
+     the play target is a real <button> below, and the + / ⋮ buttons are SIBLINGS
+     of it — never nested inside a button-role element. tabindex="-1" exists only
+     so the context menu can return focus here; it is NOT a Tab stop. -->
 <div
-  class={"relative flex cursor-pointer items-center gap-2 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
+  class={"relative flex items-center gap-2 rounded-lg py-2 pl-1.5 pr-1 transition-colors " +
     (rowSelected ? 'bg-accent-soft ring-1 ring-accent-ring ' : '') +
     (playing ? 'ui-now-playing-row' : 'hover:bg-white/5')}
-  role="button"
-  tabindex="0"
+  tabindex="-1"
   use:contextMenuTrigger={{ onOpen: handleContextMenu }}
   data-track-id={dataTrackId ?? track.trackId}
   data-selected={rowSelected || undefined}
-  aria-pressed={selectionMode ? rowSelected : undefined}
-  onclick={(e) => handlePlay(e, track.trackId)}
-  onkeydown={(e) => {
-    if (e.key !== 'Enter' && e.key !== ' ') return
-    if (selectionMode) {
-      e.preventDefault()
-      toggleSelection('library', track.trackId)
-      return
-    }
-    handlePlay(e, track.trackId)
-  }}
 >
-  {#if selectionMode}
-    <!-- Selection affordance: a fixed-size leading check so the target row is
-         unambiguous on touch, where no hover state exists. -->
-    <span class="flex h-5 w-5 flex-shrink-0 items-center justify-center" aria-hidden="true">
-      <span
-        class={"flex h-5 w-5 items-center justify-center rounded-full border transition-colors " +
-          (rowSelected ? 'border-accent bg-accent text-black' : 'border-white/30')}
-      >
-        {#if rowSelected}
-          <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
-        {/if}
+  <button
+    type="button"
+    class="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left"
+    onclick={(e) => handlePlay(e, track.trackId)}
+    aria-pressed={selectionMode ? rowSelected : undefined}
+  >
+    {#if selectionMode}
+      <!-- Selection affordance: a fixed-size leading check so the target row is
+           unambiguous on touch, where no hover state exists. -->
+      <span class="flex h-5 w-5 flex-shrink-0 items-center justify-center" aria-hidden="true">
+        <span
+          class={"flex h-5 w-5 items-center justify-center rounded-full border transition-colors " +
+            (rowSelected ? 'border-accent bg-accent text-black' : 'border-white/30')}
+        >
+          {#if rowSelected}
+            <svg class="h-3 w-3" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
+          {/if}
+        </span>
       </span>
-    </span>
-  {/if}
-  <LazyThumb {track} {windowed} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
-  <div class="min-w-0 flex-1">
-    <p class="truncate text-sm text-primary">
-      {#if highlightTokens.length > 0}
-        {#each fieldSegs(track.title) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
-      {:else}
-        {track.title}
-      {/if}
-    </p>
-    <p class="truncate text-xs text-muted">
-      {#if highlightTokens.length > 0}
-        {#each fieldSegs(track.artist) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
-        {#if showAlbum} · {#each fieldSegs(track.album) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}{/if}
-      {:else}
-        {track.artist}
-        {#if showAlbum} · {track.album}{/if}
-      {/if}
-      {#if showAlbum && track.year !== undefined && track.year !== null} · {track.year}{/if}
-      {#if showDuration} · {formatDuration(track.duration)}{/if}
-    </p>
-  </div>
+    {/if}
+    <LazyThumb {track} {windowed} wrapperClass="h-10 w-10 flex-shrink-0 rounded" />
+    <div class="min-w-0 flex-1">
+      <p class="truncate text-sm text-primary">
+        {#if highlightTokens.length > 0}
+          {#each fieldSegs(track.title) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
+        {:else}
+          {track.title}
+        {/if}
+      </p>
+      <p class="truncate text-xs text-muted">
+        {#if highlightTokens.length > 0}
+          {#each fieldSegs(track.artist) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}
+          {#if showAlbum} · {#each fieldSegs(track.album) as seg, i (i)}{#if seg.match}<mark class="rounded-sm bg-yellow-300/40 px-0 text-primary">{seg.text}</mark>{:else}{seg.text}{/if}{/each}{/if}
+        {:else}
+          {track.artist}
+          {#if showAlbum} · {track.album}{/if}
+        {/if}
+        {#if showAlbum && track.year !== undefined && track.year !== null} · {track.year}{/if}
+        {#if showDuration} · {formatDuration(track.duration)}{/if}
+      </p>
+    </div>
+  </button>
 
-  <div class="-ml-1 flex flex-shrink-0 items-center gap-0.5">
+  <div class="-ml-1 flex flex-shrink-0 items-center gap-0.5" aria-hidden="true">
     <!-- Ratings render ONLY when there is something to show (2026-09-23 scroll
          review): the old unconditional block put 5 star SVGs (+ a gradient
          <defs> per half-star) on EVERY row — a library of unrated tracks was
@@ -196,21 +207,27 @@
          repainted on every scroll frame. Rated rows render stars; a loved
          row without a rating renders just the heart. Row height is
          unchanged; the trailing area is empty for the common unrated case
-         (same as Spotify/Apple Music). -->
+         (same as Spotify/Apple Music). Decorative: aria-hidden (C8 / the
+         ContextMenu.svelte pattern) + ONE shared defs for the half-star
+         gradient (a single id per mounted row, never per segment). -->
     {#if getRating(track.trackId) > 0}
-      {#each starSegments(getRating(track.trackId)) as seg, si}
-        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24">
-          {#if seg === 'half'}
-            <defs>
-              <linearGradient id="tr-{track.trackId}-{si}">
-                <stop offset="50%" stop-color="#facc15" />
-                <stop offset="50%" stop-color="transparent" />
-              </linearGradient>
-            </defs>
-          {/if}
+      {@const segments = starSegments(getRating(track.trackId))}
+      {@const gradientId = `tr-half-star-${track.trackId}`}
+      {#if segments.includes('half')}
+        <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+          <defs>
+            <linearGradient id={gradientId}>
+              <stop offset="50%" stop-color="#facc15" />
+              <stop offset="50%" stop-color="transparent" />
+            </linearGradient>
+          </defs>
+        </svg>
+      {/if}
+      {#each segments as seg}
+        <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" aria-hidden="true">
           <path
             d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26Z"
-            fill={seg === 'full' ? '#facc15' : seg === 'half' ? 'url(#tr-' + track.trackId + '-' + si + ')' : 'none'}
+            fill={seg === 'full' ? '#facc15' : seg === 'half' ? `url(#${gradientId})` : 'none'}
             stroke={seg === 'empty' ? '#555' : '#facc15'}
             stroke-width="1"
           />
@@ -218,21 +235,22 @@
       {/each}
     {/if}
     {#if getLoved(track.trackId)}
-      <svg class="ml-0.5 h-3.5 w-3.5 text-red-400" viewBox="0 0 24 24" fill="currentColor">
+      <svg class="ml-0.5 h-3.5 w-3.5 text-red-400" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
       </svg>
     {/if}
   </div>
 
   <button
+    type="button"
     onclick={(e) => handleAdd(e, track.trackId)}
     class="flex-shrink-0 self-stretch rounded-none px-0.5 text-muted transition-colors hover:text-primary"
     aria-label="Add to queue"
   >
     {#if added}
-      <svg class="h-5 w-5 text-green-400" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
+      <svg class="h-5 w-5 text-green-400" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" /></svg>
     {:else}
-      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" /></svg>
+      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z" /></svg>
     {/if}
   </button>
 
@@ -244,5 +262,15 @@
     <span class="flex-shrink-0 text-xs text-muted/60 max-w-[120px] truncate">{track.albumArtist}</span>
   {/if}
 
-  <TrackOptionsDropdown track={track} ondetails={ondetails} />
+  <button
+    type="button"
+    onclick={handleMoreOptions}
+    class="flex-shrink-0 self-stretch rounded-none px-0.5 text-muted transition-colors hover:text-primary"
+    aria-label="More options"
+    aria-haspopup="menu"
+  >
+    <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+    </svg>
+  </button>
 </div>
