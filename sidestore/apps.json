@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.8.0",
-      "versionDate": "2026-11-04T09:59:28.363Z",
-      "versionDescription": "Multi-select: shift-click songs in the library or the queue and act on the whole set. The suggestion queue now has an adjustable length and a refresh button on its header, and the queue's now-playing island always keeps its transport controls.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.8.0/mmdrome.ipa",
+      "version": "1.9.0",
+      "versionDate": "2026-11-05T09:26:34.401Z",
+      "versionDescription": "Keyboard-accessible library and queue: shortcuts sheet via the ? key, visible focus, aria semantics throughout, unified row menus, filter dead-end exits, and published ring-hygiene counters. Includes CI hardening (build-in-fast-gate, non-blocking coverage).",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.0/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.9.0",
+          "buildVersion": "89",
+          "date": "2026-11-05T09:26:34.401Z",
+          "localizedDescription": "Keyboard-accessible library and queue: shortcuts sheet via the ? key, visible focus, aria semantics throughout, unified row menus, filter dead-end exits, and published ring-hygiene counters. Includes CI hardening (build-in-fast-gate, non-blocking coverage).",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.0/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5284660
+        },
         {
           "version": "1.8.0",
           "buildVersion": "88",
@@ -809,6 +818,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.9.0",
+      "identifier": "ios-v1.9.0",
+      "appID": "com.mmdrome.player",
+      "caption": "Keyboard-accessible library and queue: shortcuts sheet via the ? key, visible focus, aria semantics throughout, unified row menus, filter de",
+      "date": "2026-11-05T09:26:34.401Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.8.0",
       "identifier": "ios-v1.8.0",
       "appID": "com.mmdrome.player",
@@ -841,15 +859,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Filter by any field: genre, artist, album, title, composer, year, length or date added, with fuzzy text, quotes for exact matches, and dual ",
       "date": "2026-11-03T22:50:00.159Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.5.1",
-      "identifier": "ios-v1.5.1",
-      "appID": "com.mmdrome.player",
-      "caption": "Pick Random as the second sort level, so songs that tie on your first sort shuffle among themselves.",
-      "date": "2026-11-01T06:53:05.809Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
