@@ -27,7 +27,8 @@
           "date": "2026-11-05T09:26:34.401Z",
           "localizedDescription": "Keyboard-accessible library and queue: shortcuts sheet via the ? key, visible focus, aria semantics throughout, unified row menus, filter dead-end exits, and published ring-hygiene counters. Includes CI hardening (build-in-fast-gate, non-blocking coverage).",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.0/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5284660
         },
         {
           "version": "1.8.0",
