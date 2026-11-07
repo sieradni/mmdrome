@@ -27,7 +27,8 @@
           "date": "2026-11-07T03:06:22.041Z",
           "localizedDescription": "Context menus: a long press now opens the menu from anywhere on a row, and a press that dismisses the menu never also presses what is underneath.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.2/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5262597
         },
         {
           "version": "1.9.1",
