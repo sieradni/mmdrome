@@ -732,17 +732,17 @@
         </div>
       {/if}
       <div class="flex flex-shrink-0 items-center gap-1">
-        <button use:tooltip class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => { e.stopPropagation(); playbackManager.prev() }}>
+        <button use:tooltip data-no-context-menu class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Previous track" onclick={(e) => { e.stopPropagation(); playbackManager.prev() }}>
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
         </button>
-        <button use:tooltip class="rounded-full bg-neutral-300 p-2 text-black transition-transform hover:scale-105" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
+        <button use:tooltip data-no-context-menu class="rounded-full bg-neutral-300 p-2 text-black transition-transform hover:scale-105" aria-label="Play / Pause" onclick={(e) => { e.stopPropagation(); playbackManager.togglePlayPause() }}>
           {#if $playbackState === 'playing'}
             <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4h4v16H6zm8 0h4v16h-4z"/></svg>
           {:else}
             <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
           {/if}
         </button>
-        <button use:tooltip class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={(e) => { e.stopPropagation(); playbackManager.next() }}>
+        <button use:tooltip data-no-context-menu class="rounded-full p-2 text-muted transition-colors hover:text-primary" aria-label="Next track" onclick={(e) => { e.stopPropagation(); playbackManager.next() }}>
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zm10-12v12h2V6h-2z"/></svg>
         </button>
       </div>

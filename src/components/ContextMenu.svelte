@@ -9,6 +9,7 @@
     type ContextMenuEntry,
     type ContextMenuSubmenu,
   } from '../lib/contextMenuCore'
+  import { armClickSwallow } from '../lib/clickSwallow'
 
   /**
    * The app's ONE context menu primitive (2026-11-04).
@@ -21,7 +22,9 @@
    *  - edge-aware placement (flip, then clamp) measured from the real element,
    *    so the menu never runs off-screen on a phone;
    *  - dismissal on outside pointerdown, any outside scroll, resize, blur,
-   *    Escape, or a new gesture elsewhere;
+   *    Escape, or a new gesture elsewhere — and the outside press is CONSUMED:
+   *    the click it would leave behind is swallowed, so a tap meant to dismiss
+   *    can never also press the control it landed on;
    *  - focus returned to the trigger on teardown.
    *
    * One level of submenu (Rating) is supported; the wrapper with
@@ -264,6 +267,15 @@
     function onPointerDown(event: PointerEvent): void {
       if (!(event.target instanceof Node)) return
       if (rootEl?.contains(event.target)) return
+      // The outside press IS the dismissal — it is never also an activation.
+      // Cancel the pointerdown (default + propagation) and swallow the click it
+      // leaves behind, so nothing under the finger runs: a tap meant to cancel
+      // cannot queue, play or navigate (2026-11-07). The swallow is page-wide
+      // and outlives this component, because the menu unmounts before the
+      // browser dispatches the click.
+      event.preventDefault()
+      event.stopPropagation()
+      armClickSwallow()
       onclose()
     }
     function onScroll(event: Event): void {
