@@ -1745,7 +1745,8 @@ export class PlaybackManager {
   }
 
   togglePlayPause(): void {
-    if (get(playbackState) === 'playing') {
+    const state = get(playbackState)
+    if (state === 'playing' || state === 'buffering') {
       this.pause()
     } else {
       this.play()

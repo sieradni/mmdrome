@@ -2,7 +2,7 @@
 
 The web engine commits the incoming song as soon as the fade starts. Pausing the active element alone left the outgoing song audible until its retire timer fired. Foreground pause now stops the active song and finishes the overlap synchronously. The same finish operation cancels the fade timer and gain ramps, restores the active gain, and retires the outgoing element on seek, track replacement, or background handoff. A later Play resumes the committed song at its paused position. Native iOS already stops both nodes on pause and cancels its pending switch.
 
-The regression tests cover alternating element roles, pause during a pending resume, queued media events, and the iOS web handoff. A Chromium check through the production mini-player confirmed both elements pause and only the committed song resumes.
+The regression tests cover alternating element roles, pausing while the incoming song buffers, pause during a pending resume, queued media events, and the iOS web handoff. A Chromium check through the production mini-player confirmed both elements pause and only the committed song resumes.
 
 ## 2026-11-07 — Context-menu gestures: a long press reaches every pixel, and an outside press is spent, not click-through
 

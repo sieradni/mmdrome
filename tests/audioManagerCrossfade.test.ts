@@ -151,6 +151,18 @@ test('rapid pause and resume let the next crossfade use both elements and retire
   assert.equal(h.b.paused, true)
 })
 
+test('the transport button pauses both songs when the incoming song is buffering', (t) => {
+  const h = makeHarness(t)
+  h.startFade(h.a, tracks[1])
+  setPlaybackState('buffering')
+
+  h.playback.togglePlayPause()
+
+  assert.equal(get(playbackState), 'paused')
+  assert.equal(h.a.paused, true)
+  assert.equal(h.b.paused, true)
+})
+
 test('pausing without a crossfade leaves a preloaded standby untouched', async (t) => {
   const h = makeHarness(t)
   h.b.src = tracks[1].trackId
