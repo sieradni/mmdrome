@@ -27,7 +27,8 @@
           "date": "2026-11-13T07:34:15.166Z",
           "localizedDescription": "Pausing during a crossfade now stops both songs. Playback resumes from the paused position in the current song.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.3/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5262614
         },
         {
           "version": "1.9.2",
