@@ -16,11 +16,20 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.9.2",
-      "versionDate": "2026-11-07T03:06:22.041Z",
-      "versionDescription": "Context menus: a long press now opens the menu from anywhere on a row, and a press that dismisses the menu never also presses what is underneath.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.2/mmdrome.ipa",
+      "version": "1.9.3",
+      "versionDate": "2026-11-13T07:34:15.166Z",
+      "versionDescription": "Pausing during a crossfade now stops both songs. Playback resumes from the paused position in the current song.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.3/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.9.3",
+          "buildVersion": "92",
+          "date": "2026-11-13T07:34:15.166Z",
+          "localizedDescription": "Pausing during a crossfade now stops both songs. Playback resumes from the paused position in the current song.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.3/mmdrome.ipa",
+          "minOSVersion": "15.0",
+          "size": 5262614
+        },
         {
           "version": "1.9.2",
           "buildVersion": "91",
@@ -836,6 +845,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.9.3",
+      "identifier": "ios-v1.9.3",
+      "appID": "com.mmdrome.player",
+      "caption": "Pausing during a crossfade now stops both songs. Playback resumes from the paused position in the current song.",
+      "date": "2026-11-13T07:34:15.166Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.9.2",
       "identifier": "ios-v1.9.2",
       "appID": "com.mmdrome.player",
@@ -868,15 +886,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Multi-select: shift-click songs in the library or the queue and act on the whole set. The suggestion queue now has an adjustable length and ",
       "date": "2026-11-04T09:59:28.363Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.7.0",
-      "identifier": "ios-v1.7.0",
-      "appID": "com.mmdrome.player",
-      "caption": "A new context menu: hold or right-click any song, queue row, album, artist or the player for play, queue, loved, rating and details actions.",
-      "date": "2026-11-04T07:45:36.677Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
