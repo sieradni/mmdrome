@@ -1,3 +1,9 @@
+## 2026-11-12 — Pause retires the outgoing web crossfade
+
+The web engine commits the incoming song as soon as the fade starts. Pausing the active element alone left the outgoing song audible until its retire timer fired. Foreground pause now stops the active song and finishes the overlap synchronously. The same finish operation cancels the fade timer and gain ramps, restores the active gain, and retires the outgoing element on seek, track replacement, or background handoff. A later Play resumes the committed song at its paused position. Native iOS already stops both nodes on pause and cancels its pending switch.
+
+The regression tests cover alternating element roles, pause during a pending resume, queued media events, and the iOS web handoff. A Chromium check through the production mini-player confirmed both elements pause and only the committed song resumes.
+
 ## 2026-11-07 — Context-menu gestures: a long press reaches every pixel, and an outside press is spent, not click-through
 
 Two requirements were only partly true, and neither was visible to the suite. A real finger long-press on a song or queue row never opened the menu: the trigger's nested-control guard treated the row's own play `<button>` (which covers almost the whole row) as "someone else's gesture", so the 500 ms timer never started — the e2e passed only because it dispatched `pointerdown` on the wrapper instead of the element a finger hits. And pressing outside the menu closed it and then ran whatever was underneath: the window-capture dismissal only called `onclose()`, with no `preventDefault`/`stopPropagation` and no click swallow, so a dismiss-and-tap pair navigated, queued or played.

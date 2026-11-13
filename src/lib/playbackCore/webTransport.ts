@@ -62,6 +62,7 @@ export interface WebTransportEngine {
   readonly playbackElement: HTMLAudioElement
   setNextTrack(url: string | null, replayGainLinear?: number, nextDurationSeconds?: number): void
   cancelNextTrack(): void
+  finishCrossfade(): void
   onTrackEnd: (() => void) | null
   reapplyEffects(): void
   applyReplayGain(trackGainDb?: number | null, albumGainDb?: number | null): void
@@ -142,7 +143,7 @@ export class WebTransport implements PlaybackTransport {
       el.addEventListener('ended', this._onEnded)
       el.addEventListener('error', this._onError)
       el.addEventListener('waiting', this._onWaiting)
-      el.addEventListener('playing', this._onPlaying)
+      el.addEventListener('playing', this._onPlay)
     }
   }
 
@@ -152,6 +153,7 @@ export class WebTransport implements PlaybackTransport {
     this._crossfadeTargetId = null
     this._armedRg = null
     this._engine.cancelNextTrack()
+    this._engine.finishCrossfade()
     const { a, b } = this._engine
     for (const el of [a, b]) {
       el.removeEventListener('play', this._onPlay)
@@ -159,7 +161,7 @@ export class WebTransport implements PlaybackTransport {
       el.removeEventListener('ended', this._onEnded)
       el.removeEventListener('error', this._onError)
       el.removeEventListener('waiting', this._onWaiting)
-      el.removeEventListener('playing', this._onPlaying)
+      el.removeEventListener('playing', this._onPlay)
     }
   }
 
@@ -308,14 +310,16 @@ export class WebTransport implements PlaybackTransport {
     this.onTrackEnded?.({ kind: 'crossfade', targetId })
   }
 
-  private readonly _onPlay = (): void => {
+  private readonly _onPlay = (e: Event): void => {
+    const target = e.target as HTMLAudioElement
+    if (target !== this._engine.activeElement || target.paused) return
     this.onPlaybackState?.('playing')
   }
 
   private readonly _onPause = (e: Event): void => {
     const target = e.target as HTMLAudioElement
-    if (target !== this._engine.activeElement) return
-    if (target.ended) return
+    if (target !== this._engine.activeElement || !target.paused || target.ended) return
+    this._engine.finishCrossfade()
     this.onPlaybackState?.('paused')
   }
 
@@ -345,12 +349,10 @@ export class WebTransport implements PlaybackTransport {
     this._handleElementError()
   }
 
-  private readonly _onWaiting = (): void => {
+  private readonly _onWaiting = (e: Event): void => {
+    const target = e.target as HTMLAudioElement
+    if (target !== this._engine.activeElement || target.paused) return
     this.onPlaybackState?.('buffering')
-  }
-
-  private readonly _onPlaying = (): void => {
-    this.onPlaybackState?.('playing')
   }
 
   private _handleElementError(): void {

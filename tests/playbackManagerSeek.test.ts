@@ -36,6 +36,7 @@ class FakeEl {
 class FakeAudioManager {
   seekedTo: number[] = []
   activeElement = new FakeEl()
+  finishCrossfade(): void {}
   markUserSeeked(positionSeconds: number): void {
     this.seekedTo.push(positionSeconds)
   }

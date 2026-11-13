@@ -69,14 +69,9 @@ class AudioManager {
    *  (null = unknown, which the gate treats as too short: never fade blind). */
   private _nextTrackDuration: number | null = null
   private _transitionArmed = false
-  /** A fade's gain ramps + delayed retire are running (the switch already
-   *  happened). The monitor refuses to execute another until it settles —
-   *  one fade in flight, ever (native `CrossfadeState` parity). */
-  private _fadeInFlight = false
-  /** The tracked retire timer of the in-flight fade. Stale fires are
-   *  validity-checked (`shouldPauseOldElement`) — an element that became
-   *  active again must never be paused (the "next song pauses" bug). */
-  private _retireTimer: ReturnType<typeof setTimeout> | null = null
+  /** The switch is already committed. Only the outgoing element's overlap
+   *  remains, and its retirement must be cancelled before either side is reused. */
+  private _fade: { outgoing: HTMLAudioElement; timer: ReturnType<typeof setTimeout> } | null = null
   /** A user seek landed inside this track's crossfade window — automation is
    *  suppressed for the remainder of the track instance (cleared when a new
    *  target is armed, i.e. on the next track load). */
@@ -214,6 +209,11 @@ class AudioManager {
     return this.activeElement
   }
 
+  pause(): void {
+    this.activeElement.pause()
+    this.finishCrossfade()
+  }
+
   get crossfadeDuration(): number {
     return this._crossfadeDuration
   }
@@ -319,7 +319,7 @@ class AudioManager {
       crossfadeDuration: this._crossfadeDuration,
       crossfadeCurve: this._crossfadeCurve,
       transitionArmed: this._transitionArmed,
-      fadeInFlight: this._fadeInFlight,
+      fadeInFlight: this._fade !== null,
       nextTrackArmed: Boolean(this._nextTrackUrl),
       nextTrackDuration: this._nextTrackDuration,
       seekSuppressed: this._seekSuppressed,
@@ -482,17 +482,13 @@ class AudioManager {
   }
 
   private _cleanupWebAudio(): void {
-    if (this._retireTimer !== null) {
-      clearTimeout(this._retireTimer)
-      this._retireTimer = null
-    }
+    this.finishCrossfade()
     if (this._stRebuildTimer !== null) {
       clearTimeout(this._stRebuildTimer)
       this._stRebuildTimer = null
     }
     this._stParamsDirty = false
     this._stNodeLive = false
-    this._fadeInFlight = false
     this._seekSuppressed = false
     if (this._sourceA) { try { this._sourceA.disconnect() } catch {} }
     if (this._sourceB) { try { this._sourceB.disconnect() } catch {} }
@@ -686,32 +682,32 @@ class AudioManager {
     if (isSeekInCrossfadeWindow(positionSeconds, metaDur, this._crossfadeDuration)) {
       this._seekSuppressed = true
     }
-    this._collapseInFlightFade()
+    this.finishCrossfade()
   }
 
-  /** Finish a running fade immediately: freeze both gain nodes, restore the
-   *  active side to unity and retire the faded-out element. */
-  private _collapseInFlightFade(): void {
-    if (!this._fadeInFlight) return
-    const ctx = this._ctx
-    if (ctx) {
-      const now = ctx.currentTime
-      for (const gain of [this._gainA, this._gainB]) {
-        if (!gain) continue
-        gain.gain.cancelScheduledValues(now)
-        gain.gain.setValueAtTime(gain.gain.value, now)
-      }
-      const activeGain = this._activeElement === 'a' ? this._gainA : this._gainB
-      activeGain?.gain.setValueAtTime(1, now)
+  /** Keep the committed song at full gain and retire its outgoing overlap. */
+  finishCrossfade(): void {
+    const fade = this._fade
+    if (!fade) return
+    this._fade = null
+    clearTimeout(fade.timer)
+
+    const { outgoing } = fade
+    const outgoingIsActive = outgoing === this.activeElement
+    if (shouldPauseOldElement(outgoing.ended, outgoingIsActive)) outgoing.pause()
+    if (outgoingIsActive) {
+      dbgAlways('crossfade', 'retire REFUSED — outgoing element is active')
+      return
     }
-    if (this._retireTimer !== null) {
-      clearTimeout(this._retireTimer)
-      this._retireTimer = null
-    }
-    // Post-flip the faded-out element IS the standby — pause it unless ended.
-    const retired = this.standbyElement
-    if (!retired.ended) retired.pause()
-    this._fadeInFlight = false
+
+    const now = this._ctx?.currentTime ?? 0
+    const activeGain = (this._activeElement === 'a' ? this._gainA : this._gainB)?.gain
+    const outgoingGain = (this._activeElement === 'a' ? this._gainB : this._gainA)?.gain
+    activeGain?.cancelScheduledValues(now)
+    activeGain?.setValueAtTime(1, now)
+    outgoingGain?.cancelScheduledValues(now)
+    outgoingGain?.setValueAtTime(0, now)
+    dbg('crossfade', `retire old element (ended=${outgoing.ended})`)
   }
 
   /** Live per-band frequency + gain (+ optional Q) update WITHOUT a chain
@@ -1034,7 +1030,7 @@ class AudioManager {
 
     this._transitionArmed = false
     this._crossfadeInterval = setInterval(() => {
-      if (!this._nextTrackUrl || this._transitionArmed || this._fadeInFlight) return
+      if (!this._nextTrackUrl || this._transitionArmed || this._fade) return
       const el = this.activeElement
       const metaDur = get(currentTrack)?.duration ?? 0
       if (!metaDur || el.paused) return
@@ -1055,7 +1051,7 @@ class AudioManager {
   }
 
   private _executeCrossfade(): void {
-    if (this._transitionArmed || this._fadeInFlight || !this._nextTrackUrl || !this._ctx || !this._webAudioReady) return
+    if (this._transitionArmed || this._fade || !this._nextTrackUrl || !this._ctx || !this._webAudioReady) return
     this._transitionArmed = true
 
     const fadeDuration = this._crossfadeDuration
@@ -1120,32 +1116,13 @@ class AudioManager {
     // Fade in: 0 -> 1
     applyCurve(fadeInGain, 0, 1)
 
-    const oldEl = this.activeElement
-    // One fade in flight: the retire timer is tracked so a seek collapse can
-    // cancel it, and its fire is validity-checked — with alternating elements
-    // a stale fire could target an element that became ACTIVE again and pause
-    // live audio (the reported "next song pauses" bug).
-    this._fadeInFlight = true
-    if (this._retireTimer !== null) clearTimeout(this._retireTimer)
-    this._retireTimer = setTimeout(() => {
-      this._retireTimer = null
-      this._fadeInFlight = false
-      if (shouldPauseOldElement(oldEl.ended, oldEl === this.activeElement)) {
-        oldEl.pause()
-        dbg('crossfade', `retire old element (ended=${oldEl.ended})`)
-      } else if (oldEl.ended) {
-        // BENIGN: the old element reached its natural end before the delayed
-        // retire fired (short track / fade longer than the remaining tail).
-        // Nothing to pause — this is the normal raced-out completion, recorded
-        // quietly so it never reads as a fault in a dump.
-        dbg('crossfade', 'retire skipped — old element already ended naturally (benign)')
-      } else {
-        // DANGEROUS: the element is NOT ended but is active again — pausing it
-        // would stop live audio (the "next song pauses" bug). The guard just
-        // prevented that; always record.
-        dbgAlways('crossfade', 'retire REFUSED — old element re-became ACTIVE mid-fade (guard prevented live-audio pause)')
-      }
-    }, fadeDuration * 1000)
+    const fade = {
+      outgoing: this.activeElement,
+      timer: setTimeout(() => {
+        if (this._fade === fade) this.finishCrossfade()
+      }, fadeDuration * 1000),
+    }
+    this._fade = fade
 
     this.teardownCrossfadeMonitor()
     this._activeElement = this._activeElement === 'a' ? 'b' : 'a'

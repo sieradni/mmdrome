@@ -56,6 +56,7 @@ export interface WebBgEngine {
   readonly isIOS: boolean
   createBgElement(): HTMLAudioElement
   getTransitionOffset(): number
+  pause(): void
   teardownCrossfadeMonitor(): void
   reviveContext(): Promise<void>
   resumeCrossfadeAfterBgExit(): void
@@ -392,7 +393,7 @@ export class WebBgTransport {
       case 'pause':
         if (event.type === 'bgStarted') {
           // The enter-swap completed — the fg element was audible until now.
-          this._deps.fgElement().pause()
+          this._engine.pause()
           return
         }
         if (event.type === 'pauseCmd' && prev.name === 'handoff') {
@@ -400,7 +401,7 @@ export class WebBgTransport {
           // pending swap — a stale settle is a no-op via the token.
           ++this._settleToken
           this._el?.pause()
-          this._deps.fgElement().pause()
+          this._engine.pause()
           return
         }
         this._el?.pause()

@@ -63,6 +63,8 @@ class FakeAudioManager {
   b = new FakeEl() as unknown as HTMLAudioElement
   preamp: GainNode | null = null
   async ensureWebAudioReady(): Promise<void> {}
+  finishCrossfade(): void {}
+  pause(): void { this.activeElement.pause() }
   setMasterVolume(): void {}
   setReplayGainMode(): void {}
   applyReplayGain(): void {}

@@ -83,6 +83,7 @@ class FakeEngine {
   nextTrackUrl: string | null = null
   nextTrackLinear: number | null = null
   nextTrackDuration: number | null | undefined = undefined
+  finishedFades = 0
   reapplyCalls = 0
   rgCalls: Array<[number | null, number | null]> = []
 
@@ -93,6 +94,7 @@ class FakeEngine {
   }
 
   cancelNextTrack(): void { this.setNextTrack(null) }
+  finishCrossfade(): void { this.finishedFades++ }
   reapplyEffects(): void { this.reapplyCalls++ }
   applyReplayGain(trackGainDb?: number | null, albumGainDb?: number | null): void {
     this.rgCalls.push([trackGainDb ?? null, albumGainDb ?? null])
@@ -217,20 +219,46 @@ test('pause event: active element → paused; ended element and standby → noth
   await t.init()
   engine.a.dispatch('pause')
   assert.deepEqual(states, ['paused'])
+  assert.equal(engine.finishedFades, 1)
   engine.a.ended = true
   engine.a.dispatch('pause')
+  engine.a.ended = false
   engine.activeElement = engine.b
   engine.a.dispatch('pause')
   assert.deepEqual(states, ['paused'])
+  assert.equal(engine.finishedFades, 1)
 })
 
 test('play/waiting/playing events map to playback states', async () => {
   const { t, engine, states } = makeTransport()
   await t.init()
+  engine.a.paused = false
   engine.a.dispatch('play')
   engine.a.dispatch('waiting')
   engine.a.dispatch('playing')
   assert.deepEqual(states, ['playing', 'buffering', 'playing'])
+})
+
+test('queued events from the outgoing or newly paused element cannot overwrite a crossfade pause', async () => {
+  const { t, engine, states } = makeTransport()
+  await t.init()
+  engine.activeElement = engine.b
+  engine.b.dispatch('pause')
+
+  // Events queued before Pause can be delivered after the active side switched
+  // or after its paused flag changed.
+  engine.a.paused = false
+  for (const event of ['play', 'waiting', 'playing']) {
+    engine.a.dispatch(event)
+    engine.b.dispatch(event)
+  }
+  assert.deepEqual(states, ['paused'])
+
+  engine.b.paused = false
+  engine.b.dispatch('play')
+  engine.b.dispatch('pause') // queued before the immediate resume
+  assert.deepEqual(states, ['paused', 'playing'])
+  assert.equal(engine.finishedFades, 1)
 })
 
 // ── retry machine (RetryPolicy-owned, per its documented contract) ─────────

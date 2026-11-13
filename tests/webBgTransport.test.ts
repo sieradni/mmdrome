@@ -83,6 +83,11 @@ class FakeEngine implements WebBgEngine {
   readonly created: FakeEl[] = []
   readonly calls: string[] = []
   offset = 0.2
+  private readonly fg: FakeEl
+
+  constructor(fg: FakeEl) {
+    this.fg = fg
+  }
 
   createBgElement(): HTMLAudioElement {
     const el = new FakeEl()
@@ -96,6 +101,11 @@ class FakeEngine implements WebBgEngine {
 
   teardownCrossfadeMonitor(): void {
     this.calls.push('teardownCrossfadeMonitor')
+  }
+
+  pause(): void {
+    this.calls.push('pause')
+    this.fg.pause()
   }
 
   async reviveContext(): Promise<void> {
@@ -151,7 +161,7 @@ interface Harness {
 function makeHarness(): Harness {
   globalThis.document = documentStub
   const fg = new FakeEl()
-  const engine = new FakeEngine()
+  const engine = new FakeEngine(fg)
   const facts: BgFacts = {
     currentTrackId: 't1',
     parkArmed: false,
@@ -224,7 +234,7 @@ test('enterBg swaps src/position to the bg element, pauses fg on settle', async 
   assert.equal(h.fg.paused, false)
   h.t.handleVisibility(true)
   await flush()
-  assert.deepEqual(h.engine.calls, ['teardownCrossfadeMonitor'])
+  assert.deepEqual(h.engine.calls, ['teardownCrossfadeMonitor', 'pause'])
   assert.equal(h.bgEl.src, h.fg.src)
   assert.equal(h.bgEl.currentTime, 55.4 - h.engine.offset)
   assert.equal(h.bgEl.paused, false)
@@ -628,6 +638,7 @@ test('mediaPause during an enter-handoff pauses the fg element and cancels the s
   h.t.mediaPause()
   await flush()
   assert.equal(h.fg.paused, true) // the AUDIBLE element
+  assert.deepEqual(h.engine.calls, ['teardownCrossfadeMonitor', 'pause'])
   assert.equal(h.bgEl.pauseCalls, 1)
   h.bgEl.settleNextPlay() // stale — token bumped
   await flush()

@@ -111,6 +111,8 @@ export class PlaybackManager {
   private _webTransport: WebTransport | null = null
   private _bgTransport: WebBgTransport | null = null
   private _nativeTransport: NativeTransport | null = null
+  /** A newer pause supersedes a foreground resume awaiting the audio context. */
+  private _foregroundPauseGeneration = 0
   /** Test override for Capacitor.isNativePlatform — the glue suite runs under Node. */
   private _isNative: (() => boolean) | null = null
   private _refreshPositionState: () => void = () => {}
@@ -1100,6 +1102,7 @@ export class PlaybackManager {
     // the divergence this replaced.
     this._am.setMasterVolume(get(masterGain))
 
+    this._am.finishCrossfade()
     const el = this._am.activeElement
     // Phase 1: consume the parked intent instead of hard-writing 0:00 — the
     // element cannot take a time before metadata, so the parked position is
@@ -1309,7 +1312,7 @@ export class PlaybackManager {
       // which would replay the whole track instead of advancing.
       el.currentTime = Math.min(el.currentTime, dur - 0.05)
     }
-    el.pause()
+    this._am.pause()
     setPlaybackState('paused')
     return true
   }
@@ -1333,6 +1336,7 @@ export class PlaybackManager {
     this._webTransport?.cancelNext()
     this._nativeTransport?.disengage()
     if (!this.isNative()) {
+      this._am.finishCrossfade()
       this._am.activeElement.src = ''
     }
   }
@@ -1374,6 +1378,7 @@ export class PlaybackManager {
             return
           }
           this._webTransport!.cancelNext()
+          this._am.finishCrossfade()
           const el = this._am.activeElement
           el.currentTime = 0
           try { await el.play() } catch { /* user may have paused */ }
@@ -1698,7 +1703,9 @@ export class PlaybackManager {
       return
     }
 
+    const pauseGeneration = this._foregroundPauseGeneration
     await this._am.ensureWebAudioReady()
+    if (pauseGeneration !== this._foregroundPauseGeneration) return
 
     // A previous end-of-track park left the element paused just below its end
     // (never ended), so plain play() continues the tail and the re-fired
@@ -1707,7 +1714,7 @@ export class PlaybackManager {
     if (el.src && el.src !== '') {
       try {
         await el.play()
-        setPlaybackState('playing')
+        if (pauseGeneration === this._foregroundPauseGeneration) setPlaybackState('playing')
       } catch {
         /* play rejected — autoplay policy or no user gesture */
       }
@@ -1722,6 +1729,7 @@ export class PlaybackManager {
       setPlaybackState('paused')
       return
     }
+    ++this._foregroundPauseGeneration
     // The engaged-pause filter: while bg-engaged the AUDIBLE element is the bg
     // element (via the machine) — pausing the fg element would silently fail
     // to stop background audio, and a swap-settle fg pause must never write
@@ -1732,7 +1740,7 @@ export class PlaybackManager {
       setPlaybackState('paused')
       return
     }
-    this._am.activeElement.pause()
+    this._am.pause()
     setPlaybackState('paused')
   }
 
