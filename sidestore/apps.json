@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.9.3",
-      "versionDate": "2026-11-13T07:34:15.166Z",
-      "versionDescription": "Pausing during a crossfade now stops both songs. Playback resumes from the paused position in the current song.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.3/mmdrome.ipa",
+      "version": "1.9.4",
+      "versionDate": "2026-11-14T08:53:49.383Z",
+      "versionDescription": "Range sliders: both handles at the right edge can be dragged apart again.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.4/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.9.4",
+          "buildVersion": "93",
+          "date": "2026-11-14T08:53:49.383Z",
+          "localizedDescription": "Range sliders: both handles at the right edge can be dragged apart again.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.4/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.9.3",
           "buildVersion": "92",
@@ -845,6 +853,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.9.4",
+      "identifier": "ios-v1.9.4",
+      "appID": "com.mmdrome.player",
+      "caption": "Range sliders: both handles at the right edge can be dragged apart again.",
+      "date": "2026-11-14T08:53:49.383Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.9.3",
       "identifier": "ios-v1.9.3",
       "appID": "com.mmdrome.player",
@@ -877,15 +894,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Keyboard-accessible library and queue: shortcuts sheet via the ? key, visible focus, aria semantics throughout, unified row menus, filter de",
       "date": "2026-11-05T09:26:34.401Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.8.0",
-      "identifier": "ios-v1.8.0",
-      "appID": "com.mmdrome.player",
-      "caption": "Multi-select: shift-click songs in the library or the queue and act on the whole set. The suggestion queue now has an adjustable length and ",
-      "date": "2026-11-04T09:59:28.363Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
