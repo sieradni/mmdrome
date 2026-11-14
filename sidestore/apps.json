@@ -27,7 +27,8 @@
           "date": "2026-11-14T08:53:49.383Z",
           "localizedDescription": "Range sliders: both handles at the right edge can be dragged apart again.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.9.4/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5262727
         },
         {
           "version": "1.9.3",
