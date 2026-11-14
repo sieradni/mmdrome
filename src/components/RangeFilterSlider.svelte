@@ -16,7 +16,20 @@
    * Pointer state is LOCAL (`dragLo`/`dragHi`) so a fast drag never reads a
    * stale prop between the store write and the re-render; the props are the
    * committed value and re-sync when no gesture is active.
+   *
+   * Handle RESOLUTION lives in the pure `rangeSliderCore` (2026-11-14): a press
+   * on two OVERLAPPING handles defers to the first movement, because a fixed
+   * tie-break made a pair parked at the right edge impossible to drag down (the
+   * press took the maximum, which is already clamped there).
    */
+  import {
+    applyHandleMove,
+    pickDragHandle,
+    resolvePendingHandle,
+    type RangeHandle,
+    type RangeHandlePick,
+  } from '../lib/rangeSliderCore'
+
   interface Props {
     label: string
     min: number
@@ -45,7 +58,7 @@
   }: Props = $props()
 
   let trackEl = $state<HTMLDivElement | null>(null)
-  let dragging = $state<0 | 1 | null>(null)
+  let dragging = $state<RangeHandlePick | null>(null)
   let dragLo = $state<number | null>(null)
   let dragHi = $state<number | null>(null)
 
@@ -84,19 +97,32 @@
     if (disabled) return
     e.preventDefault()
     const v = valueFromClientX(e.clientX)
-    // Nearest handle wins; on a tie (overlapping handles) pick the MAXIMUM so
-    // dragging right widens the band instead of pinning the lower edge.
-    const pick: 0 | 1 = Math.abs(v - lo) < Math.abs(v - hi) ? 0 : 1
-    dragging = pick
     ;(e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId)
-    emit(pick === 0 ? Math.min(v, hi) : Math.max(v, lo), pick === 1 ? Math.max(v, lo) : hi)
+    const pick = pickDragHandle(v, lo, hi)
+    dragging = pick
+    // Overlapping handles: the gesture's first movement picks the side, so a
+    // press ON the collapsed pair neither changes the band nor burns itself on
+    // a guess (a fixed tie-break used to grab the maximum, which is exactly the
+    // handle that cannot move off the right edge).
+    if (pick === 'pending') return
+    const [nextLo, nextHi] = applyHandleMove(pick, v, lo, hi)
+    emit(nextLo, nextHi)
   }
 
   function handlePointerMove(e: PointerEvent): void {
     if (dragging === null || disabled) return
     const v = valueFromClientX(e.clientX)
-    if (dragging === 0) emit(Math.min(v, hi), hi)
-    else emit(lo, Math.max(v, lo))
+    let which: RangeHandle
+    if (dragging === 'pending') {
+      const resolved = resolvePendingHandle(v, lo)
+      if (resolved === null) return
+      which = resolved
+      dragging = resolved
+    } else {
+      which = dragging
+    }
+    const [nextLo, nextHi] = applyHandleMove(which, v, lo, hi)
+    emit(nextLo, nextHi)
   }
 
   function handlePointerUp(e: PointerEvent): void {

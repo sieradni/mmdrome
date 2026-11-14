@@ -216,3 +216,50 @@ test('a keyboard nudge cannot cross the other range handle', async ({ page }) =>
   await expect(maxHandle).toHaveAttribute('aria-valuenow', '1901')
   await expect(rows(page)).toHaveCount(0)
 })
+
+// Pointer regression (2026-11-14): with BOTH handles parked at the right edge,
+// pressing the overlapping discs and dragging left must pull the MINIMUM handle
+// down. The pre-fix tie-break always grabbed the maximum, whose move is clamped
+// at the minimum, so the whole gesture was a silent no-op.
+test('both handles at the right edge: dragging the discs left lowers the minimum', async ({ page }) => {
+  await bootWithMockLibrary(page)
+  await openFilters(page)
+  const dialog = filterDialog(page)
+
+  const minRating = dialog.getByTestId('min-rating')
+  const maxRating = dialog.getByTestId('max-rating')
+  const minHandle = dialog.getByRole('slider', { name: 'Rating filter minimum' })
+  const maxHandle = dialog.getByRole('slider', { name: 'Rating filter maximum' })
+
+  // End on the minimum collapses the band on 100 — both handles overlap at the
+  // right edge, which is exactly the reported state.
+  await minHandle.focus()
+  await page.keyboard.press('End')
+  await expect(minRating).toHaveValue('100')
+  await expect(maxRating).toHaveValue('100')
+
+  const strip = dialog.getByRole('group', { name: 'Rating filter slider' })
+  await strip.scrollIntoViewIfNeeded()
+  const box = await strip.boundingBox()
+  if (!box) throw new Error('rating slider has no layout box')
+  const y = box.y + box.height / 2
+  await page.mouse.move(box.x + box.width, y)
+  await page.mouse.down()
+  await page.mouse.move(box.x + box.width * 0.5, y, { steps: 10 })
+  await page.mouse.up()
+
+  // Half of the 0–100 domain in 10-point steps.
+  await expect(minRating).toHaveValue('50')
+  await expect(maxRating).toHaveValue('100')
+  await expect(minHandle).toHaveAttribute('aria-valuenow', '50')
+  await expect(maxHandle).toHaveAttribute('aria-valuenow', '100')
+
+  // A press right of the band jumps only the MAXIMUM: the old press-to-jump
+  // emitted `(v, v)` for the maximum handle, collapsing both handles onto the
+  // press point and silently losing the minimum.
+  await page.mouse.move(box.x + box.width * 0.8, y)
+  await page.mouse.down()
+  await page.mouse.up()
+  await expect(minRating).toHaveValue('50')
+  await expect(maxRating).toHaveValue('80')
+})
