@@ -78,7 +78,7 @@ function mockWav(seconds = 60): Buffer {
  *  the catch-all (registered later ⇒ higher precedence) swallows them and the
  *  app sees an empty catalog behind a "Connected" status.
  */
-export async function installNavidromeMock(page: Page): Promise<void> {
+export async function installNavidromeMock(page: Page, songs: typeof SONGS = SONGS): Promise<void> {
   // Catch-all FIRST (lowest precedence): streams/covers/anything unlisted —
   // keeps a stray thumbnail request from erroring the boot race.
   await page.route('**/mock-navidrome.test/**', (route) => {
@@ -93,7 +93,7 @@ export async function installNavidromeMock(page: Page): Promise<void> {
   await page.route('**/ping.view*', (route) => route.fulfill(subsonicOk({})))
   await page.route('**/getScanStatus.view*', (route) => route.fulfill(subsonicOk({ scanStatus: { lastScan: '2024-01-02T00:00:00Z' } })))
   await page.route('**/search3.view*', (route) =>
-    route.fulfill(subsonicOk({ searchResult3: { song: SONGS } })),
+    route.fulfill(subsonicOk({ searchResult3: { song: songs } })),
   )
   // Real decodable audio for stream requests: a track must be able to go
   // ACTIVE (and stay active) for specs that drive the detail controls.
