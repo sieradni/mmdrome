@@ -27,7 +27,8 @@
           "date": "2026-11-16T02:34:11.820Z",
           "localizedDescription": "Queue: shuffle Up next from its header, and repeat-all now begins each new pass in a fresh order.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.10.0/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5263341
         },
         {
           "version": "1.9.4",
