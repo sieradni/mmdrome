@@ -2091,3 +2091,24 @@ test('File Matching buckets: title-less auto link needs action, same-path Confir
 
   teardown()
 })
+
+test('searchWebdavFiles: a romaji query reaches a kana directory and filename', async () => {
+  setupMocks()
+  mockEntries = [
+    entry({ path: '/dav/files/user/ミュージック/ツユ - くらべられっ子.flac', filename: 'ツユ - くらべられっ子.flac' }),
+    entry({ path: '/dav/files/user/Rock/Other.flac', filename: 'Other.flac' }),
+  ]
+  mockComplete = true
+  initWebdav()
+  await refreshIndex()
+
+  assert.deepEqual(
+    searchWebdavFiles('tuyu', 'flac').map((e) => e.filename),
+    ['ツユ - くらべられっ子.flac'],
+    'the romaji reading of the filename is searchable',
+  )
+  assert.equal(searchWebdavFiles('kurabe', 'flac').length, 1, 'any kana run in the path is searchable')
+  assert.deepEqual(searchWebdavFiles('tuyu', 'mp3'), [], 'the extension filter still applies')
+
+  teardown()
+})

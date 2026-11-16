@@ -579,3 +579,11 @@ test('a hand order is void once the rule, the tail or a row stops being what the
   assert.equal(resolveHandOrder(intent, { ...captured, autoQueue: ['aq4', 'aq2'] }), intent, 'a removal inside the tail keeps it')
   assert.equal(resolveHandOrder(intent, { ...captured, autoQueue: ['aq6'] }), intent, 'consuming the head keeps it')
 })
+
+test('searchQuery reaches a Japanese title by its romaji reading', () => {
+  const meta = metaOf([])
+  const t = track('t1', { title: 'ツユ', artist: 'ツユ' })
+  assert.equal(matchesAutoQueueFilters(t, filters({ searchQuery: 'tuyu' }), meta), true)
+  assert.equal(matchesAutoQueueFilters(t, filters({ searchQuery: 'tsuyu' }), meta), true)
+  assert.equal(matchesAutoQueueFilters(t, filters({ searchQuery: 'tuyu kurabe' }), meta), false, 'every token still needs a home')
+})

@@ -190,3 +190,53 @@ test('highlightSegments: a mismatched map degrades to one plain segment (never w
     'wrong-length map also degrades',
   )
 })
+
+// ── Romanized search (Japanese script bridging, 2026-11-16) ────────────
+
+test('romaji queries reach kana fields — tuyu / tsuyu / TUYU / つゆ all find ツユ', () => {
+  const t = track({ title: 'ツユ', artist: 'ツユ', album: 'くらべられっ子' })
+  for (const q of ['tuyu', 'tsuyu', 'TUYU', 'つゆ']) {
+    assert.equal(trackMatchesQuery(t, parseSearchQuery(q)), true, q)
+  }
+  assert.equal(trackMatchesQueryFast(t, parseSearchQuery('tuyu')), true)
+  assert.ok(rankTrackMatch(t, parseSearchQuery('tuyu')) > 0)
+})
+
+test('katakana and hiragana are the same title to search', () => {
+  assert.equal(trackMatchesQuery(track({ title: 'つゆ' }), parseSearchQuery('tsuyu')), true)
+  assert.equal(trackMatchesQuery(track({ title: 'ツユ' }), parseSearchQuery('tsuyu')), true)
+})
+
+test('a kana query reaches a Latin field (the reading is the bridge)', () => {
+  assert.equal(trackMatchesQuery(track({ title: 'Tsuyu' }), parseSearchQuery('つゆ')), true)
+})
+
+test('romanized search keeps voicing exact and does not invent kanji readings', () => {
+  assert.equal(trackMatchesQuery(track({ title: 'バビロン' }), parseSearchQuery('babiron')), true)
+  assert.equal(trackMatchesQuery(track({ title: 'バビロン' }), parseSearchQuery('habiron')), false)
+  assert.equal(trackMatchesQuery(track({ title: 'ハビロン' }), parseSearchQuery('babiron')), false)
+  // Kanji has no reading dictionary: a real kana reading works, a guessed kanji
+  // reading does not (the documented limit of the kana bridge).
+  assert.equal(trackMatchesQuery(track({ title: '日本語のタイトル' }), parseSearchQuery('taitoru')), true)
+  assert.equal(trackMatchesQuery(track({ title: '日本語のタイトル' }), parseSearchQuery('nihongo')), false)
+})
+
+test('Latin search keeps its literal semantics (no romaji rewrite of Latin fields)', () => {
+  assert.equal(trackMatchesQuery(track({ title: 'Tuesday' }), parseSearchQuery('tuesday')), true)
+  assert.equal(trackMatchesQuery(track({ title: 'Tuesday' }), parseSearchQuery('tsuesday')), false)
+})
+
+test('rank agrees with the predicate on romaji hits (a positive score is exactly a match)', () => {
+  const tokens = parseSearchQuery('tuyu')
+  for (const title of ['ツユ', 'Tsuyu', 'TUYU', 'Hey Jude']) {
+    const t = track({ title })
+    assert.equal(rankTrackMatch(t, tokens) > 0, trackMatchesQueryFast(t, tokens), title)
+  }
+})
+
+test('File Matching fields get the same bridge (kana path, romaji query)', () => {
+  const fields = ['/dav/files/user/ミュージック/ツユ - くらべられっ子.flac']
+  assert.equal(fieldsMatchQuery(fields, parseSearchQuery('tuyu')), true)
+  assert.equal(fieldsMatchQuery(fields, parseSearchQuery('kurabe')), true)
+  assert.equal(fieldsMatchQuery(fields, parseSearchQuery('ramen')), false)
+})

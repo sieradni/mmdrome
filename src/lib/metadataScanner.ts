@@ -2266,7 +2266,8 @@ export async function listUnresolvedMatches(): Promise<UnresolvedMatch> {
  * routed through the shared `searchCore` — whitespace tokens (quoted
  * phrases kept whole), AND-across-tokens / OR-across-[path, filename],
  * folded via `normalizeForSearch` (case, punctuation, diacritics; CJK
- * voicing preserved).
+ * voicing preserved) and — for a path/filename containing kana — through its
+ * canonical romaji reading, so `tuyu` reaches ツユ (textMatchCore.ts).
  *
  * Semantics deliberately WIDENED from the old whole-query substring: each
  * token may hit a DIFFERENT field (`01 beatles` matches

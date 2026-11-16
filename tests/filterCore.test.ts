@@ -348,3 +348,32 @@ test('a decoded legacy row round-trips into the same filter meaning', () => {
   assert.equal(matchesFilterRuleSet(track('c', { genre: 'Jazz', year: 1980 }), decoded, ctx({ c: 80 })), false)
   assert.equal(matchesFilterRuleSet(track('d', { genre: 'Jazz', year: 1995 }), decoded, ctx({ d: 10 })), false)
 })
+
+// ── Romanized text clauses (2026-11-16) ────────────────────────────────
+
+test('text clauses and suggestions reach kana values by their romaji reading', () => {
+  assert.equal(textValueMatches('tuyu', 'ツユ'), true)
+  assert.equal(textValueMatches('tsuyu', 'つゆ'), true)
+  assert.equal(textValueMatches('tuyu', 'ラーメン'), false)
+  assert.equal(filterTextMatches('ツユ', parseFilterText('tuyu')), true)
+  // The fuzzy ladder runs on the romaji lane too…
+  assert.equal(textValueMatches('tuyo', 'ツユ'), true, 'one-edit typo in romaji')
+  // …but a quoted token stays exact on every lane.
+  assert.equal(textValueMatches('"tuyo"', 'ツユ'), false)
+  assert.equal(textValueMatches('"tuyu"', 'ツユ'), true)
+})
+
+test('a text clause matches a kana track field through the romaji lane', () => {
+  const t = track('t1', { title: 'ツユ', artist: 'ツユ' })
+  const rules = {
+    ...emptyFilterRuleSet(),
+    clauses: [{ id: 'clause-title-1', kind: 'text' as const, field: 'title' as const, query: 'tuyu' }],
+  }
+  const ctx = { ratingOf: () => 0, lovedOf: () => false }
+  assert.equal(matchesFilterRuleSet(t, rules, ctx), true)
+  assert.equal(
+    matchesFilterRuleSet(t, { ...rules, clauses: [{ ...rules.clauses[0], query: 'ramen' }] }, ctx),
+    false,
+    'the clause stays scoped to its own field',
+  )
+})

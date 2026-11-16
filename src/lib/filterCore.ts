@@ -10,7 +10,9 @@
  *  - a filter is a RULE SET — the always-visible rating range + loved switch,
  *    plus a list of CLAUSES ANDed together;
  *  - a clause is typed by its field: `range` (dual-handle slider bounds, either
- *    side may be open), `boolean`, or `text` (fuzzy, with `"quotes"` = exact);
+ *    side may be open), `boolean`, or `text` (fuzzy, with `"quotes"` = exact,
+ *    and script-bridging — a kana value is reachable by its romaji reading,
+ *    `tuyu` → ツユ, through the shared `textMatchCore`);
  *  - the field registry below is the single place a new filterable field is
  *    described, so the Add-filter picker, the clause editor, the track
  *    predicate and the album/artist group predicate can never disagree;
@@ -24,6 +26,13 @@
  */
 
 import { normalizeForSearch } from './matchNormalize'
+import {
+  formMatchesToken,
+  searchTextForm,
+  searchToken,
+  type SearchTextForm,
+  type TextMatchMode,
+} from './textMatchCore'
 import type { Track } from '../stores/appState'
 
 // ── Fields ────────────────────────────────────────────────────────────
@@ -261,7 +270,12 @@ export function filterRuleSetsEqual(a: FilterRuleSet, b: FilterRuleSet): boolean
   return filterRuleSetSignature(a) === filterRuleSetSignature(b)
 }
 
-// ── Text matching (fuzzy, quotes = exact) ─────────────────────────────
+// ── Text matching (fuzzy, quotes = exact, romaji-aware) ───────────────
+//
+// The comparison itself is `textMatchCore.formMatchesToken` — the same three
+// lanes the library search box uses (folded, romaji↔romaji, kana token →
+// folded Latin). This module only chooses the MODE: `"quotes"` = substring,
+// a bare run = fuzzy.
 
 export interface FilterTextToken {
   /** Folded (normalizeForSearch) token text. */
@@ -300,76 +314,34 @@ export function parseFilterText(query: string): FilterTextToken[] {
 
 const parseFilterTextCache = new Map<string, FilterTextToken[]>()
 
-/** Edit distance ≤ 1 (insert/delete/substitute) — a typo, not a different word. */
-function withinOneEdit(a: string, b: string): boolean {
-  if (a === b) return true
-  if (Math.abs(a.length - b.length) > 1) return false
-  const [short, long] = a.length <= b.length ? [a, b] : [b, a]
-  let i = 0
-  let j = 0
-  let edits = 0
-  while (i < short.length && j < long.length) {
-    if (short[i] === long[j]) {
-      i++
-      j++
-      continue
-    }
-    if (++edits > 1) return false
-    if (short.length === long.length) {
-      i++
-      j++
-    } else {
-      j++
-    }
-  }
-  return edits + (long.length - j) + (short.length - i) <= 1
-}
-
-/** Does `needle` appear in `hay` as an in-order subsequence within `maxSpan` chars? */
-function subsequenceWithin(hay: string, needle: string, maxSpan: number): boolean {
-  if (!needle) return true
-  for (let start = 0; start < hay.length; start++) {
-    if (hay[start] !== needle[0]) continue
-    let i = start + 1
-    let matched = 1
-    while (i < hay.length && matched < needle.length) {
-      if (hay[i] === needle[matched]) matched++
-      i++
-    }
-    if (matched === needle.length && i - start <= maxSpan) return true
-  }
-  return false
+/**
+ * A clause token's forgiveness: `"quoted"` means literal substring, a bare run
+ * means the fuzzy ladder (typo / initials / bounded subsequence).
+ */
+function matchModeOf(token: FilterTextToken): TextMatchMode {
+  return token.exact ? 'substring' : 'fuzzy'
 }
 
 /**
- * ONE folded field against ONE token. Exact tokens are plain substring hits;
- * fuzzy tokens also accept a per-word typo (≥4 chars, edit distance 1) and an
- * in-order subsequence with a bounded span (≥3 chars — this is what makes
- * "inro" find "Indie Rock" and gives acronym-style hits). CJK tokens are short
- * by nature, so the exact substring path carries them unchanged.
+ * ONE field form against the clause's tokens — the SAME comparison the library
+ * search box uses (`textMatchCore.formMatchesToken`), so a text clause and the
+ * search field can never disagree about what a query means. The three lanes
+ * are folded↔token, romaji↔romaji (a kana field is reachable by typing its
+ * reading, `tuyu` → ツユ) and folded↔romaji for a KANA token (`つゆ` →
+ * "Tsuyu"); the fuzzy ladder runs on each lane's own strings.
+ */
+function formMatchesFilterTokens(form: SearchTextForm, tokens: readonly FilterTextToken[]): boolean {
+  if (tokens.length === 0) return true
+  return tokens.every((t) => formMatchesToken(form, searchToken(t.text), matchModeOf(t)))
+}
+
+/**
+ * ONE folded field value against ONE token. Kept as the public convenience for
+ * callers that hold a folded value rather than a form (`searchTextForm` is
+ * idempotent, so re-folding an already-folded value is a cache hit).
  */
 export function filterTokenMatches(foldedField: string, token: FilterTextToken): boolean {
-  const t = token.text
-  if (!t) return true
-  const field = foldedField ?? ''
-  if (!field) return false
-  if (field.includes(t)) return true
-  if (token.exact) return false
-  const words = field.split(/\s+/).filter(Boolean)
-  // Initials work for even a two-letter token ("ir" → Indie Rock) and are
-  // cheap + unambiguous; the looser subsequence only applies from 3 chars.
-  if (t.length >= 2) {
-    const initials = words.map((w) => w[0] ?? '').join('')
-    if (initials.includes(t)) return true
-  }
-  if (t.length >= 4) {
-    for (const w of words) if (w.length >= 3 && withinOneEdit(w, t)) return true
-  } else if (t.length === 3) {
-    // Short token typos are too permissive across words; only the whole field.
-    if (withinOneEdit(field, t)) return true
-  }
-  if (t.length >= 3 && subsequenceWithin(field, t, t.length * 3)) return true
-  return false
+  return formMatchesToken(searchTextForm(foldedField), searchToken(token.text), matchModeOf(token))
 }
 
 /**
@@ -378,13 +350,12 @@ export function filterTokenMatches(foldedField: string, token: FilterTextToken):
  * clause per filter pass, not per track).
  */
 export function filterTextMatches(foldedField: string, tokens: readonly FilterTextToken[]): boolean {
-  if (tokens.length === 0) return true
-  return tokens.every((t) => filterTokenMatches(foldedField, t))
+  return formMatchesFilterTokens(searchTextForm(foldedField), tokens)
 }
 
 /** Convenience for UI suggestions: does one raw field value match a query? */
 export function textValueMatches(query: string, value: string): boolean {
-  return filterTextMatches(normalizeForSearch(value ?? ''), parseFilterText(query))
+  return formMatchesFilterTokens(searchTextForm(value ?? ''), parseFilterText(query))
 }
 
 // ── Track predicate ───────────────────────────────────────────────────
@@ -413,26 +384,27 @@ function rawTextField(track: Track, field: TextFilterField): string {
 }
 
 /**
- * Folded text fields memoized per track OBJECT (WeakMap — a library reload
+ * Comparable text forms memoized per track OBJECT (WeakMap — a library reload
  * produces new objects and the old entries collect with them). Without this,
- * every keystroke re-folded each text field of every candidate track for every
- * text clause; with it, folding happens once per track per field. Safe because
- * Track objects are treated as immutable by the stores.
+ * every keystroke re-folded (and re-romanized) each text field of every
+ * candidate track for every text clause; with it, the work happens once per
+ * track per field. Safe because Track objects are treated as immutable by the
+ * stores.
  */
-const foldedTextFieldCache = new WeakMap<Track, Partial<Record<TextFilterField, string>>>()
+const textFormFieldCache = new WeakMap<Track, Partial<Record<TextFilterField, SearchTextForm>>>()
 
-function foldedTextField(track: Track, field: TextFilterField): string {
-  let row = foldedTextFieldCache.get(track)
+function textFormOf(track: Track, field: TextFilterField): SearchTextForm {
+  let row = textFormFieldCache.get(track)
   if (!row) {
     row = {}
-    foldedTextFieldCache.set(track, row)
+    textFormFieldCache.set(track, row)
   }
-  let folded = row[field]
-  if (folded === undefined) {
-    folded = normalizeForSearch(rawTextField(track, field))
-    row[field] = folded
+  let form = row[field]
+  if (form === undefined) {
+    form = searchTextForm(rawTextField(track, field))
+    row[field] = form
   }
-  return folded
+  return form
 }
 
 function trackFieldValue(track: Track, field: FilterFieldKey, ctx: TrackFilterContext): string | number | boolean | null {
@@ -486,7 +458,7 @@ function clauseMatchesTrack(
   if (clause.kind === 'boolean') {
     return ctx.lovedOf(track.trackId) === clause.value
   }
-  return filterTextMatches(foldedTextField(track, clause.field), tokens ?? [])
+  return formMatchesFilterTokens(textFormOf(track, clause.field), tokens ?? [])
 }
 
 /** ALL clauses must match (the elemental AND). */
