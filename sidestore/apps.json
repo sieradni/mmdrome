@@ -27,7 +27,8 @@
           "date": "2026-11-16T08:07:07.241Z",
           "localizedDescription": "Search understands Japanese: type tuyu or tsuyu to find ツユ, in the library, the auto queue and file matching.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.11.0/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5265076
         },
         {
           "version": "1.10.0",
