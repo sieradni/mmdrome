@@ -7,6 +7,7 @@ import { queueManager } from './queueManager'
 import { advanceTargetIndex, resolveQueueOccurrence } from './queueMutation'
 import { combinedEntryIds, entryIdAt } from './queueOccurrence'
 import { inscribeRecent, RECENT_LIMIT } from './recentWindow'
+import { isQueueWrap } from './userQueueShuffle'
 import { setup as setupPreloader, teardown as teardownPreloader, resolveSrc, sweepStaleTranscodeEntries } from './preloader'
 import { forwardNativePreloadProgress } from './nativeLoadStatus'
 import { setupMediaSession } from './mediaSession'
@@ -976,6 +977,14 @@ export class PlaybackManager {
     if (trackChanged) this._resetErrorCycle()
     this._qm.promoteActiveTrack()
     this._qm.replenishAutoQueue()
+    // Repeat-all WRAP (2026-11-14). The native engine owns the clock and wraps
+    // its own snapshot under loop-all (`nextIndex(after:) → 0`), so the only
+    // observable evidence is this last-row → first-row transition. The row it
+    // landed on is ALREADY audible, so this is the anchor-preserving shuffle:
+    // the pass's first row stays playing and everything after it is reordered.
+    if (get(loopMode) === 'all' && isQueueWrap(beforeIndex, idx, combined.length)) {
+      this._qm.shuffleUserQueue()
+    }
     const after = get(queue)
     dbgAlways('queue', `native transition ${trackId}: ${beforeIndex}→${after.activeIndex} user=${after.userQueue.length} auto=${after.autoQueue.length}`)
   }
@@ -1037,8 +1046,13 @@ export class PlaybackManager {
           return
         }
         case 'wrap': {
+          // The native snapshot exhausted (its own loop-all wrap is handled in
+          // `_onNativeTrackChanged`; this is the degraded no-snapshot case) —
+          // same repeat-all boundary, same reshuffle rule (2026-11-14).
+          if (!this._qm.reshuffleForWrap(get(currentTrack)?.trackId ?? null)) {
+            setActiveQueueIndex(0)
+          }
           const q = get(queue)
-          setActiveQueueIndex(0)
           const track = this._qm.findTrack(q.userQueue[0])
           if (track) await this._loadAndPlay(track)
           else this._stopPlayback()
@@ -1398,8 +1412,14 @@ export class PlaybackManager {
           return
         }
         case 'wrap': {
+          // Repeat-all re-entry (2026-11-14): with the user-queue shuffle on,
+          // the WRAP is the boundary that starts a fresh pass order. The write
+          // sets the anchor to 0 itself, so the redundant index write is
+          // skipped; the row to load is read AFTER it.
+          if (!this._qm.reshuffleForWrap(get(currentTrack)?.trackId ?? null)) {
+            setActiveQueueIndex(0)
+          }
           const q = get(queue)
-          setActiveQueueIndex(0)
           const track = this._qm.findTrack(q.userQueue[0])
           if (track) {
             await this._loadAndPlay(track)
@@ -1445,12 +1465,13 @@ export class PlaybackManager {
       case 'advance':
         return this._qm.advanceQueue()
       case 'wrap': {
-        const q = get(queue)
-        if (q.userQueue.length > 0) {
+        // Same repeat-all boundary as the fg chain — the shuffle decides the
+        // new pass's first row before it is resolved (2026-11-14).
+        if (!this._qm.reshuffleForWrap(get(currentTrack)?.trackId ?? null)) {
           setActiveQueueIndex(0)
-          return this._qm.findTrack(q.userQueue[0]) ?? null
         }
-        return null
+        const q = get(queue)
+        return q.userQueue.length > 0 ? this._qm.findTrack(q.userQueue[0]) ?? null : null
       }
       case 'reload':
         // The caller (next/prev/select/play while engaged) resolved the track
@@ -1606,6 +1627,13 @@ export class PlaybackManager {
           return updated
         })
       } else if (result.kind === 'wrap') {
+        // NOT a user-queue-shuffle wrap site (2026-11-14), on purpose: this
+        // branch means the fade played a row while `advanceQueue` found nothing
+        // after the pre-fade anchor — the arm outlived a queue edit, not "the
+        // last row finished and the pass looped" (no arm can exist past the
+        // queue end, so a real end-of-pass fires `ended` → `_onTrackEnded`
+        // instead). The audio already plays `targetId` here, so reordering the
+        // section under it would compound a state that is already a mismatch.
         setActiveQueueIndex(result.index)
       }
 
@@ -1824,10 +1852,13 @@ export class PlaybackManager {
       return
     }
     if (mode === 'all') {
-      const first = q.userQueue[0]
+      // The tail's Next IS the repeat-all boundary, so it reshuffles like a
+      // natural wrap (2026-11-14): one rule — "each new pass is a fresh order"
+      // — instead of a Next-only exception the user cannot predict.
+      if (!this._qm.reshuffleForWrap(playingId ?? null)) setActiveQueueIndex(0)
+      const first = get(queue).userQueue[0]
       const track = first ? this._qm.findTrack(first) : undefined
       if (track) {
-        setActiveQueueIndex(0)
         await this._loadTrack(track)
       } else {
         this._stopPlayback()

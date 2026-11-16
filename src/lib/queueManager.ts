@@ -11,6 +11,7 @@ import {
   type HandOrder,
 } from './autoQueuePlan'
 import { effectiveRecent, inscribeRecent, RECENT_LIMIT_MAX } from './recentWindow'
+import { planUserQueueShuffle, planWrapShuffle } from './userQueueShuffle'
 import { syncFillProvenance } from './queueProvenance'
 import * as queueMutation from './queueMutation'
 import {
@@ -21,6 +22,7 @@ import {
   autoQueueFilters,
   autoQueueSort,
   autoQueueEnabled,
+  userQueueShuffle,
   metadataCache,
   queueWrapNotice,
   autoQueueEmptyNotice,
@@ -253,6 +255,66 @@ class QueueManager {
   /** Row-scoped reorder: moves the user OCCURRENCE at `index` to the end. */
   moveRowToEnd(index: number): void {
     this._mutateQueue((q) => queueMutation.moveUserRowToEnd(q, index))
+  }
+
+  /**
+   * The Up-next header's SHUFFLE switch (2026-11-14). Turning it ON applies one
+   * shuffle IMMEDIATELY — a switch whose only effect waits for the next loop
+   * reads as broken — and turning it OFF stops future passes from reshuffling.
+   *
+   * OFF deliberately does NOT restore a pre-shuffle order: the user section is
+   * a user-editable listening log, so a remembered snapshot would silently
+   * discard every row added, removed or dragged while the shuffle was on. What
+   * the user sees after pressing is the queue's real order.
+   */
+  toggleUserQueueShuffle(): void {
+    const next = !get(userQueueShuffle)
+    userQueueShuffle.set(next)
+    if (next) this.shuffleUserQueue()
+  }
+
+  /**
+   * ONE fresh shuffle of the rows still to come (the audible user row and the
+   * played rows above it never move — `userQueueShuffle` owns the rule). The
+   * anchor is unchanged by construction, so this is an anchor-PRESERVING edit:
+   * it does not end a hand-dragged auto tail, it does not touch the anti-repeat
+   * window, and it never needs a re-anchor hint. An inert press (fewer than two
+   * movable rows) writes nothing.
+   */
+  shuffleUserQueue(): void {
+    queue.update((q) => {
+      const userQueue = planUserQueueShuffle(q.userQueue, q.activeIndex)
+      if (userQueue === null) return q
+      const updated: QueueState = { ...q, userQueue }
+      persistQueue('shuffleUserQueue', updated)
+      return updated
+    })
+  }
+
+  /**
+   * The repeat-all WRAP hook (2026-11-14): the pass just ended and playback has
+   * re-entered at the top of the user queue. With the switch ON the new pass
+   * starts in a fresh order, never with the song that just finished.
+   *
+   * The anchor is set to 0 IN THE SAME WRITE as the reorder, so no observer can
+   * ever see an anchor naming a row the shuffle already moved. Returns whether
+   * it wrote, so the caller skips its own redundant `activeIndex = 0` write.
+   *
+   * `justPlayedId` is the finished song (optional: a wrap driven by a manual
+   * Next at the tail may have no current track on some degraded paths).
+   */
+  reshuffleForWrap(justPlayedId?: string | null): boolean {
+    if (!get(userQueueShuffle)) return false
+    let wrote = false
+    queue.update((q) => {
+      const userQueue = planWrapShuffle(q.userQueue, justPlayedId)
+      if (userQueue === null) return q
+      const updated: QueueState = { ...q, userQueue, activeIndex: 0 }
+      persistQueue('reshuffleForWrap', updated)
+      wrote = true
+      return updated
+    })
+    return wrote
   }
 
   /**

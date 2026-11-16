@@ -161,6 +161,11 @@ class FakeQueueManager {
   replenishAutoQueue(): void {
     this.calls.push('replenishAutoQueue')
   }
+  /** The repeat-all wrap hook (2026-11-14); off by default in the fakes. */
+  reshuffleForWrap(): boolean {
+    this.calls.push('reshuffleForWrap')
+    return false
+  }
 }
 
 class FakeSleepTimer {

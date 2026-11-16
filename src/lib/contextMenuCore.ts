@@ -33,6 +33,7 @@ export type ContextMenuIcon =
   | 'select'
   | 'refresh'
   | 'convertUp'
+  | 'shuffle'
 
 export const CONTEXT_MENU_ICONS: Record<ContextMenuIcon, string> = {
   play: 'M8 5v14l11-7z',
@@ -56,6 +57,11 @@ export const CONTEXT_MENU_ICONS: Record<ContextMenuIcon, string> = {
     'M19 3H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V5a2 2 0 00-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z',
   refresh:
     'M17.65 6.35A7.95 7.95 0 0012 4a8 8 0 100 16 8 8 0 007.73-6h-2.08A6 6 0 1112 6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z',
+  /** The user-queue shuffle (Up-next header, 2026-11-14) — the same glyph the
+   *  player islands use for the auto shuffle, registered here so the queue
+   *  header reads its icon from the shared set. */
+  shuffle:
+    'M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z',
   convertUp: 'M12 3L7.41 7.59 8.83 9 11 6.83V15h2V6.83L15.17 9l1.41-1.41L12 3zM5 19h14v2H5z',
 }
 

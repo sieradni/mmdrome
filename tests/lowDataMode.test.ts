@@ -42,6 +42,7 @@ class FakeQueueManager {
   rebuilt = 0
   replenishAutoQueue(): void { this.replenished++ }
   rebuildAutoQueue(): void { this.rebuilt++ }
+  reshuffleForWrap(): boolean { return false }
 }
 
 type ManagerPrivates = {

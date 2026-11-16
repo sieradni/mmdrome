@@ -33,6 +33,7 @@ class FakeEngine {
 class FakeQueueManager {
   replenishAutoQueue(): void {}
   rebuildAutoQueue(): void {}
+  reshuffleForWrap(): boolean { return false }
 }
 
 function makeManager(): { e: FakeEngine; cleanup: () => void } {

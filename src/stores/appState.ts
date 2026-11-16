@@ -411,6 +411,26 @@ const _autoQueueEnabled = persisted<boolean>('autoQueueEnabled', true)
 export const autoQueueEnabled = _autoQueueEnabled.store
 
 /**
+ * The USER QUEUE's shuffle switch (2026-11-14). Persisted like the other queue
+ * settings and restored in `initStores`, because it is a MODE: it decides
+ * whether the next repeat-all pass starts shuffled, which outlives the session
+ * that turned it on. The press that flips it also reorders what is still to
+ * come once (`queueManager.toggleUserQueueShuffle`); the ORDER itself is never
+ * stored twice — the shuffled section IS the queue.
+ *
+ * Deliberately separate from `shuffleEnabled` (the auto queue's random SORT,
+ * derived from `autoQueueSort`): one shuffles suggestions re-derived from the
+ * library, the other permutes the rows the user built. Read by the manager (the
+ * wrap hook) and the queue view (the Up-next header button).
+ * `[test-enforced: tests/userQueueShufflePersistence.test.ts — boot restore + write-back both directions]`
+ */
+const _userQueueShuffle = persisted<boolean>('userQueueShuffle', false, {
+  decode: (raw) => (typeof raw === 'boolean' ? raw : undefined),
+})
+
+export const userQueueShuffle = _userQueueShuffle.store
+
+/**
  * Saved library filter/sort presets (Phase 3A, 2026-10-26). A preset is a
  * NAME plus a snapshot of the shared library view; it is persisted like the
  * other settings and restored in `initStores`. It is deliberately separate
@@ -688,6 +708,7 @@ async function restoreLocalState(): Promise<void> {
     _autoQueueFilterFields.restore(),
     _autoQueueSort.restore(),
     _autoQueueEnabled.restore(),
+    _userQueueShuffle.restore(),
     _autoQueueRecentLimit.restore(),
     _autoQueueLength.restore(),
     _filterPresets.restore(),

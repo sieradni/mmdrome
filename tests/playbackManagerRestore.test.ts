@@ -62,6 +62,7 @@ class FakeQueueManager {
   replenishAutoQueue(): void { this.replenished++ }
   rebuildAutoQueue(): void { this.rebuilt++ }
   rebuildForFreshContext(): void { this.freshContexts++ }
+  reshuffleForWrap(): boolean { return false }
 }
 
 /** Only the two calls `_subscribeShared` can make on the web transport. */

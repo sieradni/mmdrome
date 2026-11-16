@@ -15,6 +15,7 @@
     autoQueueEmptyNotice,
     autoQueueScope,
     autoQueueLength,
+    userQueueShuffle,
     AUTO_QUEUE_LENGTH_MIN,
     AUTO_QUEUE_LENGTH_MAX,
     clampAutoQueueLength,
@@ -26,6 +27,7 @@
   import { CONTEXT_MENU_ICONS } from '../lib/contextMenuCore'
   import { bufferedRanges, preloadEntries } from '../stores/loadStatus'
   import { planDragDrop } from '../lib/queueMutation'
+  import { shuffleFromIndex } from '../lib/userQueueShuffle'
   import { contextMenuTrigger } from '../lib/contextMenuTrigger'
   import { openContextMenu } from '../lib/contextMenuStore'
   import { playQueueIndex, removeUserQueueIndex } from '../lib/queueCommands'
@@ -85,6 +87,16 @@
   // has nothing to remove (0).
   let aboveCount = $derived($queue.activeIndex < 0 ? 0 : activeInUser ? $queue.activeIndex : $queue.userQueue.length)
   let belowCount = $derived(activeInUser ? $queue.userQueue.length - $queue.activeIndex - 1 : 0)
+
+  // Rows a shuffle press can move — derived from the SAME rule the planner
+  // uses (`shuffleFromIndex`), so the button can never offer a press that does
+  // nothing. The audible row and the played rows above it are history and stay
+  // put; with the audible row in the auto section the whole user section moves.
+  let shuffleMovable = $derived($queue.userQueue.length - shuffleFromIndex($queue.userQueue, $queue.activeIndex))
+  // Disabled ONLY while the switch is off and there is nothing to reorder: a
+  // lit switch must always be pressable, or the user could not turn it off
+  // once playback reached the last row.
+  let canShuffleUser = $derived($userQueueShuffle || shuffleMovable >= 2)
 
   // Filter fields live in the persisted `autoQueueFilterFields` store — the
   // single source of truth. The store layer persists changes, and the
@@ -874,6 +886,29 @@
         <span class="text-[11px] font-semibold uppercase tracking-widest text-muted">Up next</span>
         <span class="rounded-full bg-white/10 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted">{previewUserItems.length}</span>
         <div class="h-0.5 flex-1 rounded-full bg-white/25"></div>
+        <!-- User-queue shuffle (2026-11-14): the same right-aligned slot the
+             Auto header gives its refresh button, because it is the same kind
+             of command — an action on the section that owns this row. It is a
+             SWITCH as well as an action: pressing it shuffles what is still to
+             come once AND keeps shuffling each repeat-all pass (the manager's
+             wrap hook reads the persisted flag), so the lit state has to be
+             visible. -->
+        <button
+          type="button"
+          use:tooltip={$userQueueShuffle ? 'Shuffle up next: on' : 'Shuffle up next'}
+          onclick={() => queueManager.toggleUserQueueShuffle()}
+          disabled={!canShuffleUser}
+          aria-pressed={$userQueueShuffle}
+          aria-label="Shuffle up next"
+          class="rounded-full p-1.5 transition-colors disabled:opacity-30 disabled:hover:text-muted"
+          class:text-accent={$userQueueShuffle}
+          class:hover:text-accent={$userQueueShuffle}
+          class:text-muted={!$userQueueShuffle}
+          class:hover:text-primary={!$userQueueShuffle}
+          data-testid="shuffle-user-queue"
+        >
+          <svg class="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d={CONTEXT_MENU_ICONS.shuffle} /></svg>
+        </button>
       </div>
 
       <div class="mx-2 space-y-0.5" role="group" aria-label="User queue">

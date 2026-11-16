@@ -157,6 +157,16 @@ class FakeQueueManager {
   replenishAutoQueue(): void {
     this.calls.push('replenishAutoQueue')
   }
+
+  /** The repeat-all wrap hooks (2026-11-14); the switch is off by default. */
+  reshuffleForWrap(): boolean {
+    this.calls.push('reshuffleForWrap')
+    return false
+  }
+
+  shuffleUserQueue(): void {
+    this.calls.push('shuffleUserQueue')
+  }
 }
 
 class FakeSleepTimer {
@@ -367,6 +377,42 @@ test('_onNativeTrackEnded wraps to the first user row under loop-all', async () 
   assert.equal(get(queue).activeIndex, 0)
   assert.equal(get(currentTrack)?.trackId, 't1')
   assert.equal(get(playbackState), 'playing')
+})
+
+test('_onNativeTrackEnded hands the repeat-all wrap to the shuffle hook', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1', 't2'], [t1, t2], 1)
+  loopMode.set('all')
+  setCurrentTrack(t2)
+  await h.m._onNativeTrackEnded(false)
+
+  assert.ok(h.qm.calls.includes('reshuffleForWrap'))
+  assert.equal(get(queue).activeIndex, 0)
+})
+
+// The native engine wraps its OWN snapshot under loop-all, so the pass boundary
+// is only observable as a last-row → first-row `trackChanged` (2026-11-14).
+test('_onNativeTrackChanged reshuffles the wrapped pass, and nothing else', async () => {
+  const h = makeHarness()
+  resetStores()
+  seed(h, ['t1', 't2'], [t1, t2], 1)
+  loopMode.set('all')
+  setCurrentTrack(t2)
+  h.m._onNativeTrackChanged('t1')
+
+  assert.equal(get(queue).activeIndex, 0)
+  assert.ok(h.qm.calls.includes('shuffleUserQueue'))
+
+  // Control: an ordinary forward advance is NOT a pass boundary.
+  resetStores()
+  const plain = makeHarness()
+  seed(plain, ['t1', 't2'], [t1, t2], 0)
+  loopMode.set('all')
+  setCurrentTrack(t1)
+  plain.m._onNativeTrackChanged('t2')
+
+  assert.ok(!plain.qm.calls.includes('shuffleUserQueue'))
 })
 
 test('_onNativeTrackEnded restarts the current track under loop-one', async () => {

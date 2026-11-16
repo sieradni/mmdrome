@@ -90,6 +90,8 @@ class FakeQueueManager {
   rebuildAutoQueue(): void {}
   promoteActiveTrack(): void {}
   advanceTo(): void {}
+  reshuffleForWrap(): boolean { return false }
+  shuffleUserQueue(): void {}
 }
 
 class FakeSleepTimer {
