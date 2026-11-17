@@ -27,7 +27,8 @@
           "date": "2026-11-17T22:59:56.230Z",
           "localizedDescription": "Playback recovers from audio interruptions and service resets instead of stalling: Play is never swallowed, and the restart banner clears only once audio actually starts.",
           "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.11.1/mmdrome.ipa",
-          "minOSVersion": "15.0"
+          "minOSVersion": "15.0",
+          "size": 5268113
         },
         {
           "version": "1.11.0",
