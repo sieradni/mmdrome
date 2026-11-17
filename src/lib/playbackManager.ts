@@ -1715,7 +1715,13 @@ export class PlaybackManager {
     if (this.isNative()) {
       if (get(currentTrack) && this._nativeTransport?.engaged) {
         await this._nativeTransport.play().catch(() => {})
-        setPlaybackState('playing')
+        // 2026-11-17: a SURFACED engine may still be unable to start — that is
+        // what surfaced it, and the explicit Play only re-opens its ladder. Do
+        // not claim playback: the native state edge owns the truth, and a
+        // failed start emits no edge (the engine was already not playing), so
+        // an optimistic 'playing' here would sit over the restart banner with
+        // nothing to correct it.
+        if (!get(engineUnavailable)) setPlaybackState('playing')
       } else {
         await this._playFirstInQueue()
       }

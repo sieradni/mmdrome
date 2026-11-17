@@ -233,8 +233,13 @@ public class BackgroundAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         session.onInterruptionStateChanged = { [weak self] active in
             self?.performOnMain { self?.engine.setInterruptionActive(active) }
         }
+        // 2026-11-17: COALESCED, never a rebuild per notification. iOS delivers
+        // reset/lost in bursts (and as a lost→reset pair); the old direct
+        // `rebuildAudioStack()` tore the graph down repeatedly, and each
+        // attempt logged `rebuild start failed — recovery remains pending`
+        // while the player could not start anything at all.
         session.onSessionInvalidated = { [weak self] in
-            self?.performOnMain { self?.engine.rebuildAudioStack() }
+            self?.performOnMain { self?.engine.audioServicesInvalidated() }
         }
         // Stale-flag correction (2026-10-08): the engine PROVED a start
         // succeeded while the controller still believed an interruption was

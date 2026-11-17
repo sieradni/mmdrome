@@ -25,6 +25,7 @@ import {
   sleepTimer,
   setCurrentTrack,
   setPlaybackState,
+  engineUnavailable,
   type Track,
 } from '../src/stores/appState'
 import { PlaybackManager } from '../src/lib/playbackManager'
@@ -194,6 +195,7 @@ class FakeSleepTimer {
 // --- harness ---------------------------------------------------------------
 
 type PrivatePM = {
+  play(): Promise<void>
   seek(time: number, opts?: { live?: boolean }): void
   playTrackById(trackId: string): Promise<void>
   playTrackAt(index: number): Promise<void>
@@ -282,6 +284,27 @@ test('_nativeLoadPlay failure: reports stopped and never promotes', async () => 
   assert.equal(get(playbackState), 'stopped')
   assert.ok(!h.qm.calls.includes('promoteActiveTrack'))
   assert.ok(!h.stm.calls.includes('rearmAfterSnapshot'))
+})
+
+test('play while the engine is surfaced reaches native but never claims playback', async () => {
+  // 2026-11-17: the recovery banner used to clear on an interruption edge, and
+  // a surfaced engine swallowed Play. Now the Play must reach native (the
+  // fresh-ladder run starts there), but JS must NOT optimistically report
+  // "playing" over a banner that says playback stopped — a failed start emits
+  // no native state edge (the engine was already not playing) to correct it.
+  const h = makeHarness({ engaged: true })
+  resetStores()
+  seed(h, ['t1'], [t1], 0)
+  setCurrentTrack(t1)
+  setPlaybackState('paused')
+  engineUnavailable.set(true)
+  try {
+    await h.m.play()
+    assert.ok(h.nt.calls.includes('play'), 'the Play must still reach the native engine')
+    assert.equal(get(playbackState), 'paused', 'a surfaced engine must not be claimed as playing')
+  } finally {
+    engineUnavailable.set(false)
+  }
 })
 
 // --- Phase 1 (2026-10-07): parked seek intent -------------------------------
