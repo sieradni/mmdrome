@@ -16,11 +16,19 @@
       "iconURL": "https://sieradni.github.io/mmdrome/icon-512.png",
       "tintColor": "8E8E93",
       "category": "music",
-      "version": "1.11.0",
-      "versionDate": "2026-11-16T08:07:07.241Z",
-      "versionDescription": "Search understands Japanese: type tuyu or tsuyu to find ツユ, in the library, the auto queue and file matching.",
-      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.11.0/mmdrome.ipa",
+      "version": "1.11.1",
+      "versionDate": "2026-11-17T22:59:56.230Z",
+      "versionDescription": "Playback recovers from audio interruptions and service resets instead of stalling: Play is never swallowed, and the restart banner clears only once audio actually starts.",
+      "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.11.1/mmdrome.ipa",
       "versions": [
+        {
+          "version": "1.11.1",
+          "buildVersion": "96",
+          "date": "2026-11-17T22:59:56.230Z",
+          "localizedDescription": "Playback recovers from audio interruptions and service resets instead of stalling: Play is never swallowed, and the restart banner clears only once audio actually starts.",
+          "downloadURL": "https://github.com/sieradni/mmdrome/releases/download/ios-v1.11.1/mmdrome.ipa",
+          "minOSVersion": "15.0"
+        },
         {
           "version": "1.11.0",
           "buildVersion": "95",
@@ -872,6 +880,15 @@
   ],
   "news": [
     {
+      "title": "mmdrome 1.11.1",
+      "identifier": "ios-v1.11.1",
+      "appID": "com.mmdrome.player",
+      "caption": "Playback recovers from audio interruptions and service resets instead of stalling: Play is never swallowed, and the restart banner clears on",
+      "date": "2026-11-17T22:59:56.230Z",
+      "tintColor": "8E8E93",
+      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
+    },
+    {
       "title": "mmdrome 1.11.0",
       "identifier": "ios-v1.11.0",
       "appID": "com.mmdrome.player",
@@ -904,15 +921,6 @@
       "appID": "com.mmdrome.player",
       "caption": "Pausing during a crossfade now stops both songs. Playback resumes from the paused position in the current song.",
       "date": "2026-11-13T07:34:15.166Z",
-      "tintColor": "8E8E93",
-      "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
-    },
-    {
-      "title": "mmdrome 1.9.2",
-      "identifier": "ios-v1.9.2",
-      "appID": "com.mmdrome.player",
-      "caption": "Context menus: a long press now opens the menu from anywhere on a row, and a press that dismisses the menu never also presses what is undern",
-      "date": "2026-11-07T03:06:22.041Z",
       "tintColor": "8E8E93",
       "imageURL": "https://sieradni.github.io/mmdrome/icon-512.png"
     }
